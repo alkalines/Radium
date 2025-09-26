@@ -1,5 +1,5 @@
-import React from "react";
 import Sidebar from "@/app/chat/components/Sidebar";
+import React from "react";
 
 export const metadata = {
   title: "Radium — Chat",
