@@ -1,4 +1,5 @@
 import React from "react";
+import Sidebar from "@/app/chat/components/Sidebar";
 
 export const metadata = {
   title: "Radium — Chat",
@@ -9,5 +10,12 @@ export default function ChatLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return <div className="h-screen bg-[#141414] text-gray-100">{children}</div>;
+  return (
+    <div className="h-screen bg-[#141414] text-gray-100">
+      <div className="flex h-full">
+        <Sidebar />
+        <main className="flex-1">{children}</main>
+      </div>
+    </div>
+  );
 }
