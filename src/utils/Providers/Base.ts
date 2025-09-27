@@ -1,4 +1,4 @@
-type URLType = `https://${string}` | `http://${string}`
+type URLType = `https://${string}` | `http://${string}` | string
 
 /**
  * Configuration at type
@@ -36,25 +36,29 @@ type AIProviderConfig = {
   /**
    * Where the headquarters is localized.
    */
-  headquarters: string
+  headquarters?: string;
   /**
-   * Models list available 
+   * Models list available
    * @todo Integration
    */
   models: any[]; // Later
   /**
-   * AI SDK provider.
+   * BaseURL of the provider
    */
-  aiSDK: any // Also later
+  baseURL?: URLType | undefined
 };
 
 
 /**
  * Class for AI Provider
  */
-class AIProviderBase {
+export default class AIProviderBase {
   Config: AIProviderConfig
   constructor(Config: AIProviderConfig) {
     this.Config = Config
   }
+  /**
+   * AI SDK
+   */
+  AISDK: any
 }
