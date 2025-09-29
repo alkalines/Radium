@@ -1,9 +1,7 @@
-type URLType = `https://${string}` | `http://${string}` | string
-
 /**
  * Configuration at type
  */
-type AIProviderConfig = {
+export type AIProviderConfig = {
   /**
    * Provider name
    */
@@ -27,11 +25,11 @@ type AIProviderConfig = {
     /**
      * Terms of service (TOS) of the Provider
      */
-    tos?: URLType;
+    tos?: string;
     /**
      * Privacy Policy of the Provider
      */
-    privacy_policy?: URLType;
+    privacy_policy?: string;
   };
   /**
    * Where the headquarters is localized.
@@ -41,24 +39,15 @@ type AIProviderConfig = {
    * Models list available
    * @todo Integration
    */
-  models: any[]; // Later
+  //models: any[]; // Later
+  // Models will be handled at Convex Data table (i hope it doesn't bite me in the Ass later....)
   /**
    * BaseURL of the provider
    */
-  baseURL?: URLType | undefined
-};
-
-
-/**
- * Class for AI Provider
- */
-export default class AIProviderBase {
-  Config: AIProviderConfig
-  constructor(Config: AIProviderConfig) {
-    this.Config = Config
-  }
+  baseURL?: string | undefined;
   /**
-   * AI SDK
+   * Type of API
    */
-  AISDK: any
-}
+  apiType: "Anthropic" | "OpenAI";
+  createAISDK: (baseURL: string, apiKey: string) => Promise<any>; // TODO: Better class
+};
