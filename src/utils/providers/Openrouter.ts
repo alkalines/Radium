@@ -18,7 +18,7 @@ const OpenRouterProvider: AIProviderConfig = {
     tos: "https://openrouter.ai/terms",
   },
   apiType: "OpenAI",
-  async createAISDK(baseURL, apiKey) {
+  async createAISDK(apiKey, baseURL) {
     return createOpenRouter({
       apiKey: apiKey,
       baseURL: baseURL,

@@ -49,5 +49,5 @@ export type AIProviderConfig = {
    * Type of API
    */
   apiType: "Anthropic" | "OpenAI";
-  createAISDK: (baseURL: string, apiKey: string) => Promise<any>; // TODO: Better class
+  createAISDK: (apiKey: string, baseURL?: string) => Promise<any>; // TODO: Better class
 };
