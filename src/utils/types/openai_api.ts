@@ -306,6 +306,25 @@ export const ChatCompletions_RequestBody = z.object({
   // @deprecated use `safety_identifier` or `prompt_cache_key` instead
   user: z.optional(z.string()),
   verbosity: z.optional(z.string()),
+  web_search_options: z.optional(
+    z.object({
+      search_context_size: z.optional(
+        z.union([z.literal("low"), z.literal("medium"), z.literal("high")])
+      ),
+      user_location: z.nullish(
+        z.object({
+          type: z.string(),
+          approximate: z.object({
+            city: z.optional(z.string()),
+            country: z.optional(z.string()),
+            region: z.optional(z.string()),
+            timezone: z.optional(z.string()),
+          }),
+        })
+      ),
+    })
+  ),
+});
 
 export const ChatCompletions_NotStreaming_ResponseBody = z.object({
   choices: z.array(
