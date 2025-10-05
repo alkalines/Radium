@@ -3,6 +3,7 @@
     "AISDK",
     "flac",
     "logit",
+    "logprob",
     "logprobs",
     "openai",
     "openrouter"
