@@ -1,5 +1,44 @@
 import * as z from "zod"; // This thing is a fucking heavy
 
+/**
+ * Input Types
+ */
+
+export const OpenAI_Input_Image = z.object({
+  type: z.string(),
+  image_url: z.object({
+    url: z.string(), // URL of the image or a BASE64 encoded
+    detail: z.optional(z.string()),
+  }),
+});
+
+export const OpenAI_Input_Audio = z.object({
+  type: z.literal("input_audio"),
+  input_audio: z.object({
+    data: z.string(),
+    format: z.union([z.literal("wav"), z.literal("mp3")]),
+  }),
+});
+
+export const OpenAI_Input_File = z.object({
+  type: z.literal("file"),
+  file: z.object({
+    file_data: z.optional(z.string()),
+    file_id: z.optional(z.string()),
+    filename: z.optional(z.string()),
+    // OpenAI API reference lets everything as optional, so i guess its okay????
+  }),
+});
+
+export const OpenAI_Input_TextPart = z.object({
+  type: z.string(),
+  text: z.string(),
+});
+
+/**
+ * OpenAI Message Types
+ */
+
 export const OpenAI_Message_DeveloperSystem = z.object({
   role: z.union([z.literal("developer"), z.literal("system")]),
   content: z.array(
@@ -20,33 +59,10 @@ export const OpenAI_Message_User = z.object({
     z.string(),
     z.array(
       z.union([
-        z.object({
-          type: z.string(),
-          text: z.string(),
-        }),
-        z.object({
-          type: z.string(),
-          image_url: z.object({
-            url: z.string(), // URL of the image or a BASE64 encoded
-            detail: z.optional(z.string()),
-          }),
-        }),
-        z.object({
-          type: z.literal("input_audio"),
-          input_audio: z.object({
-            data: z.string(),
-            format: z.union([z.literal("wav"), z.literal("mp3")]),
-          }),
-        }),
-        z.object({
-          type: z.literal("file"),
-          file: z.object({
-            file_data: z.optional(z.string()),
-            file_id: z.optional(z.string()),
-            filename: z.optional(z.string()),
-            // OpenAI API reference lets everything as optional, so i guess its okay????
-          }),
-        }),
+        OpenAI_Input_TextPart,
+        OpenAI_Input_Image,
+        OpenAI_Input_Audio,
+        OpenAI_Input_File,
       ])
     ),
   ]),
@@ -64,10 +80,7 @@ export const OpenAI_Message_Assistant = z.object({
     z.string(),
     z.array(
       z.union([
-        z.object({
-          text: z.string(),
-          type: z.string(),
-        }),
+        OpenAI_Input_TextPart,
         z.object({
           refusal: z.string(),
           type: z.string(),
@@ -109,15 +122,7 @@ export const OpenAI_Message_Assistant = z.object({
 });
 
 export const OpenAI_Message_Tool = z.object({
-  content: z.union([
-    z.string(),
-    z.array(
-      z.object({
-        text: z.string(),
-        type: z.string(),
-      })
-    ),
-  ]),
+  content: z.union([z.string(), z.array(OpenAI_Input_TextPart)]),
   role: z.literal("tool"),
   tool_call_id: z.string(),
 });

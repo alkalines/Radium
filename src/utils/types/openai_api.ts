@@ -10,16 +10,11 @@ import {
 export const ChatCompletions_RequestBody = z.object({
   messages: z.array(
     z.union([
-      // developer, system
       OpenAI_Message_DeveloperSystem,
-      // user
       OpenAI_Message_User,
-      // assistant
       OpenAI_Message_Assistant,
-      // tool
       OpenAI_Message_Tool,
       // @deprecated
-      // function
       OpenAI_Message_Function,
     ])
   ),
