@@ -306,20 +306,196 @@ export const ChatCompletions_RequestBody = z.object({
   // @deprecated use `safety_identifier` or `prompt_cache_key` instead
   user: z.optional(z.string()),
   verbosity: z.optional(z.string()),
-  web_search_options: z.optional(z.object({
-    search_context_size: z.optional(z.union([
-      z.literal('low'),
-      z.literal('medium'),
-      z.literal('high'),
-    ])),
-    user_location: z.nullish(z.object({
-      type: z.string(),
-      approximate: z.object({
-        city: z.optional(z.string()),
-        country: z.optional(z.string()),
-        region: z.optional(z.string()),
-        timezone: z.optional(z.string()),
-      })
-    }))
-  }))
+
+export const ChatCompletions_NotStreaming_ResponseBody = z.object({
+  choices: z.array(
+    z.object({
+      finish_reason: z.union([
+        z.string(),
+        z.literal("stop"),
+        z.literal("length"),
+        z.literal("content_filter"),
+        z.literal("tool_calls"),
+        z.literal("function_call"),
+      ]),
+      index: z.int(),
+      logprobs: z.nullish(
+        z.object({
+          content: z.array(
+            z.object({
+              bytes: z.array(z.any()),
+              logprob: z.number(),
+              token: z.string(),
+              top_logprobs: z.array(
+                z.object({
+                  bytes: z.array(z.any()),
+                  logprob: z.number(),
+                  token: z.string(),
+                })
+              ),
+            })
+          ),
+          refusal: z.array(
+            z.object({
+              bytes: z.array(z.any()),
+              logprob: z.number(),
+              token: z.string(),
+              top_logprobs: z.array(
+                z.object({
+                  bytes: z.array(z.any()),
+                  logprob: z.number(),
+                  token: z.string(),
+                })
+              ),
+            })
+          ),
+        })
+      ),
+      message: z.object({
+        content: z.string(),
+        refusal: z.string(),
+        role: z.string(),
+        annotations: z.array(
+          z.object({
+            type: z.literal("url_citation"),
+            url_citation: z.object({
+              end_index: z.int(),
+              start_index: z.int(),
+              title: z.string(),
+              url: z.string(),
+            }),
+          })
+        ),
+        audio: z.object({
+          data: z.string(),
+          expires_at: z.int(), // UNIX Timestamp
+          id: z.string(),
+          transcript: z.string(),
+        }),
+        // @Deprecated
+        function_call: z.nullish(
+          z.object({
+            arguments: z.string(),
+            name: z.string(),
+          })
+        ),
+        tool_calls: z.array(
+          z.union([
+            z.object({
+              function: z.object({
+                arguments: z.string(),
+                name: z.string(),
+              }),
+              id: z.string(),
+              type: z.union([z.string(), z.literal("function")]),
+            }),
+            z.object({
+              custom: z.object({
+                input: z.string(),
+                name: z.string(),
+              }),
+              id: z.string(),
+              type: z.literal("custom"),
+            }),
+          ])
+        ),
+      }),
+    })
+  ),
+  created: z.int(), // UNIX Timestamp
+  id: z.string(),
+  model: z.string(),
+  object: z.literal("chat.completion"),
+  service_tier: z.nullish(
+    z.union([
+      z.string(),
+      z.literal("auto"),
+      z.literal("default"),
+      z.literal("flex"),
+      z.literal("priority"),
+    ])
+  ),
+  // @deprecated
+  system_fingerprint: z.nullish(z.string()),
+  usage: z.object({
+    completion_tokens: z.int(),
+    prompt_tokens: z.int(),
+    total_tokens: z.int(),
+    completion_tokens_details: {
+      accepted_prediction_tokens: z.int(),
+      audio_tokens: z.int(),
+      reasoning_tokens: z.int(),
+      rejected_prediction_tokens: z.int(),
+      prompt_tokens_details: z.nullish(
+        z.object({
+          audio_tokens: z.int(),
+          cached_tokens: z.int(),
+        })
+      ),
+    },
+  }),
+});
+
+export const ChatCompletions_Streaming_Chunk = z.object({
+  choices: z.array(
+    z.object({
+      delta: z.object({
+        content: z.string(),
+        // @deprecated
+        function_call: z.object({
+          arguments: z.string(),
+          name: z.string(),
+        }),
+        refusal: z.string(),
+        role: z.string(),
+        tool_calls: z.array(
+          z.object({
+            index: z.int(),
+            function: z.object({
+              arguments: z.string(),
+              name: z.string(),
+            }),
+            id: z.string(),
+            type: z.literal("function"),
+          })
+        ),
+      }),
+    })
+  ),
+  created: z.int(),
+  id: z.string(),
+  model: z.string(),
+  object: z.string(),
+  service_tier: z.nullish(
+    z.union([
+      z.string(),
+      z.literal("auto"),
+      z.literal("default"),
+      z.literal("flex"),
+      z.literal("priority"),
+    ])
+  ),
+  // @deprecated
+  system_fingerprint: z.string(),
+  usage: z.nullish(
+    z.object({
+      completion_tokens: z.int(),
+      prompt_tokens: z.int(),
+      total_tokens: z.int(),
+      completion_tokens_details: z.nullish(
+        z.object({
+          accepted_prediction_tokens: z.nullish(z.int()),
+          audio_tokens: z.nullish(z.int()),
+          reasoning_tokens: z.nullish(z.int()),
+          rejected_prediction_tokens: z.nullish(z.int()),
+        })
+      ),
+      prompt_tokens_details: z.nullish(
+        z.object({
+          audio_tokens: z.nullish(z.int()),
+          cached_tokens: z.nullish(z.int()),
+        })
+      ),
+    })
+  ),
 });
