@@ -5,7 +5,11 @@ import {
   OpenAI_Message_Function,
   OpenAI_Message_Tool,
   OpenAI_Message_User,
-} from "./openai/messages";
+} from "./messages_types";
+
+/**
+ * Validators
+ */
 
 export const ChatCompletions_RequestBody = z.object({
   messages: z.array(
@@ -402,3 +406,17 @@ export const ChatCompletions_Streaming_Chunk = z.object({
     })
   ),
 });
+
+/**
+ * Types
+ */
+
+export type ChatCompletions_RequestBody_Type = z.infer<
+  typeof ChatCompletions_RequestBody
+>;
+export type ChatCompletions_NotStreaming_ResponseBody_Type = z.infer<
+  typeof ChatCompletions_NotStreaming_ResponseBody
+>;
+export type ChatCompletions_Streaming_Chunk_Type = z.infer<
+  typeof ChatCompletions_Streaming_Chunk
+>;
