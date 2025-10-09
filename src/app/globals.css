@@ -1,26 +1,44 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+    --color-bg-100: rgb(38, 38, 36);
+    --color-bg-200: rgb(31, 30, 29);
+    --color-bg-300: hsl(30, 3.3%, 16%);
+    --color-bg-400: hsl(30, 3.3%, 18%);
+    --color-text-100: hsl(30, 5%, 90%);
+    --color-text-200: hsl(30, 4%, 75%);
+    --color-text-300: hsl(30, 3%, 60%);
+    --color-text-500: hsl(30, 2%, 45%);
+    --color-border-300: hsl(30, 3%, 20%);
+    --color-accent-main-000: rgb(198, 97, 63);
+    --color-accent-main-100: rgb(198, 97, 63);
+    --color-accent-main-200: rgb(198, 97, 63);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+.ProseMirror {
+    position: relative;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+    white-space: break-spaces;
+    -webkit-font-variant-ligatures: none;
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0;
+}
+
+.ProseMirror pre {
+    white-space: pre-wrap;
+}
+
+.ProseMirror p.is-editor-empty:first-child::before {
+    content: attr(data-placeholder);
+    float: left;
+    pointer-events: none;
+    height: 0;
 }
