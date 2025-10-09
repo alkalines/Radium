@@ -17,9 +17,7 @@ export default class OpenAI_Adapter {
     this.baseURL = baseURL;
   }
 
-  async GenerateCompletion(
-    request: ChatCompletions_RequestBody_Type,
-  ) {
+  async GenerateCompletion(request: ChatCompletions_RequestBody_Type) {
     const completionRequest = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
       headers: {
@@ -33,8 +31,7 @@ export default class OpenAI_Adapter {
   }
 
   async StreamCompletion(
-    request: ChatCompletions_RequestBody_Type,
-    chunkReader: (data: ChatCompletions_Streaming_Chunk_Type) => void
+    request: ChatCompletions_RequestBody_Type
   ) {
     const completionRequest = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
@@ -45,17 +42,20 @@ export default class OpenAI_Adapter {
       body: JSON.stringify(request),
     });
 
-    const reader = completionRequest.body!.getReader();
-    while (reader !== undefined) {
-      const data = await reader.read();
+    const ChunksList = completionRequest.body!.getReader();
+    return await this.chunksReader(ChunksList);
+  }
+
+  async *chunksReader(ChunksList: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<ChatCompletions_Streaming_Chunk_Type, boolean, void> {
+    while (true) {
+      const data = await ChunksList.read();
       if (data.done) return true; // break
 
       const value = new TextDecoder().decode(data.value).replace("data: ", "");
 
       try {
-        chunkReader!(JSON.parse(value));
+        yield JSON.parse(value) as ChatCompletions_Streaming_Chunk_Type;
       } catch (e) {}
     }
-    return false
   }
 }
