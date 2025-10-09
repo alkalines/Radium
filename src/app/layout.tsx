@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { tiemposHeadline, styreneA, styreneB, claudeResponse } from './fonts';
 
 export const metadata: Metadata = {
     title: 'Claude',
@@ -14,7 +15,7 @@ export default function RootLayout({
     return (
         <html
             lang="pt-BR"
-            className="h-screen antialiased scroll-smooth"
+            className={`h-screen antialiased scroll-smooth ${tiemposHeadline.variable} ${styreneA.variable} ${styreneB.variable} ${claudeResponse.variable}`}
             data-theme="claude"
             data-mode="dark"
         >
