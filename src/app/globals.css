@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 @theme {
+    --color-bg-000: rgb(26, 25, 24);
     --color-bg-100: rgb(38, 38, 36);
     --color-bg-200: rgb(31, 30, 29);
     --color-bg-300: hsl(30, 3.3%, 16%);
@@ -9,10 +10,17 @@
     --color-text-200: hsl(30, 4%, 75%);
     --color-text-300: hsl(30, 3%, 60%);
     --color-text-500: hsl(30, 2%, 45%);
+    --color-border-200: hsl(30, 3%, 22%);
     --color-border-300: hsl(30, 3%, 20%);
     --color-accent-main-000: rgb(198, 97, 63);
     --color-accent-main-100: rgb(198, 97, 63);
     --color-accent-main-200: rgb(198, 97, 63);
+    --color-always-black: 0, 0%, 0%;
+    --font-display: var(--font-sans);
+    --font-large: 1rem;
+    --font-small: 0.875rem;
+    --font-base: 0.9375rem;
+    --z-header: 50;
 }
 
 html,
@@ -41,4 +49,19 @@ body {
     float: left;
     pointer-events: none;
     height: 0;
+}
+
+/* Font Classes */
+.font-display {
+    font-family: var(--font-sans);
+    font-weight: 400;
+}
+
+.font-claude-response {
+    font-family: var(--font-sans);
+}
+
+/* Additional utility classes */
+.border-0\.5 {
+    border-width: 0.5px;
 }
