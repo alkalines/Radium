@@ -4,20 +4,29 @@
 import {
   ChatCompletions_RequestBody_Type,
   ChatCompletions_Streaming_Chunk_Type,
+  ChatCompletions_NotStreaming_ResponseBody_Type
 } from "../types/openai/types";
+import BaseAdapter, {
+  AdapterConfig,
+  chuckListType
+} from "../types/adapter";
 
 /**
- * OpenAI Adapter
+ * OpenAI Adapter implementing BaseAdapter contract
  */
-export default class OpenAI_Adapter {
+export default class OpenAI_Adapter extends BaseAdapter {
   private apiKey: string;
   baseURL: string;
-  constructor(apiKey: string, baseURL: string) {
-    this.apiKey = apiKey;
-    this.baseURL = baseURL;
+
+  constructor(config: AdapterConfig) {
+    super(config);
+    this.apiKey = config.apiKey;
+    this.baseURL = config.baseURL;
   }
 
-  async GenerateCompletion(request: ChatCompletions_RequestBody_Type) {
+  async GenerateCompletion(
+    request: ChatCompletions_RequestBody_Type
+  ): Promise<ChatCompletions_NotStreaming_ResponseBody_Type> {
     const completionRequest = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
       headers: {
@@ -27,12 +36,12 @@ export default class OpenAI_Adapter {
       body: JSON.stringify(request),
     });
 
-    return await completionRequest.json();
+    return (await completionRequest.json()) as ChatCompletions_NotStreaming_ResponseBody_Type;
   }
 
   async StreamCompletion(
     request: ChatCompletions_RequestBody_Type
-  ) {
+  ): Promise<chuckListType> {
     const completionRequest = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
       headers: {
@@ -46,7 +55,9 @@ export default class OpenAI_Adapter {
     return await this.chunksReader(ChunksList);
   }
 
-  async *chunksReader(ChunksList: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<ChatCompletions_Streaming_Chunk_Type, boolean, void> {
+  private async *chunksReader(
+    ChunksList: ReadableStreamDefaultReader<Uint8Array>
+  ): chuckListType {
     while (true) {
       const data = await ChunksList.read();
       if (data.done) return true; // break
@@ -55,7 +66,9 @@ export default class OpenAI_Adapter {
 
       try {
         yield JSON.parse(value) as ChatCompletions_Streaming_Chunk_Type;
-      } catch (e) {}
+      } catch {
+        // swallow malformed / keep-alive events
+      }
     }
   }
 }
