@@ -1,8 +1,20 @@
 /**
  * LIBS
  */
-import { AIProviderConfig } from "../types/ai_provider";
 import OpenAI_Adapter from "../adapters/openai";
+import { AIProviderConfig } from "../types/ai_provider";
+
+/**
+ * Connector
+ */
+class OpenRouterConnector extends OpenAI_Adapter {
+  constructor(config: { apiKey: string }) {
+    super({
+      apiKey: config.apiKey,
+      baseURL: "https://openrouter.ai/api/v1",
+    });
+  }
+}
 
 /**
  * Provider info and AISDK creator
@@ -17,7 +29,7 @@ const OpenRouterProvider: AIProviderConfig = {
     privacy_policy: "https://openrouter.ai/privacy",
     tos: "https://openrouter.ai/terms",
   },
-  adapter: OpenAI_Adapter,
+  connector: OpenRouterConnector,
 };
 
 /**

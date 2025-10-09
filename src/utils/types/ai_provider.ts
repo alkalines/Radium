@@ -1,7 +1,7 @@
 /**
  * Imports
  */
-import BaseAdapter from '@/utils/types/adapter'
+import BaseAdapter, { AdapterConfig } from "@/utils/types/adapter";
 
 /**
  * Configuration at type
@@ -49,6 +49,10 @@ export type AIProviderConfig = {
    * Default BaseURL of the provider
    */
   defaultBaseURL: string | undefined;
-  adapter: typeof BaseAdapter;
+  /**
+   * Connector constructor. Explicitly typed to accept AdapterConfig and
+   * return an instance of BaseAdapter. Avoids using the `typeof` shortcut.
+   */
+  connector: new (config: AdapterConfig) => BaseAdapter;
   // Models will be handled at Convex Data table (i hope it doesn't bite me in the Ass later....)
 };

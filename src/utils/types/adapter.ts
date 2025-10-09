@@ -13,7 +13,7 @@ import {
 
 export type AdapterConfig = {
   apiKey: string;
-  baseURL: string;
+  baseURL?: string;
 };
 
 export type chuckListType = AsyncGenerator<ChatCompletions_Streaming_Chunk_Type, boolean, void>
