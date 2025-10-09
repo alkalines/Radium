@@ -1,17 +1,17 @@
 @import "tailwindcss";
 
 @theme {
-    --color-bg-000: rgb(26, 25, 24);
+    --color-bg-000: rgb(20, 20, 19);
     --color-bg-100: rgb(38, 38, 36);
     --color-bg-200: rgb(31, 30, 29);
-    --color-bg-300: hsl(30, 3.3%, 16%);
+    --color-bg-300: rgb(48, 48, 46);
     --color-bg-400: hsl(30, 3.3%, 18%);
     --color-text-100: hsl(30, 5%, 90%);
     --color-text-200: hsl(30, 4%, 75%);
     --color-text-300: hsl(30, 3%, 60%);
     --color-text-500: hsl(30, 2%, 45%);
     --color-border-200: hsl(30, 3%, 22%);
-    --color-border-300: hsl(30, 3%, 20%);
+    --color-border-300: rgb(102, 102, 99);
     --color-accent-main-000: rgb(198, 97, 63);
     --color-accent-main-100: rgb(198, 97, 63);
     --color-accent-main-200: rgb(198, 97, 63);
