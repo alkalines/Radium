@@ -26,9 +26,20 @@ export default abstract class BaseAdapter {
     // This is just a base man!
   }
 
+  /**
+   * Generate non streaming completion
+   * @param request OpenAI request
+   * @returns OpenAI non streaming body response.
+   */
   abstract GenerateCompletion(
     request: ChatCompletions_RequestBody_Type
   ): Promise<ChatCompletions_NotStreaming_ResponseBody_Type>;
+
+  /**
+   * Generate streaming completion.
+   * @param request OpenAI request
+   * @returns OpenAI chunks streaming
+   */
   abstract StreamCompletion(
     request: ChatCompletions_RequestBody_Type
   ): Promise<chuckListType>;
