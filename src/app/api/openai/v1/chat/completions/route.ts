@@ -1,24 +1,28 @@
+import { ChatCompletions_RequestBody } from "@/utils/types/openai/types";
+import { NextRequest, NextResponse } from "next/server";
+import AIBalancer from "@/utils/ai_balancer";
+import * as z from "zod";
 
-// BASE
-export const dynamic = "force-dynamic";
+export async function POST(rawRequest: NextRequest) {
+  try {
+    const request = ChatCompletions_RequestBody.parse(await rawRequest.json());
 
-export async function POST(request: Request) {
-  const encoder = new TextEncoder();
-  // Create a streaming response
-  const customReadable = new ReadableStream({
-    start(controller) {
-      const message = "A sample message.";
-      controller.enqueue(encoder.encode(`data: ${message}\n\n`));
-    },
-  });
-  // Return the stream response and keep the connection alive
-  return new Response(customReadable, {
-    // Set the headers for Server-Sent Events (SSE)
-    headers: {
-      Connection: "keep-alive",
-      "Content-Encoding": "none",
-      "Cache-Control": "no-cache, no-transform",
-      "Content-Type": "text/event-stream; charset=utf-8",
-    },
-  });
+    // TODO: Cost tracking, and BYOK.
+    const providerConnector = await AIBalancer(request);
+    if (request.stream) {
+
+    } else {
+      const gen = await providerConnector.GenerateCompletion(request);
+
+      return NextResponse.json(gen)
+    }
+  } catch (e) {
+    if (e instanceof z.ZodError) {
+      return NextResponse.json(e.issues, { status: 400 });
+    }
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 }
+    );
+  }
 }
