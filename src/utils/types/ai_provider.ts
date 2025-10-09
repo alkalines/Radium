@@ -45,6 +45,10 @@ export type AIProviderConfig = {
    * @todo Integration
    */
   //models: any[]; // Later
+  /**
+   * Default BaseURL of the provider
+   */
+  defaultBaseURL: string | undefined;
+  adapter: typeof BaseAdapter;
   // Models will be handled at Convex Data table (i hope it doesn't bite me in the Ass later....)
-  createAdapter: BaseAdapter;
 };

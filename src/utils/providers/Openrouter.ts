@@ -2,7 +2,7 @@
  * LIBS
  */
 import { AIProviderConfig } from "../types/ai_provider";
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import OpenAI_Adapter from "../adapters/openai";
 
 /**
  * Provider info and AISDK creator
@@ -10,24 +10,14 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 const OpenRouterProvider: AIProviderConfig = {
   name: "OpenRouter",
   slug: "openrouter",
-  baseURL: "https://openrouter.ai/api/v1/",
+  defaultBaseURL: "https://openrouter.ai/api/v1/",
   policies: {
     trainingOnFree: true,
     trainingOnPaid: true,
     privacy_policy: "https://openrouter.ai/privacy",
     tos: "https://openrouter.ai/terms",
   },
-  apiType: "OpenAI",
-  async createAISDK(apiKey, baseURL) {
-    return createOpenRouter({
-      apiKey: apiKey,
-      baseURL: baseURL,
-      headers: {
-        "HTTP-Referer": "https://github.com/alkalines/Radium",
-        "X-Title": "Radium Chatroom",
-      },
-    });
-  },
+  adapter: OpenAI_Adapter,
 };
 
 /**
