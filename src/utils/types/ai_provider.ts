@@ -12,7 +12,7 @@ export type AIProviderConfig = {
    */
   name: string;
   /**
-   * Slug for use (ex: openai/)
+   * Slug for use (ex: openai)
    */
   slug: string;
   /**
