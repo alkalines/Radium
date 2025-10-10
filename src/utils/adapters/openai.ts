@@ -21,7 +21,7 @@ export default class OpenAI_Adapter extends BaseAdapter {
   constructor(config: AdapterConfig) {
     super(config);
     this.apiKey = config.apiKey;
-    this.baseURL = config.baseURL;
+    this.baseURL = config.baseURL!;
   }
 
   async GenerateCompletion(
