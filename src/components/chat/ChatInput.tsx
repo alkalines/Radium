@@ -4,8 +4,7 @@ import { ModelSelector } from './ModelSelector';
 
 export function ChatInput() {
     return (
-        <div className="top-5 z-10 mx-auto w-full max-w-2xl">
-            <div className="mx-auto">
+        <div className="mx-auto">
                 <fieldset className="flex w-full min-w-0 flex-col">
                     <div className="!box-content flex flex-col bg-bg-300 mx-2 md:mx-0 items-stretch transition-all duration-200 relative cursor-text z-10 rounded-2xl border border-transparent shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/3.5%),0_0_0_0.5px_hsla(var(--border-300)/0.15)] hover:shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/3.5%),0_0_0_0.5px_hsla(var(--border-200)/0.3)]">
                         <div className="flex flex-col gap-3.5 m-3.5">
@@ -86,7 +85,6 @@ export function ChatInput() {
                         </div>
                     </div>
                 </fieldset>
-            </div>
         </div>
     );
 }

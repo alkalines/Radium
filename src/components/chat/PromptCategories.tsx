@@ -74,13 +74,14 @@ export function PromptCategories() {
                     aria-label="Categorias de prompt"
                     style={{opacity: 1}}
                 >
-                    {categories.map((category) => (
+                    {categories.map((category, index) => (
                         <CategoryButton
                             key={category.id}
                             label={category.label}
                             icon={category.icon}
                             isActive={activeCategory === category.id}
                             onClick={() => setActiveCategory(category.id)}
+                            isFullWidth={category.id === 'claude-choice'}
                         />
                     ))}
                 </ul>

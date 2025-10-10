@@ -8,7 +8,7 @@ export function ModelSelector() {
                 type="button"
                 data-testid="model-selector-dropdown"
             >
-                <div className="font-claude-response inline-flex gap-[3px] text-sm h-[14px] leading-none items-baseline">
+                <div className="font-ui inline-flex gap-[3px] text-sm h-[14px] leading-none items-baseline">
                     <div className="flex items-center gap-1">
                         <div className="whitespace-nowrap select-none">Sonnet 4.5</div>
                     </div>

@@ -3,13 +3,14 @@ interface CategoryButtonProps {
     icon: React.ReactNode;
     isActive?: boolean;
     onClick?: () => void;
+    isFullWidth?: boolean;
 }
 
-export function CategoryButton({ label, icon, isActive = false, onClick }: CategoryButtonProps) {
+export function CategoryButton({ label, icon, isActive = false, onClick, isFullWidth = false }: CategoryButtonProps) {
     return (
-        <li className="inline-block" role="presentation" style={{ opacity: 1, transform: 'none' }}>
+        <li className={isFullWidth ? "basis-full flex justify-center" : "inline-block"} role="presentation" style={{ opacity: 1, transform: 'none' }}>
             <button
-                className="active:scale-[0.995] border-0.5 border-border-300 cursor-pointer ease-in-out group hover:bg-bg-000 will-change-transform hover:text-text-100 line-clamp-1 overflow-hidden relative rounded-lg text-sm text-text-200 font-base px-2.5 h-8 transition-all"
+                className="active:scale-[0.995] border-0.5 border-border-300 cursor-pointer ease-in-out bg-bg-300 group hover:bg-bg-400 will-change-transform hover:text-text-100 line-clamp-1 overflow-hidden relative rounded-lg text-sm text-text-200 font-base px-2.5 h-8 transition-all"
                 role="tab"
                 aria-selected={isActive}
                 onClick={onClick}
