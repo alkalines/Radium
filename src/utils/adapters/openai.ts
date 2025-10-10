@@ -11,6 +11,11 @@ import BaseAdapter, {
   chuckListType
 } from "../types/adapter";
 
+const creditsHeaders = {
+  "HTTP-Referer": "https://github.com/alkalines/Radium",
+  "X-Title": "Radium Chatroom",
+};
+
 /**
  * OpenAI Adapter implementing BaseAdapter contract
  */
@@ -47,6 +52,7 @@ export default class OpenAI_Adapter extends BaseAdapter {
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         "Content-Type": "application/json",
+        ...creditsHeaders,
       },
       body: JSON.stringify(request),
     });
