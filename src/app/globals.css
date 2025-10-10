@@ -1,20 +1,20 @@
 @import "tailwindcss";
 
 @theme {
-    --color-bg-000: rgb(20, 20, 19);
-    --color-bg-100: rgb(38, 38, 36);
-    --color-bg-200: rgb(31, 30, 29);
-    --color-bg-300: rgb(48, 48, 46);
-    --color-bg-400: hsl(30, 3.3%, 18%);
-    --color-text-100: hsl(30, 5%, 90%);
-    --color-text-200: hsl(50, 9%, 74%);
-    --color-text-300: rgb(195, 193, 183);
-    --color-text-500: hsl(30, 2%, 45%);
-    --color-border-200: hsl(30, 3%, 22%);
-    --color-border-300: rgb(102, 102, 99);
-    --color-accent-main-000: rgb(198, 97, 63);
-    --color-accent-main-100: rgb(198, 97, 63);
-    --color-accent-main-200: rgb(198, 97, 63);
+    --color-bg-000: #141413;
+    --color-bg-100: #262624;
+    --color-bg-200: #1f1e1d;
+    --color-bg-300: #30302e;
+    --color-bg-400: #2f2e2c;
+    --color-text-100: #e7e6e4;
+    --color-text-200: #c3c1b7;
+    --color-text-300: #c3c1b7;
+    --color-text-500: #9c9a92;
+    --color-border-200: #3a3836;
+    --color-border-300: #484848;
+    --color-accent-main-000: #c6613f;
+    --color-accent-main-100: #c6613f;
+    --color-accent-main-200: #c6613f;
     --color-always-black: 0, 0%, 0%;
     --font-large: 1rem;
     --font-small: 0.875rem;

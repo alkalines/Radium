@@ -7,7 +7,7 @@ export function SidebarNav() {
                 <div data-state="closed">
                     <a
                         href="/new"
-                        className="inline-flex items-center justify-center h-9 px-4 py-2 rounded-lg min-w-20 active:scale-[0.985] whitespace-nowrap group transition ease-in-out active:!scale-100 hover:bg-transparent flex !justify-start !min-w-0 w-full hover:!bg-accent-main-000/[0.08] active:!bg-accent-brand/15"
+                        className="items-center h-9 px-4 py-2 rounded-lg active:scale-[0.985] whitespace-nowrap group transition ease-in-out active:!scale-100 hover:bg-transparent flex !justify-start !min-w-0 w-full active:!bg-accent-brand/15"
                         aria-label="Novo bate-papo"
                     >
                         <div className="-mx-3 flex flex-row items-center gap-2">

@@ -10,7 +10,7 @@ export function CategoryButton({ label, icon, isActive = false, onClick, isFullW
     return (
         <li className={isFullWidth ? "basis-full flex justify-center" : "inline-block"} role="presentation" style={{ opacity: 1, transform: 'none' }}>
             <button
-                className="active:scale-[0.995] border-0.5 border-border-300 cursor-pointer ease-in-out group hover:bg-bg-400 will-change-transform hover:text-text-100 line-clamp-1 overflow-hidden relative rounded-lg text-sm text-text-200 font-base px-2.5 h-8 transition-all"
+                className="active:scale-[0.995] border-0.5 border-border-300 bg-bg-100 cursor-pointer ease-in-out group will-change-transform hover:bg-bg-000 line-clamp-1 overflow-hidden relative rounded-lg text-sm text-text-200 font-base px-2.5 h-8 transition-all"
                 role="tab"
                 aria-selected={isActive}
                 onClick={onClick}
