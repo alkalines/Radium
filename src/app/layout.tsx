@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { tiemposHeadline, styreneA, styreneB, claudeResponse } from './fonts';
+import { SidebarProvider } from '@/lib/contexts/SidebarContext';
 
 export const metadata: Metadata = {
     title: 'Claude',
@@ -20,7 +21,9 @@ export default function RootLayout({
             data-mode="dark"
         >
         <body className="bg-bg-100 text-text-100 font-ui min-h-screen">
-        {children}
+        <SidebarProvider>
+            {children}
+        </SidebarProvider>
         </body>
         </html>
     );
