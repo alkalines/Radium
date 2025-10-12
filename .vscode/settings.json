@@ -2,12 +2,14 @@
   "cSpell.words": [
     "aisdk",
     "AISDK",
+    "byok",
     "BYOK",
     "flac",
     "logit",
     "logprob",
     "logprobs",
     "openai",
-    "openrouter"
+    "openrouter",
+    "websearch"
   ]
 }
