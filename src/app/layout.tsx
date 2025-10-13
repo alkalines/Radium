@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { tiemposHeadline, styreneA, styreneB, claudeResponse } from './fonts';
 import { SidebarProvider } from '@/lib/contexts/SidebarContext';
+import { ModelProvider } from '@/lib/contexts/ModelContext';
 
 export const metadata: Metadata = {
     title: 'Claude',
@@ -22,7 +23,9 @@ export default function RootLayout({
         >
         <body className="bg-bg-100 text-text-100 font-ui min-h-screen">
         <SidebarProvider>
-            {children}
+            <ModelProvider>
+                {children}
+            </ModelProvider>
         </SidebarProvider>
         </body>
         </html>
