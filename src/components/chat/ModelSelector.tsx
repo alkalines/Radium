@@ -44,7 +44,7 @@ export function ModelSelector() {
         <div className="relative shrink-0 p-1 -m-1" style={{ opacity: 1, transform: 'none' }} ref={dropdownRef}>
             <button
                 ref={buttonRef}
-                className="inline-flex items-center justify-center h-8 rounded-md px-3 min-w-16 active:scale-[0.985] whitespace-nowrap text-xs pl-2.5 pr-2 gap-1 text-text-300 hover:bg-bg-300 hover:text-text-100 transition-colors"
+                className="inline-flex items-center justify-center h-8 rounded-md px-3 min-w-16 active:scale-[0.985] whitespace-nowrap text-xs pl-2.5 pr-2 gap-1 text-text-300 bg-bg-300 hover:text-text-100 transition-colors"
                 type="button"
                 data-testid="model-selector-dropdown"
                 onClick={handleToggle}
@@ -76,7 +76,7 @@ export function ModelSelector() {
             {isOpen && (
                 <>
                     <div
-                        className="absolute top-full right-0 mt-2 w-80 bg-bg-200 border border-border-300 rounded-lg shadow-lg overflow-visible z-50"
+                        className="absolute top-full right-0 mt-2 w-80 bg-bg-300 border border-border-300 rounded-lg shadow-lg overflow-visible z-50"
                         role="menu"
                         aria-label="Selecionar modelo"
                     >
@@ -84,7 +84,7 @@ export function ModelSelector() {
                             {MODELS.map((model) => (
                                 <button
                                     key={model.id}
-                                    className="w-full text-left px-4 py-3 hover:bg-bg-300 transition-colors"
+                                    className="w-full text-left px-4 py-3 hover:bg-bg-200 transition-colors"
                                     onClick={() => handleSelectModel(model)}
                                     role="menuitem"
                                 >
@@ -147,7 +147,7 @@ export function ModelSelector() {
                                 {/* Submenu */}
                                 {isSubmenuOpen && (
                                     <div
-                                        className="absolute left-full top-0 ml-1 w-72 bg-bg-200 border border-border-300 rounded-lg shadow-lg overflow-hidden"
+                                        className="absolute left-full top-0 ml-1 w-72 3 border bg-bg-300 border-border-300 rounded-lg shadow-lg overflow-hidden"
                                         role="menu"
                                         aria-label="Mais modelos"
                                         onMouseLeave={() => setIsSubmenuOpen(false)}
@@ -156,7 +156,7 @@ export function ModelSelector() {
                                             {OVERFLOW_MODELS.map((model) => (
                                                 <button
                                                     key={model.id}
-                                                    className="w-full text-left px-4 py-3 hover:bg-bg-300 transition-colors"
+                                                    className="w-full text-left px-4 py-3 hover:bg-bg-200 transition-colors"
                                                     onClick={() => handleSelectModel(model)}
                                                     role="menuitem"
                                                 >
