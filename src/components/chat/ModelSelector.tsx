@@ -51,8 +51,8 @@ export function ModelSelector() {
                 aria-expanded={isOpen}
                 aria-haspopup="menu"
             >
-                <div className="font-ui inline-flex gap-[3px] text-sm h-[14px] leading-none items-baseline">
-                    <div className="flex items-center gap-1">
+                <div className="font-claude-response inline-flex gap-[3px] text-[14px] h-[14px] leading-none items-baseline">
+                    <div className="flex items-center gap-[4px]">
                         <div className="whitespace-nowrap select-none">{selectedModel.name}</div>
                     </div>
                 </div>
@@ -92,7 +92,7 @@ export function ModelSelector() {
                                 >
                                     <div className="flex items-start justify-between gap-2">
                                         <div className="flex-1 min-w-0">
-                                            <div className="font-ui" style={{ fontSize: '14px', lineHeight: '19.6px', color: 'rgb(194, 192, 182)' }}>
+                                            <div className="font-ui-serif" style={{ fontSize: '14px', lineHeight: '19.6px', color: 'rgb(194, 192, 182)' }}>
                                                 {model.name}
                                             </div>
                                             <div className="font-ui" style={{ fontSize: '12px', lineHeight: '16px', color: 'rgb(156, 154, 146)' }}>
@@ -168,7 +168,7 @@ export function ModelSelector() {
                                                     <div className="flex items-start justify-between gap-3">
                                                         <div className="flex-1 min-w-0">
                                                             <div className="flex items-center gap-2">
-                                                                <span className="font-ui font-medium" style={{ fontSize: '14px', lineHeight: '20px', color: 'rgb(194, 192, 182)' }}>
+                                                                <span className="font-ui-serif font-medium" style={{ fontSize: '14px', lineHeight: '20px', color: 'rgb(194, 192, 182)' }}>
                                                                     {model.name}
                                                                 </span>
                                                                 {model.badge && (

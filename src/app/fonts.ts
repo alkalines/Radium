@@ -54,22 +54,17 @@ export const styreneB = localFont({
     display: 'swap',
 });
 
-// OpenDyslexic (accessibility font, used for claude-response variable)
+// Tiempos is also used for Claude responses and other serif UI elements
 export const claudeResponse = localFont({
     src: [
         {
-            path: '../../public/fonts/b96accb76593e50d-s.p.woff2',
-            weight: '400',
+            path: '../../public/fonts/75014e9053556df0-s.p.woff2',
+            weight: '300 800',
             style: 'normal',
         },
         {
-            path: '../../public/fonts/a72997480c14a9d4-s.p.woff2',
-            weight: '500',
-            style: 'normal',
-        },
-        {
-            path: '../../public/fonts/a0eafab536ffd221-s.p.woff2',
-            weight: '500',
+            path: '../../public/fonts/06fe80d45fc12f7f-s.p.woff2',
+            weight: '300 800',
             style: 'italic',
         },
     ],
