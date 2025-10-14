@@ -1,16 +1,25 @@
 import { httpAction } from "./_generated/server";
+import { api } from "./_generated/api";
 import { ChatCompletions_RequestBody } from "@/utils/types/openai/types";
 import AIBalancer from "@/utils/ai_balancer";
 import * as z from "zod";
 
-export const CreateCompletion = httpAction(async (ctx, rawRequest) => {
+export const CreateCompletion = httpAction(async (ctx, req) => {
   try {
-    const request = ChatCompletions_RequestBody.parse(await rawRequest.json());
+    const reqData = ChatCompletions_RequestBody.parse(await req.json());
+
+    // Auth
+    const authBearer = req.headers.get("Authorization")?.replace("Bearer ", "");
+    if (!authBearer) throw new Error("Authorization header is missing.");
+    const checkKey = await ctx.runQuery(api.key.getKeyInfo, {
+      key: authBearer,
+    });
+    if (checkKey.usableCredits < 0) throw new Error("Not enough credits available.")
 
     // TODO: Cost tracking, and BYOK.
-    const providerConnector = await AIBalancer(request);
-    if (request.stream) {
-      const gen = await providerConnector.StreamCompletion(request);
+    const providerConnector = await AIBalancer(reqData);
+    if (reqData.stream) {
+      const gen = await providerConnector.StreamCompletion(reqData);
       const encoder = new TextEncoder();
 
       const customReadable = new ReadableStream({
@@ -37,7 +46,7 @@ export const CreateCompletion = httpAction(async (ctx, rawRequest) => {
         },
       });
     } else {
-      const gen = await providerConnector.GenerateCompletion(request);
+      const gen = await providerConnector.GenerateCompletion(reqData);
 
       return Response.json(gen);
     }
@@ -45,7 +54,7 @@ export const CreateCompletion = httpAction(async (ctx, rawRequest) => {
     if (e instanceof z.ZodError) {
       return Response.json(e.issues, { status: 400 });
     }
-    console.error(e)
+    console.error(e);
     return Response.json({ error: "Internal Server Error" }, { status: 500 });
   }
 });

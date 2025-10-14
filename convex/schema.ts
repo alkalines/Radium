@@ -2,9 +2,20 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
+  users: defineTable({
+    credits: v.number(),
+    // more later
+  }),
+  keys: defineTable({
+    user: v.id('users'), // We need to create the user table first.
+    creditLimit: v.optional(v.number()),
+    usedCredits: v.number(),
+    name: v.string(),
+    hash: v.string()
+  }),
   chat_completions: defineTable({
-    // user: v.id('user'), // We need to create the user table first.
-    // key: v.id('keys'), // Still just a thought
+    user: v.id('users'), // We need to create the user table first.
+    key: v.id('keys'), // Still just a thought
     provider: v.string(),
     model: v.string(),
     tokens: v.object({
