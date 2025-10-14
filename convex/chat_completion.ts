@@ -6,15 +6,17 @@ import * as z from "zod";
 
 export const CreateCompletion = httpAction(async (ctx, req) => {
   try {
-    const reqData = ChatCompletions_RequestBody.parse(await req.json());
+    const reqData = ChatCompletions_RequestBody.parse(await req.json())
 
     // Auth
     const authBearer = req.headers.get("Authorization")?.replace("Bearer ", "");
-    if (!authBearer) throw new Error("Authorization header is missing.");
+    if (!authBearer || authBearer === '') throw new Error("Authorization header is missing.");
     const checkKey = await ctx.runQuery(api.key.getKeyInfo, {
       key: authBearer,
-    });
-    if (checkKey.usableCredits < 0) throw new Error("Not enough credits available.")
+    }).catch((E) => {})
+    if (!checkKey) return Response.json({ error: 'The Authorization is invalid!' }, { status: 401 })
+    console.log(checkKey.usableCredits);
+    if (checkKey.usableCredits <= 0) throw new Error("Not enough credits available.")
 
     // TODO: Cost tracking, and BYOK.
     const providerConnector = await AIBalancer(reqData);
@@ -50,11 +52,11 @@ export const CreateCompletion = httpAction(async (ctx, req) => {
 
       return Response.json(gen);
     }
-  } catch (e) {
+  } catch (e: any) {
     if (e instanceof z.ZodError) {
       return Response.json(e.issues, { status: 400 });
-    }
-    console.error(e);
-    return Response.json({ error: "Internal Server Error" }, { status: 500 });
+    } 
+    console.log(e)
+    return Response.json({ error: e.message }, { status: 500 });
   }
 });

@@ -8,7 +8,7 @@ export async function POST(req: NextRequest) {
       method: "POST",
       body: JSON.stringify(await req.json()),
       headers: {
-        Authorization: `${req.headers.get("Authorization")}`, // I don't fucking know why i need the `` but VSCode was an pain in the Ass
+        Authorization: req.headers.get("Authorization") || '',
       },
     }
   );

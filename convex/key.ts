@@ -3,14 +3,17 @@ import { v } from "convex/values";
 
 export const hashAlgorithm = "SHA-512";
 export const hashText = async (text: string) =>
-  new Uint8Array(
-    await crypto.subtle.digest(
-      {
-        name: hashAlgorithm,
-      },
-      new TextEncoder().encode("Hello world!")
+  Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest(
+        {
+          name: hashAlgorithm,
+        },
+        new TextEncoder().encode(text)
+      )
     )
-  ).toString()
+  ).map((b) => b.toString(16).padStart(2, "0"))
+    .join(""); 
 
 export const findUsableCredit = (
   UserCredit: number,
@@ -30,12 +33,14 @@ export const getKeyInfo = query({
   },
   handler: async (ctx, args) => {
     const hash = await hashText(args.key);
+    console.log(`From: ${args.key}\nHash: ${hash}`)
     const dbKey = (
       await ctx.db
-        .query("key")
+        .query("keys")
         .filter((q) => q.eq(q.field("hash"), hash))
         .collect()
     )[0];
+    if (!dbKey) throw new Error('This key is invalid!')
     const userKey = await ctx.db.get(dbKey.user);
     const usableCredits = findUsableCredit(
       dbKey.usedCredits,
