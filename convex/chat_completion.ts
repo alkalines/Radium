@@ -15,9 +15,10 @@ export const CreateCompletion = httpAction(async (ctx, req) => {
       key: authBearer,
     }).catch((E) => {})
     if (!checkKey) return Response.json({ error: 'The Authorization is invalid!' }, { status: 401 })
-    console.log(checkKey.usableCredits);
-    if (checkKey.usableCredits <= 0) throw new Error("Not enough credits available.")
-
+    if (checkKey.usableCredits <= 0) return Response.json(
+      { error: "Not enough credits available." },
+      { status: 402 }
+    );
     // TODO: Cost tracking, and BYOK.
     const providerConnector = await AIBalancer(reqData);
     if (reqData.stream) {

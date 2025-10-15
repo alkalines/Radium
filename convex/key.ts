@@ -33,7 +33,6 @@ export const getKeyInfo = query({
   },
   handler: async (ctx, args) => {
     const hash = await hashText(args.key);
-    console.log(`From: ${args.key}\nHash: ${hash}`)
     const dbKey = (
       await ctx.db
         .query("keys")
@@ -43,8 +42,8 @@ export const getKeyInfo = query({
     if (!dbKey) throw new Error('This key is invalid!')
     const userKey = await ctx.db.get(dbKey.user);
     const usableCredits = findUsableCredit(
-      dbKey.usedCredits,
       userKey!.credits,
+      dbKey.usedCredits,
       dbKey.creditLimit
     );
 
