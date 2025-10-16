@@ -44,9 +44,11 @@ export default class OpenAI_Adapter extends BaseAdapter {
     return (await completionRequest.json()) as ChatCompletions_NotStreaming_ResponseBody_Type;
   }
 
-  async StreamCompletion(
-    request: ChatCompletions_RequestBody_Type
-  ): Promise<chuckListType> {
+  async StreamCompletion(request: ChatCompletions_RequestBody_Type): Promise<{
+    chunks: chuckListType,
+    abort: AbortController
+  }> {
+    const controller = new AbortController();
     const completionRequest = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
       headers: {
@@ -54,11 +56,15 @@ export default class OpenAI_Adapter extends BaseAdapter {
         "Content-Type": "application/json",
         ...creditsHeaders,
       },
+      signal: controller.signal,
       body: JSON.stringify(request),
     });
 
     const ChunksList = completionRequest.body!.getReader();
-    return await this.chunksReader(ChunksList);
+    return {
+      chunks: await this.chunksReader(ChunksList),
+      abort: controller
+    };
   }
 
   private async *chunksReader(

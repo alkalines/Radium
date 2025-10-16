@@ -42,5 +42,8 @@ export default abstract class BaseAdapter {
    */
   abstract StreamCompletion(
     request: ChatCompletions_RequestBody_Type
-  ): Promise<chuckListType>;
+  ): Promise<{
+    chunks: chuckListType;
+    abort: AbortController;
+  }>;
 }
