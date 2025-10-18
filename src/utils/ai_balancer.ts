@@ -10,7 +10,7 @@ export default async function AIBalancer(Request: ChatCompletions_RequestBody_Ty
    */
   return {
     info: Providers.OpenRouter,
-    connector: new Providers.OpenRouter.connector({
+    connector: Providers.OpenRouter.connector({
       apiKey: process.env.Openrouter_API_Key!
     })
   }

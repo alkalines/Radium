@@ -1,7 +1,7 @@
-/**
- * Imports
- */
-import BaseAdapter, { AdapterConfig } from "@/utils/types/adapter";
+export type AIProviderSDK_Config = {
+  apiKey: string
+}
+export type AIProviderSDK = (Config: AIProviderSDK_Config) => (model: string, settings?: any) => any
 
 /**
  * Configuration at type
@@ -53,6 +53,6 @@ export type AIProviderConfig = {
    * Connector constructor. Explicitly typed to accept AdapterConfig and
    * return an instance of BaseAdapter. Avoids using the `typeof` shortcut.
    */
-  connector: new (config: AdapterConfig) => BaseAdapter;
+  connector: AIProviderSDK;
   // Models will be handled at Convex Data table (i hope it doesn't bite me in the Ass later....)
 };
