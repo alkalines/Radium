@@ -16,6 +16,7 @@ export default defineSchema({
   chat_completions: defineTable({
     user: v.id("users"),
     key: v.id("keys"),
+    genId: v.string(),
     provider: v.string(),
     model: v.string(),
     tokens: v.object({
@@ -62,4 +63,5 @@ export default defineSchema({
         is_byok: v.boolean(),
       })
     ),
+  }).index("by_genId", ["genId"]),
 });
