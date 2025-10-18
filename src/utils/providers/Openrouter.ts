@@ -21,7 +21,14 @@ const OpenRouterProvider: AIProviderConfig = {
     privacy_policy: "https://openrouter.ai/privacy",
     tos: "https://openrouter.ai/terms",
   },
-  connector: (Config) => createOpenRouter(Config).chat,
+  connector: (Config) =>
+    createOpenRouter({
+      ...Config,
+      headers: {
+        "HTTP-Referer": "https://github.com/alkalines/Radium",
+        "X-Title": "Radium Chatroom",
+      },
+    }).chat,
 };
 
 /**
