@@ -1,4 +1,4 @@
-import { query } from "./_generated/server";
+import { query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 
 export const hashAlgorithm = "SHA-512";
@@ -59,3 +59,16 @@ export const getKeyInfo = query({
     };
   },
 });
+
+export const billKey = internalMutation({
+  args: {
+    keyId: v.id("keys"),
+    userId: v.id("users"),
+    
+  },
+  async handler(ctx, args) {
+    const [keyInfo, userInfo] = await Promise.all([ctx.db.get(args.keyId), ctx.db.get(args.userId)])
+
+    
+  },
+})
