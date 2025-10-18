@@ -10,15 +10,41 @@ export const CreateCompletion = httpAction(async (ctx, req) => {
 
     // Auth
     const authBearer = req.headers.get("Authorization")?.replace("Bearer ", "");
-    if (!authBearer || authBearer === '') throw new Error("Authorization header is missing.");
-    const checkKey = await ctx.runQuery(api.key.getKeyInfo, {
-      key: authBearer,
-    }).catch((E) => {})
-    if (!checkKey) return Response.json({ error: 'The Authorization is invalid!' }, { status: 401 })
-    if (checkKey.usableCredits <= 0) return Response.json(
-      { error: "Not enough credits available." },
-      { status: 402 }
-    );
+    if (!authBearer || authBearer === "")
+      return Response.json(
+        {
+          error: {
+            message: "The Authorization field is empty!",
+            code: 401,
+          },
+        },
+        { status: 401 }
+      );
+    const checkKey = await ctx
+      .runQuery(api.key.getKeyInfo, {
+        key: authBearer,
+      })
+      .catch((E) => {});
+    if (!checkKey)
+      return Response.json(
+        {
+          error: {
+            message: "The Authorization is invalid!",
+            code: 401,
+          },
+        },
+        { status: 401 }
+      );
+    if (checkKey.usableCredits <= 0)
+      return Response.json(
+        {
+          error: {
+            message: "Not enough credits available.",
+            code: 402
+          },
+        },
+        { status: 402 }
+      );
     // TODO: Cost tracking, and BYOK.
     const providerConnector = await AIBalancer(reqData);
     if (reqData.stream) {
