@@ -212,6 +212,11 @@ export const ChatCompletions_RequestBody = z.object({
       ),
     })
   ),
+  // Unofficial
+  top_k: z.optional(z.int().min(0)),
+  repetition_penalty: z.optional(z.number().min(0).max(2)),
+  min_p: z.optional(z.number().min(0).max(1)),
+  top_a: z.optional(z.number().min(0).max(1)),
 });
 
 export const ChatCompletions_NotStreaming_ResponseBody = z.object({
