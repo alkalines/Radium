@@ -328,7 +328,7 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
     completion_tokens: z.int(),
     prompt_tokens: z.int(),
     total_tokens: z.int(),
-    completion_tokens_details: {
+    completion_tokens_details: z.object({
       accepted_prediction_tokens: z.int(),
       audio_tokens: z.int(),
       reasoning_tokens: z.int(),
@@ -339,8 +339,10 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
           cached_tokens: z.int(),
         })
       ),
-    },
+    }),
   }),
+  // Non-official
+  provider: z.nullish(z.string()),
 });
 
 export const ChatCompletions_Streaming_Chunk = z.object({
@@ -367,6 +369,37 @@ export const ChatCompletions_Streaming_Chunk = z.object({
           })
         ),
       }),
+      index: z.number(),
+      finish_reason: z.nullish(
+        z.union([
+          z.literal("stop"),
+          z.literal("length"),
+          z.literal("content_filter"),
+          z.literal("tool_calls"),
+          // @deprecated
+          z.literal("function_call"),
+        ])
+      ),
+      logprobs: z.nullish(
+        z.object({
+          content: z.nullish(
+            z.array(
+              z.object({
+                bytes: z.array(z.any()), // OpenAI reference just say is a array.
+                logprob: z.number(),
+                token: z.string(),
+                top_logprobs: z.array(
+                  z.object({
+                    bytes: z.array(z.any()), // OpenAI reference just say is a array.
+                    logprob: z.number(),
+                    token: z.string(),
+                  })
+                ),
+              })
+            )
+          ),
+        })
+      ),
     })
   ),
   created: z.int(),
@@ -405,6 +438,8 @@ export const ChatCompletions_Streaming_Chunk = z.object({
       ),
     })
   ),
+  // Unofficial
+  provider: z.nullish(z.string()),
 });
 
 /**
