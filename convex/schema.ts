@@ -7,15 +7,15 @@ export default defineSchema({
     // more later
   }),
   keys: defineTable({
-    user: v.id('users'), // We need to create the user table first.
+    user: v.id("users"),
     creditLimit: v.optional(v.number()),
     usedCredits: v.number(),
     name: v.string(),
-    hash: v.string()
+    hash: v.string(),
   }),
   chat_completions: defineTable({
-    user: v.id('users'), // We need to create the user table first.
-    key: v.id('keys'), // Still just a thought
+    user: v.id("users"),
+    key: v.id("keys"),
     provider: v.string(),
     model: v.string(),
     tokens: v.object({
@@ -45,18 +45,21 @@ export default defineSchema({
     streamed: v.boolean(),
     finish_reason: v.string(),
     byok: v.boolean(),
-    app: v.optional(v.object({
-      //id: v.id('completion_apps') // App use analytics
-      title: v.string(),
-      url: v.string(),
-      icon: v.optional(v.string()) // URL
-    })),
-    provider_responses: v.array(v.object({
-      id: v.string(),
-      provider: v.string(),
-      status: v.number(),
-      latency: v.number(),
-      is_byok: v.boolean()
-    }))
-  }),
+    app: v.optional(
+      v.object({
+        //id: v.id('completion_apps') // App use analytics
+        title: v.string(),
+        url: v.string(),
+        icon: v.optional(v.string()), // URL
+      })
+    ),
+    provider_responses: v.array(
+      v.object({
+        id: v.string(),
+        provider: v.string(),
+        status: v.number(),
+        latency: v.number(),
+        is_byok: v.boolean(),
+      })
+    ),
 });
