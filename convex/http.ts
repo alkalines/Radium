@@ -1,5 +1,5 @@
 import { httpRouter } from "convex/server";
-import { CreateCompletion } from "./chat_completion";
+import { HTTP_Request_Chat_Completion } from "./chat_completion";
 
 const http = httpRouter();
 
@@ -8,9 +8,9 @@ const http = httpRouter();
  */
 
 http.route({
-  method: 'POST',
-  path: '/api/openai/v1/chat/completions',
-  handler: CreateCompletion,
+  method: "POST",
+  path: "/api/openai/v1/chat/completions",
+  handler: HTTP_Request_Chat_Completion,
 });
 
 export default http

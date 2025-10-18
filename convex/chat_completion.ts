@@ -1,12 +1,15 @@
 import { httpAction } from "./_generated/server";
 import { api } from "./_generated/api";
-import { ChatCompletions_RequestBody } from "@/utils/types/openai/types";
+import {
+  ChatCompletions_RequestBody,
+  ChatCompletions_RequestBody_Type,
+} from "@/utils/types/openai/types";
 import AIBalancer from "@/utils/ai_balancer";
 import * as z from "zod";
 
-export const CreateCompletion = httpAction(async (ctx, req) => {
+export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req) => {
   try {
-    const reqData = ChatCompletions_RequestBody.parse(await req.json())
+    const reqData = ChatCompletions_RequestBody.parse(await req.json());
 
     // Auth
     const authBearer = req.headers.get("Authorization")?.replace("Bearer ", "");
@@ -45,45 +48,63 @@ export const CreateCompletion = httpAction(async (ctx, req) => {
         },
         { status: 402 }
       );
+
     // TODO: Cost tracking, and BYOK.
-    const providerConnector = await AIBalancer(reqData);
-    if (reqData.stream) {
-      const gen = await providerConnector.StreamCompletion(reqData);
-      const encoder = new TextEncoder();
-
-      const customReadable = new ReadableStream({
-        async start(controller) {
-          for await (const chunk of gen) {
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`)
-            );
-          }
-
-          // End of the stream
-          controller.enqueue(encoder.encode("data: [DONE]"));
-          controller.close();
-        },
-      });
-
-      // Server Sent Events (SSE)
-      return new Response(customReadable, {
-        headers: {
-          Connection: "keep-alive",
-          "Content-Encoding": "none",
-          "Cache-Control": "no-cache, no-transform",
-          "Content-Type": "text/event-stream; charset=utf-8",
-        },
-      });
-    } else {
-      const gen = await providerConnector.GenerateCompletion(reqData);
-
-      return Response.json(gen);
-    }
+    const provider = await AIBalancer(reqData);
+    return CreateCompletion(reqData, provider);
   } catch (e: any) {
     if (e instanceof z.ZodError) {
       return Response.json(e.issues, { status: 400 });
-    } 
-    console.log(e)
+    }
+    console.log(e);
     return Response.json({ error: e.message }, { status: 500 });
   }
 });
+
+const CreateCompletion = async (
+  reqData: ChatCompletions_RequestBody_Type,
+  provider: Awaited<ReturnType<typeof AIBalancer>>
+) => {
+  const genID = `gen-${crypto.randomUUID()}`;
+  if (reqData.stream) {
+    const gen = await provider.connector.StreamCompletion(reqData);
+    let provider_genID: string;
+
+    const customReadable = new ReadableStream({
+      async start(controller) {
+        const controllerOutput = (text: string) =>
+          controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
+
+        for await (const providerChunk of gen.chunks) {
+          let chunk = providerChunk;
+          if (!provider_genID) provider_genID = chunk.id
+
+          chunk.id = genID
+          chunk.provider = provider.info.slug
+          controllerOutput(JSON.stringify(chunk));
+        }
+
+        // End of the stream
+        controllerOutput("[DONE]");
+        controller.close();
+      },
+      cancel() {
+        gen.abort.abort(`User cancelled.`)
+      }
+    });
+
+    // Server Sent Events (SSE)
+    return new Response(customReadable, {
+      headers: {
+        Connection: "keep-alive",
+        "Content-Encoding": "none",
+        "Cache-Control": "no-cache, no-transform",
+        "Content-Type": "text/event-stream; charset=utf-8",
+      },
+    });
+  } else {
+    const gen = await provider.connector.GenerateCompletion(reqData);
+
+    return Response.json(gen);
+  }
+};
