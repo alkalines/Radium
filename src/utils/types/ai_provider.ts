@@ -1,7 +1,12 @@
+/**
+ * Imports
+ */
+import { LanguageModel } from "ai";
+
 export type AIProviderSDK_Config = {
   apiKey: string
 }
-export type AIProviderSDK = (Config: AIProviderSDK_Config) => (model: string, settings?: any) => any
+export type AIProviderSDK = (Config: AIProviderSDK_Config) => (model: string, settings?: any) => LanguageModel
 
 /**
  * Configuration at type
