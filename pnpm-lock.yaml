@@ -29,6 +29,9 @@ importers:
       zod:
         specifier: ^4.1.12
         version: 4.1.12
+      zod-from-json-schema:
+        specifier: ^0.5.1
+        version: 0.5.1
     devDependencies:
       '@eslint/eslintrc':
         specifier: ^3.3.1

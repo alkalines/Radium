@@ -15,7 +15,8 @@
     "next": "16.0.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "zod": "^4.1.12"
+    "zod": "^4.1.12",
+    "zod-from-json-schema": "^0.5.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.1",

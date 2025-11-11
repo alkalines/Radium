@@ -3,21 +3,27 @@ import {
   ChatCompletions_RequestBody_Type,
   ChatCompletions_Streaming_Chunk_Type,
 } from "../types/openai/types";
-import { streamText, tool, jsonSchema } from "ai";
+import { streamText, tool, UIMessageChunk } from "ai";
+import { convertJsonSchemaToZod } from "zod-from-json-schema";
+import z from "zod";
 import AIBalancer from "../ai_balancer";
 import { ToolsSchema } from "../types/openai/tools";
+import { streamChunkForAsyncIterator } from "../tools/chunkReader";
 
 function toolsParsing(reqData: ChatCompletions_RequestBody_Type) {
-  let object = {} as { [key: string]: ReturnType<typeof tool> };
+  let object: Record<string, any> = {};
   const rawTools = reqData.tools as ToolsSchema[];
 
   rawTools?.forEach((rawTool) => {
     if (rawTool.type === "function") {
       const toolInfo = rawTool.function;
+      const inputSchema =
+        convertJsonSchemaToZod(toolInfo.parameters) || z.any();
+
       object[toolInfo.name] = tool({
         name: toolInfo.name,
         description: toolInfo.description,
-        inputSchema: jsonSchema(toolInfo.parameters), // Needs testing
+        inputSchema, // Needs a lot of testing
         /**
          * Strict is non existent on the AISDK
          * @comment i don't know why.
@@ -25,12 +31,27 @@ function toolsParsing(reqData: ChatCompletions_RequestBody_Type) {
       });
     } else {
       const toolInfo = rawTool.custom;
+      // Map "custom" tools to a simple string-input tool so the model can call them.
+      // If a grammar is provided, we still accept string input; the provider enforces the grammar.
+      const inputSchema =
+        toolInfo?.format?.type === "grammar"
+          ? z.object({ input: z.string() })
+          : z.object({ input: z.string() });
+
+      object[toolInfo.name] = tool({
+        name: toolInfo.name,
+        description: toolInfo.description,
+        inputSchema,
+      });
     }
   });
+
+  return object;
 }
 
 function toolChoiceParse(reqData: ChatCompletions_RequestBody_Type) {
   const tc = reqData.tool_choice as any;
+  if (tc == null) return;
 
   if (typeof tc === "string") return tc;
 
@@ -43,7 +64,8 @@ function toolChoiceParse(reqData: ChatCompletions_RequestBody_Type) {
   if (tc.type === "allowed_tools")
     return tc.allowed_tools?.mode === "required" ? "required" : "auto";
 
-  return "auto";
+  // Unknown shape → fall back to default
+  return undefined;
 }
 
 export async function StreamCompletion(
@@ -51,6 +73,10 @@ export async function StreamCompletion(
   provider: Awaited<ReturnType<typeof AIBalancer>>,
   abort?: AbortController
 ) {
+  const parsedToolChoice = toolChoiceParse(reqData);
+  /**
+   * @todo Reasoning parameter, and provider specific options
+   */
   const result = streamText({
     model: provider.connector(reqData.model),
     messages: reqData.messages.map((m) => {
@@ -60,12 +86,8 @@ export async function StreamCompletion(
     abortSignal: abort?.signal,
     maxOutputTokens: reqData.max_completion_tokens ?? undefined,
     tools: toolsParsing(reqData) as any,
-    toolChoice: toolChoiceParse(reqData),
+    toolChoice: parsedToolChoice,
     maxRetries: parseInt(process.env.AISDK_MaxRetries ?? "0"),
-    /**
-     * @todo providerOptions
-     **/
-    // Customization
     temperature: reqData.temperature,
     topP: reqData.top_p,
     topK: reqData.top_k,
