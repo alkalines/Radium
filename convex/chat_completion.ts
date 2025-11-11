@@ -6,7 +6,7 @@ import {
 } from "@/utils/types/openai/types";
 import AIBalancer from "@/utils/ai_balancer";
 import * as z from "zod";
-import { StreamCompletion } from "@/utils/output/openai";
+import { StreamCompletion } from "@/utils/translators/openai";
 
 export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req) => {
   try {

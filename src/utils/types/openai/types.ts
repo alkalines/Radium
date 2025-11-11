@@ -356,23 +356,23 @@ export const ChatCompletions_Streaming_Chunk = z.object({
       delta: z.object({
         content: z.string(),
         // @deprecated
-        function_call: z.object({
+        function_call: z.nullish(z.object({
           arguments: z.string(),
           name: z.string(),
-        }),
-        refusal: z.string(),
+        })),
+        refusal: z.nullish(z.string()),
         role: z.string(),
-        tool_calls: z.array(
+        tool_calls: z.nullish(z.array(
           z.object({
             index: z.int(),
             function: z.object({
               arguments: z.string(),
-              name: z.string(),
+              name: z.nullish(z.string()),
             }),
-            id: z.string(),
+            id: z.nullish(z.string()),
             type: z.literal("function"),
           })
-        ),
+        )),
         // Unofficial
         reasoning: z.nullish(z.string()),
       }),
@@ -423,7 +423,7 @@ export const ChatCompletions_Streaming_Chunk = z.object({
     ])
   ),
   // @deprecated
-  system_fingerprint: z.string(),
+  system_fingerprint: z.nullish(z.string()),
   usage: z.nullish(
     z.object({
       completion_tokens: z.int(),
