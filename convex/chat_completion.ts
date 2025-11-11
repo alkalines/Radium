@@ -6,6 +6,7 @@ import {
 } from "@/utils/types/openai/types";
 import AIBalancer from "@/utils/ai_balancer";
 import * as z from "zod";
+import { StreamCompletion } from "@/utils/output/openai";
 
 export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req) => {
   try {
@@ -65,7 +66,7 @@ const CreateCompletion = async (
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>
 ) => {
-  const genID = `gen-${crypto.randomUUID()}`;
+  /* const genID = `gen-${crypto.randomUUID()}`;
   if (reqData.stream) {
     const gen = await provider.connector.StreamCompletion(reqData);
     let provider_genID: string;
@@ -106,5 +107,6 @@ const CreateCompletion = async (
     const gen = await provider.connector.GenerateCompletion(reqData);
 
     return Response.json(gen);
-  }
+  } */
+  return StreamCompletion(reqData, provider)
 };
