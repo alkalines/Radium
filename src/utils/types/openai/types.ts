@@ -157,16 +157,16 @@ export const ChatCompletions_RequestBody = z.object({
     z.array(
       z.union([
         z.object({
-          type: "function",
+          type: z.literal("function"),
           function: z.object({
             name: z.string(),
             description: z.optional(z.string()),
-            parameters: z.optional(z.object()),
+            parameters: z.optional(z.any()),
             strict: z.optional(z.boolean()),
           }),
         }),
         z.object({
-          type: "custom",
+          type: z.literal("custom"),
           custom: z.object({
             name: z.string(),
             description: z.optional(z.string()),
@@ -373,6 +373,8 @@ export const ChatCompletions_Streaming_Chunk = z.object({
             type: z.literal("function"),
           })
         ),
+        // Unofficial
+        reasoning: z.nullish(z.string()),
       }),
       index: z.number(),
       finish_reason: z.nullish(
