@@ -41,15 +41,15 @@ export const OpenAI_Input_TextPart = z.object({
 
 export const OpenAI_Message_DeveloperSystem = z.object({
   role: z.union([z.literal("developer"), z.literal("system")]),
-  content: z.array(
-    z.union([
-      z.string(),
+  content: z.union([
+    z.string(),
+    z.array(
       z.object({
         type: z.string(),
         text: z.string(),
-      }),
-    ])
-  ),
+      })
+    ),
+  ]),
   name: z.optional(z.string()),
 });
 
