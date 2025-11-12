@@ -3,7 +3,7 @@ import {
   ChatCompletions_RequestBody_Type,
   ChatCompletions_Streaming_Chunk_Type,
 } from "../types/openai/types";
-import { streamText, tool, UIMessageChunk } from "ai";
+import { convertToModelMessages, streamText, tool, UIMessageChunk } from "ai";
 import { convertJsonSchemaToZod } from "zod-from-json-schema";
 import z from "zod";
 import AIBalancer from "../ai_balancer";
@@ -71,6 +71,11 @@ function toolChoiceParse(reqData: ChatCompletions_RequestBody_Type) {
   return undefined;
 }
 
+/**
+ * Inline adaptation of OpenAI-style messages to UIMessage format
+ * moved inside StreamCompletion for single-function implementation.
+ */
+
 export async function StreamCompletion(
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>
@@ -80,12 +85,46 @@ export async function StreamCompletion(
   /**
    * @todo Reasoning parameter, and provider specific options
    */
+  const uiMessages = convertToModelMessages(
+    reqData.messages.map(m => {
+      const role: 'system' | 'user' | 'assistant' =
+        m.role === 'developer' ? 'system' :
+        (m.role === 'function' || m.role === 'tool') ? 'assistant' :
+        m.role as any;
+
+      const raw: any = m;
+      const content = raw.content;
+      const parts: { type: 'text'; text: string }[] = [];
+
+      if (typeof content === 'string') {
+        parts.push({ type: 'text', text: content });
+      } else if (Array.isArray(content)) {
+        for (const c of content) {
+          if (c && typeof c === 'object' && 'text' in c && typeof (c as any).text === 'string') {
+            parts.push({ type: 'text', text: (c as any).text });
+          } else {
+            try {
+              parts.push({ type: 'text', text: `[${(c as any).type ?? 'part'}] ${JSON.stringify(c)}` });
+            } catch {
+              parts.push({ type: 'text', text: '[unrepresentable part]' });
+            }
+          }
+        }
+      } else {
+        parts.push({ type: 'text', text: '' });
+      }
+
+      return {
+        role,
+        content: parts.map(p => p.text).join(''),
+        parts
+      };
+    })
+  );
+
   const result = streamText({
     model: provider.connector(reqData.model),
-    messages: reqData.messages.map((m) => {
-      if (m.role === "developer") m.role = "system";
-      return m;
-    }) as any,
+    messages: uiMessages,
     abortSignal: abort.signal,
     maxOutputTokens: reqData.max_completion_tokens ?? undefined,
     tools: toolsParsing(reqData) as any,
@@ -104,7 +143,7 @@ export async function StreamCompletion(
   const chunkLoadStream = streamChunkForAsyncIterator(
     aisdk_response
   ) as AsyncGenerator<UIMessageChunk>;
-  const createdDateUnix = Date.now();
+  const createdDateUnix = Math.floor(Date.now() / 1000);
   let genID: string;
   if (reqData.stream) {
     const customReadable = new ReadableStream({
