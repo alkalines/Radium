@@ -120,7 +120,7 @@ export async function StreamCompletion(
             case "reasoning-start":
               if (!genID) genID = chunk.id;
               openaiOutput({
-                id: chunk.id,
+                id: genID || "not-available",
                 provider: provider.info.name,
                 created: createdDateUnix,
                 model: reqData.model, // @todo Not fuck everything in case of routers
@@ -138,7 +138,7 @@ export async function StreamCompletion(
             case "reasoning-delta":
               if (!genID) genID = chunk.id;
               openaiOutput({
-                id: chunk.id,
+                id: genID || "not-available",
                 provider: provider.info.name,
                 created: createdDateUnix,
                 model: reqData.model, // @todo Not fuck everything in case of routers
@@ -150,6 +150,28 @@ export async function StreamCompletion(
                       role: "assistant",
                       content: "",
                       reasoning: chunk.delta,
+                    },
+                    finish_reason: null,
+                    logprobs: null,
+                  },
+                ],
+              });
+              break;
+            case "reasoning-end":
+              if (!genID) genID = chunk.id;
+              openaiOutput({
+                id: genID || "not-available",
+                provider: provider.info.name,
+                created: createdDateUnix,
+                model: reqData.model, // @todo Not fuck everything in case of routers
+                object: "chat.completion.chunk",
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      role: "assistant",
+                      content: "",
+                      reasoning: null,
                     },
                     finish_reason: null,
                     logprobs: null,
@@ -237,6 +259,27 @@ export async function StreamCompletion(
                 ],
               });
               break;
+            case "text-delta":
+              if (!genID) genID = chunk.id;
+              openaiOutput({
+                id: genID || "not-available",
+                provider: provider.info.name,
+                created: createdDateUnix,
+                model: reqData.model, // @todo Not fuck everything in case of routers
+                object: "chat.completion.chunk",
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      role: "assistant",
+                      content: chunk.delta,
+                    },
+                    finish_reason: null,
+                    logprobs: null,
+                  },
+                ],
+              });
+              break;
             case "finish":
               openaiOutput({
                 id: genID || "not-available",
@@ -259,14 +302,16 @@ export async function StreamCompletion(
                   completion_tokens: (await result.usage).outputTokens || 0,
                   total_tokens: (await result.usage).totalTokens || 0,
                   completion_tokens_details: {
-                    reasoning_tokens: (await result.usage).reasoningTokens
+                    reasoning_tokens: (await result.usage).reasoningTokens,
                   },
                   prompt_tokens_details: {
-                    cached_tokens: (await result.usage).cachedInputTokens
-                  }
+                    cached_tokens: (await result.usage).cachedInputTokens,
+                  },
                 },
               });
               break;
+            /* default:
+              controllerOutput(JSON.stringify(chunk)); */
           }
         }
 
