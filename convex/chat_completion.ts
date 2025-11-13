@@ -8,7 +8,7 @@ import AIBalancer from "@/utils/ai_balancer";
 import * as z from "zod";
 import { StreamCompletion } from "@/utils/translators/openai";
 
-export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req) => {
+export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise<Response> => {
   try {
     const reqData = ChatCompletions_RequestBody.parse(await req.json());
 
@@ -52,7 +52,7 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req) => {
 
     // TODO: Cost tracking, and BYOK.
     const provider = await AIBalancer(reqData);
-    return CreateCompletion(reqData, provider);
+    return CreateCompletion(reqData, provider)
   } catch (e: any) {
     if (e instanceof z.ZodError) {
       return Response.json(e.issues, { status: 400 });
@@ -65,7 +65,7 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req) => {
 const CreateCompletion = async (
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>
-) => {
+): Promise<Response> => {
   /* const genID = `gen-${crypto.randomUUID()}`;
   if (reqData.stream) {
     const gen = await provider.connector.StreamCompletion(reqData);

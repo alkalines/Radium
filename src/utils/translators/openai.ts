@@ -79,7 +79,7 @@ function toolChoiceParse(reqData: ChatCompletions_RequestBody_Type) {
 export async function StreamCompletion(
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>
-) {
+): Promise<Response> {
   const abort = new AbortController();
   const parsedToolChoice = toolChoiceParse(reqData);
   /**
@@ -349,8 +349,6 @@ export async function StreamCompletion(
                 },
               });
               break;
-            /* default:
-              controllerOutput(JSON.stringify(chunk)); */
           }
         }
 
@@ -374,5 +372,8 @@ export async function StreamCompletion(
     });
   }
 
-  return result;
+  return Response.json({
+    status: 500,
+    text: 'No output available'
+  })
 }
