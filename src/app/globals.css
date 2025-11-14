@@ -21,6 +21,8 @@
     --font-base: 0.9375rem;
     --z-header: 50;
     --z-sidebar: 40;
+    --z-cookie-backdrop: 100;
+    --z-cookie-banner: 101;
 }
 
 :root {

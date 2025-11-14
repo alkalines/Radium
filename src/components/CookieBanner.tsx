@@ -1,60 +1,173 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+
+const CONSENT_KEY = 'cookie-consent';
 
 export function CookieBanner() {
-    const [isVisible, setIsVisible] = useState(true);
+    const [isVisible, setIsVisible] = useState(false);
+    const [mounted, setMounted] = useState(false);
 
-    if (!isVisible) return null;
+    useEffect(() => {
+        setMounted(true);
+        const consent = localStorage.getItem(CONSENT_KEY);
+        if (!consent) {
+            setIsVisible(true);
+        }
+    }, []);
+
+    const handleConsent = (choice: 'accept' | 'reject' | 'customize') => {
+        localStorage.setItem(CONSENT_KEY, choice);
+        setIsVisible(false);
+    };
+
+    if (!mounted || !isVisible) return null;
 
     return (
         <div
             data-theme="claude"
             data-mode="dark"
             data-testid="consent-banner"
-            className="fixed right-2 bottom-2 z-toast max-h-[calc(100vh-1rem)] max-w-[calc(100vw-1rem)] sm:max-w-md rounded-3xl font-ui bg-bg-500 p-4 sm:p-8 overflow-auto"
+            style={{
+                position: 'fixed',
+                bottom: '8px',
+                right: '8px',
+                backgroundColor: 'rgb(0, 0, 0)',
+                borderRadius: '24px',
+                padding: '32px',
+                maxWidth: '448px',
+                width: '448px',
+                zIndex: 60,
+            }}
         >
-            <h3 className="text-xl col-span-2 mb-2 sm:mb-4 text-text-000">
+            <h3
+                style={{
+                    fontSize: '20px',
+                    fontWeight: 400,
+                    lineHeight: '28px',
+                    color: 'rgb(250, 249, 245)',
+                    marginBottom: '16px',
+                }}
+            >
                 Configurações de cookies
             </h3>
 
-            <p className="text-sm text-text-300 mb-4">
+            <p
+                style={{
+                    fontSize: '14px',
+                    fontWeight: 400,
+                    lineHeight: '20px',
+                    color: 'rgb(194, 192, 182)',
+                    marginBottom: '16px',
+                }}
+            >
                 Utilizamos cookies para fornecer e melhorar nossos serviços, analisar o uso do site e,
                 se você concordar, personalizar sua experiência e divulgar nossos serviços para você.
                 Você pode ler nossa Política de Cookies{' '}
-                <a className="underline" href="https://www.anthropic.com/legal/cookies">
+                <a
+                    style={{
+                        textDecoration: 'underline',
+                        color: 'inherit',
+                    }}
+                    href="https://www.anthropic.com/legal/cookies"
+                >
                     aqui
                 </a>
                 .
             </p>
 
-            <div className="flex grid-cols-3 grid-rows-1 justify-between gap-2 pb-1 sm:grid sm:grid-cols-2 sm:grid-rows-2 sm:pb-0">
+            <div
+                style={{
+                    display: 'grid',
+                    gap: '8px',
+                }}
+            >
                 <button
-                    className="inline-flex items-center justify-center h-11 rounded-xl px-5 min-w-24 active:scale-[0.985] whitespace-nowrap !text-base col-span-1 grow sm:col-span-2 text-text-000 border-0.5 border-border-200 bg-bg-300/0 hover:bg-bg-400"
+                    style={{
+                        backgroundColor: 'transparent',
+                        color: 'rgb(250, 249, 245)',
+                        border: '1px solid rgba(222, 220, 209, 0.3)',
+                        borderRadius: '9.6px',
+                        padding: '0 20px',
+                        fontSize: '16px',
+                        fontWeight: 460,
+                        lineHeight: '24px',
+                        height: '44px',
+                        width: '100%',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                    }}
                     type="button"
-                    onClick={() => setIsVisible(false)}
+                    onClick={() => handleConsent('customize')}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = 'rgba(222, 220, 209, 0.1)';
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = 'transparent';
+                    }}
                 >
-                    <span className="sm:hidden">Personalizar</span>
-                    <span className="hidden sm:inline">Personalizar Configurações de Cookies</span>
+                    Personalizar Configurações de Cookies
                 </button>
 
-                <button
-                    className="inline-flex items-center justify-center h-11 rounded-xl px-5 min-w-24 active:scale-[0.985] whitespace-nowrap !text-base col-span-1 grow sm:col-span-1 text-text-000 border-0.5 border-border-200 bg-bg-300/0 hover:bg-bg-400"
-                    type="button"
-                    onClick={() => setIsVisible(false)}
+                <div
+                    style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: '8px',
+                    }}
                 >
-                    <span className="sm:hidden">Rejeitar</span>
-                    <span className="hidden sm:inline">Rejeitar Todos os Cookies</span>
-                </button>
+                    <button
+                        style={{
+                            backgroundColor: 'transparent',
+                            color: 'rgb(250, 249, 245)',
+                            border: '1px solid rgba(222, 220, 209, 0.3)',
+                            borderRadius: '9.6px',
+                            padding: '0 20px',
+                            fontSize: '16px',
+                            fontWeight: 460,
+                            lineHeight: '24px',
+                            height: '44px',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s',
+                        }}
+                        type="button"
+                        onClick={() => handleConsent('reject')}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor = 'rgba(222, 220, 209, 0.1)';
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor = 'transparent';
+                        }}
+                    >
+                        Rejeitar Todos os Cookies
+                    </button>
 
-                <button
-                    className="inline-flex items-center justify-center h-11 rounded-xl px-5 min-w-24 active:scale-[0.985] whitespace-nowrap !text-base col-span-1 grow sm:col-span-1 bg-text-000 text-bg-000 hover:scale-y-[1.015] hover:scale-x-[1.005]"
-                    type="button"
-                    onClick={() => setIsVisible(false)}
-                >
-                    <span className="sm:hidden">Aceitar</span>
-                    <span className="hidden sm:inline">Aceitar Todos os Cookies</span>
-                </button>
+                    <button
+                        style={{
+                            backgroundColor: 'rgb(250, 249, 245)',
+                            color: 'rgb(48, 48, 46)',
+                            border: 'none',
+                            borderRadius: '9.6px',
+                            padding: '0 20px',
+                            fontSize: '16px',
+                            fontWeight: 460,
+                            lineHeight: '24px',
+                            height: '44px',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s',
+                        }}
+                        type="button"
+                        onClick={() => handleConsent('accept')}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor = 'rgb(230, 229, 225)';
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor = 'rgb(250, 249, 245)';
+                        }}
+                    >
+                        Aceitar Todos os Cookies
+                    </button>
+                </div>
             </div>
         </div>
     );
