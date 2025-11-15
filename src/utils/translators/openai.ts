@@ -370,10 +370,76 @@ export async function StreamCompletion(
         "Content-Type": "text/event-stream; charset=utf-8",
       },
     });
-  }
+  } else {
+    let openAIResponse: ChatCompletions_NotStreaming_ResponseBody_Type = {
+      created: createdDateUnix,
+      model: reqData.model, // @todo Not fuck everything in case of routers
+      provider: provider.info.name,
+      object: "chat.completion",
+      choices: [
+        {
+          index: 0,
+          finish_reason: null,
+          message: {
+            content: null,
+            role: "assistant",
+            reasoning: null,
+          },
+        },
+      ],
+      id: "",
+      usage: {},
+    };
 
-  return Response.json({
-    status: 500,
-    text: 'No output available'
-  })
+    for await (const chunk of chunkLoadStream) {
+      // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
+      switch (chunk.type) {
+        case "reasoning-start":
+          if (openAIResponse.id === "") openAIResponse.id = chunk.id;
+          openAIResponse.choices[0].message.reasoning = "";
+          break;
+        case "reasoning-delta":
+          if (openAIResponse.id === "") openAIResponse.id = chunk.id;
+          if (chunk.delta === "[REDACTED]") break;
+          openAIResponse.choices[0].message.reasoning += chunk.delta;
+          break;
+        case "text-start":
+          if (openAIResponse.id === "") openAIResponse.id = chunk.id;
+          openAIResponse.choices[0].message.content = "";
+          break;
+        case "text-delta":
+          if (openAIResponse.id === "") openAIResponse.id = chunk.id;
+          openAIResponse.choices[0].message.content += chunk.delta;
+          break;
+        case "tool-input-start":
+          openAIResponse.choices[0].message.tool_calls = []
+          break;
+        case "tool-input-available":
+          openAIResponse.choices[0].message.tool_calls![0] = {
+            type: "function", // @todo dynamicTools
+            id: chunk.toolCallId,
+            function: {
+              name: chunk.toolName,
+              arguments: chunk.input as string
+            }
+          };
+          break;
+        case "finish":
+          openAIResponse.usage = {
+            completion_tokens: (await result.usage).outputTokens || 0,
+            completion_tokens_details: {
+              reasoning_tokens: (await result.usage).reasoningTokens,
+            },
+            prompt_tokens: (await result.usage).inputTokens || 0,
+            prompt_tokens_details: {
+              cached_tokens: (await result.usage).cachedInputTokens
+            },
+            total_tokens: (await result.usage).totalTokens || 0,
+          }
+          break;
+      }
+    }
+
+    return Response.json(openAIResponse!);
+  }
 }

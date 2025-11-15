@@ -222,14 +222,14 @@ export const ChatCompletions_RequestBody = z.object({
 export const ChatCompletions_NotStreaming_ResponseBody = z.object({
   choices: z.array(
     z.object({
-      finish_reason: z.union([
+      finish_reason: z.nullish(z.union([
         z.string(),
         z.literal("stop"),
         z.literal("length"),
         z.literal("content_filter"),
         z.literal("tool_calls"),
         z.literal("function_call"),
-      ]),
+      ])),
       index: z.int(),
       logprobs: z.nullish(
         z.object({
@@ -264,10 +264,10 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
         })
       ),
       message: z.object({
-        content: z.string(),
-        refusal: z.string(),
+        content: z.nullish(z.string()),
+        refusal: z.nullish(z.string()),
         role: z.string(),
-        annotations: z.array(
+        annotations: z.nullish(z.array(
           z.object({
             type: z.literal("url_citation"),
             url_citation: z.object({
@@ -277,13 +277,13 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
               url: z.string(),
             }),
           })
-        ),
-        audio: z.object({
+        )),
+        audio: z.nullish(z.object({
           data: z.string(),
           expires_at: z.int(), // UNIX Timestamp
           id: z.string(),
           transcript: z.string(),
-        }),
+        })),
         // @Deprecated
         function_call: z.nullish(
           z.object({
@@ -291,7 +291,7 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
             name: z.string(),
           })
         ),
-        tool_calls: z.array(
+        tool_calls: z.nullish(z.array(
           z.union([
             z.object({
               function: z.object({
@@ -310,7 +310,9 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
               type: z.literal("custom"),
             }),
           ])
-        ),
+        )),
+        // Unofficial
+        reasoning: z.nullish(z.string()),
       }),
     })
   ),
@@ -330,21 +332,23 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
   // @deprecated
   system_fingerprint: z.nullish(z.string()),
   usage: z.object({
-    completion_tokens: z.int(),
-    prompt_tokens: z.int(),
-    total_tokens: z.int(),
-    completion_tokens_details: z.object({
-      accepted_prediction_tokens: z.int(),
-      audio_tokens: z.int(),
-      reasoning_tokens: z.int(),
-      rejected_prediction_tokens: z.int(),
-      prompt_tokens_details: z.nullish(
-        z.object({
-          audio_tokens: z.int(),
-          cached_tokens: z.int(),
-        })
-      ),
-    }),
+    completion_tokens: z.nullish(z.int()),
+    prompt_tokens: z.nullish(z.int()),
+    total_tokens: z.nullish(z.int()),
+    completion_tokens_details: z.nullish(
+      z.object({
+        accepted_prediction_tokens: z.nullish(z.int()),
+        audio_tokens: z.nullish(z.int()),
+        reasoning_tokens: z.nullish(z.int()),
+        rejected_prediction_tokens: z.nullish(z.int()),
+      })
+    ),
+    prompt_tokens_details: z.nullish(
+      z.object({
+        audio_tokens: z.nullish(z.int()),
+        cached_tokens: z.nullish(z.int()),
+      })
+    ),
   }),
   // Non-official
   provider: z.nullish(z.string()),
@@ -356,23 +360,27 @@ export const ChatCompletions_Streaming_Chunk = z.object({
       delta: z.object({
         content: z.string(),
         // @deprecated
-        function_call: z.nullish(z.object({
-          arguments: z.string(),
-          name: z.string(),
-        })),
+        function_call: z.nullish(
+          z.object({
+            arguments: z.string(),
+            name: z.string(),
+          })
+        ),
         refusal: z.nullish(z.string()),
         role: z.string(),
-        tool_calls: z.nullish(z.array(
-          z.object({
-            index: z.int(),
-            function: z.object({
-              arguments: z.string(),
-              name: z.nullish(z.string()),
-            }),
-            id: z.nullish(z.string()),
-            type: z.literal("function"),
-          })
-        )),
+        tool_calls: z.nullish(
+          z.array(
+            z.object({
+              index: z.int(),
+              function: z.object({
+                arguments: z.string(),
+                name: z.nullish(z.string()),
+              }),
+              id: z.nullish(z.string()),
+              type: z.literal("function"),
+            })
+          )
+        ),
         // Unofficial
         reasoning: z.nullish(z.string()),
       }),
