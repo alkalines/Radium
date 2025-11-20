@@ -16,9 +16,9 @@ export type AIProviderSDK_ModelSettings = {
     /**
      * Reasoning efforts
      *
-     * @ignore `none` are only available on `gpt-5.1` models.
+     * @todo Some models don't have `minimal` or `none`
      */
-    effort?: "high" | "medium" | "low" | "none"; // None on some GPT models
+    effort?: "high" | "medium" | "low" | "minimal" | "none"; // None on some GPT models
     /**
      * Max reasoning tokens per request
      */
@@ -29,10 +29,6 @@ export type AIProviderSDK_ModelSettings = {
      * @function If `effort` is `none` this is off.
      */
     enabled?: boolean;
-    /**
-     * Exclude reasoning tokens from being sent.
-     */
-    exclude?: boolean;
   };
   /**
    * Identify the user of the client, helps with client analytics and cache.
@@ -41,7 +37,7 @@ export type AIProviderSDK_ModelSettings = {
   /**
    * [Openrouter Docs - LogitBias](https://openrouter.ai/docs/api-reference/parameters#logit-bias)
    */
-  logitBias: any; // JSON Object
+  logitBias?: any; // JSON Object
   /**
    * [Openrouter Docs - Logprobs](https://openrouter.ai/docs/api-reference/parameters#logprobs)
    * @todo Implement in translation layer.
@@ -51,7 +47,7 @@ export type AIProviderSDK_ModelSettings = {
    * Parallel Tool Calls for endpoints that accept it.
    * @todo Implement in translation layer.
    */
-  parallelToolCalls: boolean;
+  parallelToolCalls?: boolean;
   /**
    * Web search plugin configuration for enabling web search capabilities
    * @todo Support for Exa Search out of the box.
