@@ -135,7 +135,10 @@ export async function StreamCompletion(
   const result = streamText({
     model: provider.connector(reqData.model, {
       logitBias: reqData.logit_bias,
-      logprobs: reqData.logprobs ?? false,
+      /**
+       * @todo OpenRouter have this option currently bugged
+       */
+      //logprobs: reqData.logprobs ?? false,
       parallelToolCalls: reqData.parallel_tool_calls,
       plugins: reqData.plugins,
       reasoning: {
