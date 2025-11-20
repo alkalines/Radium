@@ -140,10 +140,7 @@ export async function StreamCompletion(
       plugins: reqData.plugins,
       reasoning: {
         effort: reqData.reasoning_effort ?? "medium",
-        enabled:
-          (reqData.reasoning?.enabled ?? reqData.reasoning_effort)
-            ? true
-            : false,
+        enabled: reqData.reasoning?.enabled || reqData.reasoning ? undefined: true,
         max_tokens: reqData.reasoning?.max_tokens ?? undefined,
       },
       /**
