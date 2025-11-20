@@ -9,23 +9,23 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@openrouter/ai-sdk-provider": "^1.2.1",
-    "ai": "^5.0.92",
-    "convex": "^1.29.0",
-    "next": "16.0.1",
+    "@openrouter/ai-sdk-provider": "^1.2.5",
+    "ai": "^5.0.98",
+    "convex": "^1.29.3",
+    "next": "16.0.3",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "zod": "^4.1.12",
-    "zod-from-json-schema": "^0.5.1"
+    "zod-from-json-schema": "^0.5.2"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.1",
     "@tailwindcss/postcss": "^4.1.17",
-    "@types/node": "^24.10.0",
-    "@types/react": "^19.2.3",
-    "@types/react-dom": "^19.2.2",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.6",
+    "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.1",
-    "eslint-config-next": "16.0.1",
+    "eslint-config-next": "16.0.3",
     "tailwindcss": "^4.1.17",
     "typescript": "^5.9.3"
   }
