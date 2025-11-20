@@ -247,14 +247,16 @@ export const ChatCompletions_RequestBody = z.object({
 export const ChatCompletions_NotStreaming_ResponseBody = z.object({
   choices: z.array(
     z.object({
-      finish_reason: z.nullish(z.union([
-        z.string(),
-        z.literal("stop"),
-        z.literal("length"),
-        z.literal("content_filter"),
-        z.literal("tool_calls"),
-        z.literal("function_call"),
-      ])),
+      finish_reason: z.nullish(
+        z.union([
+          z.string(),
+          z.literal("stop"),
+          z.literal("length"),
+          z.literal("content_filter"),
+          z.literal("tool_calls"),
+          z.literal("function_call"),
+        ])
+      ),
       index: z.int(),
       logprobs: z.nullish(
         z.object({
@@ -292,23 +294,27 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
         content: z.nullish(z.string()),
         refusal: z.nullish(z.string()),
         role: z.string(),
-        annotations: z.nullish(z.array(
+        annotations: z.nullish(
+          z.array(
+            z.object({
+              type: z.literal("url_citation"),
+              url_citation: z.object({
+                end_index: z.int(),
+                start_index: z.int(),
+                title: z.string(),
+                url: z.string(),
+              }),
+            })
+          )
+        ),
+        audio: z.nullish(
           z.object({
-            type: z.literal("url_citation"),
-            url_citation: z.object({
-              end_index: z.int(),
-              start_index: z.int(),
-              title: z.string(),
-              url: z.string(),
-            }),
+            data: z.string(),
+            expires_at: z.int(), // UNIX Timestamp
+            id: z.string(),
+            transcript: z.string(),
           })
-        )),
-        audio: z.nullish(z.object({
-          data: z.string(),
-          expires_at: z.int(), // UNIX Timestamp
-          id: z.string(),
-          transcript: z.string(),
-        })),
+        ),
         // @Deprecated
         function_call: z.nullish(
           z.object({
@@ -316,26 +322,28 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
             name: z.string(),
           })
         ),
-        tool_calls: z.nullish(z.array(
-          z.union([
-            z.object({
-              function: z.object({
-                arguments: z.string(),
-                name: z.string(),
+        tool_calls: z.nullish(
+          z.array(
+            z.union([
+              z.object({
+                function: z.object({
+                  arguments: z.string(),
+                  name: z.string(),
+                }),
+                id: z.string(),
+                type: z.union([z.string(), z.literal("function")]),
               }),
-              id: z.string(),
-              type: z.union([z.string(), z.literal("function")]),
-            }),
-            z.object({
-              custom: z.object({
-                input: z.string(),
-                name: z.string(),
+              z.object({
+                custom: z.object({
+                  input: z.string(),
+                  name: z.string(),
+                }),
+                id: z.string(),
+                type: z.literal("custom"),
               }),
-              id: z.string(),
-              type: z.literal("custom"),
-            }),
-          ])
-        )),
+            ])
+          )
+        ),
         // Unofficial
         reasoning: z.nullish(z.string()),
       }),

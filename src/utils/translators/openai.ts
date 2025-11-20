@@ -86,38 +86,48 @@ export async function StreamCompletion(
    * @todo Reasoning parameter, and provider specific options
    */
   const uiMessages = convertToModelMessages(
-    reqData.messages.map(m => {
-      const role: 'system' | 'user' | 'assistant' =
-        m.role === 'developer' ? 'system' :
-        (m.role === 'function' || m.role === 'tool') ? 'assistant' :
-        m.role as any;
+    reqData.messages.map((m) => {
+      const role: "system" | "user" | "assistant" =
+        m.role === "developer"
+          ? "system"
+          : m.role === "function" || m.role === "tool"
+            ? "assistant"
+            : (m.role as any);
 
       const raw: any = m;
       const content = raw.content;
-      const parts: { type: 'text'; text: string }[] = [];
+      const parts: { type: "text"; text: string }[] = [];
 
-      if (typeof content === 'string') {
-        parts.push({ type: 'text', text: content });
+      if (typeof content === "string") {
+        parts.push({ type: "text", text: content });
       } else if (Array.isArray(content)) {
         for (const c of content) {
-          if (c && typeof c === 'object' && 'text' in c && typeof (c as any).text === 'string') {
-            parts.push({ type: 'text', text: (c as any).text });
+          if (
+            c &&
+            typeof c === "object" &&
+            "text" in c &&
+            typeof (c as any).text === "string"
+          ) {
+            parts.push({ type: "text", text: (c as any).text });
           } else {
             try {
-              parts.push({ type: 'text', text: `[${(c as any).type ?? 'part'}] ${JSON.stringify(c)}` });
+              parts.push({
+                type: "text",
+                text: `[${(c as any).type ?? "part"}] ${JSON.stringify(c)}`,
+              });
             } catch {
-              parts.push({ type: 'text', text: '[unrepresentable part]' });
+              parts.push({ type: "text", text: "[unrepresentable part]" });
             }
           }
         }
       } else {
-        parts.push({ type: 'text', text: '' });
+        parts.push({ type: "text", text: "" });
       }
 
       return {
         role,
-        content: parts.map(p => p.text).join(''),
-        parts
+        content: parts.map((p) => p.text).join(""),
+        parts,
       };
     })
   );
@@ -176,65 +186,74 @@ export async function StreamCompletion(
           switch (chunk.type) {
             case "reasoning-start":
               if (!genID) genID = chunk.id;
-              openaiOutput({
-                id: genID || "not-available",
-                provider: provider.info.name,
-                created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
-                object: "chat.completion.chunk",
-                choices: [
-                  {
-                    index: 0,
-                    delta: { role: "assistant", content: "" },
-                    finish_reason: null,
-                    logprobs: null,
-                  },
-                ],
-              });
+
+              if (!reqData.reasoning?.exclude) {
+                openaiOutput({
+                  id: genID || "not-available",
+                  provider: provider.info.name,
+                  created: createdDateUnix,
+                  model: reqData.model, // @todo Not fuck everything in case of routers
+                  object: "chat.completion.chunk",
+                  choices: [
+                    {
+                      index: 0,
+                      delta: { role: "assistant", content: "" },
+                      finish_reason: null,
+                      logprobs: null,
+                    },
+                  ],
+                });
+              }
               break;
             case "reasoning-delta":
               if (!genID) genID = chunk.id;
-              openaiOutput({
-                id: genID || "not-available",
-                provider: provider.info.name,
-                created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
-                object: "chat.completion.chunk",
-                choices: [
-                  {
-                    index: 0,
-                    delta: {
-                      role: "assistant",
-                      content: "",
-                      reasoning: chunk.delta,
+              if (chunk.delta === "[REDACTED]") break;
+              if (!reqData.reasoning?.exclude) {
+                openaiOutput({
+                  id: genID || "not-available",
+                  provider: provider.info.name,
+                  created: createdDateUnix,
+                  model: reqData.model, // @todo Not fuck everything in case of routers
+                  object: "chat.completion.chunk",
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        role: "assistant",
+                        content: "",
+                        reasoning: chunk.delta,
+                      },
+                      finish_reason: null,
+                      logprobs: null,
                     },
-                    finish_reason: null,
-                    logprobs: null,
-                  },
-                ],
-              });
+                  ],
+                });
+              }
               break;
             case "reasoning-end":
               if (!genID) genID = chunk.id;
-              openaiOutput({
-                id: genID || "not-available",
-                provider: provider.info.name,
-                created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
-                object: "chat.completion.chunk",
-                choices: [
-                  {
-                    index: 0,
-                    delta: {
-                      role: "assistant",
-                      content: "",
-                      reasoning: null,
+
+              if (!reqData.reasoning?.exclude) {
+                openaiOutput({
+                  id: genID || "not-available",
+                  provider: provider.info.name,
+                  created: createdDateUnix,
+                  model: reqData.model, // @todo Not fuck everything in case of routers
+                  object: "chat.completion.chunk",
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        role: "assistant",
+                        content: "",
+                        reasoning: null,
+                      },
+                      finish_reason: null,
+                      logprobs: null,
                     },
-                    finish_reason: null,
-                    logprobs: null,
-                  },
-                ],
-              });
+                  ],
+                });
+              }
               break;
             case "tool-input-start":
               openaiOutput({
@@ -414,12 +433,15 @@ export async function StreamCompletion(
       switch (chunk.type) {
         case "reasoning-start":
           if (openAIResponse.id === "") openAIResponse.id = chunk.id;
-          openAIResponse.choices[0].message.reasoning = "";
+          if (!reqData.reasoning?.exclude)
+            openAIResponse.choices[0].message.reasoning = "";
           break;
         case "reasoning-delta":
           if (openAIResponse.id === "") openAIResponse.id = chunk.id;
           if (chunk.delta === "[REDACTED]") break;
-          openAIResponse.choices[0].message.reasoning += chunk.delta;
+
+          if (!reqData.reasoning?.exclude)
+            openAIResponse.choices[0].message.reasoning += chunk.delta;
           break;
         case "text-start":
           if (openAIResponse.id === "") openAIResponse.id = chunk.id;
@@ -430,7 +452,7 @@ export async function StreamCompletion(
           openAIResponse.choices[0].message.content += chunk.delta;
           break;
         case "tool-input-start":
-          openAIResponse.choices[0].message.tool_calls = []
+          openAIResponse.choices[0].message.tool_calls = [];
           break;
         case "tool-input-available":
           openAIResponse.choices[0].message.tool_calls![0] = {
@@ -438,8 +460,8 @@ export async function StreamCompletion(
             id: chunk.toolCallId,
             function: {
               name: chunk.toolName,
-              arguments: chunk.input as string
-            }
+              arguments: chunk.input as string,
+            },
           };
           break;
         case "finish":
@@ -450,10 +472,10 @@ export async function StreamCompletion(
             },
             prompt_tokens: (await result.usage).inputTokens || 0,
             prompt_tokens_details: {
-              cached_tokens: (await result.usage).cachedInputTokens
+              cached_tokens: (await result.usage).cachedInputTokens,
             },
             total_tokens: (await result.usage).totalTokens || 0,
-          }
+          };
           break;
       }
     }
