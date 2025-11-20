@@ -217,6 +217,31 @@ export const ChatCompletions_RequestBody = z.object({
   repetition_penalty: z.optional(z.number().min(0).max(2)),
   min_p: z.optional(z.number().min(0).max(1)),
   top_a: z.optional(z.number().min(0).max(1)),
+  plugins: z.optional(
+    z.array(
+      z.object({
+        id: z.literal("web"),
+        max_results: z.number(),
+        search_prompt: z.string(),
+      })
+    )
+  ),
+  reasoning: z.optional(
+    z.object({
+      effort: z.nullish(
+        z.union([
+          z.literal("high"),
+          z.literal("medium"),
+          z.literal("low"),
+          z.literal("minimal"),
+          z.literal("none"),
+        ])
+      ),
+      max_tokens: z.nullish(z.number()),
+      enabled: z.nullish(z.boolean()),
+      exclude: z.nullish(z.boolean()),
+    })
+  ),
 });
 
 export const ChatCompletions_NotStreaming_ResponseBody = z.object({

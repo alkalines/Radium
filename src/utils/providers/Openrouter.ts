@@ -1,7 +1,7 @@
 /**
  * LIBS
  */
-import { AIProviderConfig } from "../types/ai_provider";
+import { AIProviderConfig, AIProviderSDK_ModelSettings } from "../types/ai_provider";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 
 /**
@@ -21,14 +21,17 @@ const OpenRouterProvider: AIProviderConfig = {
     privacy_policy: "https://openrouter.ai/privacy",
     tos: "https://openrouter.ai/terms",
   },
-  connector: (Config) =>
-    createOpenRouter({
-      ...Config,
-      headers: {
-        "HTTP-Referer": "https://github.com/alkalines/Radium",
-        "X-Title": "Radium Chatroom",
-      },
-    }).chat,
+  connector: (Config) => {
+    return (model: string, settings?: AIProviderSDK_ModelSettings) => {
+      return createOpenRouter({
+        ...Config,
+        headers: {
+          "HTTP-Referer": "https://github.com/alkalines/Radium",
+          "X-Title": "Radium Chatroom",
+        },
+      }).chat(model, (settings ?? {}) as any)
+    }
+  }
 };
 
 /**

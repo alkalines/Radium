@@ -123,7 +123,25 @@ export async function StreamCompletion(
   );
 
   const result = streamText({
-    model: provider.connector(reqData.model),
+    model: provider.connector(reqData.model, {
+      logitBias: reqData.logit_bias,
+      logprobs: reqData.logprobs ?? false,
+      parallelToolCalls: reqData.parallel_tool_calls,
+      plugins: reqData.plugins,
+      reasoning: {
+        effort: reqData.reasoning_effort ?? "medium",
+        enabled:
+          (reqData.reasoning?.enabled ?? reqData.reasoning_effort)
+            ? true
+            : false,
+        max_tokens: reqData.reasoning?.max_tokens ?? undefined,
+      },
+      /**
+       * @todo
+       */
+      //web_search_options: reqData.web_search_options 
+      user: reqData.user,
+    }),
     messages: uiMessages,
     abortSignal: abort.signal,
     maxOutputTokens: reqData.max_completion_tokens ?? undefined,
