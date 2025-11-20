@@ -146,8 +146,8 @@ export async function StreamCompletion(
       /**
        * @todo
        */
-      //web_search_options: reqData.web_search_options 
-      user: reqData.user,
+      //web_search_options: reqData.web_search_options
+      user: reqData.prompt_cache_key || reqData.user,
     }),
     messages: uiMessages,
     abortSignal: abort.signal,
