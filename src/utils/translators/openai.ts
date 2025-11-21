@@ -3,12 +3,18 @@ import {
   ChatCompletions_RequestBody_Type,
   ChatCompletions_Streaming_Chunk_Type,
 } from "../types/openai/types";
-import { convertToModelMessages, streamText, tool, UIMessageChunk } from "ai";
+import {
+  convertToModelMessages,
+  streamText,
+  StreamTextResult,
+  tool,
+  UIMessageChunk,
+} from "ai";
 import { convertJsonSchemaToZod } from "zod-from-json-schema";
 import z from "zod";
 import AIBalancer from "../ai_balancer";
 import { ToolsSchema } from "../types/openai/tools";
-import { streamChunkForAsyncIterator } from "../tools/chunkReader";
+import { convertStreamToAsyncIterator } from "../tools/chunkReader";
 
 function toolsParsing(reqData: ChatCompletions_RequestBody_Type) {
   let object: Record<string, any> = {};
@@ -71,16 +77,11 @@ function toolChoiceParse(reqData: ChatCompletions_RequestBody_Type) {
   return undefined;
 }
 
-/**
- * Inline adaptation of OpenAI-style messages to UIMessage format
- * moved inside StreamCompletion for single-function implementation.
- */
-
-export async function StreamCompletion(
+function getAISDKStream(
   reqData: ChatCompletions_RequestBody_Type,
-  provider: Awaited<ReturnType<typeof AIBalancer>>
-): Promise<Response> {
-  const abort = new AbortController();
+  provider: Awaited<ReturnType<typeof AIBalancer>>,
+  abort: AbortController
+): ReturnType<typeof streamText> {
   const parsedToolChoice = toolChoiceParse(reqData);
   /**
    * @todo Reasoning parameter, and provider specific options
@@ -132,7 +133,7 @@ export async function StreamCompletion(
     })
   );
 
-  const result = streamText({
+  return streamText({
     model: provider.connector(reqData.model, {
       logitBias: reqData.logit_bias,
       /**
@@ -143,7 +144,8 @@ export async function StreamCompletion(
       plugins: reqData.plugins,
       reasoning: {
         effort: reqData.reasoning_effort ?? "medium",
-        enabled: reqData.reasoning?.enabled || reqData.reasoning ? undefined: true,
+        enabled:
+          reqData.reasoning?.enabled || reqData.reasoning ? undefined : true,
         max_tokens: reqData.reasoning?.max_tokens ?? undefined,
       },
       /**
@@ -165,100 +167,57 @@ export async function StreamCompletion(
     frequencyPenalty: reqData.frequency_penalty ?? undefined,
     seed: reqData.seed,
   });
+}
+
+export function StreamCompletion(
+  reqData: ChatCompletions_RequestBody_Type,
+  provider: Awaited<ReturnType<typeof AIBalancer>>
+): ReadableStream<ChatCompletions_Streaming_Chunk_Type | string> {
+  const abort = new AbortController();
+  const result = getAISDKStream(reqData, provider, abort);
 
   // Transform to OpenAI Stream
   const aisdk_response = result.toUIMessageStream();
-  const chunkLoadStream = streamChunkForAsyncIterator(
+  const chunkLoadStream = convertStreamToAsyncIterator(
     aisdk_response
   ) as AsyncGenerator<UIMessageChunk>;
   const createdDateUnix = Math.floor(Date.now() / 1000);
   let genID: string;
-  if (reqData.stream) {
-    const customReadable = new ReadableStream({
-      async start(controller) {
-        const controllerOutput = (text: string) =>
-          controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
-        const openaiOutput = (response: ChatCompletions_Streaming_Chunk_Type) =>
-          controllerOutput(JSON.stringify(response));
+  return new ReadableStream({
+    async start(controller) {
+      const controllerOutput = (text: string) => controller.enqueue(text);
+      const openaiOutput = (response: ChatCompletions_Streaming_Chunk_Type) =>
+        controllerOutput(JSON.stringify(response));
 
-        for await (const chunk of chunkLoadStream) {
-          // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
-          switch (chunk.type) {
-            case "reasoning-start":
-              if (!genID) genID = chunk.id;
+      for await (const chunk of chunkLoadStream) {
+        // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
+        switch (chunk.type) {
+          case "reasoning-start":
+            if (!genID) genID = chunk.id;
 
-              if (!reqData.reasoning?.exclude) {
-                openaiOutput({
-                  id: genID || "not-available",
-                  provider: provider.info.name,
-                  created: createdDateUnix,
-                  model: reqData.model, // @todo Not fuck everything in case of routers
-                  object: "chat.completion.chunk",
-                  choices: [
-                    {
-                      index: 0,
-                      delta: { role: "assistant", content: "" },
-                      finish_reason: null,
-                      logprobs: null,
-                    },
-                  ],
-                });
-              }
-              break;
-            case "reasoning-delta":
-              if (!genID) genID = chunk.id;
-              if (chunk.delta === "[REDACTED]") break;
-              if (!reqData.reasoning?.exclude) {
-                openaiOutput({
-                  id: genID || "not-available",
-                  provider: provider.info.name,
-                  created: createdDateUnix,
-                  model: reqData.model, // @todo Not fuck everything in case of routers
-                  object: "chat.completion.chunk",
-                  choices: [
-                    {
-                      index: 0,
-                      delta: {
-                        role: "assistant",
-                        content: "",
-                        reasoning: chunk.delta,
-                      },
-                      finish_reason: null,
-                      logprobs: null,
-                    },
-                  ],
-                });
-              }
-              break;
-            case "reasoning-end":
-              if (!genID) genID = chunk.id;
-
-              if (!reqData.reasoning?.exclude) {
-                openaiOutput({
-                  id: genID || "not-available",
-                  provider: provider.info.name,
-                  created: createdDateUnix,
-                  model: reqData.model, // @todo Not fuck everything in case of routers
-                  object: "chat.completion.chunk",
-                  choices: [
-                    {
-                      index: 0,
-                      delta: {
-                        role: "assistant",
-                        content: "",
-                        reasoning: null,
-                      },
-                      finish_reason: null,
-                      logprobs: null,
-                    },
-                  ],
-                });
-              }
-              break;
-            case "tool-input-start":
+            if (!reqData.reasoning?.exclude) {
               openaiOutput({
                 id: genID || "not-available",
-                provider: provider.info.name,
+                created: createdDateUnix,
+                model: reqData.model, // @todo Not fuck everything in case of routers
+                object: "chat.completion.chunk",
+                choices: [
+                  {
+                    index: 0,
+                    delta: { role: "assistant", content: "" },
+                    finish_reason: null,
+                    logprobs: null,
+                  },
+                ],
+              });
+            }
+            break;
+          case "reasoning-delta":
+            if (!genID) genID = chunk.id;
+            if (chunk.delta === "[REDACTED]") break;
+            if (!reqData.reasoning?.exclude) {
+              openaiOutput({
+                id: genID || "not-available",
                 created: createdDateUnix,
                 model: reqData.model, // @todo Not fuck everything in case of routers
                 object: "chat.completion.chunk",
@@ -268,218 +227,260 @@ export async function StreamCompletion(
                     delta: {
                       role: "assistant",
                       content: "",
-                      tool_calls: [
-                        {
-                          id: chunk.toolCallId,
-                          index: 0,
-                          type: "function", // @todo dynamicTools - According with OpenAI docs only function is currently supported.
-                          function: {
-                            name: chunk.toolName,
-                            arguments: "",
-                          },
+                      reasoning: chunk.delta,
+                    },
+                    finish_reason: null,
+                    logprobs: null,
+                  },
+                ],
+              });
+            }
+            break;
+          case "reasoning-end":
+            if (!genID) genID = chunk.id;
+
+            if (!reqData.reasoning?.exclude) {
+              openaiOutput({
+                id: genID || "not-available",
+                created: createdDateUnix,
+                model: reqData.model, // @todo Not fuck everything in case of routers
+                object: "chat.completion.chunk",
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      role: "assistant",
+                      content: "",
+                      reasoning: null,
+                    },
+                    finish_reason: null,
+                    logprobs: null,
+                  },
+                ],
+              });
+            }
+            break;
+          case "tool-input-start":
+            openaiOutput({
+              id: genID || "not-available",
+              created: createdDateUnix,
+              model: reqData.model, // @todo Not fuck everything in case of routers
+              object: "chat.completion.chunk",
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: "assistant",
+                    content: "",
+                    tool_calls: [
+                      {
+                        id: chunk.toolCallId,
+                        index: 0,
+                        type: "function", // @todo dynamicTools - According with OpenAI docs only function is currently supported.
+                        function: {
+                          name: chunk.toolName,
+                          arguments: "",
                         },
-                      ],
-                    },
-                    finish_reason: null,
-                    logprobs: null,
+                      },
+                    ],
                   },
-                ],
-              });
-              break;
-            case "tool-input-delta":
-              openaiOutput({
-                id: genID || "not-available",
-                provider: provider.info.name,
-                created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
-                object: "chat.completion.chunk",
-                choices: [
-                  {
-                    index: 0,
-                    delta: {
-                      role: "assistant",
-                      content: "",
-                      tool_calls: [
-                        {
-                          index: 0,
-                          type: "function", // @todo dynamicTools - According with OpenAI docs only function is currently supported.
-                          function: {
-                            arguments: chunk.inputTextDelta,
-                          },
-                        },
-                      ],
-                    },
-                    finish_reason: null,
-                    logprobs: null,
-                  },
-                ],
-              });
-              break;
-            case "tool-input-available":
-              openaiOutput({
-                id: genID || "not-available",
-                provider: provider.info.name,
-                created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
-                object: "chat.completion.chunk",
-                choices: [
-                  {
-                    index: 0,
-                    delta: {
-                      role: "assistant",
-                      content: "",
-                    },
-                    finish_reason: "tool_calls",
-                    logprobs: null,
-                  },
-                ],
-              });
-              break;
-            case "text-delta":
-              if (!genID) genID = chunk.id;
-              openaiOutput({
-                id: genID || "not-available",
-                provider: provider.info.name,
-                created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
-                object: "chat.completion.chunk",
-                choices: [
-                  {
-                    index: 0,
-                    delta: {
-                      role: "assistant",
-                      content: chunk.delta,
-                    },
-                    finish_reason: null,
-                    logprobs: null,
-                  },
-                ],
-              });
-              break;
-            case "finish":
-              openaiOutput({
-                id: genID || "not-available",
-                provider: provider.info.name,
-                created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
-                object: "chat.completion.chunk",
-                choices: [
-                  {
-                    index: 0,
-                    delta: {
-                      role: "assistant",
-                      content: "",
-                    },
-                    logprobs: null,
-                  },
-                ],
-                usage: {
-                  prompt_tokens: (await result.usage).inputTokens || 0,
-                  completion_tokens: (await result.usage).outputTokens || 0,
-                  total_tokens: (await result.usage).totalTokens || 0,
-                  completion_tokens_details: {
-                    reasoning_tokens: (await result.usage).reasoningTokens,
-                  },
-                  prompt_tokens_details: {
-                    cached_tokens: (await result.usage).cachedInputTokens,
-                  },
+                  finish_reason: null,
+                  logprobs: null,
                 },
-              });
-              break;
-          }
+              ],
+            });
+            break;
+          case "tool-input-delta":
+            openaiOutput({
+              id: genID || "not-available",
+              created: createdDateUnix,
+              model: reqData.model, // @todo Not fuck everything in case of routers
+              object: "chat.completion.chunk",
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: "assistant",
+                    content: "",
+                    tool_calls: [
+                      {
+                        index: 0,
+                        type: "function", // @todo dynamicTools - According with OpenAI docs only function is currently supported.
+                        function: {
+                          arguments: chunk.inputTextDelta,
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: null,
+                  logprobs: null,
+                },
+              ],
+            });
+            break;
+          case "tool-input-available":
+            openaiOutput({
+              id: genID || "not-available",
+              created: createdDateUnix,
+              model: reqData.model, // @todo Not fuck everything in case of routers
+              object: "chat.completion.chunk",
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: "assistant",
+                    content: "",
+                  },
+                  finish_reason: "tool_calls",
+                  logprobs: null,
+                },
+              ],
+            });
+            break;
+          case "text-delta":
+            if (!genID) genID = chunk.id;
+            openaiOutput({
+              id: genID || "not-available",
+              created: createdDateUnix,
+              model: reqData.model, // @todo Not fuck everything in case of routers
+              object: "chat.completion.chunk",
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: "assistant",
+                    content: chunk.delta,
+                  },
+                  finish_reason: null,
+                  logprobs: null,
+                },
+              ],
+            });
+            break;
+          case "finish":
+            openaiOutput({
+              id: genID || "not-available",
+              created: createdDateUnix,
+              model: reqData.model, // @todo Not fuck everything in case of routers
+              object: "chat.completion.chunk",
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: "assistant",
+                    content: "",
+                  },
+                  logprobs: null,
+                },
+              ],
+              usage: {
+                prompt_tokens: (await result.usage).inputTokens || 0,
+                completion_tokens: (await result.usage).outputTokens || 0,
+                total_tokens: (await result.usage).totalTokens || 0,
+                completion_tokens_details: {
+                  reasoning_tokens: (await result.usage).reasoningTokens,
+                },
+                prompt_tokens_details: {
+                  cached_tokens: (await result.usage).cachedInputTokens,
+                },
+              },
+            });
+            break;
         }
-
-        // End of the stream
-        controllerOutput("[DONE]");
-        controller.close();
-      },
-      cancel(reason?) {
-        abort.abort(reason);
-      },
-    });
-
-    // Server Sent Events (SSE)
-    return new Response(customReadable, {
-      headers: {
-        Connection: "keep-alive",
-        "Content-Encoding": "none",
-        "Cache-Control": "no-cache, no-transform",
-        "Content-Type": "text/event-stream; charset=utf-8",
-      },
-    });
-  } else {
-    let openAIResponse: ChatCompletions_NotStreaming_ResponseBody_Type = {
-      created: createdDateUnix,
-      model: reqData.model, // @todo Not fuck everything in case of routers
-      provider: provider.info.name,
-      object: "chat.completion",
-      choices: [
-        {
-          index: 0,
-          finish_reason: null,
-          message: {
-            content: null,
-            role: "assistant",
-            reasoning: null,
-          },
-        },
-      ],
-      id: "",
-      usage: {},
-    };
-
-    for await (const chunk of chunkLoadStream) {
-      // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
-      switch (chunk.type) {
-        case "reasoning-start":
-          if (openAIResponse.id === "") openAIResponse.id = chunk.id;
-          if (!reqData.reasoning?.exclude)
-            openAIResponse.choices[0].message.reasoning = "";
-          break;
-        case "reasoning-delta":
-          if (openAIResponse.id === "") openAIResponse.id = chunk.id;
-          if (chunk.delta === "[REDACTED]") break;
-
-          if (!reqData.reasoning?.exclude)
-            openAIResponse.choices[0].message.reasoning += chunk.delta;
-          break;
-        case "text-start":
-          if (openAIResponse.id === "") openAIResponse.id = chunk.id;
-          openAIResponse.choices[0].message.content = "";
-          break;
-        case "text-delta":
-          if (openAIResponse.id === "") openAIResponse.id = chunk.id;
-          openAIResponse.choices[0].message.content += chunk.delta;
-          break;
-        case "tool-input-start":
-          openAIResponse.choices[0].message.tool_calls = [];
-          break;
-        case "tool-input-available":
-          openAIResponse.choices[0].message.tool_calls![0] = {
-            type: "function", // @todo dynamicTools
-            id: chunk.toolCallId,
-            function: {
-              name: chunk.toolName,
-              arguments: chunk.input as string,
-            },
-          };
-          break;
-        case "finish":
-          openAIResponse.usage = {
-            completion_tokens: (await result.usage).outputTokens || 0,
-            completion_tokens_details: {
-              reasoning_tokens: (await result.usage).reasoningTokens,
-            },
-            prompt_tokens: (await result.usage).inputTokens || 0,
-            prompt_tokens_details: {
-              cached_tokens: (await result.usage).cachedInputTokens,
-            },
-            total_tokens: (await result.usage).totalTokens || 0,
-          };
-          break;
       }
-    }
 
-    return Response.json(openAIResponse!);
+      // End of the stream
+      controllerOutput("[DONE]");
+      controller.close();
+    },
+    cancel(reason?) {
+      abort.abort(reason);
+    },
+  });
+}
+
+export async function NonStreamingCompletion(
+  reqData: ChatCompletions_RequestBody_Type,
+  provider: Awaited<ReturnType<typeof AIBalancer>>
+): Promise<ChatCompletions_NotStreaming_ResponseBody_Type> {
+  const abort = new AbortController();
+  const result = getAISDKStream(reqData, provider, abort);
+
+  const aisdk_response = result.toUIMessageStream();
+  const chunkLoadStream = convertStreamToAsyncIterator(
+    aisdk_response
+  ) as AsyncGenerator<UIMessageChunk>;
+
+  let openAIResponse: ChatCompletions_NotStreaming_ResponseBody_Type = {
+    created: Math.floor(Date.now() / 1000),
+    model: reqData.model, // @todo Not fuck everything in case of routers
+    object: "chat.completion",
+    choices: [
+      {
+        index: 0,
+        finish_reason: null,
+        message: {
+          content: null,
+          role: "assistant",
+          reasoning: null,
+        },
+      },
+    ],
+    id: "",
+    usage: {},
+  };
+
+  for await (const chunk of chunkLoadStream) {
+    // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
+    switch (chunk.type) {
+      case "reasoning-start":
+        if (openAIResponse.id === "") openAIResponse.id = chunk.id;
+        if (!reqData.reasoning?.exclude)
+          openAIResponse.choices[0].message.reasoning = "";
+        break;
+      case "reasoning-delta":
+        if (openAIResponse.id === "") openAIResponse.id = chunk.id;
+        if (chunk.delta === "[REDACTED]") break;
+
+        if (!reqData.reasoning?.exclude)
+          openAIResponse.choices[0].message.reasoning += chunk.delta;
+        break;
+      case "text-start":
+        if (openAIResponse.id === "") openAIResponse.id = chunk.id;
+        openAIResponse.choices[0].message.content = "";
+        break;
+      case "text-delta":
+        if (openAIResponse.id === "") openAIResponse.id = chunk.id;
+        openAIResponse.choices[0].message.content += chunk.delta;
+        break;
+      case "tool-input-start":
+        openAIResponse.choices[0].message.tool_calls = [];
+        break;
+      case "tool-input-available":
+        openAIResponse.choices[0].message.tool_calls![0] = {
+          type: "function", // @todo dynamicTools
+          id: chunk.toolCallId,
+          function: {
+            name: chunk.toolName,
+            arguments: chunk.input as string,
+          },
+        };
+        break;
+      case "finish":
+        openAIResponse.usage = {
+          completion_tokens: (await result.usage).outputTokens || 0,
+          completion_tokens_details: {
+            reasoning_tokens: (await result.usage).reasoningTokens,
+          },
+          prompt_tokens: (await result.usage).inputTokens || 0,
+          prompt_tokens_details: {
+            cached_tokens: (await result.usage).cachedInputTokens,
+          },
+          total_tokens: (await result.usage).totalTokens || 0,
+        };
+        break;
+    }
   }
+
+  return openAIResponse!;
 }

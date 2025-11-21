@@ -1,4 +1,4 @@
-export async function* streamChunkForAsyncIterator(stream: ReadableStream) {
+export async function* convertStreamToAsyncIterator(stream: ReadableStream) {
   const reader = stream.getReader();
   try {
     while (true) {
