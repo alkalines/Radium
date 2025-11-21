@@ -6,7 +6,6 @@ import {
 import {
   convertToModelMessages,
   streamText,
-  StreamTextResult,
   tool,
   UIMessageChunk,
 } from "ai";
@@ -169,6 +168,12 @@ function getAISDKStream(
   });
 }
 
+/**
+ * Transform an OpenAI-Compatible request into a OpenAI-Compatible streamed response using the AISDK as an middleware
+ * @param reqData OpenAI Compatible Request data
+ * @param provider Provider message connector
+ * @returns An Readable Stream of Chunks
+ */
 export function StreamCompletion(
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>
@@ -399,6 +404,12 @@ export function StreamCompletion(
   });
 }
 
+/**
+ * Transform an OpenAI-Compatible request into a OpenAI-Compatible standard response using the AISDK as an middleware
+ * @param reqData OpenAI Compatible Request data
+ * @param provider Provider message connector
+ * @returns An Object with an ready response
+ */
 export async function NonStreamingCompletion(
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>
