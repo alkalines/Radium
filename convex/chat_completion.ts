@@ -3,10 +3,12 @@ import { api } from "./_generated/api";
 import {
   ChatCompletions_RequestBody,
   ChatCompletions_RequestBody_Type,
+  ChatCompletions_Streaming_Chunk_Type,
 } from "@/utils/types/openai/types";
 import AIBalancer from "@/utils/ai_balancer";
 import * as z from "zod";
-import { StreamCompletion } from "@/utils/translators/openai";
+import { NonStreamingCompletion, StreamCompletion } from "@/utils/translators/openai";
+import { convertStreamToAsyncIterator } from '../src/utils/tools/chunkReader'
 
 export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise<Response> => {
   try {
@@ -50,8 +52,8 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
         { status: 402 }
       );
 
-    // TODO: Cost tracking, and BYOK.
     const provider = await AIBalancer(reqData);
+    // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
     return CreateCompletion(reqData, provider)
   } catch (e: any) {
     if (e instanceof z.ZodError) {
@@ -66,32 +68,35 @@ const CreateCompletion = async (
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>
 ): Promise<Response> => {
-  /* const genID = `gen-${crypto.randomUUID()}`;
+  const genID = `gen-${crypto.randomUUID()}`;
+  
   if (reqData.stream) {
-    const gen = await provider.connector.StreamCompletion(reqData);
-    let provider_genID: string;
-
+    const providerGen = StreamCompletion(reqData, provider)
+    let originalGenID: string;
     const customReadable = new ReadableStream({
       async start(controller) {
         const controllerOutput = (text: string) =>
           controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
 
-        for await (const providerChunk of gen.chunks) {
-          let chunk = providerChunk;
-          if (!provider_genID) provider_genID = chunk.id
-
-          chunk.id = genID
-          chunk.provider = provider.info.slug
-          controllerOutput(JSON.stringify(chunk));
+        console.log(providerGen);
+        for await (const providerChunk of convertStreamToAsyncIterator(providerGen)) {
+          try {
+            let chunk = JSON.parse(providerChunk) as ChatCompletions_Streaming_Chunk_Type;
+            if (!originalGenID) originalGenID = chunk.id
+  
+            chunk.id = genID;
+            chunk.provider = provider.info.slug;
+            controllerOutput(JSON.stringify(chunk));
+          } catch (E) {}
         }
 
         // End of the stream
         controllerOutput("[DONE]");
         controller.close();
       },
-      cancel() {
-        gen.abort.abort(`User cancelled.`)
-      }
+      cancel(reason?) {
+        (providerGen as ReadableStream<any>).cancel(reason);
+      },
     });
 
     // Server Sent Events (SSE)
@@ -104,9 +109,10 @@ const CreateCompletion = async (
       },
     });
   } else {
-    const gen = await provider.connector.GenerateCompletion(reqData);
+    let generation = await NonStreamingCompletion(reqData, provider)
+    generation.id = genID
+    generation.provider = provider.info.slug;
 
-    return Response.json(gen);
-  } */
-  return StreamCompletion(reqData, provider)
+    return Response.json(generation);
+  }
 };
