@@ -1,5 +1,5 @@
 import { httpAction } from "./_generated/server";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import {
   ChatCompletions_RequestBody,
   ChatCompletions_RequestBody_Type,
@@ -9,6 +9,9 @@ import AIBalancer from "@/utils/ai_balancer";
 import * as z from "zod";
 import { NonStreamingCompletion, StreamCompletion } from "@/utils/translators/openai";
 import { convertStreamToAsyncIterator } from '../src/utils/tools/chunkReader'
+import { completionUsage } from "./key";
+import { GenericActionCtx } from "convex/server";
+import { Id } from "./_generated/dataModel";
 
 export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise<Response> => {
   try {
@@ -54,7 +57,12 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
 
     const provider = await AIBalancer(reqData);
     // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
-    return CreateCompletion(reqData, provider)
+    return CreateCompletion(reqData, provider, {
+      ctx,
+      userId: checkKey.user!._id,
+      keyId: checkKey._id,
+      byok: false // @todo
+    })
   } catch (e: any) {
     if (e instanceof z.ZodError) {
       return Response.json(e.issues, { status: 400 });
@@ -66,23 +74,70 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
 
 const CreateCompletion = async (
   reqData: ChatCompletions_RequestBody_Type,
-  provider: Awaited<ReturnType<typeof AIBalancer>>
+  provider: Awaited<ReturnType<typeof AIBalancer>>,
+  info: {
+    ctx: GenericActionCtx<any>,
+    userId: Id<"users">,
+    keyId: Id<"keys">,
+    byok: boolean
+  }
 ): Promise<Response> => {
   const genID = `gen-${crypto.randomUUID()}`;
   
   if (reqData.stream) {
-    const providerGen = StreamCompletion(reqData, provider)
     let originalGenID: string;
+    let finishedReason: string;
+    let streamCanceled = false;
+
+    const providerGen = StreamCompletion(reqData, provider, (genCompletion) => {
+      // End of the stream
+      info.ctx.runMutation(internal.key.billKey, {
+        user: {
+          id: info.userId,
+          usedKey: info.keyId,
+        },
+        request: {
+          api: "chat_completions",
+          //app
+          byok: info.byok,
+          canceled: streamCanceled,
+          model_slug: reqData.model,
+          provider: provider.info.slug,
+          stream: reqData.stream ?? false,
+          prompt_cache_key: reqData.prompt_cache_key || reqData.user,
+        },
+        response: {
+          gen_id: originalGenID!,
+          finish_reason: finishedReason,
+          gen_time: genCompletion.genTime,
+          ttft: genCompletion.ttft,
+          provider_gen_id: originalGenID!,
+          usage: {
+            completion_tokens: genCompletion.usage.completion_tokens,
+            prompt_tokens: genCompletion.usage.prompt_tokens,
+            completion_tokens_details: {
+              reasoning_tokens: genCompletion.usage.completion_tokens_details.reasoning_tokens ?? undefined,
+            },
+            prompt_tokens_details: {
+              cached_tokens: genCompletion.usage.prompt_tokens_details.cached_tokens ?? undefined,
+              written_cache_tokens: genCompletion.usage.prompt_tokens_details.written_cache_tokens ?? undefined
+            },
+            total_tokens: genCompletion.usage.completion_tokens + genCompletion.usage.prompt_tokens
+          }
+        }
+      });
+    })
+    
     const customReadable = new ReadableStream({
       async start(controller) {
         const controllerOutput = (text: string) =>
           controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
 
-        console.log(providerGen);
         for await (const providerChunk of convertStreamToAsyncIterator(providerGen)) {
           try {
             let chunk = JSON.parse(providerChunk) as ChatCompletions_Streaming_Chunk_Type;
             if (!originalGenID) originalGenID = chunk.id
+            if (chunk.choices[0].finish_reason) finishedReason = chunk.choices[0].finish_reason;
   
             chunk.id = genID;
             chunk.provider = provider.info.slug;
@@ -90,11 +145,11 @@ const CreateCompletion = async (
           } catch (E) {}
         }
 
-        // End of the stream
         controllerOutput("[DONE]");
         controller.close();
       },
       cancel(reason?) {
+        streamCanceled = true;
         (providerGen as ReadableStream<any>).cancel(reason);
       },
     });
@@ -109,9 +164,61 @@ const CreateCompletion = async (
       },
     });
   } else {
-    let generation = await NonStreamingCompletion(reqData, provider)
+    let originalGenID;
+    let finishedReason: string;
+    let generation = await NonStreamingCompletion(
+      reqData,
+      provider,
+      (genCompletion) => {
+        // End of the stream
+        info.ctx.runMutation(internal.key.billKey, {
+          user: {
+            id: info.userId,
+            usedKey: info.keyId,
+          },
+          request: {
+            api: "chat_completions",
+            //app
+            byok: info.byok,
+            canceled: false, //streamCanceled
+            model_slug: reqData.model,
+            provider: provider.info.slug,
+            stream: reqData.stream ?? false,
+            prompt_cache_key: reqData.prompt_cache_key || reqData.user,
+          },
+          response: {
+            gen_id: originalGenID!,
+            finish_reason: finishedReason!,
+            gen_time: genCompletion.genTime,
+            ttft: genCompletion.ttft,
+            provider_gen_id: originalGenID!,
+            usage: {
+              completion_tokens: genCompletion.usage.completion_tokens,
+              prompt_tokens: genCompletion.usage.prompt_tokens,
+              completion_tokens_details: {
+                reasoning_tokens:
+                  genCompletion.usage.completion_tokens_details
+                    .reasoning_tokens ?? undefined,
+              },
+              prompt_tokens_details: {
+                cached_tokens:
+                  genCompletion.usage.prompt_tokens_details.cached_tokens ??
+                  undefined,
+                written_cache_tokens:
+                  genCompletion.usage.prompt_tokens_details
+                    .written_cache_tokens ?? undefined,
+              },
+              total_tokens:
+                genCompletion.usage.completion_tokens +
+                genCompletion.usage.prompt_tokens,
+            },
+          },
+        });
+      }
+    );
     generation.id = genID
     generation.provider = provider.info.slug;
+    finishedReason = generation.choices[0].finish_reason || "stop";
 
     return Response.json(generation);
   }

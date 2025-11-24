@@ -1,19 +1,15 @@
+import { convertToModelMessages, streamText, tool, UIMessageChunk } from "ai";
+import z from "zod";
+import { convertJsonSchemaToZod } from "zod-from-json-schema";
+import { completionUsage } from "../../../convex/key";
+import AIBalancer from "../ai_balancer";
+import { convertStreamToAsyncIterator } from "../tools/chunkReader";
+import { ToolsSchema } from "../types/openai/tools";
 import {
   ChatCompletions_NotStreaming_ResponseBody_Type,
   ChatCompletions_RequestBody_Type,
   ChatCompletions_Streaming_Chunk_Type,
 } from "../types/openai/types";
-import {
-  convertToModelMessages,
-  streamText,
-  tool,
-  UIMessageChunk,
-} from "ai";
-import { convertJsonSchemaToZod } from "zod-from-json-schema";
-import z from "zod";
-import AIBalancer from "../ai_balancer";
-import { ToolsSchema } from "../types/openai/tools";
-import { convertStreamToAsyncIterator } from "../tools/chunkReader";
 
 function toolsParsing(reqData: ChatCompletions_RequestBody_Type) {
   let object: Record<string, any> = {};
@@ -168,6 +164,12 @@ function getAISDKStream(
   });
 }
 
+export type genCallbackType = (genCompletion: {
+  usage: completionUsage;
+  genTime: number;
+  ttft: number;
+}) => undefined;
+
 /**
  * Transform an OpenAI-Compatible request into a OpenAI-Compatible streamed response using the AISDK as an middleware
  * @param reqData OpenAI Compatible Request data
@@ -176,23 +178,48 @@ function getAISDKStream(
  */
 export function StreamCompletion(
   reqData: ChatCompletions_RequestBody_Type,
-  provider: Awaited<ReturnType<typeof AIBalancer>>
+  provider: Awaited<ReturnType<typeof AIBalancer>>,
+  genCallback: genCallbackType
 ): ReadableStream<ChatCompletions_Streaming_Chunk_Type | string> {
   const abort = new AbortController();
   const result = getAISDKStream(reqData, provider, abort);
+
+  // Usage Callback
+  let genTime: string;
+  let ttft: string;
+  result.usage.then((r) => {
+    genCallback({
+      usage: {
+        completion_tokens: r.outputTokens || 0,
+        completion_tokens_details: {
+          reasoning_tokens: r.reasoningTokens ?? null,
+        },
+        prompt_tokens: r.inputTokens || 0,
+        prompt_tokens_details: {
+          cached_tokens: r.cachedInputTokens ?? null,
+          // @todo: written_cache_tokens
+        },
+      },
+      genTime: parseFloat(genTime),
+      ttft: parseFloat(ttft),
+    });
+  });
 
   // Transform to OpenAI Stream
   const aisdk_response = result.toUIMessageStream();
   const chunkLoadStream = convertStreamToAsyncIterator(
     aisdk_response
   ) as AsyncGenerator<UIMessageChunk>;
-  const createdDateUnix = Math.floor(Date.now() / 1000);
+  const genTimeFirst = Date.now() / 1000;
+  const createdDateUnix = Math.floor(genTimeFirst);
   let genID: string;
   return new ReadableStream({
     async start(controller) {
       const controllerOutput = (text: string) => controller.enqueue(text);
-      const openaiOutput = (response: ChatCompletions_Streaming_Chunk_Type) =>
+      const openaiOutput = (response: ChatCompletions_Streaming_Chunk_Type) => {
+        if (!ttft) ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         controllerOutput(JSON.stringify(response));
+      };
 
       for await (const chunk of chunkLoadStream) {
         // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
@@ -393,6 +420,7 @@ export function StreamCompletion(
             break;
         }
       }
+      genTime = (Date.now() / 1000 - genTimeFirst).toFixed(3);
 
       // End of the stream
       controllerOutput("[DONE]");
@@ -400,6 +428,7 @@ export function StreamCompletion(
     },
     cancel(reason?) {
       abort.abort(reason);
+      genTime = (Date.now() / 1000 - genTimeFirst).toFixed(3);
     },
   });
 }
@@ -412,18 +441,43 @@ export function StreamCompletion(
  */
 export async function NonStreamingCompletion(
   reqData: ChatCompletions_RequestBody_Type,
-  provider: Awaited<ReturnType<typeof AIBalancer>>
+  provider: Awaited<ReturnType<typeof AIBalancer>>,
+  genCallback: genCallbackType
 ): Promise<ChatCompletions_NotStreaming_ResponseBody_Type> {
   const abort = new AbortController();
   const result = getAISDKStream(reqData, provider, abort);
+
+  // Usage Callback
+  let genTime: string;
+  let ttft: string = '';
+  result.usage.then((r) => {
+    genCallback({
+      usage: {
+        completion_tokens: r.outputTokens || 0,
+        completion_tokens_details: {
+          reasoning_tokens: r.reasoningTokens ?? null,
+        },
+        prompt_tokens: r.inputTokens || 0,
+        prompt_tokens_details: {
+          cached_tokens: r.cachedInputTokens ?? null,
+          // @todo: written_cache_tokens
+        },
+      },
+      genTime: parseFloat(genTime),
+      ttft: parseFloat(ttft),
+    });
+  });
 
   const aisdk_response = result.toUIMessageStream();
   const chunkLoadStream = convertStreamToAsyncIterator(
     aisdk_response
   ) as AsyncGenerator<UIMessageChunk>;
 
+  const genTimeFirst = Date.now() / 1000;
+  const createdDateUnix = Math.floor(genTimeFirst);
+
   let openAIResponse: ChatCompletions_NotStreaming_ResponseBody_Type = {
-    created: Math.floor(Date.now() / 1000),
+    created: createdDateUnix,
     model: reqData.model, // @todo Not fuck everything in case of routers
     object: "chat.completion",
     choices: [
@@ -450,6 +504,7 @@ export async function NonStreamingCompletion(
           openAIResponse.choices[0].message.reasoning = "";
         break;
       case "reasoning-delta":
+        if (ttft === '') ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         if (openAIResponse.id === "") openAIResponse.id = chunk.id;
         if (chunk.delta === "[REDACTED]") break;
 
@@ -461,13 +516,16 @@ export async function NonStreamingCompletion(
         openAIResponse.choices[0].message.content = "";
         break;
       case "text-delta":
+        if (ttft === '') ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         if (openAIResponse.id === "") openAIResponse.id = chunk.id;
         openAIResponse.choices[0].message.content += chunk.delta;
         break;
       case "tool-input-start":
+        if (ttft === '') ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         openAIResponse.choices[0].message.tool_calls = [];
         break;
       case "tool-input-available":
+        if (ttft === '') ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         openAIResponse.choices[0].message.tool_calls![0] = {
           type: "function", // @todo dynamicTools
           id: chunk.toolCallId,
@@ -492,6 +550,7 @@ export async function NonStreamingCompletion(
         break;
     }
   }
+  genTime = (Date.now() / 1000 - genTimeFirst).toFixed(3);
 
   return openAIResponse!;
 }

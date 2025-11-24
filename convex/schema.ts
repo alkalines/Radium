@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { completionPricingSchema, completionUsageSchema } from "./key";
 
 export default defineSchema({
   users: defineTable({
@@ -13,57 +14,35 @@ export default defineSchema({
     name: v.string(),
     hash: v.string(),
   }),
+  ai_apps: defineTable({
+    title: v.string(),
+    url: v.string(),
+    icon: v.optional(v.string()), // URL
+  }),
   chat_completions: defineTable({
-    user: v.id("users"),
-    key: v.id("keys"),
-    genId: v.string(),
-    provider: v.string(),
-    model: v.string(),
-    tokens: v.object({
-      prompt: v.number(),
-      completion: v.number(),
-      reasoning: v.optional(v.number()),
-      completion_image: v.optional(v.number()),
-      cached: v.optional(v.number()),
+    user: v.object({
+      id: v.id("users"),
+      key: v.id("keys"),
     }),
-    pricing: v.object({
-      input: v.number(),
-      output: v.number(),
-      audio: v.optional(v.number()),
-      image: v.optional(v.number()),
-      // Caches
-      cache_read: v.optional(v.number()),
-      cache_write: v.optional(v.number()),
-      cache_audio: v.optional(v.number()),
-      // Fees
-      byok_fee: v.optional(v.number()),
-      tools: v.optional(v.number()), // Like websearch and others
+    request: v.object({
+      provider: v.string(),
+      byok: v.boolean(),
+      app: v.optional(v.id("ai_apps")),
+      model: v.id("models"),
+      streamed: v.boolean(),
+      canceled: v.boolean(),
     }),
-    gen_time: v.number(),
-    latency: v.number(),
-    moderation_latency: v.number(),
-    canceled: v.boolean(),
-    streamed: v.boolean(),
-    finish_reason: v.string(),
-    byok: v.boolean(),
-    app: v.optional(
-      v.object({
-        //id: v.id('completion_apps') // App use analytics
-        title: v.string(),
-        url: v.string(),
-        icon: v.optional(v.string()), // URL
-      })
-    ),
-    provider_responses: v.array(
-      v.object({
-        id: v.string(),
-        provider: v.string(),
-        status: v.number(),
-        latency: v.number(),
-        is_byok: v.boolean(),
-      })
-    ),
-  }).index("by_genId", ["genId"]),
+    response: v.object({
+      genId: v.string(),
+      providerGenId: v.string(),
+      usage: completionUsageSchema,
+      pricing: completionPricingSchema,
+      moderation_latency: v.optional(v.number()),
+      ttft: v.number(), // Time To First Token
+      gen_time: v.number(),
+      finish_reason: v.string(),
+    }),
+  }),
   models: defineTable({
     name: v.string(),
     author: v.string(),
@@ -76,6 +55,7 @@ export default defineSchema({
       v.literal("image-generation")
     ),
     description: v.string(),
+    warning: v.optional(v.string()),
     reasoning: v.boolean(),
     features: v.object({
       reasoning_minimal: v.optional(v.boolean()),
@@ -131,17 +111,18 @@ export default defineSchema({
           cache_write: v.optional(v.string()),
           // @todo Support audio and video
         }),
-        promotions: v.optional(v.object({
-          // Needs to be a string otherwise JS just fucks everything
-          input: v.optional(v.string()),
-          output: v.optional(v.string()),
-          cache_read: v.optional(v.string()),
-          cache_write: v.optional(v.string()),
-          // @todo Support audio and video
-        })),
+        promotions: v.optional(
+          v.object({
+            // Needs to be a string otherwise JS just fucks everything
+            input: v.optional(v.string()),
+            output: v.optional(v.string()),
+            cache_read: v.optional(v.string()),
+            cache_write: v.optional(v.string()),
+            // @todo Support audio and video
+          })
+        ),
       })
     ),
-
-  }),
+  }).index("by_model_slug", ["slug"]),
   // providers: doesn't need to have a table because they should be hardcoded otherwise inference implementation would suck.
 });
