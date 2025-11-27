@@ -45,7 +45,7 @@ export default defineSchema({
   }),
   models: defineTable({
     name: v.string(),
-    author: v.string(),
+    author: v.id("authors"),
     slug: v.string(),
     model_weights: v.optional(v.string()), // Link
     // @todo Embedding Support and Image Generation (fal.ai syntax probably)
@@ -123,6 +123,11 @@ export default defineSchema({
         ),
       })
     ),
-  }).index("by_model_slug", ["slug"]),
+  }),
   // providers: doesn't need to have a table because they should be hardcoded otherwise inference implementation would suck.
+  authors: defineTable({
+    name: v.string(),
+    slug: v.string(),
+    icon: v.string() // URL
+  })
 });
