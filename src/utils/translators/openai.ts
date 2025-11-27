@@ -187,23 +187,26 @@ export function StreamCompletion(
   // Usage Callback
   let genTime: string;
   let ttft: string;
-  result.usage.then((r) => {
-    genCallback({
-      usage: {
-        completion_tokens: r.outputTokens || 0,
-        completion_tokens_details: {
-          reasoning_tokens: r.reasoningTokens ?? null,
+  const endOfCompletion = async () => {
+    const r = await result.usage
+    try {
+      await genCallback({
+        usage: {
+          completion_tokens: r.outputTokens || 0,
+          completion_tokens_details: {
+            reasoning_tokens: r.reasoningTokens ?? null,
+          },
+          prompt_tokens: r.inputTokens || 0,
+          prompt_tokens_details: {
+            cached_tokens: r.cachedInputTokens ?? null,
+            // @todo: written_cache_tokens
+          },
         },
-        prompt_tokens: r.inputTokens || 0,
-        prompt_tokens_details: {
-          cached_tokens: r.cachedInputTokens ?? null,
-          // @todo: written_cache_tokens
-        },
-      },
-      genTime: parseFloat(genTime),
-      ttft: parseFloat(ttft),
-    });
-  });
+        genTime: parseFloat(genTime),
+        ttft: parseFloat(ttft),
+      });
+    } catch (e) {}
+  }
 
   // Transform to OpenAI Stream
   const aisdk_response = result.toUIMessageStream();
@@ -421,14 +424,16 @@ export function StreamCompletion(
         }
       }
       genTime = (Date.now() / 1000 - genTimeFirst).toFixed(3);
+      await endOfCompletion();
 
       // End of the stream
       controllerOutput("[DONE]");
       controller.close();
     },
-    cancel(reason?) {
+    async cancel(reason?) {
       abort.abort(reason);
       genTime = (Date.now() / 1000 - genTimeFirst).toFixed(3);
+      await endOfCompletion();
     },
   });
 }
@@ -449,24 +454,28 @@ export async function NonStreamingCompletion(
 
   // Usage Callback
   let genTime: string;
-  let ttft: string = '';
-  result.usage.then((r) => {
-    genCallback({
-      usage: {
-        completion_tokens: r.outputTokens || 0,
-        completion_tokens_details: {
-          reasoning_tokens: r.reasoningTokens ?? null,
+  let ttft: string = "";
+  const endOfCompletion = async () => {
+    const r = await result.usage;
+
+    try {
+      await genCallback({
+        usage: {
+          completion_tokens: r.outputTokens || 0,
+          completion_tokens_details: {
+            reasoning_tokens: r.reasoningTokens ?? null,
+          },
+          prompt_tokens: r.inputTokens || 0,
+          prompt_tokens_details: {
+            cached_tokens: r.cachedInputTokens ?? null,
+            // @todo: written_cache_tokens
+          },
         },
-        prompt_tokens: r.inputTokens || 0,
-        prompt_tokens_details: {
-          cached_tokens: r.cachedInputTokens ?? null,
-          // @todo: written_cache_tokens
-        },
-      },
-      genTime: parseFloat(genTime),
-      ttft: parseFloat(ttft),
-    });
-  });
+        genTime: parseFloat(genTime),
+        ttft: parseFloat(ttft),
+      });
+    } catch (e) {}
+  };
 
   const aisdk_response = result.toUIMessageStream();
   const chunkLoadStream = convertStreamToAsyncIterator(
@@ -504,7 +513,7 @@ export async function NonStreamingCompletion(
           openAIResponse.choices[0].message.reasoning = "";
         break;
       case "reasoning-delta":
-        if (ttft === '') ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
+        if (ttft === "") ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         if (openAIResponse.id === "") openAIResponse.id = chunk.id;
         if (chunk.delta === "[REDACTED]") break;
 
@@ -516,16 +525,16 @@ export async function NonStreamingCompletion(
         openAIResponse.choices[0].message.content = "";
         break;
       case "text-delta":
-        if (ttft === '') ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
+        if (ttft === "") ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         if (openAIResponse.id === "") openAIResponse.id = chunk.id;
         openAIResponse.choices[0].message.content += chunk.delta;
         break;
       case "tool-input-start":
-        if (ttft === '') ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
+        if (ttft === "") ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         openAIResponse.choices[0].message.tool_calls = [];
         break;
       case "tool-input-available":
-        if (ttft === '') ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
+        if (ttft === "") ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         openAIResponse.choices[0].message.tool_calls![0] = {
           type: "function", // @todo dynamicTools
           id: chunk.toolCallId,
@@ -551,6 +560,7 @@ export async function NonStreamingCompletion(
     }
   }
   genTime = (Date.now() / 1000 - genTimeFirst).toFixed(3);
+  await endOfCompletion()
 
   return openAIResponse!;
 }
