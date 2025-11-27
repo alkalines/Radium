@@ -170,8 +170,8 @@ export const billKey = internalMutation({
       ctx.db.get(args.user.id),
       ctx.db
         .query("models")
-        .filter((q) => q.eq("slug", args.request.model_slug))
-        .unique(),
+        .filter((q) => q.eq(q.field("slug"), args.request.model_slug))
+        .first(),
     ]);
     const modelFromProvider = modelInfo!.providers.find(
       (q) => q.id === args.request.provider
