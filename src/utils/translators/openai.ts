@@ -168,7 +168,7 @@ export type genCallbackType = (genCompletion: {
   usage: completionUsage;
   genTime: number;
   ttft: number;
-}) => undefined;
+}) => undefined | Promise<undefined>;
 
 /**
  * Transform an OpenAI-Compatible request into a OpenAI-Compatible streamed response using the AISDK as an middleware
@@ -216,6 +216,11 @@ export function StreamCompletion(
   const genTimeFirst = Date.now() / 1000;
   const createdDateUnix = Math.floor(genTimeFirst);
   let genID: string;
+  let finishReasons = {
+    toolCalls: false,
+    text: false,
+    max_tokens: false,
+  };
   return new ReadableStream({
     async start(controller) {
       const controllerOutput = (text: string) => controller.enqueue(text);
@@ -393,6 +398,16 @@ export function StreamCompletion(
             });
             break;
           case "finish":
+            let finishReason = "stop";
+            if (
+              (reqData.max_tokens || reqData.max_completion_tokens) ===
+              (await result.usage).outputTokens
+            ) {
+              finishReason = "length";
+            } else if (finishReasons.toolCalls) {
+              finishReason = "tool_calls";
+            }
+
             openaiOutput({
               id: genID || "not-available",
               created: createdDateUnix,
@@ -405,6 +420,7 @@ export function StreamCompletion(
                     role: "assistant",
                     content: "",
                   },
+                  finish_reason: finishReason as any,
                   logprobs: null,
                 },
               ],
@@ -545,6 +561,17 @@ export async function NonStreamingCompletion(
         };
         break;
       case "finish":
+        let finishReason = "stop";
+        if (
+          (reqData.max_tokens || reqData.max_completion_tokens) ===
+          (await result.usage).outputTokens
+        ) {
+          finishReason = "length";
+        } else if (openAIResponse.choices[0].message.tool_calls?.[0]) {
+          finishReason = "tool_calls";
+        }
+        openAIResponse.choices[0].finish_reason = finishReason;
+
         openAIResponse.usage = {
           completion_tokens: (await result.usage).outputTokens || 0,
           completion_tokens_details: {

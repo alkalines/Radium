@@ -108,7 +108,7 @@ const CreateCompletion = async (
         },
         response: {
           gen_id: originalGenID!,
-          finish_reason: finishedReason,
+          finish_reason: finishedReason || 'stop',
           gen_time: genCompletion.genTime,
           ttft: genCompletion.ttft,
           provider_gen_id: originalGenID!,
@@ -188,7 +188,7 @@ const CreateCompletion = async (
           },
           response: {
             gen_id: originalGenID!,
-            finish_reason: finishedReason!,
+            finish_reason: finishedReason || 'stop',
             gen_time: genCompletion.genTime,
             ttft: genCompletion.ttft,
             provider_gen_id: originalGenID!,
