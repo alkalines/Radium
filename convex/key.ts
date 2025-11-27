@@ -213,7 +213,7 @@ export const billKey = internalMutation({
       : totalCostInference;
 
     // Database actions
-    return await Promise.all([
+    await Promise.all([
       ctx.db.insert("chat_completions", {
         user: {
           id: userInfo!._id,
@@ -265,5 +265,6 @@ export const billKey = internalMutation({
         usedCredits: AddFunction([keyInfo!.usedCredits, billedCost]),
       }),
     ]);
+    return true;
   },
 });
