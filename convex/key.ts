@@ -110,13 +110,22 @@ export const completionPricingSchema = v.object({
   ),
 });
 
-const unfuckJSMath = 100000000;
-const AddFunction = (numbers: number[]) =>
+const unfuckJSMath = 100000000000;
+const AddFunction = (numbers: number[]) => 
   numbers
+    .filter((m) => parseFloat(m.toString()))
     .map((m) => m * unfuckJSMath)
+    .map((m) => parseInt(m.toFixed(0))) // Repeating decimal will mess JS fucked math
     .reduce((accumulator, currentValue) => {
       return accumulator + currentValue;
     }, 0) / unfuckJSMath;
+const MultiplyFunction = (numbers: number[]) => numbers
+    .filter((m) => parseFloat(m.toString()))
+    .map((m) => m * unfuckJSMath)
+    .map((m) => parseInt(m.toFixed(0)))
+    .reduce((accumulator, currentValue) => {
+      return accumulator * currentValue;
+    }, 1) / (unfuckJSMath ** numbers.length);
 
 export const billKey = internalMutation({
   args: {
@@ -170,26 +179,32 @@ export const billKey = internalMutation({
 
     /**
      * Pricing
-     * @todo Cache Write.
+     * @description There is a need for the MultiplyFunction and AddFunction because otherwise floating point numbers equation get broken. [Click to see an article, about it](https://medium.com/@devinred/weird-math-in-javascript-2379ad151d09)
      */
-    const completionPricing =
-      args.response.usage.completion_tokens *
-      parseFloat(modelFromProvider!.pricing.output);
-    const cacheReadPricing =
-      args.response.usage.prompt_tokens_details.cached_tokens ??
-      0 * parseFloat(modelFromProvider!.pricing.cache_read ?? "0");
-    const cacheWritePricing =
-      args.response.usage.prompt_tokens_details.written_cache_tokens ??
-      0 * parseFloat(modelFromProvider!.pricing.cache_write ?? "0");
-    const promptPricing =
-      args.response.usage.prompt_tokens *
-      parseFloat(modelFromProvider!.pricing.input);
+
+    const completionPricing = MultiplyFunction([
+      args.response.usage.completion_tokens,
+      parseFloat(modelFromProvider!.pricing.output),
+    ]);
+    const cacheReadPricing = MultiplyFunction([
+      args.response.usage.prompt_tokens_details.cached_tokens || 0,
+      parseFloat(modelFromProvider!.pricing.cache_read || "0"),
+    ]);
+    const cacheWritePricing = MultiplyFunction([
+      args.response.usage.prompt_tokens_details.written_cache_tokens || 0,
+      parseFloat(modelFromProvider!.pricing.cache_write || "0"),
+    ]);
+    const promptPricing = MultiplyFunction([
+      args.response.usage.prompt_tokens,
+      parseFloat(modelFromProvider!.pricing.input),
+    ]);
     const totalCostInference = AddFunction([
       completionPricing,
       cacheReadPricing,
       cacheWritePricing,
       promptPricing,
     ]); // Float numbers are weird in JS...
+
     /**
      * @todo 1M per month should be free
      */
