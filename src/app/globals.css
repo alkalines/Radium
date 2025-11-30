@@ -6,6 +6,7 @@
     --color-bg-200: #1f1e1d;
     --color-bg-300: #30302e;
     --color-bg-400: #2f2e2c;
+    --color-text-000: #ffffff;
     --color-text-100: #e7e6e4;
     --color-text-200: #c3c1b7;
     --color-text-300: #c3c1b7;
@@ -21,8 +22,13 @@
     --font-base: 0.9375rem;
     --z-header: 50;
     --z-sidebar: 40;
+    --z-dropdown: 50;
     --z-cookie-backdrop: 100;
     --z-cookie-banner: 101;
+
+    /* Animations for dropdown */
+    --animate-in: animate-in 200ms ease-out;
+    --animate-out: animate-out 150ms ease-in;
 }
 
 :root {
@@ -82,4 +88,117 @@ body {
 /* Additional utility classes */
 .border-0\.5 {
     border-width: 0.5px;
+}
+
+
+
+/* Dropdown Animations */
+@keyframes animate-in {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+@keyframes animate-out {
+    from {
+        opacity: 1;
+        transform: scale(1);
+    }
+    to {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+}
+
+@keyframes slide-in-from-top-2 {
+    from {
+        transform: translateY(-8px);
+    }
+    to {
+        transform: translateY(0);
+    }
+}
+
+@keyframes slide-in-from-bottom-2 {
+    from {
+        transform: translateY(8px);
+    }
+    to {
+        transform: translateY(0);
+    }
+}
+
+@keyframes slide-in-from-left-2 {
+    from {
+        transform: translateX(-8px);
+    }
+    to {
+        transform: translateX(0);
+    }
+}
+
+@keyframes slide-in-from-right-2 {
+    from {
+        transform: translateX(8px);
+    }
+    to {
+        transform: translateX(0);
+    }
+}
+
+/* Animation utility classes */
+.animate-in {
+    animation-name: animate-in;
+    animation-duration: 150ms;
+    animation-timing-function: ease-out;
+    animation-fill-mode: both;
+}
+
+.animate-out {
+    animation-name: animate-out;
+    animation-duration: 100ms;
+    animation-timing-function: ease-in;
+    animation-fill-mode: both;
+}
+
+.fade-in-0 {
+    animation: animate-in 150ms ease-out both;
+}
+
+.fade-out-0 {
+    animation: animate-out 100ms ease-in both;
+}
+
+.zoom-in-95 {
+    animation: animate-in 150ms ease-out both;
+}
+
+.zoom-out-95 {
+    animation: animate-out 100ms ease-in both;
+}
+
+.slide-in-from-top-2 {
+    animation: slide-in-from-top-2 150ms ease-out both;
+}
+
+.slide-in-from-bottom-2 {
+    animation: slide-in-from-bottom-2 150ms ease-out both;
+}
+
+.slide-in-from-left-2 {
+    animation: slide-in-from-left-2 150ms ease-out both;
+}
+
+.slide-in-from-right-2 {
+    animation: slide-in-from-right-2 150ms ease-out both;
+}
+
+/* Z-index utility */
+.z-dropdown {
+    z-index: 50;
 }
