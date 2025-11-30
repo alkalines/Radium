@@ -1,7 +1,15 @@
 {
-  "name": "radium",
+  "author": "alkalines",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alkalines/Radium.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alkalines/Radium/issues"
+  },
+  "homepage": "https://github.com/alkalines/Radium#readme",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
