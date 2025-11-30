@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import "./globals.css";
+import "@/app/globals.css";
 import { tiemposHeadline, styreneA, styreneB, claudeResponse } from "../fonts";
 import { SidebarProvider } from "@/lib/contexts/SidebarContext";
 import { ModelProvider } from "@/lib/contexts/ModelContext";
@@ -15,17 +15,17 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html
+    <div
       lang="pt-BR"
       className={`h-screen antialiased scroll-smooth ${tiemposHeadline.variable} ${styreneA.variable} ${styreneB.variable} ${claudeResponse.variable}`}
       data-theme="claude"
       data-mode="dark"
     >
-      <body className="bg-bg-100 text-text-100 font-ui min-h-screen">
+      <div className="bg-bg-100 text-text-100 font-ui min-h-screen">
         <SidebarProvider>
           <ModelProvider>{children}</ModelProvider>
         </SidebarProvider>
-      </body>
-    </html>
+      </div>
+    </div>
   );
 }
