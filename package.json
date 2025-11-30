@@ -18,17 +18,19 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@convex-dev/better-auth": "^0.9.7",
     "@openrouter/ai-sdk-provider": "^1.2.8",
     "ai": "^5.0.104",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "better-auth": "1.3.34",
+    "clsx": "^2.1.1",
     "convex": "^1.29.3",
     "next": "16.0.5",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "tailwind-merge": "^3.4.0",
     "zod": "^4.1.13",
-    "zod-from-json-schema": "^0.5.2",
-    "babel-plugin-react-compiler": "^1.0.0",
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^3.4.0"
+    "zod-from-json-schema": "^0.5.2"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.3",

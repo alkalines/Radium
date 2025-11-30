@@ -1,6 +1,7 @@
 import { httpRouter } from "convex/server";
 import { HTTP_Request_Chat_Completion } from "./chat_completion";
 import { HTTP_Request_OpenAI_Models } from "./models";
+import { authComponent, createAuth } from "./auth";
 
 const http = httpRouter();
 
@@ -19,5 +20,10 @@ http.route({
   path: "/api/openai/v1/models",
   handler: HTTP_Request_OpenAI_Models,
 });
+
+/**
+ * Better Auth
+ */
+authComponent.registerRoutes(http, createAuth);
 
 export default http
