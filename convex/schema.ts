@@ -143,26 +143,24 @@ export default defineSchema({
           v.string()
         )
       ),
-      tokenizer: v.array(
-        v.union(
-          v.string(),
-          v.literal("GPT"),
-          v.literal("Claude"),
-          v.literal("Gemini"),
-          v.literal("Grok"),
-          v.literal("Cohere"),
-          v.literal("Nova"),
-          v.literal("Qwen"),
-          v.literal("Qwen3"),
-          v.literal("Yi"),
-          v.literal("DeepSeek"),
-          v.literal("Mistral"),
-          v.literal("Llama2"),
-          v.literal("Llama3"),
-          v.literal("Llama4"),
-          v.literal("PaLM"),
-          v.literal("RWKV")
-        )
+      tokenizer: v.union(
+        v.string(),
+        v.literal("GPT"),
+        v.literal("Claude"),
+        v.literal("Gemini"),
+        v.literal("Grok"),
+        v.literal("Cohere"),
+        v.literal("Nova"),
+        v.literal("Qwen"),
+        v.literal("Qwen3"),
+        v.literal("Yi"),
+        v.literal("DeepSeek"),
+        v.literal("Mistral"),
+        v.literal("Llama2"),
+        v.literal("Llama3"),
+        v.literal("Llama4"),
+        v.literal("PaLM"),
+        v.literal("RWKV")
       ),
     }),
     default_parameters: v.optional(
@@ -177,6 +175,6 @@ export default defineSchema({
   authors: defineTable({
     name: v.string(),
     slug: v.string(),
-    icon: v.string() // URL
-  })
+    icon: v.string(), // URL
+  }),
 });
