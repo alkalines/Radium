@@ -60,30 +60,6 @@ export default defineSchema({
     features: v.object({
       reasoning_minimal: v.optional(v.boolean()),
       reasoning_none: v.optional(v.boolean()),
-      supported_parameters: v.array(
-        v.union(
-          v.literal("temperature"),
-          v.literal("top_p"),
-          v.literal("top_k"),
-          v.literal("frequency_penalty"),
-          v.literal("presence_penalty"),
-          v.literal("repetition_penalty"),
-          v.literal("min_p"),
-          v.literal("top_a"),
-          v.literal("seed"),
-          v.literal("max_tokens"),
-          v.literal("logit_bias"),
-          v.literal("logprobs"),
-          v.literal("top_logprobs"),
-          v.literal("response_format"),
-          v.literal("structured_outputs"),
-          v.literal("stop"),
-          v.literal("tools"),
-          v.literal("tool_choice"),
-          v.literal("parallel_tool_calls"),
-          v.literal("verbosity")
-        )
-      ),
     }),
     // Model Context, Pricing and Others should be gotten from providers
     providers: v.array(
@@ -111,6 +87,30 @@ export default defineSchema({
           cache_write: v.optional(v.string()),
           // @todo Support audio and video
         }),
+        supported_parameters: v.array(
+          v.union(
+            v.literal("temperature"),
+            v.literal("top_p"),
+            v.literal("top_k"),
+            v.literal("frequency_penalty"),
+            v.literal("presence_penalty"),
+            v.literal("repetition_penalty"),
+            v.literal("min_p"),
+            v.literal("top_a"),
+            v.literal("seed"),
+            v.literal("max_tokens"),
+            v.literal("logit_bias"),
+            v.literal("logprobs"),
+            v.literal("top_logprobs"),
+            v.literal("response_format"),
+            v.literal("structured_outputs"),
+            v.literal("stop"),
+            v.literal("tools"),
+            v.literal("tool_choice"),
+            v.literal("parallel_tool_calls"),
+            v.literal("verbosity")
+          )
+        ),
         promotions: v.optional(
           v.object({
             // Needs to be a string otherwise JS just fucks everything
@@ -121,6 +121,55 @@ export default defineSchema({
             // @todo Support audio and video
           })
         ),
+        moderated: v.boolean(),
+      })
+    ),
+    architecture: v.object({
+      input_modalities: v.array(
+        v.union(
+          v.literal("text"),
+          v.literal("image"),
+          v.literal("file"),
+          v.literal("audio"),
+          v.literal("video"),
+          v.string()
+        )
+      ),
+      output_modalities: v.array(
+        v.union(
+          v.literal("text"),
+          v.literal("image"),
+          v.literal("embeddings"),
+          v.string()
+        )
+      ),
+      tokenizer: v.array(
+        v.union(
+          v.string(),
+          v.literal("GPT"),
+          v.literal("Claude"),
+          v.literal("Gemini"),
+          v.literal("Grok"),
+          v.literal("Cohere"),
+          v.literal("Nova"),
+          v.literal("Qwen"),
+          v.literal("Qwen3"),
+          v.literal("Yi"),
+          v.literal("DeepSeek"),
+          v.literal("Mistral"),
+          v.literal("Llama2"),
+          v.literal("Llama3"),
+          v.literal("Llama4"),
+          v.literal("PaLM"),
+          v.literal("RWKV")
+        )
+      ),
+    }),
+    default_parameters: v.optional(
+      v.object({
+        temperature: v.optional(v.number()),
+        top_p: v.optional(v.number()),
+        frequency_penalty: v.optional(v.number()),
       })
     ),
   }),
