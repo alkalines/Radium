@@ -1,7 +1,7 @@
-import { MainLayout } from "@/components/layout/MainLayout";
-import { Header } from "@/components/layout/Header";
-import { ChatInput } from "@/components/chat/ChatInput";
-import { PromptCategories } from "@/components/chat/PromptCategories";
+import { MainLayout } from "@/components/chatroom/layout/MainLayout";
+import { Header } from "@/components/chatroom/layout/Header";
+import { ChatInput } from "@/components/chatroom/chat/ChatInput";
+import { PromptCategories } from "@/components/chatroom/chat/PromptCategories";
 import { CookieBanner } from "@/components/CookieBanner";
 import { ClaudeIcon } from "@/components/ui/ClaudeIcon";
 
