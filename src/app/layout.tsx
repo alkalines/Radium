@@ -1,5 +1,5 @@
 import { AuthProvider } from "@/components/providers/AuthProvider";
-import { ConvexClientProvider } from "./ConvexClientProvider";
+import { ConvexClientProvider } from "../utils/providers/ConvexClientProvider";
 import "./globals.css";
 
 export default function RootLayout({
