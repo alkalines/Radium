@@ -16,6 +16,7 @@ import {
 import { MultiplyFunction, RemFunction } from "@/utils/math";
 import Providers from "@/utils/providers";
 import { useQuery } from "convex/react";
+import NextImage from "next/image";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
@@ -181,6 +182,7 @@ function ModelCard({
   authors: Doc<"authors">[];
   viewMode: "grid" | "list";
 }) {
+  const author = authors.find((a) => a._id === model.author);
   if (viewMode === "list") {
     return (
       <Link
@@ -191,8 +193,7 @@ function ModelCard({
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
               <h3 className="text-lg font-semibold text-text-100">
-                {authors.find((a) => a._id === model.author)?.name || ""}:{" "}
-                {model.name}
+                {author?.name}: {model.name}
               </h3>
               {Date.now() - model.launch_date < 864000 && ( // 3 days is new
                 <span className="px-2 py-0.5 text-xs font-medium bg-accent-main-100/20 text-accent-main-100 rounded-full">
@@ -251,12 +252,23 @@ function ModelCard({
     >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-bg-300 flex items-center justify-center">
-            <span className="text-sm font-bold text-text-200">
-              {model.author.charAt(0)}
-            </span>
+          <div className="w-8 h-8 rounded-lg bg-bg-300 flex items-center justify-center overflow-hidden">
+            {author?.icon ? (
+              <NextImage
+                src={author.icon}
+                alt={`${author.name} icon`}
+                width={32}
+                height={32}
+                className="w-full h-full object-cover"
+                unoptimized
+              />
+            ) : (
+              <span className="text-sm font-bold text-text-200">
+                {author?.name?.charAt(0) ?? "?"}
+              </span>
+            )}
           </div>
-          <span className="text-sm text-text-300">{model.author}</span>
+          <span className="text-sm text-text-300">{author?.name}</span>
         </div>
         {Date.now() - model.launch_date < 864000 && ( // 3 days is new
           <span className="px-2 py-0.5 text-xs font-medium bg-accent-main-100/20 text-accent-main-100 rounded-full">
