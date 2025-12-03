@@ -11,7 +11,8 @@ type ProvidersType = {
  * Providers available 
  */
 const Providers = {
-  OpenRouter: OpenRouterProvider
-};
+  // Only use lowercase letters for the Providers ID  
+  openrouter: OpenRouterProvider,
+} as ProvidersType;
 
 export default Providers
