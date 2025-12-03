@@ -11,7 +11,7 @@ export function SidebarNav() {
                         aria-label="Novo bate-papo"
                     >
                         <div className="-mx-3 flex flex-row items-center gap-2">
-                            <div className="w-6 h-6 flex items-center justify-center group-active:!scale-[0.98] group-hover:-rotate-3 group-hover:scale-110 group-active:rotate-6 rounded-full transition-all ease-in-out bg-accent-main-000 group-hover:shadow-md">
+                            <div className="w-6 h-6 flex items-center justify-center group-active:!scale-[0.98] group-hover:-rotate-3 group-hover:scale-110 group-active:rotate-6 rounded-full transition-all ease-in-out bg-accent-main-100 group-hover:shadow-md">
                                 <div
                                     className="flex items-center justify-center group-hover:scale-105 transition text-white">
                                     <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"
@@ -23,7 +23,7 @@ export function SidebarNav() {
                                     </svg>
                                 </div>
                             </div>
-                            <div className="transition-all duration-200 text-accent-main-100 font-medium text-sm">
+                            <div className="transition-all duration-200 text-text-300  font-medium text-sm">
                                 Novo bate-papo
                             </div>
                         </div>

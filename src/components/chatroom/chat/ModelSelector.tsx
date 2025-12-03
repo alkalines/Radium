@@ -44,7 +44,7 @@ export function ModelSelector() {
         <div className="relative shrink-0 p-1 -m-1" style={{ opacity: 1, transform: 'none' }} ref={dropdownRef}>
             <button
                 ref={buttonRef}
-                className="inline-flex items-center justify-center h-8 rounded-md min-w-[112px] active:scale-[0.985] whitespace-nowrap text-xs pl-2.5 pr-2 gap-1 text-text-300 bg-bg-300 hover:text-text-100 transition-colors"
+                className="text-text-300 font-base inline-flex items-center justify-center relative shrink-0 can-focus select-none disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none disabled:drop-shadow-none border-transparent transition duration-300 ease-[cubic-bezier(0.165,0.85,0.45,1)] h-8 rounded-md px-3 min-w-[4rem] active:scale-[0.985] whitespace-nowrap !text-xs pl-2.5 pr-2 gap-1"
                 type="button"
                 data-testid="model-selector-dropdown"
                 onClick={handleToggle}
@@ -76,10 +76,11 @@ export function ModelSelector() {
             {isOpen && (
                 <>
                     <div
-                        className="absolute top-full right-0 mt-2 bg-bg-300 border border-border-300 rounded-xl shadow-lg overflow-visible z-50 p-[6px]"
+                        className="absolute top-full right-0 mt-2 bg-bg-000 border rounded-xl shadow-lg overflow-visible z-50 p-[6px]"
                         style={{ width: '418px', minWidth: '128px' }}
                         role="menu"
                         aria-label="Selecionar modelo"
+
                     >
                         <div>
                             {MODELS.map((model) => (
@@ -92,14 +93,14 @@ export function ModelSelector() {
                                 >
                                     <div className="flex items-start justify-between gap-2">
                                         <div className="flex-1 min-w-0">
-                                            <div className="font-ui-serif" style={{ fontSize: '14px', lineHeight: '19.6px', color: 'rgb(194, 192, 182)' }}>
+                                            <div className="font-claude-response" style={{ fontSize: '14px', lineHeight: '19.6px', color: 'rgb(194, 192, 182)' }}>
                                                 {model.name}
                                             </div>
                                             <div className="font-ui" style={{ fontSize: '12px', lineHeight: '16px', color: 'rgb(156, 154, 146)' }}>
                                                 {model.description}
                                             </div>
                                             {model.usageInfo && (
-                                                <div className="font-ui" style={{ fontSize: '12px', lineHeight: '16px', color: 'rgb(156, 154, 146)' }}>
+                                                <div className="font-claude-response" style={{ fontSize: '12px', lineHeight: '16px', color: 'rgb(156, 154, 146)' }}>
                                                     {model.usageInfo}
                                                 </div>
                                             )}
@@ -124,7 +125,7 @@ export function ModelSelector() {
                             {/* Mais modelos */}
                             <div className="relative">
                                 <button
-                                    className="w-full text-left hover:bg-bg-200 transition-colors rounded-lg grid items-center gap-2"
+                                    className="w-full text-left hover:bg-bg-000 transition-colors rounded-lg grid items-center gap-2"
                                     style={{ padding: '6px 8px', fontSize: '14px', lineHeight: '20px' }}
                                     onMouseEnter={() => setIsSubmenuOpen(true)}
                                     role="menuitem"
@@ -150,7 +151,7 @@ export function ModelSelector() {
                                 {/* Submenu */}
                                 {isSubmenuOpen && (
                                     <div
-                                        className="absolute left-full top-0 ml-1 border bg-bg-300 border-border-300 rounded-xl shadow-lg overflow-hidden p-1"
+                                        className="absolute left-full top-0 ml-1 border bg-bg-000 rounded-xl shadow-lg overflow-hidden p-1"
                                         style={{ width: '242px' }}
                                         role="menu"
                                         aria-label="Mais modelos"
@@ -168,7 +169,7 @@ export function ModelSelector() {
                                                     <div className="flex items-start justify-between gap-3">
                                                         <div className="flex-1 min-w-0">
                                                             <div className="flex items-center gap-2">
-                                                                <span className="font-ui-serif font-medium" style={{ fontSize: '14px', lineHeight: '20px', color: 'rgb(194, 192, 182)' }}>
+                                                                <span className="font-claude-response font-medium" style={{ fontSize: '14px', lineHeight: '20px', color: 'rgb(194, 192, 182)' }}>
                                                                     {model.name}
                                                                 </span>
                                                                 {model.badge && (
