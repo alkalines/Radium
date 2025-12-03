@@ -1,6 +1,7 @@
 import { Models_Response_Type } from "@/utils/types/openai/models";
 import { api, internal } from "./_generated/api";
 import { httpAction, internalQuery, query } from "./_generated/server";
+import { v } from "convex/values";
 
 export const HTTP_Request_OpenAI_Models = httpAction(
   async (ctx, req): Promise<any> => {
@@ -95,4 +96,16 @@ export const availableModels = query({
   handler(ctx) {
     return ctx.db.query("models").collect();
   },
-})
+});
+
+export const modelInfo = query({
+  args: {
+    slug: v.string(),
+  },
+  handler(ctx, args) {
+    return ctx.db
+      .query("models")
+      .filter((q) => q.eq(q.field("slug"), args.slug))
+      .first();
+  },
+});
