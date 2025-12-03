@@ -33,7 +33,7 @@ export default function HomePage() {
         {/* Chat Input and Categories grouped */}
         <div className="top-5 z-10 mx-auto w-full max-w-2xl">
           <ChatInput />
-          <PromptCategories />
+          {/*<PromptCategories />*/}
         </div>
       </main>
 

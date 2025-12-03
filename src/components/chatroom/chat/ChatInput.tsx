@@ -6,7 +6,7 @@ export function ChatInput() {
     return (
         <div className="mx-auto">
                 <fieldset className="flex w-full min-w-0 flex-col">
-                    <div className="!box-content flex flex-col bg-bg-300 mx-2 md:mx-0 items-stretch transition-all duration-200 relative cursor-text z-10 rounded-2xl border border-transparent shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/3.5%),0_0_0_0.5px_hsla(var(--border-300)/0.15)] hover:shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/3.5%),0_0_0_0.5px_hsla(var(--border-200)/0.3)]">
+                    <div className="!box-content flex flex-col bg-bg-000 mx-2 md:mx-0 items-stretch transition-all duration-200 relative cursor-text z-10 rounded-2xl border border-transparent shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/3.5%),0_0_0_0.5px_hsla(var(--border-300)/0.15)] hover:shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/3.5%),0_0_0_0.5px_hsla(var(--border-200)/0.3)] focus-within:shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/7.5%),0_0_0_0.5px_hsla(var(--border-200)/0.3)] hover:focus-within:shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/7.5%),0_0_0_0.5px_hsla(var(--border-200)/0.3)]">
                         <div className="flex flex-col gap-3.5 m-3.5">
                             <div className="relative">
                                 <div className="max-h-96 w-full overflow-y-auto font-large break-words transition-opacity duration-200 min-h-12">
@@ -28,7 +28,7 @@ export function ChatInput() {
                                     {/* Plus button */}
                                     <div className="relative shrink-0">
                                         <button
-                                            className="inline-flex items-center justify-center border-0.5 transition-all h-8 min-w-8 rounded-lg px-[7.5px] text-text-300 border-border-300 active:scale-[0.98] hover:text-text-200/90 hover:bg-bg-300"
+                                            className="border-0.5 transition-all h-8 flex items-center group !pointer-events-auto !outline-offset-1 overflow-hidden px-1.5 min-w-8 rounded-lg justify-center text-text-300 hover:text-text-200/90 hover:bg-bg-100 active:scale-[0.98]"
                                             type="button"
                                             aria-label="Abrir menu de anexos"
                                         >
@@ -42,7 +42,7 @@ export function ChatInput() {
                                     {/* Tools button */}
                                     <div className="relative shrink-0">
                                         <button
-                                            className="inline-flex items-center justify-center border-0.5 transition-all h-8 min-w-8 rounded-lg px-[7.5px] text-text-300 border-border-300 active:scale-[0.98] hover:text-text-200/90 hover:bg-bg-300"
+                                            className="border-0.5 transition-all h-8 flex items-center group !pointer-events-auto !outline-offset-1 overflow-hidden px-1.5 min-w-8 rounded-lg justify-center text-text-300 hover:text-text-200/90 hover:bg-bg-100 active:scale-[0.98]"
                                             type="button"
                                             aria-label="Abrir menu de ferramentas"
                                         >
@@ -55,7 +55,7 @@ export function ChatInput() {
                                     {/* Clock button */}
                                     <div className="flex shrink min-w-8 !shrink-0">
                                         <button
-                                            className="inline-flex items-center justify-center border-0.5 transition-all h-8 min-w-8 rounded-lg px-[7.5px] text-text-300 border-border-300 active:scale-[0.98] hover:text-text-200/90 hover:bg-bg-300">
+                                            className="border-0.5 transition-all h-8 flex items-center group !pointer-events-auto !outline-offset-1 overflow-hidden px-1.5 min-w-8 rounded-lg justify-center text-text-300 hover:text-text-200/90 hover:bg-bg-100 active:scale-[0.98]">
                                             <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor"
                                                  xmlns="http://www.w3.org/2000/svg" className="shrink-0"
                                                  aria-hidden="true">

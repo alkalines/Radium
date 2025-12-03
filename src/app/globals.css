@@ -5,70 +5,181 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
-    --color-bg-000: #141413;
-    --color-bg-100: #262624;
-    --color-bg-200: #1f1e1d;
-    --color-bg-300: #30302e;
-    --color-bg-400: #2f2e2c;
-    --color-text-000: #ffffff;
-    --color-text-100: #e7e6e4;
-    --color-text-200: #c3c1b7;
-    --color-text-300: #c3c1b7;
-    --color-text-500: #9c9a92;
-    --color-border-200: #3a3836;
-    --color-border-300: #484848;
-    --color-accent-main-000: #c6613f;
-    --color-accent-main-100: #c6613f;
-    --color-accent-main-200: #c6613f;
-    --color-always-black: 0, 0%, 0%;
+    /* Background Colors - Claude Dark Theme */
+    --color-bg-000: hsl(60 2.1% 18.4%);
+    --color-bg-100: hsl(60 2.7% 14.5%);
+    --color-bg-200: hsl(30 3.3% 11.8%);
+    --color-bg-300: hsl(60 2.6% 7.6%);
+    --color-bg-400: hsl(0 0% 0%);
+    --color-bg-500: hsl(0 0% 0%);
+
+    /* Text Colors - Claude Dark Theme */
+    --color-text-000: hsl(48 33.3% 97.1%);
+    --color-text-100: hsl(48 33.3% 97.1%);
+    --color-text-200: hsl(50 9% 73.7%);
+    --color-text-300: hsl(50 9% 73.7%);
+    --color-text-400: hsl(48 4.8% 59.2%);
+    --color-text-500: hsl(48 4.8% 59.2%);
+
+    /* Border Colors - Claude Dark Theme */
+    --color-border-100: hsl(51 16.5% 84.5%);
+    --color-border-200: hsl(51 16.5% 84.5%);
+    --color-border-300: hsl(51 16.5% 84.5%);
+    --color-border-400: hsl(51 16.5% 84.5%);
+
+    /* Accent Colors - Claude Brand */
+    --color-accent-brand: hsl(15 63.1% 59.6%);
+    --color-accent-main-000: hsl(15 54.2% 51.2%);
+    --color-accent-main-100: hsl(15 63.1% 59.6%);
+    --color-accent-main-200: hsl(15 63.1% 59.6%);
+    --color-accent-main-900: hsl(0 0% 0%);
+
+    /* Pro Accent - Purple */
+    --color-accent-pro-000: hsl(251 84.6% 74.5%);
+    --color-accent-pro-100: hsl(251 40.2% 54.1%);
+    --color-accent-pro-200: hsl(251 40% 45.1%);
+    --color-accent-pro-900: hsl(250 25.3% 19.4%);
+
+    /* Secondary Accent - Blue */
+    --color-accent-secondary-000: hsl(210 65.5% 67.1%);
+    --color-accent-secondary-100: hsl(210 70.9% 51.6%);
+    --color-accent-secondary-200: hsl(210 70.9% 51.6%);
+    --color-accent-secondary-900: hsl(210 55.9% 24.6%);
+
+    /* Status Colors */
+    --color-danger-000: hsl(0 98.4% 75.1%);
+    --color-danger-100: hsl(0 67% 59.6%);
+    --color-danger-200: hsl(0 67% 59.6%);
+    --color-danger-900: hsl(0 46.5% 27.8%);
+
+    --color-success-000: hsl(97 59.1% 46.1%);
+    --color-success-100: hsl(97 75% 32.9%);
+    --color-success-200: hsl(97 75% 32.9%);
+    --color-success-900: hsl(127 100% 13.9%);
+
+    --color-warning-000: hsl(40 71% 50%);
+    --color-warning-100: hsl(39 93.4% 35.9%);
+    --color-warning-200: hsl(39 93.4% 35.9%);
+    --color-warning-900: hsl(45 94.8% 15.1%);
+
+    /* On-Color (text on colored backgrounds) */
+    --color-oncolor-100: hsl(0 0% 100%);
+    --color-oncolor-200: hsl(60 6.7% 97.1%);
+    --color-oncolor-300: hsl(60 6.7% 97.1%);
+
+    /* Pictogram Colors */
+    --color-pictogram-100: hsl(48 3.4% 29.2%);
+    --color-pictogram-200: hsl(60 2.5% 23.3%);
+    --color-pictogram-300: hsl(60 2.1% 18.4%);
+    --color-pictogram-400: hsl(60 2.7% 14.5%);
+
+    /* Always Colors */
+    --color-always-white: hsl(0 0% 100%);
+    --color-always-black: hsl(0 0% 0%);
+
+    /* Typography Scale */
+    --font-display: 2rem;
+    --font-xl: 1.25rem;
     --font-large: 1rem;
-    --font-small: 0.875rem;
     --font-base: 0.9375rem;
+    --font-small: 0.875rem;
+
+    /* Z-Index Scale */
     --z-header: 50;
     --z-sidebar: 40;
     --z-dropdown: 50;
     --z-cookie-backdrop: 100;
     --z-cookie-banner: 101;
 
-    /* Animations for dropdown */
+    /* Animations */
     --animate-in: animate-in 200ms ease-out;
     --animate-out: animate-out 150ms ease-in;
 }
 
 :root {
-    --font-ui-serif: var(--font-claude-response);
+    /* Font System - Claude */
+    --font-mono: var(--font-jetbrains, ui-monospace, monospace);
+    --font-ui: var(--font-anthropic-sans, system-ui, sans-serif);
+    --font-ui-serif: var(--font-anthropic-serif, Georgia, serif);
+    --font-claude-response: var(--font-anthropic-serif, Georgia, serif);
+    --font-sans-serif: var(--font-ui);
+    --font-serif: var(--font-ui-serif);
+    --font-system: system-ui, sans-serif;
+
+    /* Border Radius */
     --radius: 0.625rem;
+
+    /* Shadcn Light Theme Defaults */
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
     --card-foreground: oklch(0.145 0 0);
     --popover: oklch(1 0 0);
     --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
+    --primary: hsl(15 63.1% 59.6%); /* Claude accent */
+    --primary-foreground: hsl(0 0% 100%);
     --secondary: oklch(0.97 0 0);
     --secondary-foreground: oklch(0.205 0 0);
     --muted: oklch(0.97 0 0);
     --muted-foreground: oklch(0.556 0 0);
     --accent: oklch(0.97 0 0);
     --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
+    --destructive: hsl(0 67% 59.6%); /* Claude danger */
     --border: oklch(0.922 0 0);
     --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.646 0.222 41.116);
-    --chart-2: oklch(0.6 0.118 184.704);
-    --chart-3: oklch(0.398 0.07 227.392);
-    --chart-4: oklch(0.828 0.189 84.429);
-    --chart-5: oklch(0.769 0.188 70.08);
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --ring: hsl(15 63.1% 59.6%); /* Claude accent */
+    --chart-1: hsl(15 63.1% 59.6%);
+    --chart-2: hsl(210 70.9% 51.6%);
+    --chart-3: hsl(251 40% 45.1%);
+    --chart-4: hsl(97 59.1% 46.1%);
+    --chart-5: hsl(40 71% 50%);
+
+    /* Sidebar - Claude Light */
+    --sidebar: hsl(48 33.3% 97.1%);
+    --sidebar-foreground: hsl(60 2.6% 7.6%);
+    --sidebar-primary: hsl(15 63.1% 59.6%);
+    --sidebar-primary-foreground: hsl(0 0% 100%);
+    --sidebar-accent: hsl(53 28.6% 94.5%);
+    --sidebar-accent-foreground: hsl(60 2.6% 7.6%);
+    --sidebar-border: hsl(50 20.7% 88.6%);
+    --sidebar-ring: hsl(15 63.1% 59.6%);
+}
+
+.dark {
+    /* Shadcn Dark Theme with Claude Colors */
+    --background: hsl(60 2.7% 14.5%);
+    --foreground: hsl(48 33.3% 97.1%);
+    --card: hsl(60 2.1% 18.4%);
+    --card-foreground: hsl(48 33.3% 97.1%);
+    --popover: hsl(30 3.3% 11.8%);
+    --popover-foreground: hsl(48 33.3% 97.1%);
+    --primary: hsl(15 63.1% 59.6%);
+    --primary-foreground: hsl(0 0% 100%);
+    --secondary: hsl(60 2.5% 23.3%);
+    --secondary-foreground: hsl(48 33.3% 97.1%);
+    --muted: hsl(60 2.5% 23.3%);
+    --muted-foreground: hsl(48 4.8% 59.2%);
+    --accent: hsl(60 2.5% 23.3%);
+    --accent-foreground: hsl(48 33.3% 97.1%);
+    --destructive: hsl(0 67% 59.6%);
+    --border: hsl(51 16.5% 84.5% / 15%);
+    --input: hsl(51 16.5% 84.5% / 20%);
+    --ring: hsl(15 63.1% 59.6%);
+    --chart-1: hsl(15 63.1% 59.6%);
+    --chart-2: hsl(210 65.5% 67.1%);
+    --chart-3: hsl(251 84.6% 74.5%);
+    --chart-4: hsl(97 59.1% 46.1%);
+    --chart-5: hsl(40 71% 50%);
+
+    /* Sidebar - Claude Dark */
+    --sidebar: hsl(30 3.3% 11.8%);
+    --sidebar-foreground: hsl(48 33.3% 97.1%);
+    --sidebar-primary: hsl(15 63.1% 59.6%);
+    --sidebar-primary-foreground: hsl(0 0% 100%);
+    --sidebar-accent: hsl(60 2.5% 23.3%);
+    --sidebar-accent-foreground: hsl(48 33.3% 97.1%);
+    --sidebar-border: hsl(51 16.5% 84.5% / 15%);
+    --sidebar-ring: hsl(15 63.1% 59.6%);
 }
 
 html,
@@ -76,6 +187,83 @@ body {
     height: 100%;
     margin: 0;
     padding: 0;
+    font-family: var(--font-ui);
+}
+
+.font-normal {
+    font-weight: 430;
+}
+
+.font-medium {
+    font-weight: 550;
+}
+
+.font-semibold {
+    font-weight: 580;
+}
+
+.font-bold,
+.font-bolder,
+b,
+strong {
+    font-weight: 600;
+}
+
+/* Dark mode font weight adjustments */
+.dark .font-normal {
+    font-weight: 400;
+}
+
+.dark .font-medium {
+    font-weight: 510;
+}
+
+.dark .font-semibold {
+    font-weight: 540;
+}
+
+.dark .font-bold,
+.dark .font-bolder,
+.dark b,
+.dark strong {
+    font-weight: 530;
+}
+
+/* Monospace - disable ligatures */
+.font-mono,
+[class*="font-mono"],
+code,
+kbd,
+pre,
+samp {
+    font-variant-ligatures: none;
+    font-feature-settings: "calt" 0, "liga" 0;
+}
+
+/* Font Family Classes */
+.font-display {
+    font-family: var(--font-display, var(--font-ui));
+    font-weight: 400;
+}
+
+.font-ui {
+    font-family: var(--font-ui);
+}
+
+.font-ui-serif {
+    font-family: var(--font-ui-serif);
+}
+
+.font-sans {
+    font-family: var(--font-sans-serif);
+}
+
+.font-claude-response {
+    font-family: var(--font-claude-response);
+}
+
+.font-system {
+    font-family: var(--font-system);
 }
 
 .ProseMirror {
@@ -97,38 +285,94 @@ body {
     float: left;
     pointer-events: none;
     height: 0;
+    color: var(--color-text-400);
 }
 
-/* Font Classes */
-.font-display {
-    font-family: var(--font-display);
-    font-weight: 400;
+pre code.hljs {
+    display: block;
+    overflow-x: auto;
+    padding: 1em;
 }
 
-.font-ui {
-    font-family: var(--font-ui);
+code.hljs {
+    padding: 3px 5px;
 }
 
-.font-ui-serif {
-    font-family: var(--font-ui-serif);
+.hljs {
+    color: #abb2bf;
+    background: hsl(60 2.7% 14.5%);
 }
 
-.font-sans {
-    font-family: var(--font-sans);
+.hljs-comment,
+.hljs-quote {
+    color: #5c6370;
+    font-style: italic;
 }
 
-.font-claude-response {
-    font-family: var(--font-claude-response);
+.hljs-doctag,
+.hljs-formula,
+.hljs-keyword {
+    color: #c678dd;
 }
 
-/* Additional utility classes */
-.border-0\.5 {
-    border-width: 0.5px;
+.hljs-deletion,
+.hljs-name,
+.hljs-section,
+.hljs-selector-tag,
+.hljs-subst {
+    color: #e06c75;
 }
 
+.hljs-literal {
+    color: #56b6c2;
+}
 
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string,
+.hljs-regexp,
+.hljs-string {
+    color: #98c379;
+}
 
-/* Dropdown Animations */
+.hljs-attr,
+.hljs-number,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-pseudo,
+.hljs-template-variable,
+.hljs-type,
+.hljs-variable {
+    color: #d19a66;
+}
+
+.hljs-bullet,
+.hljs-link,
+.hljs-meta,
+.hljs-selector-id,
+.hljs-symbol,
+.hljs-title {
+    color: #61aeee;
+}
+
+.hljs-built_in,
+.hljs-class .hljs-title,
+.hljs-title.class_ {
+    color: #e6c07b;
+}
+
+.hljs-emphasis {
+    font-style: italic;
+}
+
+.hljs-strong {
+    font-weight: 700;
+}
+
+.hljs-link {
+    text-decoration: underline;
+}
+
 @keyframes animate-in {
     from {
         opacity: 0;
@@ -187,7 +431,7 @@ body {
     }
 }
 
-/* Animation utility classes */
+/* Animation Utility Classes */
 .animate-in {
     animation-name: animate-in;
     animation-duration: 150ms;
@@ -234,7 +478,10 @@ body {
     animation: slide-in-from-right-2 150ms ease-out both;
 }
 
-/* Z-index utility */
+.border-0\.5 {
+    border-width: 0.5px;
+}
+
 .z-dropdown {
     z-index: 50;
 }
@@ -277,45 +524,11 @@ body {
     --color-sidebar-ring: var(--sidebar-ring);
 }
 
-.dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.488 0.243 264.376);
-    --chart-2: oklch(0.696 0.17 162.48);
-    --chart-3: oklch(0.769 0.188 70.08);
-    --chart-4: oklch(0.627 0.265 303.9);
-    --chart-5: oklch(0.645 0.246 16.439);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
-}
-
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
+    * {
+        @apply border-border outline-ring/50;
     }
-  body {
-    @apply bg-background text-foreground;
+    body {
+        @apply bg-background text-foreground;
     }
 }
