@@ -1,6 +1,12 @@
 import { AuthProvider } from "@/components/providers/AuthProvider";
 import { ConvexClientProvider } from "../lib/ConvexClientProvider";
 import "./globals.css";
+import { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Radium",
+  description: "An All-In-One solution for AI use cases.",
+};
 
 export default function RootLayout({
   children,

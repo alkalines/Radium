@@ -1,4 +1,10 @@
 import { Navbar } from "@/components/navigation/Navbar";
+import { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Radium Gateway",
+  description: "An gateway system used to dynamically route all AI traffic into one endpoint, making it more stable.",
+};
 
 export default function GatewayLayout({
   children,
