@@ -1,6 +1,7 @@
 import { number } from "zod";
 import { query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
+import { AddFunction, MultiplyFunction } from "@/utils/math";
 
 export const hashAlgorithm = "SHA-512";
 export const hashText = async (text: string) =>
@@ -109,23 +110,6 @@ export const completionPricingSchema = v.object({
     v.object({ upstream_inference_cost: v.optional(v.number()) })
   ),
 });
-
-const unfuckJSMath = 100000000000;
-const AddFunction = (numbers: number[]) => 
-  numbers
-    .filter((m) => parseFloat(m.toString()))
-    .map((m) => m * unfuckJSMath)
-    .map((m) => parseInt(m.toFixed(0))) // Repeating decimal will mess JS fucked math
-    .reduce((accumulator, currentValue) => {
-      return accumulator + currentValue;
-    }, 0) / unfuckJSMath;
-const MultiplyFunction = (numbers: number[]) => numbers
-    .filter((m) => parseFloat(m.toString()))
-    .map((m) => m * unfuckJSMath)
-    .map((m) => parseInt(m.toFixed(0)))
-    .reduce((accumulator, currentValue) => {
-      return accumulator * currentValue;
-    }, 1) / (unfuckJSMath ** numbers.length);
 
 export const billKey = internalMutation({
   args: {
