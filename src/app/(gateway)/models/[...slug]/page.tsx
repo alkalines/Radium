@@ -445,22 +445,10 @@ function ProviderCard({
           </h4>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 text-sm">
             <div className="md:col-span-2">
-              <div className="text-text-500 mb-1.5">Available Parameters</div>
+              <div className="text-text-500 mb-1.5">Supported Parameters</div>
               <div className="flex flex-wrap gap-1.5">
                 {/* Example data - will be integrated with database later */}
-                {[
-                  "temperature",
-                  "top_p",
-                  "top_k",
-                  "frequency_penalty",
-                  "presence_penalty",
-                  "max_tokens",
-                  "stop",
-                  "seed",
-                  "response_format",
-                  "tools",
-                  "tool_choice",
-                ].map((param) => (
+                {provider.supported_parameters.map((param) => (
                   <span
                     key={param}
                     className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-bg-300 text-text-200 border border-border-200"
@@ -479,7 +467,7 @@ function ProviderCard({
             <div>
               <div className="text-text-500 mb-0.5">Base URL</div>
               <div className="text-text-100 font-mono text-xs break-all">
-                {Providers[provider.id]?.defaultBaseURL || 'Not available'}
+                {Providers[provider.id]?.defaultBaseURL || "Not available"}
               </div>
             </div>
             <div>
