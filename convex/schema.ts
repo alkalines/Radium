@@ -45,6 +45,7 @@ export default defineSchema({
   }),
   models: defineTable({
     name: v.string(),
+    launch_date: v.number(), // UNIX in ms
     author: v.id("authors"),
     slug: v.string(),
     model_weights: v.optional(v.string()), // Link

@@ -1,6 +1,6 @@
 import { Models_Response_Type } from "@/utils/types/openai/models";
 import { api, internal } from "./_generated/api";
-import { httpAction, internalQuery } from "./_generated/server";
+import { httpAction, internalQuery, query } from "./_generated/server";
 
 export const HTTP_Request_OpenAI_Models = httpAction(
   async (ctx, req): Promise<any> => {
@@ -90,3 +90,9 @@ export const openaiModels = internalQuery({
     });
   },
 });
+
+export const availableModels = query({
+  handler(ctx) {
+    return ctx.db.query("models").collect();
+  },
+})
