@@ -4,38 +4,15 @@ import { Logo } from '@/components/ui/ClaudeLogo';
 import { SidebarNav } from './SidebarNav';
 import { ConversationList } from './ConversationList';
 import { UserMenu } from './UserMenu';
-import { Conversation } from '@/types';
+import { Conversation, User } from '@/types';
 import { useSidebar } from '@/lib/contexts/SidebarContext';
 
-const recentConversations: Conversation[] = [
-    {
-        id: '1',
-        title: 'Sem título',
-        href: '/chat/e2d4da28-b22c-4101-b524-fd56a3ab91aa',
-    },
-    {
-        id: '2',
-        title: 'Discord: Risks for Teenagers',
-        href: '/chat/150e0208-2b37-4e94-84cd-6113af4a5b7e',
-    },
-    {
-        id: '3',
-        title: "The Impact of Mental Deterioration on Colombia's International Drug Trade",
-        href: '/chat/fcbde3de-79bd-4855-978a-549ca2b4eefb',
-    },
-    {
-        id: '4',
-        title: 'CRM Strategy for a Pet Shop',
-        href: '/chat/041ee6b7-e40c-4563-a8cf-d24cb993260e',
-    },
-    {
-        id: '5',
-        title: 'Greeting and Assistance',
-        href: '/chat/81ed72a1-94db-47f9-bdbe-5b67b153321f',
-    },
-];
+interface SidebarProps {
+    conversations: Conversation[];
+    user: User;
+}
 
-export function Sidebar() {
+export function Sidebar({ conversations, user }: SidebarProps) {
     const { isExpanded, toggleSidebar } = useSidebar();
 
     return (
@@ -96,13 +73,13 @@ export function Sidebar() {
                     >
                         {isExpanded && (
                             <>
-                                <SidebarNav />
+                            <SidebarNav />
 
-                                <div className="flex flex-grow flex-col overflow-y-auto overflow-x-hidden relative px-2 mb-2" tabIndex={-1}>
-                                    <ConversationList conversations={recentConversations} />
-                                </div>
+                            <div className="flex flex-grow flex-col overflow-y-auto overflow-x-hidden relative px-2 mb-2" tabIndex={-1}>
+                                <ConversationList conversations={conversations} />
+                            </div>
 
-                                <UserMenu />
+                            <UserMenu user={user} />
                             </>
                         )}
                     </div>

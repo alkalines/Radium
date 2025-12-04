@@ -23,6 +23,7 @@ import {
     CheckIcon,
 } from '@/components/ui/MenuIcons';
 import { useState } from 'react';
+import { User } from '@/types';
 
 const languages = [
     { code: 'pt-BR', name: 'Português (Brasil)' },
@@ -42,7 +43,11 @@ const learnMoreLinks = [
     { name: 'Status do sistema', href: 'https://status.anthropic.com' },
 ];
 
-export function UserMenu() {
+interface UserMenuProps {
+    user: User;
+}
+
+export function UserMenu({ user }: UserMenuProps) {
     const [selectedLanguage, setSelectedLanguage] = useState('pt-BR');
     const [open, setOpen] = useState(false);
 
@@ -82,17 +87,17 @@ export function UserMenu() {
                     >
                         <div className="flex-shrink-0 flex size-8 items-center justify-center rounded-full text-text-200">
                             <div className="flex shrink-0 items-center justify-center rounded-full font-bold select-none h-7 w-7 text-xs bg-text-200 text-bg-100">
-                                GM
+                                {user.initials}
                             </div>
                         </div>
 
                         <div className="transition-all duration-200 flex w-full text-sm justify-between items-center font-medium min-w-0">
                             <div className="flex flex-col items-start w-full max-w-full overflow-hidden pr-4">
                                 <span className="w-full max-w-full overflow-hidden text-start block truncate">
-                                    Gabriel Moneiro
+                                    {user.name}
                                 </span>
                                 <span className="w-full truncate text-xs text-text-300 font-normal text-start">
-                                    plano Gratuito
+                                    {user.plan}
                                 </span>
                             </div>
 
@@ -112,7 +117,7 @@ export function UserMenu() {
 
                 <DropdownMenuContent side="top" align="end" className="!max-h-none !overflow-visible">
                     {/* Email header */}
-                    <DropdownMenuLabel>bielpau797@gmail.com</DropdownMenuLabel>
+                    <DropdownMenuLabel>{user.email}</DropdownMenuLabel>
 
                     {/* Configurações */}
                     <DropdownMenuItem onClick={handleSettingsClick}>
