@@ -45,7 +45,7 @@ export function SidebarNav() {
     <div className="flex flex-col px-2 pt-1 gap-px mb-6">
       <div className="mb-1">
         <div data-state="closed">
-          <a
+          <Link
             href="/chat"
             className="font-ui items-center h-9 px-4 py-2 rounded-lg active:scale-[0.985] whitespace-nowrap group transition ease-in-out active:!scale-100 hover:bg-transparent flex !justify-start !min-w-0 w-full active:!bg-accent-brand/15"
             aria-label="New Chat"
@@ -67,10 +67,10 @@ export function SidebarNav() {
                 </div>
               </div>
               <div className="transition-all duration-200 text-text-300  font-medium text-sm">
-                Novo bate-papo
+                New chat
               </div>
             </div>
-          </a>
+          </Link>
         </div>
       </div>
 
