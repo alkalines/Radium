@@ -40,16 +40,11 @@ function readConsentCookie(): ConsentPreferences | null {
 }
 
 export function CookieBanner() {
-    const [isVisible, setIsVisible] = useState(false);
-    const [mounted, setMounted] = useState(false);
-
-    useEffect(() => {
-        setMounted(true);
-        if (typeof document !== 'undefined') {
+    const [isVisible, setIsVisible] = useState<boolean>(() => {
+        if (typeof document === 'undefined') return false;
             const existingConsent = readConsentCookie();
-            setIsVisible(!existingConsent);
-        }
-    }, []);
+        return !existingConsent;
+    });
 
     const handleAccept = () => {
         setConsentCookie({ analytics: true, marketing: true });
@@ -66,7 +61,7 @@ export function CookieBanner() {
         // Placeholder: não abre painel por ora
     };
 
-    if (!mounted || !isVisible) return null;
+    if (!isVisible) return null;
 
     return (
         <div
