@@ -7,6 +7,7 @@ import {
   AuthLoading,
 } from "@daveyplate/better-auth-ui";
 import Link from "next/link";
+import { Logo } from "./Logo";
 
 function AuthButtonSkeleton() {
   return (
@@ -20,14 +21,7 @@ export function Navbar() {
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 items-center justify-between">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 group">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-main-100">
-              <span className="text-lg font-bold text-white">R</span>
-            </div>
-            <span className="text-xl font-semibold text-text-100 group-hover:text-accent-main-100 transition-colors">
-              Radium
-            </span>
-          </Link>
+          <Logo variant="full" href="/" />
 
           {/* Navigation Links */}
           <div className="hidden md:flex items-center gap-1">

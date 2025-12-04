@@ -1,6 +1,6 @@
 'use client';
 
-import { Logo } from '@/components/ui/Logo';
+import { Logo } from '@/components/ui/ClaudeLogo';
 import { SidebarNav } from './SidebarNav';
 import { ConversationList } from './ConversationList';
 import { UserMenu } from './UserMenu';
