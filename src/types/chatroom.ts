@@ -20,7 +20,6 @@ export interface User {
     name: string;
     email: string;
     initials: string;
-    plan: string;
 }
 
 export interface ChatConfig {

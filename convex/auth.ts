@@ -35,11 +35,22 @@ export const createAuth = (
   });
 };
 
-// Example function for getting the current user
-// Feel free to edit, omit, etc.
-export const getCurrentUser = query({
-  args: {},
-  handler: async (ctx) => {
-    return authComponent.getAuthUser(ctx);
+export type UserInfoType = {
+  email: string
+  name: string,
+  profilePicture?: string | null,
+}
+
+export const userInfo = query({
+  handler: async (ctx, args): Promise<UserInfoType | "Not logged in!"> => {
+    const userAuth = await authComponent.getAuthUser(ctx);
+
+    if (!userAuth) return "Not logged in!";
+
+    return {
+      email: userAuth.email,
+      name: userAuth.name,
+      profilePicture: userAuth?.image,
+    };
   },
 });
