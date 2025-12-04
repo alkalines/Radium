@@ -87,7 +87,7 @@ export function Sidebar({ conversations, user }: SidebarProps) {
               <a
                 className="flex flex-col justify-start items-top"
                 aria-label="Início"
-                href="/new"
+                href="/"
               >
                 <Logo />
               </a>

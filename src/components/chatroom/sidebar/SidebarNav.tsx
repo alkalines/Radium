@@ -46,9 +46,9 @@ export function SidebarNav() {
       <div className="mb-1">
         <div data-state="closed">
           <a
-            href="/new"
+            href="/chat"
             className="font-ui items-center h-9 px-4 py-2 rounded-lg active:scale-[0.985] whitespace-nowrap group transition ease-in-out active:!scale-100 hover:bg-transparent flex !justify-start !min-w-0 w-full active:!bg-accent-brand/15"
-            aria-label="Novo bate-papo"
+            aria-label="New Chat"
           >
             <div className="-mx-3 flex flex-row items-center gap-2">
               <div className="w-6 h-6 flex items-center justify-center group-active:!scale-[0.98] group-hover:-rotate-3 group-hover:scale-110 group-active:rotate-6 rounded-full transition-all ease-in-out bg-accent-main-100 group-hover:shadow-md">
@@ -76,7 +76,7 @@ export function SidebarNav() {
 
       <SidebarItem
         href="/recents"
-        label="Conversas"
+        label="Chats"
         icon={
           <svg
             width="20"
@@ -101,7 +101,7 @@ export function SidebarNav() {
 
       <SidebarItem
         href="/projects"
-        label="Projetos"
+        label="Projects"
         icon={
           <svg
             width="20"
@@ -128,9 +128,9 @@ export function SidebarNav() {
         }
       />
 
-      <SidebarItem
+      {/* <SidebarItem
         href="/artifacts"
-        label="Artefatos"
+        label="Artifacts"
         icon={
           <svg
             width="20"
@@ -165,7 +165,7 @@ export function SidebarNav() {
             />
           </svg>
         }
-      />
+      /> */}
     </div>
   );
 }

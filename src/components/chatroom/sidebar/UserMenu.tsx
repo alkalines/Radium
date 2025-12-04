@@ -45,7 +45,7 @@ const learnMoreLinks = [
 ];
 
 export function UserMenu({ user }: { user: UserInfoType }) {
-  const [selectedLanguage, setSelectedLanguage] = useState("pt-BR");
+  const [selectedLanguage, setSelectedLanguage] = useState("en");
   const [open, setOpen] = useState(false);
 
   const handleSettingsClick = () => {

@@ -15,10 +15,10 @@ export function ChatInput() {
                   suppressContentEditableWarning
                   translate="no"
                   role="textbox"
-                  aria-label="Escreva as instruções para o Claude"
+                  aria-label="Write instructions the AI Model"
                   aria-multiline="true"
                   className="font-ui outline-none empty:before:content-[attr(data-placeholder)] empty:before:!text-text-500 empty:before:whitespace-nowrap"
-                  data-placeholder="Como posso ajudar você hoje?"
+                  data-placeholder="How can I help you today?"
                 />
               </div>
             </div>

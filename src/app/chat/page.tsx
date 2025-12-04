@@ -13,7 +13,7 @@ export default function HomePage() {
   /**
    * @todo Dynamic day message
    */
-  const welcomeMessage = `Oi ${userInfo.name.split(" ")[0]}, tudo bem?`;
+  const welcomeMessage = `Hey, ${userInfo.name.split(" ")[0]}!`;
   
   return (
     <main className="mx-auto mt-4 w-full flex-1 px-4 md:px-8 lg:mt-6 max-w-7xl !mt-0 flex flex-col items-center gap-8 md:px-14 3xl:px-20 pt-[10vh] md:pt-[20vh] max-sm:!px-1 bg-bg-100">
