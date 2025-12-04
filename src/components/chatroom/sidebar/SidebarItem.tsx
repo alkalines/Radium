@@ -20,14 +20,14 @@ export function SidebarItem({ href, icon, label, isActive = false }: SidebarItem
                     'h-9 px-4 py-2 rounded-lg min-w-20 active:scale-[0.985]',
                     'w-full hover:bg-bg-400 overflow-hidden !min-w-0 group',
                     'active:bg-bg-400 active:scale-100 px-4',
-                    isActive && 'bg-bg-400 text-text-100'
+                    isActive && 'bg-bg-400 text-text-100 '
                 )}
                 aria-label={label}
             >
                 <div className="-translate-x-2 w-full flex flex-row items-center justify-start gap-3">
                     <div className="size-4 flex items-center justify-center">{icon}</div>
                     <span className="truncate text-sm whitespace-nowrap w-full">
-            <div className="transition-all duration-200">{label}</div>
+            <div className="font-ui transition-all duration-200">{label}</div>
           </span>
                 </div>
             </Link>

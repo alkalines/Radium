@@ -28,7 +28,7 @@ const DropdownMenuSubTrigger = React.forwardRef<
     <DropdownMenuPrimitive.SubTrigger
         ref={ref}
         className={cn(
-            'font-base min-h-8 px-2 py-1.5 rounded-lg cursor-pointer whitespace-nowrap overflow-hidden text-ellipsis',
+            'font-ui min-h-8 px-2 py-1.5 rounded-lg cursor-pointer whitespace-nowrap overflow-hidden text-ellipsis',
             'grid grid-cols-[minmax(0,_1fr)_auto] gap-2 items-center outline-none select-none',
             'text-text-300 text-sm',
             'data-[highlighted]:bg-bg-200 data-[highlighted]:text-text-300',
@@ -56,7 +56,7 @@ const DropdownMenuSubContent = React.forwardRef<
         className={cn(
             'p-1.5 z-dropdown bg-bg-000 border-0.5 border-0.5 backdrop-blur-xl rounded-xl',
             'min-w-[8rem] text-text-300 shadow-[0px_2px_8px_0px_rgba(0,0,0,0.24)]',
-            'overflow-y-auto overflow-x-hidden font-base',
+            'overflow-y-auto overflow-x-hidden font-ui',
             'data-[state=open]:animate-in data-[state=closed]:animate-out',
             'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
             'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
@@ -84,7 +84,7 @@ const DropdownMenuContent = React.forwardRef<
                 'p-1.5 z-dropdown bg-bg-000 border-0.5 backdrop-blur-xl rounded-xl',
                 'min-w-[8rem] text-text-300 shadow-[0px_2px_8px_0px_rgba(0,0,0,0.24)]',
                 'max-h-[min(var(--radix-dropdown-menu-content-available-height),24rem)]',
-                'overflow-y-auto overflow-x-hidden mb-1 font-base w-[17rem] mx-2',
+                'overflow-y-auto overflow-x-hidden mb-1 font-ui w-[17rem] mx-2',
                 'data-[state=open]:animate-in data-[state=closed]:animate-out',
                 'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
                 'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
@@ -110,7 +110,7 @@ const DropdownMenuItem = React.forwardRef<
     <DropdownMenuPrimitive.Item
         ref={ref}
         className={cn(
-            'font-base min-h-8 px-2 py-1.5 rounded-lg cursor-pointer whitespace-nowrap overflow-hidden text-ellipsis',
+            'font-ui min-h-8 px-2 py-1.5 rounded-lg cursor-pointer whitespace-nowrap overflow-hidden text-ellipsis',
             'grid grid-cols-[minmax(0,_1fr)_auto] gap-2 items-center outline-none select-none',
             'text-text-300 text-sm',
             'data-[highlighted]:bg-bg-200 data-[highlighted]:text-text-000',

@@ -16,7 +16,7 @@ export function ConversationItem({ conversation }: ConversationItemProps) {
                     className="inline-flex items-center justify-center relative shrink-0 select-none text-text-300 border-transparent transition hover:bg-bg-300 hover:text-text-100 h-8 rounded-md px-3 min-w-16 active:scale-[0.985] whitespace-nowrap !text-xs w-full hover:bg-bg-400 overflow-hidden !min-w-0 group active:bg-bg-400 active:scale-100 px-4"
                 >
                     <div className="-translate-x-2 w-full flex flex-row items-center justify-start gap-3">
-            <span className="truncate text-sm whitespace-nowrap w-full group-hover:[mask-image:linear-gradient(to_right,hsl(var(--always-black))_78%,transparent_95%)] [mask-size:100%_100%]">
+            <span className="font-ui truncate text-sm whitespace-nowrap w-full group-hover:[mask-image:linear-gradient(to_right,hsl(var(--always-black))_78%,transparent_95%)] [mask-size:100%_100%]">
               <span className={isUntitled ? 'opacity-60' : ''}>{conversation.title}</span>
             </span>
                     </div>

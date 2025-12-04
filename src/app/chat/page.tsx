@@ -22,7 +22,7 @@ export default function HomePage() {
           >
             <ClaudeIcon />
             <div
-              className="inline-block max-w-full align-middle max-md:line-clamp-2 max-md:break-words md:overflow-hidden md:overflow-ellipsis select-none"
+              className="font-normal font-serif inline-block max-w-full align-middle max-md:line-clamp-2 max-md:break-words md:overflow-hidden md:overflow-ellipsis select-none"
               style={{ opacity: 1 }}
             >
               Oi Gabriel, tudo bem?

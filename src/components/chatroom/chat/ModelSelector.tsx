@@ -44,14 +44,14 @@ export function ModelSelector() {
         <div className="relative shrink-0 p-1 -m-1" style={{ opacity: 1, transform: 'none' }} ref={dropdownRef}>
             <button
                 ref={buttonRef}
-                className="text-text-300 font-base inline-flex items-center justify-center relative shrink-0 can-focus select-none disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none disabled:drop-shadow-none border-transparent transition duration-300 ease-[cubic-bezier(0.165,0.85,0.45,1)] h-8 rounded-md px-3 min-w-[4rem] active:scale-[0.985] whitespace-nowrap !text-xs pl-2.5 pr-2 gap-1"
+                className="text-text-300 inline-flex items-center justify-center relative shrink-0 can-focus select-none disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none disabled:drop-shadow-none border-transparent transition duration-300 ease-[cubic-bezier(0.165,0.85,0.45,1)] h-8 rounded-md px-3 min-w-[4rem] active:scale-[0.985] whitespace-nowrap !text-xs pl-2.5 pr-2 gap-1"
                 type="button"
                 data-testid="model-selector-dropdown"
                 onClick={handleToggle}
                 aria-expanded={isOpen}
                 aria-haspopup="menu"
             >
-                <div className="font-claude-response inline-flex gap-[3px] text-[14px] h-[14px] leading-none items-baseline">
+                <div className="font-claude-response font-medium inline-flex gap-[3px] text-[14px] h-[14px] leading-none items-baseline">
                     <div className="flex items-center gap-[4px]">
                         <div className="whitespace-nowrap select-none">{selectedModel.name}</div>
                     </div>
@@ -93,14 +93,14 @@ export function ModelSelector() {
                                 >
                                     <div className="flex items-start justify-between gap-2">
                                         <div className="flex-1 min-w-0">
-                                            <div className="font-claude-response" style={{ fontSize: '14px', lineHeight: '19.6px', color: 'rgb(194, 192, 182)' }}>
+                                            <div className="font-claude-response font-medium" style={{ fontSize: '14px', lineHeight: '19.6px', color: 'rgb(194, 192, 182)' }}>
                                                 {model.name}
                                             </div>
                                             <div className="font-ui" style={{ fontSize: '12px', lineHeight: '16px', color: 'rgb(156, 154, 146)' }}>
                                                 {model.description}
                                             </div>
                                             {model.usageInfo && (
-                                                <div className="font-claude-response" style={{ fontSize: '12px', lineHeight: '16px', color: 'rgb(156, 154, 146)' }}>
+                                                <div className="font-claude-response font-normal" style={{ fontSize: '12px', lineHeight: '16px', color: 'rgb(156, 154, 146)' }}>
                                                     {model.usageInfo}
                                                 </div>
                                             )}

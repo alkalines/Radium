@@ -17,7 +17,7 @@ export function ChatInput() {
                                         role="textbox"
                                         aria-label="Escreva as instruções para o Claude"
                                         aria-multiline="true"
-                                        className="ProseMirror outline-none empty:before:content-[attr(data-placeholder)] empty:before:!text-text-500 empty:before:whitespace-nowrap"
+                                        className="font-ui outline-none empty:before:content-[attr(data-placeholder)] empty:before:!text-text-500 empty:before:whitespace-nowrap"
                                         data-placeholder="Como posso ajudar você hoje?"
                                     />
                                 </div>
