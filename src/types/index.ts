@@ -15,3 +15,16 @@ export interface PromptCategory {
     label: string;
     icon: React.ReactNode;
 }
+
+export interface User {
+    name: string;
+    email: string;
+    initials: string;
+    plan: string;
+}
+
+export interface ChatConfig {
+    user: User;
+    conversations: Conversation[];
+    welcomeMessage: string;
+}
