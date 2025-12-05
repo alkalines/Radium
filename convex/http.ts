@@ -1,8 +1,8 @@
 import { httpRouter } from "convex/server";
-import { HTTP_Request_Chat_Completion } from "./chat_completion";
-import { HTTP_Request_OpenAI_Models } from "./models";
 import { authComponent, createAuth } from "./auth";
-import { AISDK_POST_Chat } from "./aisdk.chat";
+import { HTTP_Request_Chat_Completion } from "./http/chat_completion";
+import { AISDK_POST_Chat } from "./http/aisdk.chat";
+import { HTTP_Request_OpenAI_Models } from "./http/models";
 
 const http = httpRouter();
 
@@ -24,7 +24,7 @@ http.route({
 
 /**
  * Better Auth
-*/
+ */
 authComponent.registerRoutes(http, createAuth);
 
 /**
@@ -37,4 +37,4 @@ http.route({
   handler: AISDK_POST_Chat,
 });
 
-export default http
+export default http;

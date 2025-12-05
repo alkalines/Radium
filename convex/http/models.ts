@@ -1,7 +1,7 @@
 import { Models_Response_Type } from "@/utils/types/openai/models";
-import { api, internal } from "./_generated/api";
-import { httpAction, internalQuery, query } from "./_generated/server";
 import { v } from "convex/values";
+import { api, internal } from "../_generated/api";
+import { httpAction, internalQuery, query } from "../_generated/server";
 
 export const HTTP_Request_OpenAI_Models = httpAction(
   async (ctx, req): Promise<any> => {

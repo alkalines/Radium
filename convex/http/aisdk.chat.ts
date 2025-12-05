@@ -1,8 +1,8 @@
-import { httpAction } from "./_generated/server";
-import { convertToModelMessages, streamText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { convertToModelMessages, streamText } from "ai";
+import { ChatCompletions_RequestBody } from "../../src/utils/types/openai/types";
+import { httpAction } from "../_generated/server";
 import { Internal_Chat_Completion } from "./chat_completion";
-import { ChatCompletions_RequestBody } from "../src/utils/types/openai/types";
 
 export const AISDK_POST_Chat = httpAction(
   async (ctx, req): Promise<Response> => {
