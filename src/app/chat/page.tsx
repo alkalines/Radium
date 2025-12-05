@@ -52,7 +52,11 @@ const findAuthorByID = (
 
 export default function HomePage() {
   const userInfo = useQuery(api.auth.userInfo, {});
-  if (userInfo === "Not logged in!" || !userInfo) return "Error";
+  if (userInfo === "Not logged in!" || !userInfo) return (
+    <div className="flex h-full w-full flex-1 items-center justify-center">
+      <Loader2 className="size-8 animate-spin text-muted-foreground" />
+    </div>
+  );
   const models = useQuery(api.models.availableModels);
   const authors = useQuery(api.authors.listAuthors)
 

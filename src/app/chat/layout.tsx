@@ -7,6 +7,7 @@ import { Conversation, User } from "@/types/chatroom";
 import { Sidebar } from "@/components/chatroom/sidebar/Sidebar";
 import { useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
+import { Loader2 } from "lucide-react";
 
 function Header() {
   return (
@@ -81,7 +82,12 @@ export default function RootLayout({
     },
   ];
   const userInfo = useQuery(api.auth.userInfo, {})
-  if (userInfo === 'Not logged in!' || !userInfo) return 'Error'
+  if (userInfo === "Not logged in!" || !userInfo)
+    return (
+      <div className="flex h-full w-full flex-1 items-center justify-center">
+        <Loader2 className="size-8 animate-spin text-muted-foreground" />
+      </div>
+    );
 
   return (
     <div
