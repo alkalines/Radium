@@ -1,5 +1,5 @@
-import { httpAction } from "./_generated/server";
-import { api, internal } from "./_generated/api";
+import { httpAction } from "../_generated/server";
+import { api, internal } from "../_generated/api";
 import {
   ChatCompletions_RequestBody,
   ChatCompletions_RequestBody_Type,
@@ -8,10 +8,10 @@ import {
 import AIBalancer from "@/utils/ai_balancer";
 import * as z from "zod";
 import { NonStreamingCompletion, StreamCompletion } from "@/utils/translators/openai";
-import { convertStreamToAsyncIterator } from '../src/utils/tools/chunkReader'
-import { completionUsage } from "./key";
+import { convertStreamToAsyncIterator } from '@/utils/tools/chunkReader'
+import { completionUsage } from "../key";
 import { GenericActionCtx } from "convex/server";
-import { Id } from "./_generated/dataModel";
+import { Id } from "../_generated/dataModel";
 
 export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise<Response> => {
   try {
