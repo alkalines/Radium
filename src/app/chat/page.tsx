@@ -255,7 +255,7 @@ export default function HomePage() {
                   </ModelSelectorList>
                 </ModelSelectorContent>
               </ModelSelector>
-              <PromptInputSubmit disabled={status && text === ''} status={status} />
+              <PromptInputSubmit disabled={!(selectedModelData && status && text !== '')} status={status} />
             </div>
           </PromptInputFooter>
         </PromptInput>
