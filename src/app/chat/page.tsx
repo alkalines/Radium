@@ -96,7 +96,7 @@ export default function HomePage() {
       },
       {
         body: {
-          model: selectedModel,
+          model: models?.find((m) => m._id === selectedModel)!.slug,
           webSearch: useWebSearch,
         },
       }
