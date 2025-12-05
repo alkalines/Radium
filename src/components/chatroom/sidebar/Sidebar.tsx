@@ -1,6 +1,6 @@
 "use client";
 
-import { Logo } from "@/components/ui/ClaudeLogo";
+import { ExtendedLogo } from "@/components/ui/Logo";
 import { useSidebar } from "@/lib/contexts/SidebarContext";
 import { Conversation, User } from "@/types/chatroom";
 import { ConversationList } from "./ConversationList";
@@ -42,7 +42,19 @@ export function Sidebar({ conversations, user }: SidebarProps) {
           }}
         >
           {/* Header */}
-          <div className="flex w-full items-center gap-px p-2 transition-all duration-75 ease-out">
+          <div className="flex w-full items-center justify-between p-2 transition-all duration-75 ease-out">
+            {isExpanded ? (
+              <a
+                className="flex flex-col justify-start items-top ml-1"
+                aria-label="Início"
+                href="/"
+              >
+                <ExtendedLogo size="sm" />
+              </a>
+            ) : (
+              <div /> // Spacer when collapsed
+            )}
+
             <button
               className="inline-flex items-center justify-center h-8 w-8 rounded-md text-text-300 hover:bg-bg-300 hover:text-text-100 active:scale-95 group"
               type="button"
@@ -82,16 +94,6 @@ export function Sidebar({ conversations, user }: SidebarProps) {
                 )}
               </div>
             </button>
-
-            {isExpanded && (
-              <a
-                className="flex flex-col justify-start items-top"
-                aria-label="Início"
-                href="/"
-              >
-                <Logo />
-              </a>
-            )}
           </div>
 
           {/* Content */}

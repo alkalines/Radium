@@ -17,6 +17,7 @@ function Header() {
           type="button"
         >
           <div className="flex items-center justify-center group">
+            {/* Little ghost */}
             <svg
               width="20"
               height="20"
