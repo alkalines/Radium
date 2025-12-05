@@ -58,10 +58,10 @@ export function ModelSelector() {
         aria-expanded={isOpen}
         aria-haspopup="menu"
       >
-        <div className="font-claude-response font-medium inline-flex gap-[3px] text-[14px] h-[14px] leading-none items-baseline">
+          <div className="font-claude-response font-medium inline-flex gap-[3px] text-[14px] h-[14px] leading-none items-baseline">
           <div className="flex items-center gap-[4px]">
             <div className="whitespace-nowrap select-none">
-              {selectedModel.name}
+              {selectedModel.id === "" ? "Choose a Model" : selectedModel.name}
             </div>
           </div>
         </div>

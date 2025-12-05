@@ -70,8 +70,14 @@ interface ModelContextType {
 
 const ModelContext = createContext<ModelContextType | undefined>(undefined);
 
+export const EMPTY_MODEL: Model = {
+    id: '',
+    name: '',
+    description: ''
+};
+
 export function ModelProvider({ children }: { children: ReactNode }) {
-    const [selectedModel, setSelectedModel] = useState<Model>(MODELS[1]); // Sonnet 4.5 como padrão
+    const [selectedModel, setSelectedModel] = useState<Model>(EMPTY_MODEL);
 
     return (
         <ModelContext.Provider value={{ selectedModel, setSelectedModel }}>

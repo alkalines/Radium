@@ -38,7 +38,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { LetterIcon } from "@/components/ui/Letters";
 import { useQuery } from "convex/react";
-import { GlobeIcon, CheckIcon } from "lucide-react";
+import { GlobeIcon, CheckIcon, Loader2 } from "lucide-react";
 import { useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { api } from "../../../convex/_generated/api";
@@ -65,9 +65,7 @@ export default function HomePage() {
    * Model selector
    */
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
-  const [selectedModel, setSelectedModel] = useState<string>(
-    models?.[0]?._id ?? "gpt-5-nano"
-  );
+  const [selectedModel, setSelectedModel] = useState<string>();
   const selectedModelData = models?.find(
     (model) => model._id === selectedModel
   );
@@ -80,7 +78,7 @@ export default function HomePage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [useWebSearch, setUseWebSearch] = useState<boolean>(false);
   const [text, setText] = useState<string>("");
-  const { messages, status, sendMessage } = useChat();
+  const { messages, status, sendMessage } = useChat({});
   const handleSubmit = (message: PromptInputMessage) => {
     const hasText = Boolean(message.text);
     const hasAttachments = Boolean(message.files?.length);
@@ -175,25 +173,31 @@ export default function HomePage() {
                     className="h-8 justify-between border-none bg-transparent shadow-none hover:bg-accent"
                     variant="ghost"
                   >
-                    {findAuthorByID(authors, selectedModelData?.author) && (
-                      <ModelSelectorLogo
-                        className="size-5"
-                        provider={
-                          findAuthorByID(authors, selectedModelData?.author)
-                            ?.slug || "openrouter"
-                        }
-                      />
+                    {selectedModel ? (
+                      <>
+                        {findAuthorByID(authors, selectedModelData?.author) && (
+                          <ModelSelectorLogo
+                            className="size-5"
+                            provider={
+                              findAuthorByID(authors, selectedModelData?.author)
+                                ?.slug || "openrouter"
+                            }
+                          />
+                        )}
+                        {findAuthorByID(authors, selectedModelData?.author) &&
+                          selectedModelData?.name && (
+                            <ModelSelectorName>
+                              {
+                                findAuthorByID(authors, selectedModelData?.author)
+                                  ?.name
+                              }
+                              : {selectedModelData?.name}
+                            </ModelSelectorName>
+                          )}
+                      </>
+                    ) : (
+                      <ModelSelectorName>Choose a Model</ModelSelectorName>
                     )}
-                    {findAuthorByID(authors, selectedModelData?.author) &&
-                      selectedModelData?.name && (
-                        <ModelSelectorName>
-                          {
-                            findAuthorByID(authors, selectedModelData?.author)
-                              ?.name
-                          }
-                          : {selectedModelData?.name}
-                        </ModelSelectorName>
-                      )}
                   </Button>
                 </ModelSelectorTrigger>
                 <ModelSelectorContent>
