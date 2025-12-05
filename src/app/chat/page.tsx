@@ -1,6 +1,6 @@
 "use client";
 import { ChatInput } from "@/components/chatroom/chat/ChatInput";
-import { ClaudeIcon } from "@/components/ui/ClaudeIcon";
+import { LetterIcon } from "@/components/ui/Letters";
 import { useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 
@@ -28,7 +28,7 @@ export default function HomePage() {
             lineHeight: 1.5,
           }}
         >
-          <ClaudeIcon />
+          <LetterIcon letter="R"/>
           <div
             className="font-normal font-serif inline-block max-w-full align-middle max-md:line-clamp-2 max-md:break-words md:overflow-hidden md:overflow-ellipsis select-none"
             style={{ opacity: 1 }}
