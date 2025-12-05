@@ -1,5 +1,5 @@
 import { AuthProvider } from "@/components/providers/AuthProvider";
-import { ConvexClientProvider } from "../lib/ConvexClientProvider";
+import { ConvexClientProvider } from "../components/providers/ConvexClientProvider";
 import "./globals.css";
 import { Metadata } from "next";
 
