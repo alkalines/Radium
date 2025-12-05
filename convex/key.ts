@@ -1,7 +1,7 @@
 import { number } from "zod";
 import { query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
-import { AddFunction, MultiplyFunction } from "@/utils/math";
+import { AddFunction, MultiplyFunction, RemFunction } from "@/utils/math";
 
 export const hashAlgorithm = "SHA-512";
 export const hashText = async (text: string) =>
@@ -114,7 +114,7 @@ export const completionPricingSchema = v.object({
 export const billKey = internalMutation({
   args: {
     user: v.object({
-      usedKey: v.id("keys"),
+      usedKey: v.optional(v.id("keys")),
       id: v.id("users"),
     }),
     request: v.object({
@@ -150,7 +150,7 @@ export const billKey = internalMutation({
   },
   async handler(ctx, args) {
     const [keyInfo, userInfo, modelInfo] = await Promise.all([
-      ctx.db.get(args.user.usedKey),
+      args.user.usedKey ? ctx.db.get(args.user.usedKey): undefined,
       ctx.db.get(args.user.id),
       ctx.db
         .query("models")
@@ -201,7 +201,7 @@ export const billKey = internalMutation({
       ctx.db.insert("chat_completions", {
         user: {
           id: userInfo!._id,
-          key: keyInfo!._id,
+          key: keyInfo?._id,
         },
         request: {
           byok: args.request.byok,
@@ -245,9 +245,13 @@ export const billKey = internalMutation({
           },
         },
       }),
-      ctx.db.patch(keyInfo!._id, {
-        usedCredits: AddFunction([keyInfo!.usedCredits, billedCost]),
-      }),
+      keyInfo
+        ? ctx.db.patch(keyInfo!._id, {
+            usedCredits: AddFunction([keyInfo!.usedCredits, billedCost]),
+          })
+        : ctx.db.patch(userInfo!._id, {
+            credits: RemFunction([userInfo!.credits, billedCost]),
+          }),
     ]);
     return true;
   },

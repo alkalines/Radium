@@ -22,7 +22,7 @@ export default defineSchema({
   chat_completions: defineTable({
     user: v.object({
       id: v.id("users"),
-      key: v.id("keys"),
+      key: v.optional(v.id("keys")),
     }),
     request: v.object({
       provider: v.string(),

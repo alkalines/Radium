@@ -72,13 +72,23 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
   }
 });
 
+export const Internal_Chat_Completion = async (ctx: GenericActionCtx<any>, reqData: ChatCompletions_RequestBody_Type, userId: Id<"users">) => {
+  const provider = await AIBalancer(reqData);
+    // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
+    return CreateCompletion(reqData, provider, {
+      ctx,
+      userId: userId,
+      byok: false, // @todo
+    });
+}
+
 const CreateCompletion = async (
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>,
   info: {
     ctx: GenericActionCtx<any>,
     userId: Id<"users">,
-    keyId: Id<"keys">,
+    keyId?: Id<"keys">,
     byok: boolean
   }
 ): Promise<Response> => {
