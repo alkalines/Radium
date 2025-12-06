@@ -200,7 +200,7 @@ export default function ChatroomPromptInput({
             </ModelSelectorContent>
           </ModelSelector>
           <PromptInputSubmit
-            disabled={!(selectedModelData && status && text !== "")}
+            disabled={!(selectedModelData && chatStatus && text !== "")}
             status={chatStatus}
           />
         </div>
