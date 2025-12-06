@@ -250,7 +250,7 @@ export const billKey = internalMutation({
             usedCredits: AddFunction([keyInfo!.usedCredits, billedCost]),
           })
         : ctx.db.patch(userInfo!._id, {
-            credits: RemFunction([userInfo!.credits, billedCost]),
+            credits: AddFunction([userInfo!.credits, -billedCost]),
           }),
     ]);
     return true;
