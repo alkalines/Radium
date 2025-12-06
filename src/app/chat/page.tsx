@@ -1,64 +1,26 @@
 "use client";
-import {
-  PromptInput,
-  PromptInputActionAddAttachments,
-  PromptInputActionMenu,
-  PromptInputActionMenuContent,
-  PromptInputActionMenuTrigger,
-  PromptInputAttachment,
-  PromptInputAttachments,
-  PromptInputBody,
-  PromptInputButton,
-  PromptInputFooter,
-  PromptInputHeader,
-  type PromptInputMessage,
-  PromptInputSelect,
-  PromptInputSelectContent,
-  PromptInputSelectItem,
-  PromptInputSelectTrigger,
-  PromptInputSelectValue,
-  PromptInputSpeechButton,
-  PromptInputSubmit,
-  PromptInputTextarea,
-  PromptInputTools,
-} from "@/components/ai-elements/prompt-input";
-import {
-  ModelSelector,
-  ModelSelectorContent,
-  ModelSelectorEmpty,
-  ModelSelectorGroup,
-  ModelSelectorInput,
-  ModelSelectorItem,
-  ModelSelectorList,
-  ModelSelectorLogo,
-  ModelSelectorLogoGroup,
-  ModelSelectorName,
-  ModelSelectorTrigger,
-} from "@/components/ai-elements/model-selector";
-import { Button } from "@/components/ui/button";
 import { LetterIcon } from "@/components/ui/Letters";
 import { useQuery } from "convex/react";
-import { GlobeIcon, CheckIcon, Loader2 } from "lucide-react";
-import { useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { api } from "../../../convex/_generated/api";
 import { Doc, Id } from "../../../convex/_generated/dataModel";
+import ChatroomPromptInput from "@/components/chatroom/chat/PromptInput";
+import { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 
 // ============================================
-const findAuthorByID = (
-  authors: Doc<"authors">[] | undefined,
-  modelAuthorID?: Id<"authors">
-) => authors?.filter((a) => a._id === (modelAuthorID ?? ''))[0];
 
 export default function HomePage() {
   const userInfo = useQuery(api.auth.userInfo, {});
-  if (userInfo === "Not logged in!" || !userInfo) return (
-    <div className="flex h-full w-full flex-1 items-center justify-center">
-      <Loader2 className="size-8 animate-spin text-muted-foreground" />
-    </div>
-  );
+  if (userInfo === "Not logged in!" || !userInfo)
+    return (
+      <div className="flex h-full w-full flex-1 items-center justify-center">
+        <Loader2 className="size-8 animate-spin text-muted-foreground" />
+      </div>
+    );
   const models = useQuery(api.models.availableModels);
-  const authors = useQuery(api.authors.listAuthors)
+  const authors = useQuery(api.authors.listAuthors);
 
   /**
    * @todo Dynamic day message
@@ -66,20 +28,9 @@ export default function HomePage() {
   const welcomeMessage = `Hey, ${userInfo.name.split(" ")[0]}!`;
 
   /**
-   * Model selector
+   * ChatroomInput
    */
-  const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string>();
-  const selectedModelData = models?.find(
-    (model) => model._id === selectedModel
-  );
-  const chefs = Array.from(
-    new Set(models?.map((model) => findAuthorByID(authors, model.author)?.name))
-  );
-  /**
-   * Chat Input
-   */
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [useWebSearch, setUseWebSearch] = useState<boolean>(false);
   const [text, setText] = useState<string>("");
   const { messages, status, sendMessage } = useChat({});
@@ -129,136 +80,15 @@ export default function HomePage() {
 
       {/* Chat Input and Categories grouped */}
       <div className="top-5 z-10 mx-auto w-full max-w-2xl">
-        <PromptInput
-          onSubmit={handleSubmit}
-          className="mt-4"
-          globalDrop
-          multiple
-        >
-          <PromptInputHeader>
-            <PromptInputAttachments>
-              {(attachment) => <PromptInputAttachment data={attachment} />}
-            </PromptInputAttachments>
-          </PromptInputHeader>
-          <PromptInputBody>
-            <PromptInputTextarea
-              onChange={(e) => setText(e.target.value)}
-              ref={textareaRef}
-              value={text}
-            />
-          </PromptInputBody>
-          <PromptInputFooter>
-            <PromptInputTools>
-              <PromptInputActionMenu>
-                <PromptInputActionMenuTrigger />
-                <PromptInputActionMenuContent>
-                  <PromptInputActionAddAttachments />
-                </PromptInputActionMenuContent>
-              </PromptInputActionMenu>
-              <PromptInputSpeechButton
-                onTranscriptionChange={setText}
-                textareaRef={textareaRef}
-              />
-              <PromptInputButton
-                onClick={() => setUseWebSearch(!useWebSearch)}
-                variant={useWebSearch ? "default" : "ghost"}
-              >
-                <GlobeIcon size={16} />
-                <span>Search</span>
-              </PromptInputButton>
-            </PromptInputTools>
-            <div className="flex items-center gap-1">
-              <ModelSelector
-                onOpenChange={setModelSelectorOpen}
-                open={modelSelectorOpen}
-              >
-                <ModelSelectorTrigger asChild>
-                  <Button
-                    className="h-8 justify-between border-none bg-transparent shadow-none hover:bg-accent"
-                    variant="ghost"
-                  >
-                    {selectedModel ? (
-                      <>
-                        {findAuthorByID(authors, selectedModelData?.author) && (
-                          <ModelSelectorLogo
-                            className="size-5"
-                            provider={
-                              findAuthorByID(authors, selectedModelData?.author)
-                                ?.slug || "openrouter"
-                            }
-                          />
-                        )}
-                        {findAuthorByID(authors, selectedModelData?.author) &&
-                          selectedModelData?.name && (
-                            <ModelSelectorName>
-                              {
-                                findAuthorByID(authors, selectedModelData?.author)
-                                  ?.name
-                              }
-                              : {selectedModelData?.name}
-                            </ModelSelectorName>
-                          )}
-                      </>
-                    ) : (
-                      <ModelSelectorName>Choose a Model</ModelSelectorName>
-                    )}
-                  </Button>
-                </ModelSelectorTrigger>
-                <ModelSelectorContent>
-                  <ModelSelectorInput placeholder="Search models..." />
-                  <ModelSelectorList>
-                    <ModelSelectorEmpty>No models found.</ModelSelectorEmpty>
-                    {chefs.map((chef) => (
-                      <ModelSelectorGroup heading={chef} key={chef}>
-                        {models
-                          ?.filter(
-                            (model) =>
-                              findAuthorByID(authors, model.author)?.name ===
-                              chef
-                          )
-                          .map((model) => (
-                            <ModelSelectorItem
-                              key={model._id}
-                              onSelect={() => {
-                                setSelectedModel(model._id);
-                                setModelSelectorOpen(false);
-                              }}
-                              value={model._id}
-                            >
-                              <ModelSelectorLogo
-                                provider={
-                                  findAuthorByID(authors, model.author)
-                                    ?.slug || "openrouter"
-                                }
-                              />
-                              <ModelSelectorName>
-                                {findAuthorByID(authors, model.author)?.name}:{" "}
-                                {model.name}
-                              </ModelSelectorName>
-                              <ModelSelectorLogoGroup>
-                                {model.providers.map((provider) => (
-                                  <ModelSelectorLogo
-                                    key={provider.id}
-                                    provider={provider.id}
-                                  />
-                                ))}
-                              </ModelSelectorLogoGroup>
-                              {selectedModel === model._id ? (
-                                <CheckIcon className="ml-auto size-4" />
-                              ) : (
-                                <div className="ml-auto size-4" />
-                              )}
-                            </ModelSelectorItem>
-                          ))}
-                      </ModelSelectorGroup>
-                    ))}
-                  </ModelSelectorList>
-                </ModelSelectorContent>
-              </ModelSelector>
-              <PromptInputSubmit disabled={!(selectedModelData && status && text !== '')} status={status} />
-            </div>
-          </PromptInputFooter>
-        </PromptInput>
+        <ChatroomPromptInput
+          models={models}
+          authors={authors}
+          chatStatus={status}
+          handleSubmit={handleSubmit}
+          StateUseWebSearch={[useWebSearch, setUseWebSearch]}
+          StateSelectedModel={[selectedModel, setSelectedModel]}
+          StateText={[text, setText]}
+        />
         {/*<PromptCategories />*/}
       </div>
     </main>
