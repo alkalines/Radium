@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { completionPricingSchema, completionUsageSchema } from "./key";
+import { messageSchema } from "./aisdk_schemas";
 
 export default defineSchema({
   balances: defineTable({
@@ -180,4 +181,12 @@ export default defineSchema({
     slug: v.string(),
     icon: v.string(), // URL
   }),
-});
+  // Chatroom
+  aisdk_chats: defineTable({
+    userId: v.string(), // Better Auth ID
+    balance: v.id("balances"),
+    messages: v.array(messageSchema),
+    chat_completions: v.array(v.id("chat_completions")),
+    title: v.optional(v.string()),
+  }),
+}, { schemaValidation: false});

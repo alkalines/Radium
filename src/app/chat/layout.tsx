@@ -50,37 +50,6 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  /**
-   * @todo Use convex
-   */
-  const conversations: Conversation[] = [
-    {
-      id: "1",
-      title: "Sem título",
-      href: "/chat/e2d4da28-b22c-4101-b524-fd56a3ab91aa",
-    },
-    {
-      id: "2",
-      title: "Discord: Risks for Teenagers",
-      href: "/chat/150e0208-2b37-4e94-84cd-6113af4a5b7e",
-    },
-    {
-      id: "3",
-      title:
-        "The Impact of Mental Deterioration on Colombia's International Drug Trade",
-      href: "/chat/fcbde3de-79bd-4855-978a-549ca2b4eefb",
-    },
-    {
-      id: "4",
-      title: "CRM Strategy for a Pet Shop",
-      href: "/chat/041ee6b7-e40c-4563-a8cf-d24cb993260e",
-    },
-    {
-      id: "5",
-      title: "Greeting and Assistance",
-      href: "/chat/81ed72a1-94db-47f9-bdbe-5b67b153321f",
-    },
-  ];
   const userInfo = useQuery(api.auth.userInfo, {})
   if (userInfo === "Not logged in!" || !userInfo)
     return (
@@ -100,7 +69,7 @@ export default function RootLayout({
         <SidebarProvider>
           <ModelProvider>
             <div className="flex min-h-screen w-full overflow-x-clip">
-              <Sidebar conversations={conversations} user={userInfo} />
+              <Sidebar user={userInfo} />
               <Header />
 
               <div

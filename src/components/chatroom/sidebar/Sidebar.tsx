@@ -2,19 +2,24 @@
 
 import { ExtendedLogo } from "@/components/ui/Logo";
 import { useSidebar } from "@/lib/contexts/SidebarContext";
-import { Conversation, User } from "@/types/chatroom";
 import { ConversationList } from "./ConversationList";
 import { SidebarNav } from "./SidebarNav";
 import { UserMenu } from "./UserMenu";
 import { UserInfoType } from "../../../../convex/auth";
+import { useQuery } from "convex/react";
+import { api } from "../../../../convex/_generated/api";
 
 interface SidebarProps {
-  conversations: Conversation[];
   user: UserInfoType;
 }
 
-export function Sidebar({ conversations, user }: SidebarProps) {
+export function Sidebar({ user }: SidebarProps) {
+  const conversations = useQuery(api.aisdk.ListChats, {})
   const { isExpanded, toggleSidebar } = useSidebar();
+
+  console.log(conversations)
+  if (!conversations) return 'Waiting for jesus to come!'
+  if (conversations === 'Not logged in!') return 'Not logged in!'
 
   return (
     <div
