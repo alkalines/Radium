@@ -244,13 +244,14 @@ export const billKey = internalMutation({
           },
         },
       }),
+      ctx.db.patch(balanceInfo!._id, {
+        credits: AddFunction([balanceInfo!.credits, -billedCost]),
+      }),
       keyInfo
-        ? ctx.db.patch(keyInfo!._id, {
+        ? ctx.db.patch(keyInfo?._id, {
             usedCredits: AddFunction([keyInfo!.usedCredits, billedCost]),
           })
-        : ctx.db.patch(balanceInfo!._id, {
-            credits: AddFunction([balanceInfo!.credits, -billedCost]),
-          }),
+        : null,
     ]);
     return true;
   },
