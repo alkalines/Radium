@@ -11,7 +11,7 @@ function ConversationItem({
     <li style={{ opacity: 1 }}>
       <div className="relative group" data-state="closed">
         <Link
-          href={`/chats/${conversation._id}`}
+          href={`/chat/${conversation._id}`}
           className="inline-flex items-center justify-center relative shrink-0 select-none text-text-300 border-transparent transition hover:bg-bg-300 hover:text-text-100 h-8 rounded-md px-3 min-w-16 active:scale-[0.985] whitespace-nowrap !text-xs w-full hover:bg-bg-400 overflow-hidden !min-w-0 group active:bg-bg-400 active:scale-100 px-4"
         >
           <div className="-translate-x-2 w-full flex flex-row items-center justify-start gap-3">
