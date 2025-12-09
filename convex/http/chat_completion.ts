@@ -59,7 +59,7 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
     // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
     return CreateCompletion(reqData, provider, {
       ctx,
-      userId: checkKey.user!._id,
+      balanceId: checkKey.balance!._id,
       keyId: checkKey._id,
       byok: false // @todo
     })
@@ -72,12 +72,12 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
   }
 });
 
-export const Internal_Chat_Completion = async (ctx: GenericActionCtx<any>, reqData: ChatCompletions_RequestBody_Type, userId: Id<"users">) => {
+export const Internal_Chat_Completion = async (ctx: GenericActionCtx<any>, reqData: ChatCompletions_RequestBody_Type, balanceId: Id<"balances">) => {
   const provider = await AIBalancer(reqData);
     // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
     return CreateCompletion(reqData, provider, {
       ctx,
-      userId: userId,
+      balanceId,
       byok: false, // @todo
     });
 }
@@ -87,7 +87,7 @@ const CreateCompletion = async (
   provider: Awaited<ReturnType<typeof AIBalancer>>,
   info: {
     ctx: GenericActionCtx<any>,
-    userId: Id<"users">,
+    balanceId: Id<"balances">,
     keyId?: Id<"keys">,
     byok: boolean
   }
@@ -102,9 +102,9 @@ const CreateCompletion = async (
     const providerGen = StreamCompletion(reqData, provider, async (genCompletion) => {
       // End of the stream
       await info.ctx.runMutation(internal.key.billKey, {
-        user: {
-          id: info.userId,
-          usedKey: info.keyId,
+        bill: {
+          balance: info.balanceId,
+          key: info.keyId,
         },
         request: {
           api: "chat_completions",
@@ -182,9 +182,9 @@ const CreateCompletion = async (
       async (genCompletion) => {
         // End of the stream
         await info.ctx.runMutation(internal.key.billKey, {
-          user: {
-            id: info.userId,
-            usedKey: info.keyId,
+          bill: {
+            balance: info.balanceId,
+            key: info.keyId,
           },
           request: {
             api: "chat_completions",

@@ -1,4 +1,3 @@
-import { number } from "zod";
 import { query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { AddFunction, MultiplyFunction, RemFunction } from "@/utils/math";
@@ -43,9 +42,9 @@ export const getKeyInfo = query({
         .collect()
     )[0];
     if (!dbKey) throw new Error("This key is invalid!");
-    const userKey = await ctx.db.get(dbKey.user);
+    const balanceInfo = await ctx.db.get(dbKey.balance);
     const usableCredits = findUsableCredit(
-      userKey!.credits,
+      balanceInfo!.credits,
       dbKey.usedCredits,
       dbKey.creditLimit
     );
@@ -57,7 +56,7 @@ export const getKeyInfo = query({
       hash: dbKey.hash,
       creditLimit: dbKey.creditLimit,
       usedCredits: dbKey.usedCredits,
-      user: userKey,
+      balance: balanceInfo,
       usableCredits,
     };
   },
@@ -113,9 +112,9 @@ export const completionPricingSchema = v.object({
 
 export const billKey = internalMutation({
   args: {
-    user: v.object({
-      usedKey: v.optional(v.id("keys")),
-      id: v.id("users"),
+    bill: v.object({
+      key: v.optional(v.id("keys")),
+      balance: v.id("balances"),
     }),
     request: v.object({
       model_slug: v.string(),
@@ -149,9 +148,9 @@ export const billKey = internalMutation({
     }),
   },
   async handler(ctx, args) {
-    const [keyInfo, userInfo, modelInfo] = await Promise.all([
-      args.user.usedKey ? ctx.db.get(args.user.usedKey): undefined,
-      ctx.db.get(args.user.id),
+    const [keyInfo, balanceInfo, modelInfo] = await Promise.all([
+      args.bill.key ? ctx.db.get(args.bill.key) : undefined,
+      ctx.db.get(args.bill.balance),
       ctx.db
         .query("models")
         .filter((q) => q.eq(q.field("slug"), args.request.model_slug))
@@ -199,8 +198,8 @@ export const billKey = internalMutation({
     // Database actions
     await Promise.all([
       ctx.db.insert("chat_completions", {
-        user: {
-          id: userInfo!._id,
+        bill: {
+          balance: balanceInfo!._id,
           key: keyInfo?._id,
         },
         request: {
@@ -249,8 +248,8 @@ export const billKey = internalMutation({
         ? ctx.db.patch(keyInfo!._id, {
             usedCredits: AddFunction([keyInfo!.usedCredits, billedCost]),
           })
-        : ctx.db.patch(userInfo!._id, {
-            credits: AddFunction([userInfo!.credits, -billedCost]),
+        : ctx.db.patch(balanceInfo!._id, {
+            credits: AddFunction([balanceInfo!.credits, -billedCost]),
           }),
     ]);
     return true;

@@ -3,12 +3,14 @@ import { v } from "convex/values";
 import { completionPricingSchema, completionUsageSchema } from "./key";
 
 export default defineSchema({
-  users: defineTable({
+  balances: defineTable({
     credits: v.number(),
-    // more later
+    userId: v.string(), // Better Auth ID
+    organizationId: v.optional(v.string()),
+    teamId: v.optional(v.string()),
   }),
   keys: defineTable({
-    user: v.id("users"),
+    balance: v.id("balances"),
     creditLimit: v.optional(v.number()),
     usedCredits: v.number(),
     name: v.string(),
@@ -20,8 +22,8 @@ export default defineSchema({
     icon: v.optional(v.string()), // URL
   }),
   chat_completions: defineTable({
-    user: v.object({
-      id: v.id("users"),
+    bill: v.object({
+      balance: v.id("balances"),
       key: v.optional(v.id("keys")),
     }),
     request: v.object({
