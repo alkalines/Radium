@@ -7,7 +7,6 @@ import { Conversation, User } from "@/types/chatroom";
 import { Sidebar } from "@/components/chatroom/sidebar/Sidebar";
 import { useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
-import { Loader2 } from "lucide-react";
 
 function Header() {
   return (
@@ -50,13 +49,18 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const userInfo = useQuery(api.auth.userInfo, {})
-  if (userInfo === "Not logged in!" || !userInfo)
+  const userInfo = useQuery(api.auth.userInfo, {});
+  const isLoading = userInfo === undefined;
+  const isNotLoggedIn = userInfo === "Not logged in!";
+
+  // Show not logged in message only after we know the user is not logged in
+  if (isNotLoggedIn) {
     return (
       <div className="flex h-full w-full flex-1 items-center justify-center">
-        <Loader2 className="size-8 animate-spin text-muted-foreground" />
+        <p className="text-muted-foreground">Not logged in</p>
       </div>
     );
+  }
 
   return (
     <div
@@ -69,7 +73,7 @@ export default function RootLayout({
         <SidebarProvider>
           <ModelProvider>
             <div className="flex min-h-screen w-full overflow-x-clip">
-              <Sidebar user={userInfo} />
+              <Sidebar user={isLoading ? undefined : userInfo} />
               <Header />
 
               <div

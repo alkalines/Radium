@@ -22,9 +22,21 @@ import {
   SettingsIcon,
   UpgradeIcon,
 } from "@/components/ui/MenuIcons";
+import { Skeleton } from "@/components/chatroom/skeleton";
 import { User } from "@/types/chatroom";
 import { useState } from "react";
 import { UserInfoType } from "../../../../convex/auth";
+
+export function UserMenuSkeleton() {
+  return (
+    <div className="px-2 pb-1 transition">
+      <div className="flex flex-row items-center gap-3 px-1.5 py-2">
+        <Skeleton className="h-7 w-7 rounded-full flex-shrink-0" />
+        <Skeleton className="h-4 flex-1 rounded" />
+      </div>
+    </div>
+  );
+}
 
 const languages = [
   { code: "en", name: "English" },

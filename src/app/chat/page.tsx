@@ -1,7 +1,7 @@
 "use client";
 import { LetterIcon } from "@/components/ui/Letters";
+import { Skeleton } from "@/components/chatroom/skeleton";
 import { useQuery } from "convex/react";
-import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { api } from "../../../convex/_generated/api";
@@ -12,28 +12,20 @@ import { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 // ============================================
 
 export default function HomePage() {
+  // All hooks must be called unconditionally at the top level
   const userInfo = useQuery(api.auth.userInfo, {});
-  if (userInfo === "Not logged in!" || !userInfo)
-    return (
-      <div className="flex h-full w-full flex-1 items-center justify-center">
-        <Loader2 className="size-8 animate-spin text-muted-foreground" />
-      </div>
-    );
   const models = useQuery(api.models.availableModels);
   const authors = useQuery(api.authors.listAuthors);
 
-  /**
-   * @todo Dynamic day message
-   */
-  const welcomeMessage = `Hey, ${userInfo.name.split(" ")[0]}!`;
-
-  /**
-   * ChatroomInput
-   */
   const [selectedModel, setSelectedModel] = useState<string>();
   const [useWebSearch, setUseWebSearch] = useState<boolean>(false);
   const [text, setText] = useState<string>("");
   const { messages, status, sendMessage } = useChat({});
+
+  // Handle loading and not logged in states after all hooks
+  const isLoading = userInfo === undefined;
+  const isNotLoggedIn = userInfo === "Not logged in!";
+
   const handleSubmit = (message: PromptInputMessage) => {
     const hasText = Boolean(message.text);
     const hasAttachments = Boolean(message.files?.length);
@@ -55,6 +47,21 @@ export default function HomePage() {
     setText("");
   };
 
+  if (isNotLoggedIn) {
+    return (
+      <div className="flex h-full w-full flex-1 items-center justify-center">
+        <p className="text-muted-foreground">Not logged in</p>
+      </div>
+    );
+  }
+
+  /**
+   * @todo Dynamic day message
+   */
+  const welcomeMessage = isLoading 
+    ? "" 
+    : `Hey, ${userInfo.name.split(" ")[0]}!`;
+
   return (
     <main className="mx-auto mt-4 w-full flex-1 px-4 md:px-8 lg:mt-6 max-w-7xl !mt-0 flex flex-col items-center gap-8 md:px-14 3xl:px-20 pt-[10vh] md:pt-[20vh] max-sm:!px-1 bg-bg-100">
       {/* Welcome Section */}
@@ -68,12 +75,16 @@ export default function HomePage() {
             lineHeight: 1.5,
           }}
         >
-          <LetterIcon letter="R" />
+          {isLoading ? null : <LetterIcon letter="R" />}
           <div
             className="font-normal font-serif inline-block max-w-full align-middle max-md:line-clamp-2 max-md:break-words md:overflow-hidden md:overflow-ellipsis select-none"
             style={{ opacity: 1 }}
           >
-            {welcomeMessage}
+            {isLoading ? (
+              <Skeleton className="h-10 w-48 inline-block" />
+            ) : (
+              welcomeMessage
+            )}
           </div>
         </div>
       </div>

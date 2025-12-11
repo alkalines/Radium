@@ -1,25 +1,48 @@
 "use client";
 
 import { ExtendedLogo } from "@/components/ui/Logo";
+import { Skeleton } from "@/components/chatroom/skeleton";
 import { useSidebar } from "@/lib/contexts/SidebarContext";
 import { ConversationList } from "./ConversationList";
 import { SidebarNav } from "./SidebarNav";
-import { UserMenu } from "./UserMenu";
+import { UserMenu, UserMenuSkeleton } from "./UserMenu";
 import { UserInfoType } from "../../../../convex/auth";
 import { useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
+import Link from "next/link";
+
+function ConversationListSkeleton() {
+  const widths = [85, 70, 90, 65, 80, 75];
+  
+  return (
+    <div className="transition-all duration-200">
+      <div className="flex flex-col">
+        <Skeleton className="h-4 w-16 mb-2 mt-1 ml-2" />
+        <ul className="flex flex-col gap-px">
+          {widths.map((width, i) => (
+            <li key={i} className="px-3 py-1.5">
+              <Skeleton 
+                className="h-5 rounded-md" 
+                style={{ width: `${width}%` }} 
+              />
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
 
 interface SidebarProps {
-  user: UserInfoType;
+  user?: UserInfoType;
 }
 
 export function Sidebar({ user }: SidebarProps) {
   const conversations = useQuery(api.aisdk.ListChats, {})
   const { isExpanded, toggleSidebar } = useSidebar();
 
-  console.log(conversations)
-  if (!conversations) return 'Waiting for jesus to come!'
-  if (conversations === 'Not logged in!') return 'Not logged in!'
+  const isLoading = conversations === undefined;
+  const isNotLoggedIn = conversations === 'Not logged in!';
 
   return (
     <div
@@ -49,13 +72,13 @@ export function Sidebar({ user }: SidebarProps) {
           {/* Header */}
           <div className="flex w-full items-center justify-between p-2 transition-all duration-75 ease-out">
             {isExpanded ? (
-              <a
+              <Link
                 className="flex flex-col justify-start items-top ml-1"
                 aria-label="Início"
                 href="/"
               >
                 <ExtendedLogo size="sm" />
-              </a>
+              </Link>
             ) : (
               <div /> // Spacer when collapsed
             )}
@@ -115,10 +138,16 @@ export function Sidebar({ user }: SidebarProps) {
                   className="flex flex-grow flex-col overflow-y-auto overflow-x-hidden relative px-2 mb-2"
                   tabIndex={-1}
                 >
-                  <ConversationList conversations={conversations} />
+                  {isLoading ? (
+                    <ConversationListSkeleton />
+                  ) : isNotLoggedIn ? (
+                    <p className="text-text-300 text-sm px-2">Not logged in</p>
+                  ) : (
+                    <ConversationList conversations={conversations as Exclude<typeof conversations, undefined | 'Not logged in!'>} />
+                  )}
                 </div>
 
-                <UserMenu user={user} />
+                {user ? <UserMenu user={user} /> : <UserMenuSkeleton />}
               </>
             )}
           </div>
