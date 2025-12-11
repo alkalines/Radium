@@ -32,20 +32,15 @@ export const AISDK_POST_Chat = httpAction(
       baseURL: "https://api.there_is_no_need_for_this.com/v1",
       fetch: async (
         input: string | URL | Request,
-        init?: RequestInit
+        init?: RequestInit,
       ): Promise<Response> => {
         try {
           // Parse the request body from init
-          const bodyText =
-            typeof init?.body === "string"
-              ? init.body
-              : await new Response(init?.body).text();
-          const reqData = ChatCompletions_RequestBody.parse(
-            JSON.parse(bodyText)
-          );
-          return Internal_Chat_Completion(ctx, reqData, userID as any);
+          const reqData = JSON.parse(init?.body as string) as ChatCompletions_RequestBody_Type
+          return Internal_Chat_Completion(ctx, reqData, identity.user.id as any);
         } catch (e) {
-          return Response.json({ text: "FUCK" });
+          console.log(e)
+          return Response.json({ text: 'Internal Server Error!' }, { status: 500 })
         }
       },
     });
