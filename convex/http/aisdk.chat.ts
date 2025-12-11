@@ -1,9 +1,11 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { convertToModelMessages, streamText } from "ai";
-import { ChatCompletions_RequestBody } from "../../src/utils/types/openai/types";
+import { convertToModelMessages, streamText, UIMessage } from "ai";
+import { ChatCompletions_RequestBody_Type } from "../../src/utils/types/openai/types";
 import { httpAction } from "../_generated/server";
 import { Internal_Chat_Completion } from "./chat_completion";
+import { Id } from "../_generated/dataModel";
 import { createAuth } from "../auth";
+import { internal } from "../_generated/api";
 
 export const AISDK_POST_Chat = httpAction(
   async (ctx, req): Promise<Response> => {
@@ -46,8 +48,12 @@ export const AISDK_POST_Chat = httpAction(
     });
 
     // Parse the incoming request
-    const body = await req.json();
-
+    const body: {
+      messages: UIMessage[];
+      model: string;
+      id: Id<"aisdk_chats">;
+    } = await req.json();
+    
     const result = streamText({
       model: provider(body.model),
       messages: convertToModelMessages(body.messages),
@@ -56,6 +62,18 @@ export const AISDK_POST_Chat = httpAction(
     return result.toUIMessageStreamResponse({
       sendSources: true,
       sendReasoning: true,
+      messageMetadata() {
+        return {
+          model: body.model,
+        };
+      },
+      onFinish: async ({ messages }) => {
+        const allMessages = [...body.messages, ...messages]
+        await ctx.runMutation(internal.aisdk.EditChat, {
+          chatId: body.id,
+          messages: allMessages,
+        });
+      },
     });
-  }
+  },
 );

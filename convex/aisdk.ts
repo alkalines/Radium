@@ -27,9 +27,15 @@ export const EditChat = internalMutation({
   args: {
     messages: v.array(messageSchema),
     chatId: v.id("aisdk_chats"),
-    user: v.id("users"),
   },
-  handler: async (ctx, args) => {},
+  handler: async (ctx, args) => {
+    const chat = await ctx.db.get(args.chatId);
+    if (!chat) return "Chat not Found.";
+    
+    ctx.db.patch(args.chatId, {
+      messages: args.messages
+    })
+  },
 });
 
 export const GetChat = query({
