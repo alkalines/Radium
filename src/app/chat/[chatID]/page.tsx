@@ -101,8 +101,8 @@ export default function ChatPage({
       {/* Conversation Area */}
       <Conversation className="flex-1 overflow-hidden">
         <ConversationContent className="px-4 md:px-8 lg:px-14 3xl:px-20 max-w-4xl mx-auto w-full">
-          {messages.map((message) => (
-            <div key={message.id}>
+          {messages.map((message, messageIndex) => (
+            <div key={message.id || `msg-${messageIndex}`}>
               {message.parts.map((part, partIndex) => {
                 switch (part.type) {
                   case "text":
