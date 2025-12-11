@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 const signInRoutes = ["/auth/sign-in", "/auth/sign-up", "/auth/verify-2fa", "/auth/reset-password"];
 
 // Public routes that don't require authentication
-const publicRoutes = ["/chat"];
+const publicRoutes = [] as string[];
 
 // Just check cookie, recommended approach
 export async function proxy(request: NextRequest) {
