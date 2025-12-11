@@ -1,13 +1,13 @@
 "use client";
 import { LetterIcon } from "@/components/ui/Letters";
 import { Skeleton } from "@/components/chatroom/skeleton";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { api } from "../../../convex/_generated/api";
-import { Doc, Id } from "../../../convex/_generated/dataModel";
 import ChatroomPromptInput from "@/components/chatroom/chat/PromptInput";
 import { PromptInputMessage } from "@/components/ai-elements/prompt-input";
+import { UserInfoType } from "../../../convex/auth";
 
 // ============================================
 
@@ -16,22 +16,27 @@ export default function HomePage() {
   const userInfo = useQuery(api.auth.userInfo, {});
   const models = useQuery(api.models.availableModels);
   const authors = useQuery(api.authors.listAuthors);
+  const createChat = useMutation(api.aisdk.CreateChat)
 
   const [selectedModel, setSelectedModel] = useState<string>();
   const [useWebSearch, setUseWebSearch] = useState<boolean>(false);
   const [text, setText] = useState<string>("");
-  const { messages, status, sendMessage } = useChat({});
+  const { messages, status, sendMessage } = useChat();
 
   // Handle loading and not logged in states after all hooks
   const isLoading = userInfo === undefined;
   const isNotLoggedIn = userInfo === "Not logged in!";
 
-  const handleSubmit = (message: PromptInputMessage) => {
+  const handleSubmit = async (message: PromptInputMessage) => {
     const hasText = Boolean(message.text);
     const hasAttachments = Boolean(message.files?.length);
     if (!(hasText || hasAttachments)) {
       return;
     }
+    const chatId = await createChat({
+      balance: (userInfo as UserInfoType)!.balances[0]._id
+    });
+    
     sendMessage(
       {
         text: message.text || "Sent with attachments",
@@ -41,9 +46,11 @@ export default function HomePage() {
         body: {
           model: models?.find((m) => m._id === selectedModel)!.slug,
           webSearch: useWebSearch,
+          chatId: chatId
         },
       }
     );
+    console.log(chatId);
     setText("");
   };
 

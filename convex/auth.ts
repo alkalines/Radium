@@ -1,7 +1,7 @@
 import { createClient, type GenericCtx } from "@convex-dev/better-auth";
 import { convex } from "@convex-dev/better-auth/plugins";
 import { components } from "./_generated/api";
-import { DataModel } from "./_generated/dataModel";
+import { DataModel, Doc, Id } from "./_generated/dataModel";
 import { query } from "./_generated/server";
 import { betterAuth } from "better-auth";
 
@@ -39,18 +39,24 @@ export type UserInfoType = {
   email: string
   name: string,
   profilePicture?: string | null,
+  balances: Doc<"balances">[]
 }
 
 export const userInfo = query({
-  handler: async (ctx, args): Promise<UserInfoType | "Not logged in!"> => {
+  handler: async (ctx): Promise<UserInfoType | "Not logged in!"> => {
     const userAuth = await authComponent.getAuthUser(ctx);
-
     if (!userAuth) return "Not logged in!";
+
+    /**
+     * @todo Organization and teams support
+     */
+    const balances = await ctx.db.query("balances").filter((q) => q.eq(q.field("userId"), userAuth._id)).collect()
 
     return {
       email: userAuth.email,
       name: userAuth.name,
       profilePicture: userAuth?.image,
+      balances: balances,
     };
   },
 });
