@@ -3,18 +3,22 @@ import { convertToModelMessages, streamText } from "ai";
 import { ChatCompletions_RequestBody } from "../../src/utils/types/openai/types";
 import { httpAction } from "../_generated/server";
 import { Internal_Chat_Completion } from "./chat_completion";
+import { createAuth } from "../auth";
 
 export const AISDK_POST_Chat = httpAction(
   async (ctx, req): Promise<Response> => {
     /**
-     * @todo Make a User from Better Auth to User (better naming required) in convex table
+     * @comment Default `ctx.auth.getUserIdentity()` used on the `authComponent.getAuthUser(ctx);` doesn't work
      */
-    const userID = "jd7e16947630dpnf0psta59dps7se1zc"; //await ctx.auth.getUserIdentity();
-
-    if (!userID) {
+    const auth = createAuth(ctx)
+    const identity = await auth.api.getSession({
+      headers: req.headers,
+    })
+    
+    if (!identity) {
       return Response.json(
         { error: { message: "Unauthorized", code: 401 } },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
