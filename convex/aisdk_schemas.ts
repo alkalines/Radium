@@ -61,3 +61,19 @@ export const messageSchema = v.object({
     )
   ),
 });
+
+const FileUIPartSchema = v.object({
+  type: v.literal("file"),
+  mediaType: v.string(),
+  filename: v.optional(v.string()),
+  url: v.optional(v.string()),
+  providerMetadata: v.optional(v.any()),
+});
+
+export const queuedMessageSchema = v.object({
+  text: v.string(),
+  files: v.array(FileUIPartSchema),
+  model: v.string(), // Slug, not the ID
+  // @todo: Better tool selector
+  webSearch: v.boolean()
+});

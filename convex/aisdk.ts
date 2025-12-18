@@ -8,6 +8,7 @@ import { messageSchema } from "./aisdk_schemas";
 export const CreateChat = mutation({
   args: {
     balance: v.id("balances"),
+    messages_queue: queuedMessageSchema,
   },
   handler: async (ctx, args): Promise<Id<"aisdk_chats"> | "Not logged in!"> => {
     const identity = await authComponent.getAuthUser(ctx);
@@ -17,6 +18,7 @@ export const CreateChat = mutation({
     return await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
       messages: [],
+      messages_queue: args.messages_queue,
       balance: args.balance,
       userId: identity._id,
     });
@@ -25,7 +27,8 @@ export const CreateChat = mutation({
 
 export const EditChat = internalMutation({
   args: {
-    messages: v.array(messageSchema),
+    messages: v.optional(v.array(messageSchema)),
+    messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
     chatId: v.id("aisdk_chats"),
   },
   handler: async (ctx, args) => {
@@ -33,8 +36,9 @@ export const EditChat = internalMutation({
     if (!chat) return "Chat not Found.";
     
     ctx.db.patch(args.chatId, {
-      messages: args.messages
-    })
+      messages: args.messages || chat.messages,
+      messages_queue: args.messages_queue,
+    });
   },
 });
 
@@ -51,10 +55,11 @@ export const GetChat = query({
     return {
       id: chat?._id,
       messages: chat?.messages,
-      title: chat?.title
-    }
-  }
-})
+      title: chat?.title,
+      messages_queue: chat.messages_queue,
+    };
+  },
+});
 
 export const ListChats = query({
   handler: async (ctx, args) => {

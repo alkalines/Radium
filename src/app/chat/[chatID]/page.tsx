@@ -41,7 +41,7 @@ export default function ChatPage({
   const models = useQuery(api.models.availableModels);
   const authors = useQuery(api.authors.listAuthors);
   const chatInfo = useQuery(api.aisdk.GetChat, {
-    chatId: chatID as Id<"aisdk_chats">
+    chatId: chatID as Id<"aisdk_chats">,
   });
 
   /**
@@ -67,13 +67,28 @@ export default function ChatPage({
       !hasLoadedMessages.current
     ) {
       setMessages(chatInfo.messages as any);
-      const lastMessageModel = chatInfo.messages.at(-1)?.metadata?.model;
-      if (lastMessageModel)
-        setSelectedModel(models?.find((m) => m.slug === lastMessageModel)?._id);
+      if (chatInfo.messages_queue) {
+        setSelectedModel(chatInfo.messages_queue.model);
+        sendMessage(
+          {
+            text: chatInfo.messages_queue.text,
+            files: chatInfo.messages_queue.files as any,
+          },
+          {
+            body: {
+              model: chatInfo.messages_queue.model,
+              webSearch: chatInfo.messages_queue.webSearch,
+            },
+          }
+        );
+      } else {
+        const lastMessageModel = chatInfo.messages.at(-1)?.metadata?.model;
+        if (lastMessageModel)
+          setSelectedModel(models?.find((m) => m.slug === lastMessageModel)?._id);
+      }
       hasLoadedMessages.current = true;
     }
   }, [chatInfo, setMessages]);
-
 
   const handleSubmit = (message: PromptInputMessage) => {
     const hasText = Boolean(message.text);

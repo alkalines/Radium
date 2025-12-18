@@ -1,7 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { completionPricingSchema, completionUsageSchema } from "./key";
-import { messageSchema } from "./aisdk_schemas";
+import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 
 export default defineSchema({
   balances: defineTable({
@@ -186,7 +186,9 @@ export default defineSchema({
     userId: v.string(), // Better Auth ID
     balance: v.id("balances"),
     messages: v.array(messageSchema),
+    messages_queue: v.optional(v.union(queuedMessageSchema, v.null())), // Used only on home page
     chat_completions: v.array(v.id("chat_completions")),
     title: v.optional(v.string()),
+    activeStreamId: v.optional(v.union(v.string(), v.null())),
   }),
-}, { schemaValidation: false});
+});

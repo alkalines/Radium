@@ -8,6 +8,7 @@ import { api } from "../../../convex/_generated/api";
 import ChatroomPromptInput from "@/components/chatroom/chat/PromptInput";
 import { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { UserInfoType } from "../../../convex/auth";
+import { useRouter } from "next/navigation";
 
 // ============================================
 
@@ -17,6 +18,8 @@ export default function HomePage() {
   const models = useQuery(api.models.availableModels);
   const authors = useQuery(api.authors.listAuthors);
   const createChat = useMutation(api.aisdk.CreateChat)
+
+  const router = useRouter()
 
   const [selectedModel, setSelectedModel] = useState<string>();
   const [useWebSearch, setUseWebSearch] = useState<boolean>(false);
@@ -34,24 +37,15 @@ export default function HomePage() {
       return;
     }
     const chatId = await createChat({
-      balance: (userInfo as UserInfoType)!.balances[0]._id
-    });
-    
-    sendMessage(
-      {
+      balance: (userInfo as UserInfoType)!.balances[0]._id,
+      messages_queue: {
         text: message.text || "Sent with attachments",
-        files: message.files,
+        files: message.files as any,
+        model: models?.find((m) => m._id === selectedModel)!.slug!,
+        webSearch: useWebSearch,
       },
-      {
-        body: {
-          model: models?.find((m) => m._id === selectedModel)!.slug,
-          webSearch: useWebSearch,
-          chatId: chatId
-        },
-      }
-    );
-    console.log(chatId);
-    setText("");
+    });
+    router.push(`/chat/${chatId}`)
   };
 
   if (isNotLoggedIn) {

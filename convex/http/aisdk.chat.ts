@@ -54,7 +54,12 @@ export const AISDK_POST_Chat = httpAction(
       id?: Id<"aisdk_chats">;
       chatId?: Id<"aisdk_chats">; // When creating an chat we can't create an chat ID on the fly
     } = await req.json();
+    const chatId = (body?.chatId || body?.id)!;
     
+    await ctx.runMutation(internal.aisdk.EditChat, {
+      chatId,
+      messages_queue: null,
+    });
     const result = streamText({
       model: provider(body.model),
       messages: convertToModelMessages(body.messages),
@@ -71,8 +76,9 @@ export const AISDK_POST_Chat = httpAction(
       onFinish: async ({ messages }) => {
         const allMessages = [...body.messages, ...messages]
         await ctx.runMutation(internal.aisdk.EditChat, {
-          chatId: body?.chatId || body?.id || 'FUCK!' as any,
+          chatId,
           messages: allMessages,
+          activeStreamId: null,
         });
       },
     });
