@@ -4,6 +4,7 @@ import { components } from "./_generated/api";
 import { DataModel, Doc, Id } from "./_generated/dataModel";
 import { query } from "./_generated/server";
 import { betterAuth } from "better-auth";
+import authConfig from "./auth.config";
 
 const siteUrl = process.env.SITE_URL!;
 
@@ -30,7 +31,7 @@ export const createAuth = (
     },
     plugins: [
       // The Convex plugin is required for Convex compatibility
-      convex(),
+      convex({ authConfig }),
     ],
   });
 };
