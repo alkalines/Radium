@@ -23,11 +23,14 @@ import {
 } from "@/components/ai-elements/reasoning";
 import { Loader } from "@/components/ai-elements/loader";
 import { Id } from "../../../../convex/_generated/dataModel";
+import { DefaultChatTransport, UI_MESSAGE_STREAM_HEADERS } from "ai";
 
 export default function ChatPage({
   params,
+  resume = true,
 }: {
   params: Promise<{ chatID: string }>;
+  resume?: boolean;
 }) {
   const { chatID } = use(params);
 
@@ -49,6 +52,77 @@ export default function ChatPage({
    */
   const { messages, status, sendMessage, setMessages } = useChat({
     id: chatID,
+    resume,
+    transport: new DefaultChatTransport({
+      prepareSendMessagesRequest: ({ id, messages }) => {
+        return {
+          body: {
+            id,
+            message: messages[messages.length - 1],
+          },
+        };
+      },
+      prepareReconnectToStreamRequest: ({ id }) => {
+        return {
+          api: `/api/chat/stream/${id}`, 
+        };
+      },
+      /* fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        let inputUrl: URL;
+        if (typeof input === 'string') {
+          inputUrl = new URL(input);
+        } else if (input instanceof URL) {
+          inputUrl = input;
+        } else {
+          inputUrl = new URL(input.url);
+        }
+        
+        console.log(inputUrl.pathname);
+        if (inputUrl.pathname === "/api/chat/stream/") {
+          if (
+            chatInfo &&
+            typeof chatInfo !== "string" &&
+            chatInfo.activeStream
+          ) {
+            const stream = useQuery(api.aisdk.GetChatStream, {
+              chatId: chatInfo.id,
+            });
+            let lastChunk = -1; // -1 = Not Recived anything yet
+
+            console.log('here')
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  console.log('started!')
+                  const controllerOutput = (text: string) =>
+                    controller.enqueue(
+                      new TextEncoder().encode(`data: ${text}\n\n`)
+                    );
+
+                  if (typeof stream !== "string" && stream) {
+                    if (
+                      stream.status === "done" ||
+                      stream.status === "error" ||
+                      stream.status === "timeout"
+                    )
+                      controller.close();
+
+                    const nextChunk = stream.chunks[lastChunk + 1];
+                    if (nextChunk) {
+                      controllerOutput(nextChunk);
+                      lastChunk += 1;
+                    }
+                  }
+                },
+              }),
+              {
+                headers: UI_MESSAGE_STREAM_HEADERS,
+              }
+            );
+          } else return new Response(null, { status: 204 });
+        } else return fetch(input, init);
+      }, */
+    }),
   });
 
   /**
@@ -84,7 +158,9 @@ export default function ChatPage({
       } else {
         const lastMessageModel = chatInfo.messages.at(-1)?.metadata?.model;
         if (lastMessageModel)
-          setSelectedModel(models?.find((m) => m.slug === lastMessageModel)?._id);
+          setSelectedModel(
+            models?.find((m) => m.slug === lastMessageModel)?._id
+          );
       }
       hasLoadedMessages.current = true;
     }
@@ -122,7 +198,10 @@ export default function ChatPage({
                 switch (part.type) {
                   case "text":
                     return (
-                      <Message from={message.role} key={`${message.id}-${partIndex}`}>
+                      <Message
+                        from={message.role}
+                        key={`${message.id}-${partIndex}`}
+                      >
                         <MessageContent>
                           <MessageResponse>{part.text}</MessageResponse>
                         </MessageContent>

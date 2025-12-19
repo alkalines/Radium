@@ -1,8 +1,17 @@
 import { v } from "convex/values";
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
-import { messageSchema } from "./aisdk_schemas";
+import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
+import {
+  PersistentTextStreaming,
+  StreamId,
+} from "@convex-dev/persistent-text-streaming";
+import { components } from "./_generated/api";
+
+const streaming = new PersistentTextStreaming(
+  components.persistentTextStreaming
+);
 
 // Mutation
 export const CreateChat = mutation({
@@ -28,6 +37,7 @@ export const CreateChat = mutation({
 export const EditChat = internalMutation({
   args: {
     messages: v.optional(v.array(messageSchema)),
+    activeStreamId: v.optional(v.union(v.string(), v.null())),
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
     chatId: v.id("aisdk_chats"),
   },
@@ -38,34 +48,70 @@ export const EditChat = internalMutation({
     ctx.db.patch(args.chatId, {
       messages: args.messages || chat.messages,
       messages_queue: args.messages_queue,
+      activeStreamId: args.activeStreamId,
     });
   },
 });
 
 export const GetChat = query({
   args: {
-    chatId: v.id("aisdk_chats")
+    chatId: v.id("aisdk_chats"),
   },
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
-    const chat = await ctx.db.get(args.chatId)
-    if (!chat || chat.userId !== identity._id) return 'Chat not Found.'
+    const chat = await ctx.db.get(args.chatId);
+    if (!chat || chat.userId !== identity._id) return "Chat not Found.";
 
     return {
       id: chat?._id,
       messages: chat?.messages,
       title: chat?.title,
+      activeStream: chat.activeStreamId,
       messages_queue: chat.messages_queue,
     };
   },
 });
+
+export const GetChatOwner = internalQuery({
+  args: {
+    chatId: v.id("aisdk_chats"),
+  },
+  handler: async (ctx, args) => {
+    const chat = await ctx.db.get(args.chatId);
+    return chat?.userId;
+  },
+});
+
+export const GetChatStream = internalQuery({
+  args: {
+    chatId: v.id("aisdk_chats"),
+  },
+  handler: async (ctx, args) => {
+    const chat = await ctx.db.get(args.chatId);
+    let body;
+
+    try {
+      body = await streaming.getStreamBody(ctx, chat!.activeStreamId as StreamId);
+    } catch (e) {
+      return null
+    }
+
+    return {
+      chunks: body.text.split("[NEXT-CHUNK]"),
+      status: body.status
+    };
+  },
+})
 
 export const ListChats = query({
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
-    return ctx.db.query("aisdk_chats").filter((q) => q.eq(q.field("userId"), identity._id)).collect()
-  }
-})
+    return ctx.db
+      .query("aisdk_chats")
+      .filter((q) => q.eq(q.field("userId"), identity._id))
+      .collect();
+  },
+});
