@@ -188,7 +188,7 @@ export function StreamCompletion(
   let genTime: string;
   let ttft: string;
   const endOfCompletion = async () => {
-    const r = await result.usage
+    const r = await result.usage;
     try {
       await genCallback({
         usage: {
@@ -206,13 +206,12 @@ export function StreamCompletion(
         ttft: parseFloat(ttft),
       });
     } catch (e) {}
-  }
+  };
 
   // Transform to OpenAI Stream
   const aisdk_response = result.toUIMessageStream();
-  const chunkLoadStream = convertStreamToAsyncIterator(
-    aisdk_response
-  ) as AsyncGenerator<UIMessageChunk>;
+  const chunkLoadStream =
+    convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
   const genTimeFirst = Date.now() / 1000;
   const createdDateUnix = Math.floor(genTimeFirst);
   let genID: string;
@@ -494,9 +493,8 @@ export async function NonStreamingCompletion(
   };
 
   const aisdk_response = result.toUIMessageStream();
-  const chunkLoadStream = convertStreamToAsyncIterator(
-    aisdk_response
-  ) as AsyncGenerator<UIMessageChunk>;
+  const chunkLoadStream =
+    convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
 
   const genTimeFirst = Date.now() / 1000;
   const createdDateUnix = Math.floor(genTimeFirst);
@@ -587,7 +585,7 @@ export async function NonStreamingCompletion(
     }
   }
   genTime = (Date.now() / 1000 - genTimeFirst).toFixed(3);
-  await endOfCompletion()
+  await endOfCompletion();
 
   return openAIResponse!;
 }

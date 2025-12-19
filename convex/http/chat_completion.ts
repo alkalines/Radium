@@ -143,7 +143,7 @@ const CreateCompletion = async (
         const controllerOutput = (text: string) =>
           controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
 
-        for await (const providerChunk of convertStreamToAsyncIterator(providerGen)) {
+        for await (const providerChunk of convertStreamToAsyncIterator<string>(providerGen)) {
           try {
             let chunk = JSON.parse(providerChunk) as ChatCompletions_Streaming_Chunk_Type;
             if (!originalGenID) originalGenID = chunk.id
