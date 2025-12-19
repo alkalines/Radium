@@ -73,18 +73,18 @@ export const AISDK_POST_Chat = httpAction(
 
     // Parse the incoming request
     const body: {
-      messages: UIMessage[];
+      message: UIMessage[];
       model: string;
       id?: Id<"aisdk_chats">;
       chatId?: Id<"aisdk_chats">; // When creating an chat we can't create an chat ID on the fly
     } = await req.json();
     const chatId = (body?.chatId || body?.id)!;
 
-    const chatOwner = await ctx.runQuery(internal.aisdk.GetChatOwner, {
+    const chatInfo = await ctx.runQuery(internal.aisdk.InternalChatInfo, {
       chatId,
-    })
+    });
 
-    if (chatOwner && chatOwner !== identity.user.id)
+    if (!chatInfo || chatInfo.userId !== identity.user.id)
       return Response.json(
         { error: { message: "Unauthorized", code: 401 } },
         { status: 401 }
@@ -96,9 +96,11 @@ export const AISDK_POST_Chat = httpAction(
       messages_queue: null,
     });
 
+    const chatMessages = [...(chatInfo.messages as any[]), body.message];
+
     const result = streamText({
       model: provider(body.model),
-      messages: convertToModelMessages(body.messages),
+      messages: convertToModelMessages(chatMessages),
     });
 
     return result.toUIMessageStreamResponse({
@@ -110,7 +112,7 @@ export const AISDK_POST_Chat = httpAction(
         };
       },
       onFinish: async ({ messages }) => {
-        const allMessages = [...body.messages, ...messages];
+        const allMessages = [...chatMessages, ...messages];
         await ctx.runMutation(internal.aisdk.EditChat, {
           chatId,
           messages: allMessages,
@@ -160,20 +162,17 @@ export const AISDK_GET_Chat_Stream = httpAction(
       );
     }
 
-    let stream;
-    try {
-      stream = await ctx.runQuery(internal.aisdk.GetChatStream, {
-        chatId,
-      });
-    } catch (E) {
-      return new Response(null, { status: 204 });
-    }
-
-    const chatOwner = await ctx.runQuery(internal.aisdk.GetChatOwner, {
+    let stream = await ctx.runQuery(internal.aisdk.GetChatStream, {
       chatId,
     });
 
-    if (chatOwner && chatOwner !== identity.user.id)
+    if (!stream) return new Response(null, { status: 204 });
+
+    const chatInfo = await ctx.runQuery(internal.aisdk.InternalChatInfo, {
+      chatId,
+    });
+
+    if (!chatInfo || chatInfo.userId !== identity.user.id)
       return new Response(null, { status: 204 });
 
     let lastChunk = -1; // -1 = Not Recived anything yet
@@ -197,7 +196,7 @@ export const AISDK_GET_Chat_Stream = httpAction(
                 stream.status === "timeout"
               ) {
                 streamFinished = true;
-                controller.close()
+                controller.close();
               }
 
               const nextChunk = stream.chunks[lastChunk + 1];

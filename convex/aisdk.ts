@@ -73,13 +73,13 @@ export const GetChat = query({
   },
 });
 
-export const GetChatOwner = internalQuery({
+export const InternalChatInfo = internalQuery({
   args: {
     chatId: v.id("aisdk_chats"),
   },
   handler: async (ctx, args) => {
     const chat = await ctx.db.get(args.chatId);
-    return chat?.userId;
+    return chat
   },
 });
 

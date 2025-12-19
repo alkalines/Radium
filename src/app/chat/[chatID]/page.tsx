@@ -54,11 +54,13 @@ export default function ChatPage({
     id: chatID,
     resume,
     transport: new DefaultChatTransport({
-      prepareSendMessagesRequest: ({ id, messages }) => {
+      prepareSendMessagesRequest: ({ id, messages, body }) => {
         return {
           body: {
             id,
             message: messages[messages.length - 1],
+            webSearch: useWebSearch,
+            model: body?.model!
           },
         };
       },
@@ -180,8 +182,7 @@ export default function ChatPage({
       {
         body: {
           model: models?.find((m) => m._id === selectedModel)?.slug,
-          webSearch: useWebSearch,
-        },
+        }
       }
     );
     setText("");
