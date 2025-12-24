@@ -23,11 +23,10 @@ import {
 } from "@/components/ai-elements/reasoning";
 import { Loader } from "@/components/ai-elements/loader";
 import { Id } from "../../../../convex/_generated/dataModel";
-import { DefaultChatTransport, UI_MESSAGE_STREAM_HEADERS } from "ai";
+import { DefaultChatTransport } from "ai";
 
 export default function ChatPage({
   params,
-  resume = true,
 }: {
   params: Promise<{ chatID: string }>;
   resume?: boolean;
@@ -52,7 +51,6 @@ export default function ChatPage({
    */
   const { messages, status, sendMessage, setMessages } = useChat({
     id: chatID,
-    resume,
     transport: new DefaultChatTransport({
       prepareSendMessagesRequest: ({ id, messages, body }) => {
         return {
@@ -62,11 +60,6 @@ export default function ChatPage({
             webSearch: useWebSearch,
             model: body!.model!
           },
-        };
-      },
-      prepareReconnectToStreamRequest: ({ id }) => {
-        return {
-          api: `/api/chat/stream/${id}`, 
         };
       },
     }),
@@ -111,7 +104,7 @@ export default function ChatPage({
       }
       hasLoadedMessages.current = true;
     }
-  }, [chatInfo, setMessages]);
+  }, [chatInfo, setMessages, models, sendMessage]);
 
   const handleSubmit = (message: PromptInputMessage) => {
     const hasText = Boolean(message.text);

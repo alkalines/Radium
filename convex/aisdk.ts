@@ -22,6 +22,7 @@ export const CreateChat = mutation({
       messages_queue: args.messages_queue,
       balance: args.balance,
       userId: identity._id,
+      activeStream: false
     });
   },
 });
@@ -29,7 +30,7 @@ export const CreateChat = mutation({
 export const EditChat = internalMutation({
   args: {
     messages: v.optional(v.array(messageSchema)),
-    activeStreamId: v.optional(v.union(v.string(), v.null())),
+    activeStream: v.optional(v.boolean()),
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
     chatId: v.id("aisdk_chats"),
   },
@@ -40,7 +41,7 @@ export const EditChat = internalMutation({
     ctx.db.patch(args.chatId, {
       messages: args.messages || chat.messages,
       messages_queue: args.messages_queue,
-      activeStreamId: args.activeStreamId,
+      activeStream: args.activeStream,
     });
   },
 });
@@ -59,7 +60,7 @@ export const GetChat = query({
       id: chat?._id,
       messages: chat?.messages,
       title: chat?.title,
-      activeStream: chat.activeStreamId,
+      activeStream: chat.activeStream,
       messages_queue: chat.messages_queue,
     };
   },

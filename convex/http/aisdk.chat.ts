@@ -1,9 +1,7 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
   convertToModelMessages,
-  generateId,
   streamText,
-  UI_MESSAGE_STREAM_HEADERS,
   UIMessage,
 } from "ai";
 import { ChatCompletions_RequestBody_Type } from "../../src/utils/types/openai/types";
@@ -12,7 +10,6 @@ import { Internal_Chat_Completion } from "./chat_completion";
 import { Id } from "../_generated/dataModel";
 import { createAuth } from "../auth";
 import { internal } from "../_generated/api";
-import { createResumableStreamContext } from "resumable-stream/ioredis";
 
 export const AISDK_POST_Chat = httpAction(
   async (ctx, req): Promise<Response> => {
@@ -84,7 +81,7 @@ export const AISDK_POST_Chat = httpAction(
 
     await ctx.runMutation(internal.aisdk.EditChat, {
       chatId,
-      activeStreamId: null,
+      activeStream: true,
       messages_queue: null,
     });
 
@@ -108,63 +105,14 @@ export const AISDK_POST_Chat = httpAction(
         await ctx.runMutation(internal.aisdk.EditChat, {
           chatId,
           messages: allMessages,
-          activeStreamId: null,
-        });
-      },
-      async consumeSseStream({ stream }) {
-        const streamId = generateId();
-
-        // Create a resumable stream from the SSE stream
-        const streamContext = createResumableStreamContext({
-          waitUntil: null
-        });
-        await streamContext.createNewResumableStream(streamId, () => stream);
-
-        // Update the chat with the active stream ID
-        await ctx.runMutation(internal.aisdk.EditChat, {
-          chatId,
-          activeStreamId: streamId,
+          activeStream: false,
         });
       },
     });
   },
 );
 
-export const AISDK_GET_Chat_Stream = httpAction(
-  async (ctx, req): Promise<Response> => {
-    "use node";
-    
-    const url = new URL(req.url);
-    const chatId = url.pathname.split("/")[5] as Id<"aisdk_chats">;
-
-    const auth = createAuth(ctx);
-    const identity = await auth.api.getSession({
-      headers: req.headers,
-    });
-
-    if (!identity) {
-      return Response.json(
-        { error: { message: "Unauthorized", code: 401 } },
-        { status: 401 },
-      );
-    }
-
-    const chatInfo = await ctx.runQuery(internal.aisdk.InternalChatInfo, {
-      chatId,
-    });
-
-    const stream = createResumableStreamContext({
-      waitUntil: null
-    });
-    
-    if (!chatInfo || chatInfo.userId !== identity.user.id || !chatInfo.activeStreamId)
-      return new Response(null, { status: 204 });
-
-    return new Response(
-      await stream.resumeExistingStream(chatInfo.activeStreamId),
-      { headers: UI_MESSAGE_STREAM_HEADERS },
-    );
-  },
-);
-
-// https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams#3-implement-the-get-handler
+/**
+ * https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams#3-implement-the-get-handler
+ * We can't implement the GET handler. In case we wanted Convex needed to be compatible with an Redis library or create an extremely custom logic to store data into convex, but this aproach would add major pressure on the DB and be harder to maintain
+ */
