@@ -3,15 +3,7 @@ import { internalMutation, internalQuery, mutation, query } from "./_generated/s
 import { Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
-import {
-  PersistentTextStreaming,
-  StreamId,
-} from "@convex-dev/persistent-text-streaming";
 import { components } from "./_generated/api";
-
-const streaming = new PersistentTextStreaming(
-  components.persistentTextStreaming
-);
 
 // Mutation
 export const CreateChat = mutation({
@@ -82,27 +74,6 @@ export const InternalChatInfo = internalQuery({
     return chat
   },
 });
-
-export const GetChatStream = internalQuery({
-  args: {
-    chatId: v.id("aisdk_chats"),
-  },
-  handler: async (ctx, args) => {
-    const chat = await ctx.db.get(args.chatId);
-    let body;
-
-    try {
-      body = await streaming.getStreamBody(ctx, chat!.activeStreamId as StreamId);
-    } catch (e) {
-      return null
-    }
-
-    return {
-      chunks: body.text.split("[NEXT-CHUNK]"),
-      status: body.status
-    };
-  },
-})
 
 export const ListChats = query({
   handler: async (ctx, args) => {

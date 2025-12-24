@@ -11,16 +11,8 @@ import { httpAction } from "../_generated/server";
 import { Internal_Chat_Completion } from "./chat_completion";
 import { Id } from "../_generated/dataModel";
 import { createAuth } from "../auth";
-import { api, components, internal } from "../_generated/api";
-import {
-  PersistentTextStreaming,
-  StreamId,
-} from "@convex-dev/persistent-text-streaming";
-import { convertStreamToAsyncIterator } from "@/utils/tools/chunkReader";
-
-const streaming = new PersistentTextStreaming(
-  components.persistentTextStreaming
-);
+import { internal } from "../_generated/api";
+import { createResumableStreamContext } from "resumable-stream/ioredis";
 
 export const AISDK_POST_Chat = httpAction(
   async (ctx, req): Promise<Response> => {
@@ -35,7 +27,7 @@ export const AISDK_POST_Chat = httpAction(
     if (!identity) {
       return Response.json(
         { error: { message: "Unauthorized", code: 401 } },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -49,23 +41,23 @@ export const AISDK_POST_Chat = httpAction(
       baseURL: "https://api.there_is_no_need_for_this.com/v1",
       fetch: async (
         input: string | URL | Request,
-        init?: RequestInit
+        init?: RequestInit,
       ): Promise<Response> => {
         try {
           // Parse the request body from init
           const reqData = JSON.parse(
-            init?.body as string
+            init?.body as string,
           ) as ChatCompletions_RequestBody_Type;
           return Internal_Chat_Completion(
             ctx,
             reqData,
-            identity.user.id as any
+            identity.user.id as any,
           );
         } catch (e) {
           console.log(e);
           return Response.json(
             { text: "Internal Server Error!" },
-            { status: 500 }
+            { status: 500 },
           );
         }
       },
@@ -87,7 +79,7 @@ export const AISDK_POST_Chat = httpAction(
     if (!chatInfo || chatInfo.userId !== identity.user.id)
       return Response.json(
         { error: { message: "Unauthorized", code: 401 } },
-        { status: 401 }
+        { status: 401 },
       );
 
     await ctx.runMutation(internal.aisdk.EditChat, {
@@ -120,33 +112,28 @@ export const AISDK_POST_Chat = httpAction(
         });
       },
       async consumeSseStream({ stream }) {
-        const streamId = await streaming.createStream(ctx);
+        const streamId = generateId();
+
+        // Create a resumable stream from the SSE stream
+        const streamContext = createResumableStreamContext({
+          waitUntil: null
+        });
+        await streamContext.createNewResumableStream(streamId, () => stream);
+
+        // Update the chat with the active stream ID
         await ctx.runMutation(internal.aisdk.EditChat, {
           chatId,
           activeStreamId: streamId,
         });
-        await streaming.stream(
-          ctx,
-          req,
-          streamId,
-          async (ctx, req, streamId, append) => {
-            for await (const chunk of convertStreamToAsyncIterator<string>(
-              stream
-            ))
-              append(`${chunk}[NEXT-CHUNK]`);
-            await ctx.runMutation(internal.aisdk.EditChat, {
-              chatId,
-              activeStreamId: null,
-            });
-          }
-        );
       },
     });
-  }
+  },
 );
 
 export const AISDK_GET_Chat_Stream = httpAction(
   async (ctx, req): Promise<Response> => {
+    "use node";
+    
     const url = new URL(req.url);
     const chatId = url.pathname.split("/")[5] as Id<"aisdk_chats">;
 
@@ -158,59 +145,26 @@ export const AISDK_GET_Chat_Stream = httpAction(
     if (!identity) {
       return Response.json(
         { error: { message: "Unauthorized", code: 401 } },
-        { status: 401 }
+        { status: 401 },
       );
     }
-
-    let stream = await ctx.runQuery(internal.aisdk.GetChatStream, {
-      chatId,
-    });
-
-    if (!stream) return new Response(null, { status: 204 });
 
     const chatInfo = await ctx.runQuery(internal.aisdk.InternalChatInfo, {
       chatId,
     });
 
-    if (!chatInfo || chatInfo.userId !== identity.user.id)
+    const stream = createResumableStreamContext({
+      waitUntil: null
+    });
+    
+    if (!chatInfo || chatInfo.userId !== identity.user.id || !chatInfo.activeStreamId)
       return new Response(null, { status: 204 });
 
-    let lastChunk = -1; // -1 = Not Recived anything yet
-
-    console.log("here");
     return new Response(
-      new ReadableStream({
-        start(controller) {
-          console.log("started!");
-          const controllerOutput = (text: string) => {
-            controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
-            console.log(text);
-          };
-
-          let streamFinished = false;
-          while (!streamFinished) {
-            if (stream) {
-              if (
-                stream.status === "done" ||
-                stream.status === "error" ||
-                stream.status === "timeout"
-              ) {
-                streamFinished = true;
-                controller.close();
-              }
-
-              const nextChunk = stream.chunks[lastChunk + 1];
-              if (nextChunk) {
-                controllerOutput(nextChunk);
-                lastChunk += 1;
-              }
-            }
-          }
-        },
-      }),
-      { headers: UI_MESSAGE_STREAM_HEADERS }
+      await stream.resumeExistingStream(chatInfo.activeStreamId),
+      { headers: UI_MESSAGE_STREAM_HEADERS },
     );
-  }
+  },
 );
 
 // https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams#3-implement-the-get-handler

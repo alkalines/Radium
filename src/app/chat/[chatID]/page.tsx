@@ -60,7 +60,7 @@ export default function ChatPage({
             id,
             message: messages[messages.length - 1],
             webSearch: useWebSearch,
-            model: body?.model!
+            model: body!.model!
           },
         };
       },
@@ -69,61 +69,6 @@ export default function ChatPage({
           api: `/api/chat/stream/${id}`, 
         };
       },
-      /* fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-        let inputUrl: URL;
-        if (typeof input === 'string') {
-          inputUrl = new URL(input);
-        } else if (input instanceof URL) {
-          inputUrl = input;
-        } else {
-          inputUrl = new URL(input.url);
-        }
-        
-        console.log(inputUrl.pathname);
-        if (inputUrl.pathname === "/api/chat/stream/") {
-          if (
-            chatInfo &&
-            typeof chatInfo !== "string" &&
-            chatInfo.activeStream
-          ) {
-            const stream = useQuery(api.aisdk.GetChatStream, {
-              chatId: chatInfo.id,
-            });
-            let lastChunk = -1; // -1 = Not Recived anything yet
-
-            console.log('here')
-            return new Response(
-              new ReadableStream({
-                start(controller) {
-                  console.log('started!')
-                  const controllerOutput = (text: string) =>
-                    controller.enqueue(
-                      new TextEncoder().encode(`data: ${text}\n\n`)
-                    );
-
-                  if (typeof stream !== "string" && stream) {
-                    if (
-                      stream.status === "done" ||
-                      stream.status === "error" ||
-                      stream.status === "timeout"
-                    )
-                      controller.close();
-
-                    const nextChunk = stream.chunks[lastChunk + 1];
-                    if (nextChunk) {
-                      controllerOutput(nextChunk);
-                      lastChunk += 1;
-                    }
-                  }
-                },
-              }),
-              {
-                headers: UI_MESSAGE_STREAM_HEADERS,
-              }
-            );
-          } else return new Response(null, { status: 204 });
-        } else return fetch(input, init);
-      }, */
     }),
   });
 
