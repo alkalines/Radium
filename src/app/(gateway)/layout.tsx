@@ -23,7 +23,7 @@ export default function GatewayLayout({
         }}
       />
       <Navbar />
-      <main className="relative pt-16">{children}</main>
+      <main className="relative pt-16 min-h-screen flex flex-col">{children}</main>
     </div>
   );
 }
