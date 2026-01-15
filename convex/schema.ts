@@ -189,6 +189,6 @@ export default defineSchema({
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())), // Used only on home page
     chat_completions: v.array(v.id("chat_completions")),
     title: v.optional(v.string()),
-    activeStream: v.boolean(),
+    activeStream: v.optional(v.boolean()),
   }),
 });
