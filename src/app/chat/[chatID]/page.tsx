@@ -22,6 +22,7 @@ import {
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
 import { Loader } from "@/components/ai-elements/loader";
+import { AlertCircle } from "lucide-react";
 import { Id } from "../../../../convex/_generated/dataModel";
 import { DefaultChatTransport } from "ai";
 
@@ -78,7 +79,8 @@ export default function ChatPage({
       chatInfo &&
       typeof chatInfo !== "string" &&
       chatInfo.messages &&
-      !hasLoadedMessages.current
+      !hasLoadedMessages.current &&
+      !chatInfo.activeStream
     ) {
       setMessages(chatInfo.messages as any);
       if (chatInfo.messages_queue) {
@@ -155,6 +157,7 @@ export default function ChatPage({
                           partIndex === message.parts.length - 1 &&
                           message.id === messages.at(-1)?.id
                         }
+                        duration={(part as any).duration}
                       >
                         <ReasoningTrigger />
                         <ReasoningContent>{part.text}</ReasoningContent>
@@ -172,6 +175,14 @@ export default function ChatPage({
               <span className="text-sm">Thinking...</span>
             </div>
           )}
+          {chatInfo && typeof chatInfo !== "string" && chatInfo.activeStream && (
+            <div className="flex items-center gap-3 p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">
+              <AlertCircle className="size-5 shrink-0" />
+              <span className="text-sm">
+                A response is currently being generated in another session. Please wait for it to complete.
+              </span>
+            </div>
+          )}
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
@@ -186,6 +197,7 @@ export default function ChatPage({
           StateUseWebSearch={[useWebSearch, setUseWebSearch]}
           StateSelectedModel={[selectedModel, setSelectedModel]}
           StateText={[text, setText]}
+          activeStream={chatInfo && typeof chatInfo !== "string" ? chatInfo.activeStream : false}
         />
       </div>
     </main>
