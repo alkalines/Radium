@@ -12,6 +12,7 @@ const ReasoningUIPartSchema = v.object({
   text: v.string(),
   state: v.union(v.literal("streaming"), v.literal("done")),
   providerMetadata: v.optional(v.any()),
+  duration: v.optional(v.number()), // Duration in seconds
 });
 
 const SourceUrlUIPartSchema = v.object({

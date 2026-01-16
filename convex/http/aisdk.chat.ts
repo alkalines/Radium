@@ -92,16 +92,41 @@ export const AISDK_POST_Chat = httpAction(
       messages: convertToModelMessages(chatMessages),
     });
 
+    // Track reasoning start time to calculate duration
+    let reasoningStartTime: number | null = null;
+
     return result.toUIMessageStreamResponse({
       sendSources: true,
       sendReasoning: true,
-      messageMetadata() {
+      messageMetadata({ part }) {
+        // Track when reasoning starts
+        if (part.type === "reasoning-start") {
+          if (reasoningStartTime === null) {
+            reasoningStartTime = Date.now();
+          }
+        }
         return {
           model: body.model,
         };
       },
       onFinish: async ({ messages }) => {
-        const allMessages = [...chatMessages, ...messages];
+        // Calculate reasoning duration and add it to reasoning parts
+        const messagesWithDuration = messages.map((message) => ({
+          ...message,
+          parts: message.parts.map((part) => {
+            if (part.type === "reasoning" && reasoningStartTime !== null) {
+              const durationMs = Date.now() - reasoningStartTime;
+              const durationSeconds = Math.ceil(durationMs / 1000);
+              return {
+                ...part,
+                duration: durationSeconds,
+              };
+            }
+            return part;
+          }),
+        }));
+
+        const allMessages = [...chatMessages, ...messagesWithDuration];
         await ctx.runMutation(internal.aisdk.EditChat, {
           chatId,
           messages: allMessages,
