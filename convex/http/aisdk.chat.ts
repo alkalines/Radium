@@ -90,6 +90,7 @@ export const AISDK_POST_Chat = httpAction(
     const result = streamText({
       model: provider(body.model),
       messages: await convertToModelMessages(chatMessages),
+      abortSignal: req.signal,
     });
 
     // Track reasoning start time to calculate duration

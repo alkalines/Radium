@@ -51,6 +51,7 @@ export default function ChatroomPromptInput({
   StateText,
   chatStatus,
   activeStream,
+  onStop,
 }: {
   models?: Doc<"models">[] | undefined;
   authors?: Doc<"authors">[] | undefined;
@@ -60,6 +61,7 @@ export default function ChatroomPromptInput({
   StateText: useStateType<string>;
   chatStatus: ChatStatus;
   activeStream?: boolean;
+  onStop?: () => void;
 }) {
   /**
    * Model selector
@@ -204,6 +206,7 @@ export default function ChatroomPromptInput({
           <PromptInputSubmit
             disabled={!(selectedModelData && chatStatus && text !== "") || activeStream}
             status={chatStatus}
+            onStop={onStop}
           />
         </div>
       </PromptInputFooter>

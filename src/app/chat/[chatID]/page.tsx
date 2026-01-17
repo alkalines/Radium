@@ -50,7 +50,7 @@ export default function ChatPage({
   /**
    * AI SDK useChat hook
    */
-  const { messages, status, sendMessage, setMessages } = useChat({
+  const { messages, status, sendMessage, setMessages, stop } = useChat({
     id: chatID,
     transport: new DefaultChatTransport({
       prepareSendMessagesRequest: ({ id, messages, body }) => {
@@ -72,6 +72,12 @@ export default function ChatPage({
   const hasLoadedMessages = useRef(false);
 
   /**
+   * Track if this client initiated a stream (to avoid showing "another session" warning
+   * during the brief moment between sendMessage() and status changing from "ready")
+   */
+  const didInitiateStream = useRef(false);
+
+  /**
    * Sync messages from chatInfo when it loads
    */
   useEffect(() => {
@@ -84,8 +90,10 @@ export default function ChatPage({
     ) {
       setMessages(chatInfo.messages as any);
       if (chatInfo.messages_queue) {
-        console.log(chatInfo.messages_queue.model);
-        setSelectedModel(chatInfo.messages_queue.model);
+        setSelectedModel(
+          models?.find((m) => m.slug === chatInfo.messages_queue?.model)?._id,
+        );
+        didInitiateStream.current = true;
         sendMessage(
           {
             text: chatInfo.messages_queue.text,
@@ -102,12 +110,21 @@ export default function ChatPage({
         const lastMessageModel = chatInfo.messages.at(-1)?.metadata?.model;
         if (lastMessageModel)
           setSelectedModel(
-            models?.find((m) => m.slug === lastMessageModel)?.slug
+            models?.find((m) => m.slug === lastMessageModel)?._id
           );
       }
       hasLoadedMessages.current = true;
     }
   }, [chatInfo, setMessages, models, sendMessage]);
+
+  /**
+   * Reset didInitiateStream when the stream completes
+   */
+  useEffect(() => {
+    if (status === "ready" && chatInfo && typeof chatInfo !== "string" && !chatInfo.activeStream) {
+      didInitiateStream.current = false;
+    }
+  }, [status, chatInfo]);
 
   const handleSubmit = (message: PromptInputMessage) => {
     const hasText = Boolean(message.text);
@@ -115,6 +132,7 @@ export default function ChatPage({
     if (!(hasText || hasAttachments)) {
       return;
     }
+    didInitiateStream.current = true;
     sendMessage(
       {
         text: message.text || "Sent with attachments",
@@ -176,7 +194,7 @@ export default function ChatPage({
               <span className="text-sm">Thinking...</span>
             </div>
           )}
-          {chatInfo && typeof chatInfo !== "string" && chatInfo.activeStream && status === "ready" && (
+          {chatInfo && typeof chatInfo !== "string" && chatInfo.activeStream && status === "ready" && !didInitiateStream.current && (
             <div className="flex items-center gap-3 p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">
               <AlertCircle className="size-5 shrink-0" />
               <span className="text-sm">
@@ -199,6 +217,7 @@ export default function ChatPage({
           StateSelectedModel={[selectedModel, setSelectedModel]}
           StateText={[text, setText]}
           activeStream={chatInfo && typeof chatInfo !== "string" ? chatInfo.activeStream : false}
+          onStop={stop}
         />
       </div>
     </main>
