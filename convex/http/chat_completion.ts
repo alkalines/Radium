@@ -99,7 +99,7 @@ const CreateCompletion = async (
     let finishedReason: string;
     let streamCanceled = false;
 
-    const providerGen = StreamCompletion(reqData, provider, async (genCompletion) => {
+    const providerGen = await StreamCompletion(reqData, provider, async (genCompletion) => {
       // End of the stream
       await info.ctx.runMutation(internal.key.billKey, {
         bill: {

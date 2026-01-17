@@ -84,6 +84,7 @@ export default function ChatPage({
     ) {
       setMessages(chatInfo.messages as any);
       if (chatInfo.messages_queue) {
+        console.log(chatInfo.messages_queue.model);
         setSelectedModel(chatInfo.messages_queue.model);
         sendMessage(
           {
@@ -101,7 +102,7 @@ export default function ChatPage({
         const lastMessageModel = chatInfo.messages.at(-1)?.metadata?.model;
         if (lastMessageModel)
           setSelectedModel(
-            models?.find((m) => m.slug === lastMessageModel)?._id
+            models?.find((m) => m.slug === lastMessageModel)?.slug
           );
       }
       hasLoadedMessages.current = true;
@@ -175,7 +176,7 @@ export default function ChatPage({
               <span className="text-sm">Thinking...</span>
             </div>
           )}
-          {chatInfo && typeof chatInfo !== "string" && chatInfo.activeStream && (
+          {chatInfo && typeof chatInfo !== "string" && chatInfo.activeStream && status === "ready" && (
             <div className="flex items-center gap-3 p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">
               <AlertCircle className="size-5 shrink-0" />
               <span className="text-sm">

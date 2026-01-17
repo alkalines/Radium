@@ -72,16 +72,16 @@ function toolChoiceParse(reqData: ChatCompletions_RequestBody_Type) {
   return undefined;
 }
 
-function getAISDKStream(
+async function getAISDKStream(
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>,
   abort: AbortController
-): ReturnType<typeof streamText> {
+): Promise<ReturnType<typeof streamText>> {
   const parsedToolChoice = toolChoiceParse(reqData);
   /**
    * @todo Reasoning parameter, and provider specific options
    */
-  const uiMessages = convertToModelMessages(
+  const uiMessages = await convertToModelMessages(
     reqData.messages.map((m) => {
       const role: "system" | "user" | "assistant" =
         m.role === "developer"
@@ -176,13 +176,13 @@ export type genCallbackType = (genCompletion: {
  * @param provider Provider message connector
  * @returns An Readable Stream of Chunks
  */
-export function StreamCompletion(
+export async function StreamCompletion(
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>,
   genCallback: genCallbackType
-): ReadableStream<ChatCompletions_Streaming_Chunk_Type | string> {
+): Promise<ReadableStream<ChatCompletions_Streaming_Chunk_Type | string>> {
   const abort = new AbortController();
-  const result = getAISDKStream(reqData, provider, abort);
+  const result = await getAISDKStream(reqData, provider, abort);
 
   // Usage Callback
   let genTime: string;
@@ -465,7 +465,7 @@ export async function NonStreamingCompletion(
   genCallback: genCallbackType
 ): Promise<ChatCompletions_NotStreaming_ResponseBody_Type> {
   const abort = new AbortController();
-  const result = getAISDKStream(reqData, provider, abort);
+  const result = await getAISDKStream(reqData, provider, abort);
 
   // Usage Callback
   let genTime: string;
@@ -560,9 +560,10 @@ export async function NonStreamingCompletion(
         break;
       case "finish":
         let finishReason = "stop";
+        let generationUsage = await result.usage
         if (
           (reqData.max_tokens || reqData.max_completion_tokens) ===
-          (await result.usage).outputTokens
+          generationUsage.outputTokens
         ) {
           finishReason = "length";
         } else if (openAIResponse.choices[0].message.tool_calls?.[0]) {
@@ -571,15 +572,15 @@ export async function NonStreamingCompletion(
         openAIResponse.choices[0].finish_reason = finishReason;
 
         openAIResponse.usage = {
-          completion_tokens: (await result.usage).outputTokens || 0,
+          completion_tokens: generationUsage.outputTokens || 0,
           completion_tokens_details: {
-            reasoning_tokens: (await result.usage).reasoningTokens,
+            reasoning_tokens: generationUsage.reasoningTokens,
           },
-          prompt_tokens: (await result.usage).inputTokens || 0,
+          prompt_tokens: generationUsage.inputTokens || 0,
           prompt_tokens_details: {
-            cached_tokens: (await result.usage).cachedInputTokens,
+            cached_tokens: generationUsage.cachedInputTokens,
           },
-          total_tokens: (await result.usage).totalTokens || 0,
+          total_tokens: generationUsage.totalTokens || 0,
         };
         break;
     }
