@@ -12,9 +12,11 @@
   },
   "homepage": "https://github.com/alkalines/Radium#readme",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "dev": "concurrently -c gray,yellow --names next-dev,convex-dev \"bun run next:dev\" \"bun run convex:dev\"",
+    "next:dev": "next dev",
+    "convex:dev": "convex dev",
+    "next:build": "next build",
+    "next:start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
@@ -41,6 +43,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "concurrently": "^9.2.1",
     "convex": "^1.31.5",
     "embla-carousel-react": "^8.6.0",
     "ioredis": "^5.9.2",
