@@ -153,55 +153,45 @@ export default function ChatPage({
       <Conversation className="flex-1 overflow-hidden">
         <ConversationContent className="px-4 md:px-8 lg:px-14 3xl:px-20 max-w-4xl mx-auto w-full">
           {messages.map((message, messageIndex) => (
-            <div key={message.id || `msg-${messageIndex}`}>
-              {message.parts.map((part, partIndex) => {
-                switch (part.type) {
-                  case "text":
-                    return (
-                      <Message
-                        from={message.role}
-                        key={`${message.id}-${partIndex}`}
-                      >
-                        <MessageContent>
-                          <MessageResponse>{part.text}</MessageResponse>
-                        </MessageContent>
-                      </Message>
-                    );
-                  case "reasoning":
-                    return (
-                      <Reasoning
-                        key={`${message.id}-${partIndex}`}
-                        isStreaming={
-                          status === "streaming" &&
-                          partIndex === message.parts.length - 1 &&
-                          message.id === messages.at(-1)?.id
-                        }
-                        duration={(part as any).duration}
-                      >
-                        <ReasoningTrigger />
-                        <ReasoningContent>{part.text}</ReasoningContent>
-                      </Reasoning>
-                    );
-                  default:
-                    return null;
-                }
-              })}
-            </div>
+            <Message from={message.role} key={message.id}>
+              <MessageContent>
+                {message.parts.map((part, partIndex) => {
+                  switch (part.type) {
+                    case "text":
+                      return <MessageResponse>{part.text}</MessageResponse>;
+                    case "reasoning":
+                      return (
+                        <Reasoning
+                          key={`${message.id}-${partIndex}`}
+                          isStreaming={
+                            status === "streaming" &&
+                            partIndex === message.parts.length - 1 &&
+                            message.id === messages.at(-1)?.id
+                          }
+                          duration={(part as any).duration}
+                        >
+                          <ReasoningTrigger />
+                          <ReasoningContent>{part.text}</ReasoningContent>
+                        </Reasoning>
+                      );
+                  }
+                })}
+              </MessageContent>
+            </Message>
           ))}
-          {status === "submitted" && (
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <Loader size={16} />
-              <span className="text-sm">Thinking...</span>
-            </div>
-          )}
-          {chatInfo && typeof chatInfo !== "string" && chatInfo.activeStream && status === "ready" && !didInitiateStream.current && (
-            <div className="flex items-center gap-3 p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">
-              <AlertCircle className="size-5 shrink-0" />
-              <span className="text-sm">
-                A response is currently being generated in another session. Please wait for it to complete.
-              </span>
-            </div>
-          )}
+          {chatInfo &&
+            typeof chatInfo !== "string" &&
+            chatInfo.activeStream &&
+            status === "ready" &&
+            !didInitiateStream.current && (
+              <div className="flex items-center gap-3 p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">
+                <AlertCircle className="size-5 shrink-0" />
+                <span className="text-sm">
+                  A response is currently being generated in another session.
+                  Please wait for it to complete.
+                </span>
+              </div>
+            )}
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
