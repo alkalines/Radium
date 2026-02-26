@@ -22,8 +22,8 @@ export const AISDK_POST_Chat = httpAction(
     });
 
     const userInfo = await ctx.runQuery(internal.auth.internalUserInfo, {
-      userId: identity!.user.id! as any
-    })
+      userId: identity!.user.id! as any,
+    });
 
     if (!identity) {
       return Response.json(
@@ -66,7 +66,7 @@ export const AISDK_POST_Chat = httpAction(
 
     // Parse the incoming request
     const body: {
-      message: UIMessage[];
+      messages: UIMessage[];
       model: string;
       id?: Id<"aisdk_chats">;
       chatId?: Id<"aisdk_chats">; // When creating an chat we can't create an chat ID on the fly
@@ -93,7 +93,7 @@ export const AISDK_POST_Chat = httpAction(
 
     const result = streamText({
       model: provider(body.model),
-      messages: await convertToModelMessages(chatMessages),
+      messages: await convertToModelMessages(body.messages),
       abortSignal: req.signal,
     });
 
@@ -131,7 +131,7 @@ export const AISDK_POST_Chat = httpAction(
           }),
         }));
 
-        const allMessages = [...chatMessages, ...messagesWithDuration];
+        const allMessages = [...body.messages, ...messagesWithDuration];
         await ctx.runMutation(internal.aisdk.EditChat, {
           chatId,
           messages: allMessages,

@@ -57,7 +57,7 @@ export default function ChatPage({
         return {
           body: {
             id,
-            message: messages[messages.length - 1],
+            messages: messages,
             webSearch: useWebSearch,
             model: body!.model!
           },
