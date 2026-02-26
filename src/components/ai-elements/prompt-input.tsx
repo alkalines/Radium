@@ -493,11 +493,19 @@ export const PromptInput = ({
       if (!accept || accept.trim() === "") {
         return true;
       }
-      if (accept.includes("image/*")) {
-        return f.type.startsWith("image/");
-      }
-      // NOTE: keep simple; expand as needed
-      return true;
+
+      const patterns = accept
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      return patterns.some((pattern) => {
+        if (pattern.endsWith("/*")) {
+          const prefix = pattern.slice(0, -1); // e.g: image/* -> image/
+          return f.type.startsWith(prefix);
+        }
+        return f.type === pattern;
+      });
     },
     [accept]
   );
@@ -603,6 +611,7 @@ export const PromptInput = ({
   useEffect(() => {
     const form = formRef.current;
     if (!form) return;
+    if (globalDrop) return // when global drop is on, let the document-level handler own drops
 
     const onDragOver = (e: DragEvent) => {
       if (e.dataTransfer?.types?.includes("Files")) {
@@ -623,7 +632,7 @@ export const PromptInput = ({
       form.removeEventListener("dragover", onDragOver);
       form.removeEventListener("drop", onDrop);
     };
-  }, [add]);
+  }, [add, globalDrop]);
 
   useEffect(() => {
     if (!globalDrop) return;
@@ -1009,7 +1018,10 @@ export const PromptInputActionMenuItem = ({
 // Note: Actions that perform side-effects (like opening a file dialog)
 // are provided in opt-in modules (e.g., prompt-input-attachments).
 
-export type PromptInputSubmitProps = ComponentProps<typeof InputGroupButton> & {
+export type PromptInputSubmitProps = Omit<
+  ComponentProps<typeof InputGroupButton>,
+  "type"
+> & {
   status?: ChatStatus;
   onStop?: () => void;
 };
@@ -1020,20 +1032,12 @@ export const PromptInputSubmit = ({
   size = "icon-sm",
   status,
   onStop,
+  onClick,
   children,
-  disabled,
   ...props
 }: PromptInputSubmitProps) => {
-  const isStreaming = status === "streaming" || status === "submitted";
-
-  const handleClick = (e: React.MouseEvent) => {
-    if (isStreaming && onStop) {
-      e.preventDefault();
-      onStop();
-    }
-  };
-
   let Icon = <CornerDownLeftIcon className="size-4" />;
+  const isStreaming = status === "streaming";
 
   if (status === "submitted") {
     Icon = <Loader2Icon className="size-4 animate-spin" />;
@@ -1045,15 +1049,17 @@ export const PromptInputSubmit = ({
 
   return (
     <InputGroupButton
-      aria-label={isStreaming ? "Stop generation" : "Submit"}
-      className={cn(
-        isStreaming && "bg-destructive hover:bg-destructive/90 text-destructive-foreground",
-        className
-      )}
+      aria-label={isStreaming ? "Stop generating" : "Submit"}
+      className={cn(className)}
+      onClick={(event) => {
+        if (isStreaming) {
+          event.preventDefault();
+          onStop?.();
+        }
+        onClick?.(event);
+      }}
       size={size}
       type={isStreaming ? "button" : "submit"}
-      disabled={isStreaming ? false : disabled}
-      onClick={handleClick}
       variant={variant}
       {...props}
     >
