@@ -2,9 +2,10 @@ import { createClient, type GenericCtx } from "@convex-dev/better-auth";
 import { convex } from "@convex-dev/better-auth/plugins";
 import { components } from "./_generated/api";
 import { DataModel, Doc, Id } from "./_generated/dataModel";
-import { query } from "./_generated/server";
+import { internalQuery, query } from "./_generated/server";
 import { betterAuth } from "better-auth";
 import authConfig from "./auth.config";
+import { v } from "convex/values";
 
 const siteUrl = process.env.SITE_URL!;
 
@@ -49,6 +50,27 @@ export const userInfo = query({
       email: userAuth.email,
       name: userAuth.name,
       profilePicture: userAuth?.image,
+      balances: balances,
+    };
+  },
+});
+
+export const internalUserInfo = internalQuery({
+  args: {
+    userId: v.string()
+  },
+  handler: async (ctx, args): Promise<UserInfoType> => {
+    const userInfo = await authComponent.getAnyUserById(ctx, args.userId)
+
+    /**
+     * @todo Organization and teams support
+     */
+    const balances = await ctx.db.query("balances").filter((q) => q.eq(q.field("userId"), userInfo!._id)).collect()
+
+    return {
+      email: userInfo!.email,
+      name: userInfo!.name,
+      profilePicture: userInfo!.image,
       balances: balances,
     };
   },

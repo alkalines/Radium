@@ -21,6 +21,10 @@ export const AISDK_POST_Chat = httpAction(
       headers: req.headers,
     });
 
+    const userInfo = await ctx.runQuery(internal.auth.internalUserInfo, {
+      userId: identity!.user.id! as any
+    })
+
     if (!identity) {
       return Response.json(
         { error: { message: "Unauthorized", code: 401 } },
@@ -48,7 +52,7 @@ export const AISDK_POST_Chat = httpAction(
           return Internal_Chat_Completion(
             ctx,
             reqData,
-            identity.user.id as any,
+            userInfo.balances[0]._id, // 0 for the moment
           );
         } catch (e) {
           console.log(e);
