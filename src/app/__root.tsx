@@ -4,10 +4,13 @@ import type { QueryClient } from "@tanstack/react-query";
 import {
   createRootRouteWithContext,
   HeadContent,
+  Outlet,
   Scripts,
 } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
+import { AppShell } from "@/components/app-shell";
+import { Toaster } from "@/components/ui/sonner";
 import appCss from "@/styles/app.css?url";
 
 const isDev = import.meta.env.DEV;
@@ -35,8 +38,17 @@ export const Route = createRootRouteWithContext<{
       },
     ],
   }),
+  component: RootRouteComponent,
   shellComponent: RootDocument,
 });
+
+function RootRouteComponent() {
+  return (
+    <AppShell>
+      <Outlet />
+    </AppShell>
+  );
+}
 
 function RootDocument({ children }: { children: ReactNode }) {
   return (
@@ -47,6 +59,7 @@ function RootDocument({ children }: { children: ReactNode }) {
 
       <body className="antialiased min-h-svh flex flex-col">
         {children}
+        <Toaster />
 
         {isDev ? (
           <TanStackDevtools

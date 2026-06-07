@@ -7,7 +7,7 @@ export const Route = createFileRoute("/")({
 
 function Home() {
   return (
-    <main className="min-h-dvh w-screen flex items-center justify-center flex-col gap-y-4 p-4">
+    <div className="min-h-[calc(100svh-var(--header-height))] w-full flex items-center justify-center flex-col gap-4 p-4">
       <img
         className="max-w-sm w-full"
         src="https://raw.githubusercontent.com/TanStack/tanstack.com/main/public/images/logos/splash-dark.png"
@@ -23,6 +23,6 @@ function Home() {
       >
         Docs
       </a>
-    </main>
+    </div>
   );
 }
