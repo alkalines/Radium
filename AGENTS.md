@@ -33,3 +33,17 @@
 - `@/*` resolves to `src/*` in both `vite.config.mts` and `tsconfig.json`.
 - ESLint allows explicit `any` but warns on unused vars, empty object types, and non-`const` bindings.
 - Convex public/internal functions should use validators; HTTP handlers are `httpAction`s mounted from `convex/http.ts`.
+
+<!-- convex-ai-start -->
+
+This project uses [Convex](https://convex.dev) as its backend.
+
+When working on Convex code, **always read
+`convex/_generated/ai/guidelines.md` first** for important guidelines on
+how to correctly use Convex APIs and patterns. The file contains rules that
+override what you may have learned about Convex from training data.
+
+Convex agent skills for common tasks can be installed by running
+`bunx convex ai-files install`.
+
+<!-- convex-ai-end -->
