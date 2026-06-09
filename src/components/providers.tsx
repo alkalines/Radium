@@ -1,25 +1,32 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ConvexProvider, type ConvexReactClient } from "convex/react";
+import { ConvexBetterAuthProvider } from "@convex-dev/better-auth/react";
+import type { ConvexReactClient } from "convex/react";
 import { ThemeProvider, useTheme } from "next-themes";
 import type { ReactNode } from "react";
 
 import { authClient } from "@/lib/auth-client";
+import { themePlugin } from "@/lib/auth/theme-plugin";
 import { AuthProvider } from "./auth/auth-provider";
 import { TooltipProvider } from "./ui/tooltip";
-import { themePlugin } from "@/lib/auth/theme-plugin"
 
 export function Providers({
   children,
   convexClient,
+  initialToken,
 }: {
   children: ReactNode;
   convexClient: ConvexReactClient;
+  initialToken?: string | null;
 }) {
   const navigate = useNavigate();
   //const { slug } = useParams({ strict: false })
 
   return (
-    <ConvexProvider client={convexClient}>
+    <ConvexBetterAuthProvider
+      client={convexClient}
+      authClient={authClient}
+      initialToken={initialToken}
+    >
       <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
         <AuthProvider
           authClient={authClient}
@@ -46,6 +53,6 @@ export function Providers({
           </TooltipProvider>
         </AuthProvider>
       </ThemeProvider>
-    </ConvexProvider>
+    </ConvexBetterAuthProvider>
   );
 }
