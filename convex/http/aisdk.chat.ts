@@ -89,8 +89,6 @@ export const AISDK_POST_Chat = httpAction(
       messages_queue: null,
     });
 
-    const chatMessages = [...(chatInfo.messages as any[]), body.message];
-
     const result = streamText({
       model: provider(body.model),
       messages: await convertToModelMessages(body.messages),
