@@ -4,6 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 export const Route = createFileRoute("/chat")({
+  staticData: {
+    pageTitle: "Chat",
+  },
   component: ChatPage,
 });
 

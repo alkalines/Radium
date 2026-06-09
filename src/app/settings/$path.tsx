@@ -16,6 +16,9 @@ const validSettingsPaths = [
 ]
 
 export const Route = createFileRoute("/settings/$path")({
+  staticData: {
+    pageTitle: "Settings"
+  },
   async beforeLoad({ params: { path }, context: { queryClient }, location }) {
     if (!validSettingsPaths.includes(path)) {
       throw notFound()

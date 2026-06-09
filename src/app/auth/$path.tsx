@@ -10,6 +10,9 @@ const validAuthPathSegments = new Set([
 ])
 
 export const Route = createFileRoute("/auth/$path")({
+  staticData: {
+    pageTitle: "Authentication"
+  },
   beforeLoad({ params: { path } }) {
     if (!validAuthPathSegments.has(path)) {
       throw redirect({ to: "/" })
