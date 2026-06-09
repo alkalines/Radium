@@ -15,12 +15,8 @@ import {
 } from "@/components/ui/sidebar"
 import {
   BotIcon,
-  ChartNoAxesColumnIcon,
-  KeyRoundIcon,
-  LifeBuoyIcon,
+  Route as RouteIcon,
   MessageSquareTextIcon,
-  Settings2Icon,
-  SparklesIcon,
 } from "lucide-react"
 
 const data = {
@@ -37,27 +33,22 @@ const data = {
       icon: BotIcon,
     },
     {
-      title: "API Keys",
+      title: "Gateway",
       url: "#",
-      icon: KeyRoundIcon,
-    },
-    {
-      title: "Usage",
-      url: "#",
-      icon: ChartNoAxesColumnIcon,
+      icon: RouteIcon,
     },
   ],
   navSecondary: [
-    {
-      title: "Settings",
-      url: "/settings/account",
-      icon: Settings2Icon,
-    },
-    {
-      title: "Help",
-      url: "#",
-      icon: LifeBuoyIcon,
-    },
+    // {
+    //   title: "Settings",
+    //   url: "/settings/account",
+    //   icon: Settings2Icon,
+    // },
+    // {
+    //   title: "Help",
+    //   url: "#",
+    //   icon: LifeBuoyIcon,
+    // },
   ],
 }
 
@@ -67,12 +58,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton className="w-fit px-1.5" asChild>
+            <SidebarMenuButton className="h-10 w-fit px-1.5" asChild>
               <a href="/chat">
-                <div className="flex aspect-square size-5 items-center justify-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
-                  <SparklesIcon />
-                </div>
-                <span className="truncate font-medium">Radium</span>
+                <img
+                  src="/radium_extended.svg"
+                  alt="Radium"
+                  className="h-5 w-auto invert dark:invert-0"
+                />
               </a>
             </SidebarMenuButton>
           </SidebarMenuItem>
