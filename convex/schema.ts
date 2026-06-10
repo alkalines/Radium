@@ -64,6 +64,8 @@ export default defineSchema({
     features: v.object({
       reasoning_minimal: v.optional(v.boolean()),
       reasoning_none: v.optional(v.boolean()),
+      reasoning_budget: v.optional(v.boolean()),
+      reasoning_efforts: v.optional(v.array(v.string())),
     }),
     // Model Context, Pricing and Others should be gotten from providers
     providers: v.array(

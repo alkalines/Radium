@@ -68,7 +68,8 @@ function ChatConversationPage() {
   const chat = useQuery(api.aisdk.GetChat, { chatId: convexChatId });
   const models = useQuery(api.models.availableModels);
   const [model, setModel] = useState<string>();
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
+  const [reasoningBudget, setReasoningBudget] = useState<number>();
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const loadedInitialMessages = useRef(false);
   const sentQueuedMessage = useRef(false);
   const queuedModel = typeof chat === "string" ? undefined : chat?.messages_queue?.model;
@@ -84,15 +85,23 @@ function ChatConversationPage() {
         body: {
           chatId: convexChatId,
           model: selectedModel,
-          reasoningEffort:
-            selectedModelData?.reasoning && reasoningEffort !== "none"
-              ? reasoningEffort
+          reasoningEffort: selectedModelData?.reasoning ? reasoningEffort : undefined,
+          reasoningBudget:
+            selectedModelData?.features?.reasoning_budget && reasoningBudget
+              ? reasoningBudget
               : undefined,
         },
         headers: getConvexAuthHeaders,
         credentials: "include",
       }),
-    [convexChatId, reasoningEffort, selectedModel, selectedModelData?.reasoning]
+    [
+      convexChatId,
+      reasoningBudget,
+      reasoningEffort,
+      selectedModel,
+      selectedModelData?.features?.reasoning_budget,
+      selectedModelData?.reasoning,
+    ]
   );
   const { error, messages, sendMessage, setMessages, status, stop } = useChat({
     id: chatId,
@@ -129,6 +138,7 @@ function ChatConversationPage() {
         body: {
           chatId: convexChatId,
           model: chat.messages_queue.model,
+          reasoningBudget: chat.messages_queue.reasoningBudget,
           reasoningEffort: chat.messages_queue.reasoningEffort,
         },
       }
@@ -211,6 +221,7 @@ function ChatConversationPage() {
             disabled={status !== "ready" || !selectedModel}
             models={models}
             onModelChange={handleModelChange}
+            onReasoningBudgetChange={setReasoningBudget}
             onReasoningEffortChange={setReasoningEffort}
             onStop={() => void stop()}
             onSubmit={({ text, files }) => {
@@ -226,15 +237,19 @@ function ChatConversationPage() {
                   body: {
                     chatId: convexChatId,
                     model: selectedModel,
-                    reasoningEffort:
-                      selectedModelData?.reasoning && reasoningEffort !== "none"
-                        ? reasoningEffort
+                    reasoningEffort: selectedModelData?.reasoning
+                      ? reasoningEffort
+                      : undefined,
+                    reasoningBudget:
+                      selectedModelData?.features?.reasoning_budget && reasoningBudget
+                        ? reasoningBudget
                         : undefined,
                   },
                 }
               );
             }}
             placeholder="Continue the conversation..."
+            reasoningBudget={reasoningBudget}
             reasoningEffort={reasoningEffort}
             selectedModel={selectedModel}
             status={status}
@@ -253,7 +268,7 @@ function getAiSdkChatApi() {
     : "/api/aisdk/chat";
 }
 
-async function getConvexAuthHeaders() {
+async function getConvexAuthHeaders(): Promise<Record<string, string>> {
   const { data } = await authClient.convex.token({
     fetchOptions: { throw: false },
   });

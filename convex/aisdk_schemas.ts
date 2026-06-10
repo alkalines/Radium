@@ -75,9 +75,8 @@ export const queuedMessageSchema = v.object({
   text: v.string(),
   files: v.array(FileUIPartSchema),
   model: v.string(), // Slug, not the ID
-  reasoningEffort: v.optional(
-    v.union(v.literal("low"), v.literal("medium"), v.literal("high"))
-  ),
+  reasoningEffort: v.optional(v.string()),
+  reasoningBudget: v.optional(v.number()),
   // @todo: Better tool selector
   webSearch: v.boolean()
 });

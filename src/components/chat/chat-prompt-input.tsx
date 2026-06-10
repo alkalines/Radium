@@ -39,11 +39,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 
-export type ReasoningEffort = "none" | "low" | "medium" | "high";
+export type ReasoningEffort = string;
 
 type ChatModel = {
   features?: {
+    reasoning_budget?: boolean;
+    reasoning_efforts?: string[];
     reasoning_minimal?: boolean;
     reasoning_none?: boolean;
   };
@@ -57,10 +60,12 @@ type ChatPromptInputProps = {
   disabled?: boolean;
   models: ChatModel[] | undefined;
   onModelChange: (model: string) => void;
+  onReasoningBudgetChange: (budget: number | undefined) => void;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   onStop?: () => void;
   onSubmit: (message: PromptInputMessage) => void | Promise<void>;
   placeholder: string;
+  reasoningBudget: number | undefined;
   reasoningEffort: ReasoningEffort;
   selectedModel: string | undefined;
   status: ChatStatus;
@@ -70,10 +75,12 @@ export function ChatPromptInput({
   disabled,
   models,
   onModelChange,
+  onReasoningBudgetChange,
   onReasoningEffortChange,
   onStop,
   onSubmit,
   placeholder,
+  reasoningBudget,
   reasoningEffort,
   selectedModel,
   status,
@@ -98,6 +105,10 @@ export function ChatPromptInput({
   const isBusy = status === "submitted" || status === "streaming";
   const submitDisabled = disabled || !selectedModel || status === "submitted";
   const supportsReasoning = Boolean(selectedModelData?.reasoning);
+  const supportsReasoningBudget = Boolean(
+    selectedModelData?.features?.reasoning_budget
+  );
+  const reasoningEfforts = getReasoningEfforts(selectedModelData);
   const selectedReasoningLabel = supportsReasoning
     ? reasoningEffort === "none"
       ? "Off"
@@ -185,7 +196,7 @@ export function ChatPromptInput({
                 </PromptInputButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {(["none", "low", "medium", "high"] as const).map((effort) => (
+                {reasoningEfforts.map((effort) => (
                   <DropdownMenuItem
                     key={effort}
                     onSelect={() => onReasoningEffortChange(effort)}
@@ -198,6 +209,22 @@ export function ChatPromptInput({
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
+
+            {supportsReasoningBudget ? (
+              <Input
+                aria-label="Reasoning budget"
+                className="h-7 w-24 rounded-xl text-xs"
+                disabled={!supportsReasoning}
+                min={1}
+                onChange={(event) => {
+                  const value = event.currentTarget.valueAsNumber;
+                  onReasoningBudgetChange(Number.isFinite(value) ? value : undefined);
+                }}
+                placeholder="Budget"
+                type="number"
+                value={reasoningBudget ?? ""}
+              />
+            ) : null}
 
             <VoiceInputButton />
 
@@ -245,6 +272,24 @@ function ModelItem({ model, onSelect, selectedModel }: ModelItemProps) {
 
 function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function getReasoningEfforts(model: ChatModel | undefined) {
+  if (!model?.reasoning) {
+    return [];
+  }
+
+  if (model.features?.reasoning_efforts?.length) {
+    return model.features.reasoning_efforts;
+  }
+
+  return [
+    ...(model.features?.reasoning_none === false ? [] : ["none"]),
+    ...(model.features?.reasoning_minimal ? ["minimal"] : []),
+    "low",
+    "medium",
+    "high",
+  ];
 }
 
 type BrowserSpeechRecognition = {

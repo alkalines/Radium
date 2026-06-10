@@ -18,7 +18,7 @@ export type AIProviderSDK_ModelSettings = {
      *
      * @todo Some models don't have `minimal` or `none`
      */
-    effort?: "high" | "medium" | "low" | "minimal" | "none"; // None on some GPT models
+    effort?: string;
     /**
      * Max reasoning tokens per request
      */

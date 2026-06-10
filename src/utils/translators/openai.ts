@@ -137,12 +137,14 @@ async function getAISDKStream(
       //logprobs: reqData.logprobs ?? false,
       parallelToolCalls: reqData.parallel_tool_calls,
       plugins: reqData.plugins,
-      reasoning: {
-        effort: reqData.reasoning_effort ?? "medium",
-        enabled:
-          reqData.reasoning?.enabled || reqData.reasoning ? undefined : true,
-        max_tokens: reqData.reasoning?.max_tokens ?? undefined,
-      },
+      reasoning:
+        reqData.reasoning_effort || reqData.reasoning
+          ? {
+              effort: reqData.reasoning?.effort ?? reqData.reasoning_effort,
+              enabled: reqData.reasoning?.enabled ?? undefined,
+              max_tokens: reqData.reasoning?.max_tokens ?? undefined,
+            }
+          : undefined,
       /**
        * @todo
        */

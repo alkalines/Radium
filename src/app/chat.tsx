@@ -65,7 +65,8 @@ function ChatHomePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState<string>();
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
+  const [reasoningBudget, setReasoningBudget] = useState<number>();
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
 
   const userName =
     typeof userInfo === "string"
@@ -99,6 +100,7 @@ function ChatHomePage() {
           disabled={!canSubmit}
           models={models}
           onModelChange={handleModelChange}
+          onReasoningBudgetChange={setReasoningBudget}
           onReasoningEffortChange={setReasoningEffort}
           onSubmit={async ({ text, files }) => {
             const trimmedText = text.trim();
@@ -122,8 +124,11 @@ function ChatHomePage() {
                   text: trimmedText,
                   files,
                   model,
-                  ...(selectedModelData?.reasoning && reasoningEffort !== "none"
+                  ...(selectedModelData?.reasoning
                     ? { reasoningEffort }
+                    : {}),
+                  ...(selectedModelData?.features?.reasoning_budget && reasoningBudget
+                    ? { reasoningBudget }
                     : {}),
                   webSearch: false,
                 },
@@ -148,6 +153,7 @@ function ChatHomePage() {
             }
           }}
           placeholder="Ask Radium anything..."
+          reasoningBudget={reasoningBudget}
           reasoningEffort={reasoningEffort}
           selectedModel={model}
           status={isSubmitting ? "submitted" : "ready"}

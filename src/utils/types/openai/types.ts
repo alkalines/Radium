@@ -87,6 +87,8 @@ export const ChatCompletions_RequestBody = z.object({
       z.literal("low"),
       z.literal("medium"),
       z.literal("high"),
+      z.literal("xhigh"),
+      z.literal("max"),
     ])
   ),
   response_format: z.optional(
@@ -235,6 +237,8 @@ export const ChatCompletions_RequestBody = z.object({
           z.literal("low"),
           z.literal("minimal"),
           z.literal("none"),
+          z.literal("xhigh"),
+          z.literal("max"),
         ])
       ),
       max_tokens: z.nullish(z.number()),

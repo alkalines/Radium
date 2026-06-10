@@ -2,17 +2,30 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
   convertToModelMessages,
   streamText,
-  UIMessage,
+  type UIMessage,
 } from "ai";
-import { ChatCompletions_RequestBody_Type } from "../../src/utils/types/openai/types";
+import {
+  ChatCompletions_RequestBody,
+  type ChatCompletions_RequestBody_Type,
+} from "../../src/utils/types/openai/types";
 import { httpAction } from "../_generated/server";
 import { Internal_Chat_Completion } from "./chat_completion";
 import { Id } from "../_generated/dataModel";
 import { authComponent, createAuth } from "../auth";
 import { internal } from "../_generated/api";
+import type { ActionCtx } from "../_generated/server";
 
-function corsHeaders(req: Request) {
-  const origin = req.headers.get("origin") ?? "*";
+type AISDKChatRequestBody = {
+  messages: UIMessage[];
+  model: string;
+  reasoningEffort?: string;
+  reasoningBudget?: number;
+  id?: Id<"aisdk_chats">;
+  chatId?: Id<"aisdk_chats">;
+};
+
+function corsHeaders() {
+  const origin = new URL(process.env.SITE_URL!).origin;
 
   return {
     "Access-Control-Allow-Credentials": "true",
@@ -23,94 +36,45 @@ function corsHeaders(req: Request) {
   };
 }
 
-function jsonResponse(req: Request, body: unknown, init?: ResponseInit) {
+function jsonResponse(_req: Request, body: unknown, init?: ResponseInit) {
   return Response.json(body, {
     ...init,
     headers: {
-      ...corsHeaders(req),
+      ...corsHeaders(),
       ...init?.headers,
     },
   });
 }
 
-export const AISDK_OPTIONS_Chat = httpAction(async (_ctx, req) => {
+export const AISDK_OPTIONS_Chat = httpAction(async (_ctx, _req) => {
   return new Response(null, {
     status: 204,
-    headers: corsHeaders(req),
+    headers: corsHeaders(),
   });
 });
 
 export const AISDK_POST_Chat = httpAction(
   async (ctx, req): Promise<Response> => {
-    /**
-     * @comment Default `ctx.auth.getUserIdentity()` used on the `authComponent.getAuthUser(ctx);` doesn't work
-     */
-    const auth = createAuth(ctx);
-    const authUser = await authComponent.safeGetAuthUser(ctx);
-    let userId = authUser?._id;
+    const userId = await getAuthenticatedUserId(ctx, req);
 
     if (!userId) {
-      const identity = await auth.api.getSession({
-        headers: req.headers,
-      });
-
-      userId = identity?.user.id;
-
-      if (!userId) {
-        return jsonResponse(
-          req,
-          { error: { message: "Unauthorized", code: 401 } },
-          { status: 401 },
-        );
-      }
+      return jsonResponse(
+        req,
+        { error: { message: "Unauthorized", code: 401 } },
+        { status: 401 },
+      );
     }
 
-    const userInfo = await ctx.runQuery(internal.auth.internalUserInfo, {
-      userId,
-    });
-
-    const provider = createOpenAICompatible({
-      name: "Radium",
-      headers: {
-        "HTTP-Referer": "https://github.com/alkalines/Radium",
-        "X-Title": "Radium Chatroom",
-      },
-      apiKey: process.env.PROVIDER_API_KEY,
-      baseURL: "https://api.there_is_no_need_for_this.com/v1",
-      fetch: async (
-        input: string | URL | Request,
-        init?: RequestInit,
-      ): Promise<Response> => {
-        try {
-          // Parse the request body from init
-          const reqData = JSON.parse(
-            init?.body as string,
-          ) as ChatCompletions_RequestBody_Type;
-          return Internal_Chat_Completion(
-            ctx,
-            reqData,
-            userInfo.balances[0]._id, // 0 for the moment
-          );
-        } catch (e) {
-          console.log(e);
-          return jsonResponse(
-            req,
-            { text: "Internal Server Error!" },
-            { status: 500 },
-          );
-        }
-      },
-    });
-
-    // Parse the incoming request
-    const body: {
-      messages: UIMessage[];
-      model: string;
-      reasoningEffort?: "low" | "medium" | "high";
-      id?: Id<"aisdk_chats">;
-      chatId?: Id<"aisdk_chats">; // When creating an chat we can't create an chat ID on the fly
-    } = await req.json();
+    const body = (await req.json()) as AISDKChatRequestBody;
     const chatId = (body?.chatId || body?.id)!;
+
+    if (!chatId || !body.model || !Array.isArray(body.messages)) {
+      return jsonResponse(
+        req,
+        { error: { message: "Invalid chat request", code: 400 } },
+        { status: 400 },
+      );
+    }
 
     const chatInfo = await ctx.runQuery(internal.aisdk.InternalChatInfo, {
       chatId,
@@ -123,6 +87,8 @@ export const AISDK_POST_Chat = httpAction(
         { status: 401 },
       );
 
+    const provider = createInternalGatewayProvider(ctx, req, chatInfo.balance);
+
     await ctx.runMutation(internal.aisdk.EditChat, {
       chatId,
       activeStream: true,
@@ -132,10 +98,18 @@ export const AISDK_POST_Chat = httpAction(
     const result = streamText({
       model: provider(body.model),
       messages: await convertToModelMessages(body.messages),
-      providerOptions: body.reasoningEffort
+      providerOptions: body.reasoningEffort || body.reasoningBudget
         ? {
             openaiCompatible: {
-              reasoningEffort: body.reasoningEffort,
+              ...(body.reasoningEffort && body.reasoningEffort !== "none"
+                ? { reasoningEffort: body.reasoningEffort }
+                : {}),
+              reasoning: {
+                ...(body.reasoningEffort ? { effort: body.reasoningEffort } : {}),
+                ...(body.reasoningBudget
+                  ? { max_tokens: body.reasoningBudget }
+                  : {}),
+              },
             },
           }
         : undefined,
@@ -146,7 +120,7 @@ export const AISDK_POST_Chat = httpAction(
     let reasoningStartTime: number | null = null;
 
     return result.toUIMessageStreamResponse({
-      headers: corsHeaders(req),
+      headers: corsHeaders(),
       sendSources: true,
       sendReasoning: true,
       messageMetadata({ part }) {
@@ -187,6 +161,60 @@ export const AISDK_POST_Chat = httpAction(
     });
   },
 );
+
+async function getAuthenticatedUserId(ctx: ActionCtx, req: Request) {
+  const authUser = await authComponent.safeGetAuthUser(ctx);
+
+  if (authUser?._id) {
+    return authUser._id;
+  }
+
+  const auth = createAuth(ctx);
+  const session = await auth.api.getSession({
+    headers: req.headers,
+  });
+
+  return session?.user.id;
+}
+
+function createInternalGatewayProvider(
+  ctx: ActionCtx,
+  req: Request,
+  balanceId: Id<"balances">,
+) {
+  return createOpenAICompatible({
+    name: "Radium Gateway",
+    apiKey: "internal-gateway",
+    baseURL: "https://radium.internal/openai/v1",
+    headers: {
+      "HTTP-Referer": "https://github.com/alkalines/Radium",
+      "X-Title": "Radium Chatroom",
+    },
+    fetch: async (_input, init): Promise<Response> => {
+      try {
+        const requestBody = getGatewayRequestBody(init?.body);
+        return await Internal_Chat_Completion(ctx, requestBody, balanceId);
+      } catch (error) {
+        console.error(error);
+        return jsonResponse(
+          req,
+          { error: { message: "Internal gateway request failed", code: 500 } },
+          { status: 500 },
+        );
+      }
+    },
+  });
+}
+
+function getGatewayRequestBody(body: BodyInit | null | undefined) {
+  if (typeof body !== "string") {
+    throw new Error("Expected OpenAI-compatible JSON request body.");
+  }
+
+  return ChatCompletions_RequestBody.parse(
+    JSON.parse(body),
+  ) as ChatCompletions_RequestBody_Type;
+}
 
 /**
  * https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams#3-implement-the-get-handler
