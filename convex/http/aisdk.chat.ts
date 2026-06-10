@@ -8,8 +8,37 @@ import { ChatCompletions_RequestBody_Type } from "../../src/utils/types/openai/t
 import { httpAction } from "../_generated/server";
 import { Internal_Chat_Completion } from "./chat_completion";
 import { Id } from "../_generated/dataModel";
-import { createAuth } from "../auth";
+import { authComponent, createAuth } from "../auth";
 import { internal } from "../_generated/api";
+
+function corsHeaders(req: Request) {
+  const origin = req.headers.get("origin") ?? "*";
+
+  return {
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Origin": origin,
+    Vary: "Origin",
+  };
+}
+
+function jsonResponse(req: Request, body: unknown, init?: ResponseInit) {
+  return Response.json(body, {
+    ...init,
+    headers: {
+      ...corsHeaders(req),
+      ...init?.headers,
+    },
+  });
+}
+
+export const AISDK_OPTIONS_Chat = httpAction(async (_ctx, req) => {
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders(req),
+  });
+});
 
 export const AISDK_POST_Chat = httpAction(
   async (ctx, req): Promise<Response> => {
@@ -17,20 +46,28 @@ export const AISDK_POST_Chat = httpAction(
      * @comment Default `ctx.auth.getUserIdentity()` used on the `authComponent.getAuthUser(ctx);` doesn't work
      */
     const auth = createAuth(ctx);
-    const identity = await auth.api.getSession({
-      headers: req.headers,
-    });
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    let userId = authUser?._id;
+
+    if (!userId) {
+      const identity = await auth.api.getSession({
+        headers: req.headers,
+      });
+
+      userId = identity?.user.id;
+
+      if (!userId) {
+        return jsonResponse(
+          req,
+          { error: { message: "Unauthorized", code: 401 } },
+          { status: 401 },
+        );
+      }
+    }
 
     const userInfo = await ctx.runQuery(internal.auth.internalUserInfo, {
-      userId: identity!.user.id! as any,
+      userId,
     });
-
-    if (!identity) {
-      return Response.json(
-        { error: { message: "Unauthorized", code: 401 } },
-        { status: 401 },
-      );
-    }
 
     const provider = createOpenAICompatible({
       name: "Radium",
@@ -56,7 +93,8 @@ export const AISDK_POST_Chat = httpAction(
           );
         } catch (e) {
           console.log(e);
-          return Response.json(
+          return jsonResponse(
+            req,
             { text: "Internal Server Error!" },
             { status: 500 },
           );
@@ -68,6 +106,7 @@ export const AISDK_POST_Chat = httpAction(
     const body: {
       messages: UIMessage[];
       model: string;
+      reasoningEffort?: "low" | "medium" | "high";
       id?: Id<"aisdk_chats">;
       chatId?: Id<"aisdk_chats">; // When creating an chat we can't create an chat ID on the fly
     } = await req.json();
@@ -77,8 +116,9 @@ export const AISDK_POST_Chat = httpAction(
       chatId,
     });
 
-    if (!chatInfo || chatInfo.userId !== identity.user.id)
-      return Response.json(
+    if (!chatInfo || chatInfo.userId !== userId)
+      return jsonResponse(
+        req,
         { error: { message: "Unauthorized", code: 401 } },
         { status: 401 },
       );
@@ -92,6 +132,13 @@ export const AISDK_POST_Chat = httpAction(
     const result = streamText({
       model: provider(body.model),
       messages: await convertToModelMessages(body.messages),
+      providerOptions: body.reasoningEffort
+        ? {
+            openaiCompatible: {
+              reasoningEffort: body.reasoningEffort,
+            },
+          }
+        : undefined,
       abortSignal: req.signal,
     });
 
@@ -99,6 +146,7 @@ export const AISDK_POST_Chat = httpAction(
     let reasoningStartTime: number | null = null;
 
     return result.toUIMessageStreamResponse({
+      headers: corsHeaders(req),
       sendSources: true,
       sendReasoning: true,
       messageMetadata({ part }) {

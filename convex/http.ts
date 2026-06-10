@@ -1,7 +1,7 @@
 import { httpRouter } from "convex/server";
 import { authComponent, createAuth } from "./auth";
 import { HTTP_Request_Chat_Completion } from "./http/chat_completion";
-import { AISDK_POST_Chat } from "./http/aisdk.chat";
+import { AISDK_OPTIONS_Chat, AISDK_POST_Chat } from "./http/aisdk.chat";
 import { HTTP_Request_OpenAI_Models } from "./http/models";
 
 const http = httpRouter();
@@ -35,6 +35,12 @@ http.route({
   method: "POST",
   path: "/api/aisdk/chat",
   handler: AISDK_POST_Chat,
+});
+
+http.route({
+  method: "OPTIONS",
+  path: "/api/aisdk/chat",
+  handler: AISDK_OPTIONS_Chat,
 });
 
 export default http;

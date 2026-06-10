@@ -11,7 +11,10 @@ import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 import { useCallback, useState } from "react";
 
-import { ChatPromptInput } from "@/components/chat/chat-prompt-input";
+import {
+  ChatPromptInput,
+  type ReasoningEffort,
+} from "@/components/chat/chat-prompt-input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { api } from "../../convex/_generated/api";
 import { auth } from "@/lib/auth";
@@ -62,6 +65,7 @@ function ChatHomePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState<string>();
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
 
   const userName =
     typeof userInfo === "string"
@@ -69,6 +73,7 @@ function ChatHomePage() {
       : (userInfo?.name ?? "there");
   const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const canSubmit = Boolean(balance && model && !isSubmitting);
+  const selectedModelData = models?.find((item) => item.slug === model);
   const handleModelChange = useCallback((nextModel: string) => {
     setModel(nextModel);
   }, []);
@@ -94,6 +99,7 @@ function ChatHomePage() {
           disabled={!canSubmit}
           models={models}
           onModelChange={handleModelChange}
+          onReasoningEffortChange={setReasoningEffort}
           onSubmit={async ({ text, files }) => {
             const trimmedText = text.trim();
 
@@ -116,6 +122,9 @@ function ChatHomePage() {
                   text: trimmedText,
                   files,
                   model,
+                  ...(selectedModelData?.reasoning && reasoningEffort !== "none"
+                    ? { reasoningEffort }
+                    : {}),
                   webSearch: false,
                 },
               });
@@ -139,6 +148,7 @@ function ChatHomePage() {
             }
           }}
           placeholder="Ask Radium anything..."
+          reasoningEffort={reasoningEffort}
           selectedModel={model}
           status={isSubmitting ? "submitted" : "ready"}
         />
