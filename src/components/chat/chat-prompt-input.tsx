@@ -1,5 +1,5 @@
 import type { ChatStatus, FileUIPart } from "ai";
-import { BrainIcon, CheckIcon, ChevronDownIcon, MicIcon } from "lucide-react";
+import { BrainIcon, ChevronDownIcon, MicIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -37,13 +37,24 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 
 export type ReasoningEffort = string;
 
+type ChatModelAuthor = {
+  icon?: string;
+  name: string;
+  slug: string;
+} | null;
+
 type ChatModel = {
+  author: ChatModelAuthor;
   features?: {
     reasoning_budget?: boolean;
     reasoning_efforts?: string[];
@@ -115,6 +126,21 @@ export function ChatPromptInput({
       : capitalize(reasoningEffort)
     : "Off";
 
+  useEffect(() => {
+    if (!supportsReasoning || reasoningEfforts.length === 0) {
+      return;
+    }
+
+    if (!reasoningEfforts.includes(reasoningEffort)) {
+      onReasoningEffortChange(reasoningEfforts[0]);
+    }
+  }, [
+    onReasoningEffortChange,
+    reasoningEffort,
+    reasoningEfforts,
+    supportsReasoning,
+  ]);
+
   return (
     <PromptInputProvider>
       <PromptInput
@@ -165,8 +191,12 @@ export function ChatPromptInput({
                   <ChevronDownIcon className="size-3 shrink-0 opacity-70" />
                 </PromptInputButton>
               </ModelSelectorTrigger>
-              <ModelSelectorContent className="w-[min(calc(100vw-2rem),34rem)]">
-                <ModelSelectorInput placeholder="Search models..." />
+              <ModelSelectorContent
+                className="w-[min(calc(100vw-2rem),34rem)] [&_[data-slot=dialog-close]]:right-2 [&_[data-slot=dialog-close]]:top-1"
+              >
+                <div className="pr-12">
+                  <ModelSelectorInput placeholder="Search models..." />
+                </div>
                 <ModelSelectorList>
                   <ModelSelectorEmpty>No models found.</ModelSelectorEmpty>
                   <ModelSelectorGroup heading="Models">
@@ -180,51 +210,20 @@ export function ChatPromptInput({
                     ))}
                   </ModelSelectorGroup>
                 </ModelSelectorList>
+                <div className="flex justify-end border-t p-2">
+                  <ReasoningDropdown
+                    onReasoningBudgetChange={onReasoningBudgetChange}
+                    onReasoningEffortChange={onReasoningEffortChange}
+                    reasoningBudget={reasoningBudget}
+                    reasoningEffort={reasoningEffort}
+                    reasoningEfforts={reasoningEfforts}
+                    selectedReasoningLabel={selectedReasoningLabel}
+                    supportsReasoning={supportsReasoning}
+                    supportsReasoningBudget={supportsReasoningBudget}
+                  />
+                </div>
               </ModelSelectorContent>
             </ModelSelector>
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <PromptInputButton
-                  aria-label="Reasoning effort"
-                  className="gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
-                  disabled={!supportsReasoning}
-                  size="xs"
-                >
-                  <BrainIcon className="size-3.5" />
-                  <span className="hidden sm:inline">{selectedReasoningLabel}</span>
-                </PromptInputButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {reasoningEfforts.map((effort) => (
-                  <DropdownMenuItem
-                    key={effort}
-                    onSelect={() => onReasoningEffortChange(effort)}
-                  >
-                    <span className="flex-1">{capitalize(effort)}</span>
-                    {reasoningEffort === effort ? (
-                      <CheckIcon className="size-4" />
-                    ) : null}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-
-            {supportsReasoningBudget ? (
-              <Input
-                aria-label="Reasoning budget"
-                className="h-7 w-24 rounded-xl text-xs"
-                disabled={!supportsReasoning}
-                min={1}
-                onChange={(event) => {
-                  const value = event.currentTarget.valueAsNumber;
-                  onReasoningBudgetChange(Number.isFinite(value) ? value : undefined);
-                }}
-                placeholder="Budget"
-                type="number"
-                value={reasoningBudget ?? ""}
-              />
-            ) : null}
 
             <VoiceInputButton />
 
@@ -248,24 +247,118 @@ type ModelItemProps = {
   selectedModel: string | undefined;
 };
 
+type ReasoningDropdownProps = {
+  onReasoningBudgetChange: (budget: number | undefined) => void;
+  onReasoningEffortChange: (effort: ReasoningEffort) => void;
+  reasoningBudget: number | undefined;
+  reasoningEffort: ReasoningEffort;
+  reasoningEfforts: string[];
+  selectedReasoningLabel: string;
+  supportsReasoning: boolean;
+  supportsReasoningBudget: boolean;
+};
+
+function ReasoningDropdown({
+  onReasoningBudgetChange,
+  onReasoningEffortChange,
+  reasoningBudget,
+  reasoningEffort,
+  reasoningEfforts,
+  selectedReasoningLabel,
+  supportsReasoning,
+  supportsReasoningBudget,
+}: ReasoningDropdownProps) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label="Model options"
+          className="flex h-8 shrink-0 items-center gap-1.5 rounded-xl border bg-background px-2 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          type="button"
+        >
+          <BrainIcon className="size-3.5" />
+          <span>{selectedReasoningLabel}</span>
+          <ChevronDownIcon className="size-3 opacity-70" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuLabel>Reasoning amount</DropdownMenuLabel>
+        {supportsReasoning ? (
+          <DropdownMenuRadioGroup
+            onValueChange={onReasoningEffortChange}
+            value={reasoningEffort}
+          >
+            {reasoningEfforts.map((effort) => (
+              <DropdownMenuRadioItem key={effort} value={effort}>
+                {effort === "none" ? "Off" : capitalize(effort)}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        ) : (
+          <DropdownMenuItem disabled>
+            This model does not support reasoning.
+          </DropdownMenuItem>
+        )}
+
+        {supportsReasoningBudget ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Budget</DropdownMenuLabel>
+            <div className="px-1 pb-1">
+              <Input
+                aria-label="Reasoning budget"
+                className="h-8 rounded-xl text-xs"
+                min={1}
+                onChange={(event) => {
+                  const value = event.currentTarget.valueAsNumber;
+                  onReasoningBudgetChange(
+                    Number.isFinite(value) ? value : undefined
+                  );
+                }}
+                placeholder="Token budget"
+                type="number"
+                value={reasoningBudget ?? ""}
+              />
+            </div>
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function ModelItem({ model, onSelect, selectedModel }: ModelItemProps) {
   const handleSelect = useCallback(() => onSelect(model.slug), [model.slug, onSelect]);
   const providerIds = model.providers.map((provider) => provider.id);
+  const selected = selectedModel === model.slug;
 
   return (
-    <ModelSelectorItem onSelect={handleSelect} value={model.slug}>
-      {providerIds[0] ? <ModelSelectorLogo provider={providerIds[0]} /> : null}
+    <ModelSelectorItem
+      data-checked={selected}
+      keywords={[
+        model.name,
+        model.author?.name ?? "",
+        model.author?.slug ?? "",
+        ...providerIds,
+      ]}
+      onSelect={handleSelect}
+      value={model.slug}
+    >
+      {model.author ? (
+        <img
+          alt={`${model.author.name} logo`}
+          className="size-4 shrink-0 rounded-sm"
+          height={16}
+          src={`https://models.dev/logos/labs/${model.author.slug}.svg`}
+          width={16}
+        />
+      ) : null}
       <ModelSelectorName>{model.name}</ModelSelectorName>
-      <ModelSelectorLogoGroup>
+      <ModelSelectorLogoGroup aria-label="Available providers" title="Available providers">
         {providerIds.map((provider) => (
-          <ModelSelectorLogo key={provider} provider={provider} />
+          <ModelSelectorLogo key={provider} provider={provider} title={provider} />
         ))}
       </ModelSelectorLogoGroup>
-      {selectedModel === model.slug ? (
-        <CheckIcon className="ml-auto size-4" />
-      ) : (
-        <div className="ml-auto size-4" />
-      )}
     </ModelSelectorItem>
   );
 }

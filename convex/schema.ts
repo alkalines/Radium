@@ -181,7 +181,6 @@ export default defineSchema({
   authors: defineTable({
     name: v.string(),
     slug: v.string(),
-    icon: v.string(), // URL
   }),
   // Chatroom
   aisdk_chats: defineTable({

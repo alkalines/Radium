@@ -58,8 +58,15 @@ export const openaiModels = internalQuery({
 });
 
 export const availableModels = query({
-  handler(ctx) {
-    return ctx.db.query("models").collect();
+  async handler(ctx) {
+    const models = await ctx.db.query("models").collect();
+
+    return Promise.all(
+      models.map(async (model) => ({
+        ...model,
+        author: await ctx.db.get(model.author),
+      }))
+    );
   },
 });
 
