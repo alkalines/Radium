@@ -8,12 +8,13 @@ import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
 } from "../../src/utils/types/openai/types";
-import { httpAction } from "../_generated/server";
 import { Internal_Chat_Completion } from "./chat_completion";
-import { Id } from "../_generated/dataModel";
+import type { Id } from "../_generated/dataModel";
 import { authComponent, createAuth } from "../auth";
 import { internal } from "../_generated/api";
 import type { ActionCtx } from "../_generated/server";
+
+type ResponseHeaders = Record<string, string>;
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
@@ -24,163 +25,144 @@ type AISDKChatRequestBody = {
   chatId?: Id<"aisdk_chats">;
 };
 
-function corsHeaders() {
-  const origin = new URL(process.env.SITE_URL!).origin;
-
-  return {
-    "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Origin": origin,
-    Vary: "Origin",
-  };
-}
-
-function jsonResponse(_req: Request, body: unknown, init?: ResponseInit) {
+function jsonResponse(
+  body: unknown,
+  responseHeaders: ResponseHeaders,
+  init?: ResponseInit,
+) {
   return Response.json(body, {
     ...init,
     headers: {
-      ...corsHeaders(),
+      ...responseHeaders,
       ...init?.headers,
     },
   });
 }
 
-export const AISDK_OPTIONS_Chat = httpAction(async (_ctx, _req) => {
-  return new Response(null, {
-    status: 204,
-    headers: corsHeaders(),
-  });
-});
-
-export const AISDK_POST_Chat = httpAction(
-  async (ctx, req): Promise<Response> => {
-    const userId = await getAuthenticatedUserId(ctx, req);
-
-    if (!userId) {
-      return jsonResponse(
-        req,
-        { error: { message: "Unauthorized", code: 401 } },
-        { status: 401 },
-      );
-    }
-
-    const body = (await req.json()) as AISDKChatRequestBody;
-    const chatId = (body?.chatId || body?.id)!;
-
-    if (!chatId || !body.model || !Array.isArray(body.messages)) {
-      return jsonResponse(
-        req,
-        { error: { message: "Invalid chat request", code: 400 } },
-        { status: 400 },
-      );
-    }
-
-    const chatInfo = await ctx.runQuery(internal.aisdk.InternalChatInfo, {
-      chatId,
-    });
-
-    if (!chatInfo || chatInfo.userId !== userId)
-      return jsonResponse(
-        req,
-        { error: { message: "Unauthorized", code: 401 } },
-        { status: 401 },
-      );
-
-    const provider = createInternalGatewayProvider(ctx, req, chatInfo.balance);
-
-    await ctx.runMutation(internal.aisdk.EditChat, {
-      chatId,
-      activeStream: true,
-      messages_queue: null,
-    });
-
-    const result = streamText({
-      model: provider(body.model),
-      messages: await convertToModelMessages(body.messages),
-      providerOptions: body.reasoningEffort || body.reasoningBudget
-        ? {
-            openaiCompatible: {
-              ...(body.reasoningEffort && body.reasoningEffort !== "none"
-                ? { reasoningEffort: body.reasoningEffort }
-                : {}),
-              reasoning: {
-                ...(body.reasoningEffort ? { effort: body.reasoningEffort } : {}),
-                ...(body.reasoningBudget
-                  ? { max_tokens: body.reasoningBudget }
-                  : {}),
-              },
-            },
-          }
-        : undefined,
-      abortSignal: req.signal,
-    });
-
-    // Track reasoning start time to calculate duration
-    let reasoningStartTime: number | null = null;
-
-    return result.toUIMessageStreamResponse({
-      headers: corsHeaders(),
-      sendSources: true,
-      sendReasoning: true,
-      messageMetadata({ part }) {
-        // Track when reasoning starts
-        if (part.type === "reasoning-start") {
-          if (reasoningStartTime === null) {
-            reasoningStartTime = Date.now();
-          }
-        }
-        return {
-          model: body.model,
-        };
-      },
-      onFinish: async ({ messages }) => {
-        // Calculate reasoning duration and add it to reasoning parts
-        const messagesWithDuration = messages.map((message) => ({
-          ...message,
-          parts: message.parts.map((part) => {
-            if (part.type === "reasoning" && reasoningStartTime !== null) {
-              const durationMs = Date.now() - reasoningStartTime;
-              const durationSeconds = Math.ceil(durationMs / 1000);
-              return {
-                ...part,
-                duration: durationSeconds,
-              };
-            }
-            return part;
-          }),
-        }));
-
-        const allMessages = [...body.messages, ...messagesWithDuration];
-        await ctx.runMutation(internal.aisdk.EditChat, {
-          chatId,
-          messages: allMessages,
-          activeStream: false,
-        });
-      },
-    });
-  },
-);
-
-async function getAuthenticatedUserId(ctx: ActionCtx, req: Request) {
+/** Handles the authenticated AI SDK chat request body and stream lifecycle. */
+export async function handleAISDKChat(
+  ctx: ActionCtx,
+  req: Request,
+  responseHeaders: ResponseHeaders,
+): Promise<Response> {
   const authUser = await authComponent.safeGetAuthUser(ctx);
+  const session = authUser?._id
+    ? null
+    : await createAuth(ctx).api.getSession({
+        headers: req.headers,
+      });
+  const userId = authUser?._id ?? session?.user.id;
 
-  if (authUser?._id) {
-    return authUser._id;
+  if (!userId) {
+    return jsonResponse(
+      { error: { message: "Unauthorized", code: 401 } },
+      responseHeaders,
+      { status: 401 },
+    );
   }
 
-  const auth = createAuth(ctx);
-  const session = await auth.api.getSession({
-    headers: req.headers,
+  const body = (await req.json()) as AISDKChatRequestBody;
+  const chatId = (body?.chatId || body?.id)!;
+
+  if (!chatId || !body.model || !Array.isArray(body.messages)) {
+    return jsonResponse(
+      { error: { message: "Invalid chat request", code: 400 } },
+      responseHeaders,
+      { status: 400 },
+    );
+  }
+
+  const chatInfo = await ctx.runQuery(internal.aisdk.InternalChatInfo, {
+    chatId,
   });
 
-  return session?.user.id;
+  if (!chatInfo || chatInfo.userId !== userId)
+    return jsonResponse(
+      { error: { message: "Unauthorized", code: 401 } },
+      responseHeaders,
+      { status: 401 },
+    );
+
+  const provider = createInternalGatewayProvider(
+    ctx,
+    chatInfo.balance,
+    responseHeaders,
+  );
+
+  await ctx.runMutation(internal.aisdk.EditChat, {
+    chatId,
+    activeStream: true,
+    messages_queue: null,
+  });
+
+  const result = streamText({
+    model: provider(body.model),
+    messages: await convertToModelMessages(body.messages),
+    providerOptions: body.reasoningEffort || body.reasoningBudget
+      ? {
+          openaiCompatible: {
+            ...(body.reasoningEffort && body.reasoningEffort !== "none"
+              ? { reasoningEffort: body.reasoningEffort }
+              : {}),
+            reasoning: {
+              ...(body.reasoningEffort ? { effort: body.reasoningEffort } : {}),
+              ...(body.reasoningBudget ? { max_tokens: body.reasoningBudget } : {}),
+            },
+          },
+        }
+      : undefined,
+    abortSignal: req.signal,
+  });
+
+  // Track reasoning start time to calculate duration
+  let reasoningStartTime: number | null = null;
+
+  return result.toUIMessageStreamResponse({
+    headers: responseHeaders,
+    sendSources: true,
+    sendReasoning: true,
+    messageMetadata({ part }) {
+      // Track when reasoning starts
+      if (part.type === "reasoning-start") {
+        if (reasoningStartTime === null) {
+          reasoningStartTime = Date.now();
+        }
+      }
+      return {
+        model: body.model,
+      };
+    },
+    onFinish: async ({ messages }) => {
+      // Calculate reasoning duration and add it to reasoning parts
+      const messagesWithDuration = messages.map((message) => ({
+        ...message,
+        parts: message.parts.map((part) => {
+          if (part.type === "reasoning" && reasoningStartTime !== null) {
+            const durationMs = Date.now() - reasoningStartTime;
+            const durationSeconds = Math.ceil(durationMs / 1000);
+            return {
+              ...part,
+              duration: durationSeconds,
+            };
+          }
+          return part;
+        }),
+      }));
+
+      const allMessages = [...body.messages, ...messagesWithDuration];
+      await ctx.runMutation(internal.aisdk.EditChat, {
+        chatId,
+        messages: allMessages,
+        activeStream: false,
+      });
+    },
+  });
 }
 
 function createInternalGatewayProvider(
   ctx: ActionCtx,
-  req: Request,
   balanceId: Id<"balances">,
+  responseHeaders: ResponseHeaders,
 ) {
   return createOpenAICompatible({
     name: "Radium Gateway",
@@ -197,8 +179,8 @@ function createInternalGatewayProvider(
       } catch (error) {
         console.error(error);
         return jsonResponse(
-          req,
           { error: { message: "Internal gateway request failed", code: 500 } },
+          responseHeaders,
           { status: 500 },
         );
       }

@@ -33,6 +33,10 @@
 - `@/*` resolves to `src/*` in both `vite.config.mts` and `tsconfig.json`.
 - ESLint allows explicit `any` but warns on unused vars, empty object types, and non-`const` bindings.
 - Convex public/internal functions should use validators; HTTP handlers are `httpAction`s mounted from `convex/http.ts`.
+- Keep code at the layer that owns the policy. Router-level behavior belongs with route registration, endpoint behavior belongs with endpoint implementations, persistence rules belong near Convex data access, and UI behavior belongs near the relevant component or route.
+- Avoid extracting single-use helpers or constants just to make code look organized. Prefer local control flow until an abstraction removes real duplication, clarifies a complex block, or defines a cross-module contract.
+- Do not let repeated values or logic drift across files. When the same constant, header set, validation rule, auth pattern, provider option, or response shape appears in more than one place, promote it to the nearest shared owner instead of copying it again.
+- Use TSDoc (`/** ... */`) as the standard documentation format when documentation is useful, especially for exported functions, non-obvious helpers, public APIs, and cross-module contracts. Do not add redundant comments for self-explanatory code.
 
 <!-- convex-ai-start -->
 
