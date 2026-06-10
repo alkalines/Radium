@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
+import type { Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import { components } from "./_generated/api";
@@ -22,7 +22,8 @@ export const CreateChat = mutation({
       messages_queue: args.messages_queue,
       balance: args.balance,
       userId: identity._id,
-      activeStream: false
+      activeStream: false,
+      lastInteractionAt: Date.now(),
     });
   },
 });
@@ -37,11 +38,12 @@ export const EditChat = internalMutation({
   handler: async (ctx, args) => {
     const chat = await ctx.db.get(args.chatId);
     if (!chat) return "Chat not Found.";
-    
-    ctx.db.patch(args.chatId, {
+
+    await ctx.db.patch(args.chatId, {
       messages: args.messages || chat.messages,
       messages_queue: args.messages_queue,
       activeStream: args.activeStream,
+      lastInteractionAt: Date.now(),
     });
   },
 });
@@ -72,18 +74,30 @@ export const InternalChatInfo = internalQuery({
   },
   handler: async (ctx, args) => {
     const chat = await ctx.db.get(args.chatId);
-    return chat
+    return chat;
   },
 });
 
 export const ListChats = query({
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
-    return ctx.db
+    const chats = await ctx.db
       .query("aisdk_chats")
-      .filter((q) => q.eq(q.field("userId"), identity._id))
-      .collect();
+      .withIndex("by_userId_and_lastInteractionAt", (q) =>
+        q.eq("userId", identity._id)
+      )
+      .order("desc")
+      .take(30);
+
+    return chats.map((chat) => ({
+      id: chat._id,
+      title: chat.title,
+      emoji: chat.emoji,
+      lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
+      activeStream: chat.activeStream ?? false,
+    }));
   },
 });

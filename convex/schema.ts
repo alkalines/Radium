@@ -190,6 +190,10 @@ export default defineSchema({
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())), // Used only on home page
     chat_completions: v.array(v.id("chat_completions")),
     title: v.optional(v.string()),
+    emoji: v.optional(v.string()),
     activeStream: v.optional(v.boolean()),
-  }),
+    lastInteractionAt: v.optional(v.number()),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_userId_and_lastInteractionAt", ["userId", "lastInteractionAt"]),
 });
