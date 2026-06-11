@@ -1,5 +1,6 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { convertToModelMessages, streamText, type UIMessage } from "ai";
+import { convertToModelMessages, streamText, tool, type UIMessage } from "ai";
+import * as z from "zod";
 import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
@@ -79,9 +80,24 @@ export async function handleAISDKChat(
     messages_queue: null,
   });
 
+  const tools = {
+    weather: tool({
+      description: "Get the weather in a location",
+      inputSchema: z.object({
+        location: z.string().describe("The location to get the weather for"),
+      }),
+      needsApproval: true,
+      execute: ({ location }) => ({
+        location,
+        temperature: 72 + Math.floor(Math.random() * 21) - 10,
+      }),
+    }),
+  };
+
   const result = streamText({
     model: provider(body.model),
-    messages: await convertToModelMessages(body.messages),
+    messages: await convertToModelMessages(body.messages, { tools }),
+    tools,
     providerOptions:
       body.reasoningEffort || body.reasoningBudget
         ? {
@@ -104,6 +120,7 @@ export async function handleAISDKChat(
 
   return result.toUIMessageStreamResponse({
     headers: responseHeaders,
+    originalMessages: body.messages,
     sendSources: true,
     sendReasoning: true,
     messageMetadata({ part }) {

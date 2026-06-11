@@ -1,4 +1,4 @@
-import { DefaultChatTransport, type UIMessage } from "ai";
+import { DefaultChatTransport, type ToolUIPart, type UIMessage } from "ai";
 import { useChat } from "@ai-sdk/react";
 import { useQuery } from "convex/react";
 import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
@@ -17,6 +17,22 @@ import {
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import {
+  Confirmation,
+  ConfirmationAccepted,
+  ConfirmationAction,
+  ConfirmationActions,
+  ConfirmationRejected,
+  ConfirmationRequest,
+  ConfirmationTitle,
+} from "@/components/ai-elements/confirmation";
+import {
+  Tool,
+  ToolContent,
+  ToolHeader,
+  ToolInput,
+  ToolOutput,
+} from "@/components/ai-elements/tool";
+import {
   ChatPromptInput,
   filterFilesWithUrl,
   type ReasoningEffort,
@@ -29,6 +45,7 @@ import {
   readChatHandoff,
 } from "@/components/chat/chat-loading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { CheckIcon, XIcon } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { auth } from "@/lib/auth";
@@ -73,6 +90,7 @@ function ChatConversationPage() {
   const [handoffSettled, setHandoffSettled] = useState(() => handoffPrompt === null);
   const loadedInitialMessages = useRef(false);
   const sentQueuedMessage = useRef(false);
+  const submittedApprovalContinuations = useRef(new Set<string>());
   const queuedModel = typeof chat === "string" ? undefined : chat?.messages_queue?.model;
   const selectedModel = model ?? queuedModel ?? models?.[0]?.slug;
   const selectedModelData = models?.find((item) => item.slug === selectedModel);
@@ -93,6 +111,22 @@ function ChatConversationPage() {
               : undefined,
         },
         headers: getConvexAuthHeaders,
+        prepareSendMessagesRequest({ api: requestApi, body, credentials, headers, id, messages }) {
+          const requestModel = body?.model ?? getLastMessageModel(messages);
+
+          return {
+            api: requestApi,
+            body: {
+              ...body,
+              chatId: convexChatId,
+              id,
+              messages,
+              model: requestModel,
+            },
+            credentials,
+            headers,
+          };
+        },
         credentials: "include",
       }),
     [
@@ -104,10 +138,21 @@ function ChatConversationPage() {
       selectedModelData?.reasoning,
     ],
   );
-  const { error, messages, sendMessage, setMessages, status, stop } = useChat({
-    id: chatId,
-    transport,
-  });
+  const { addToolApprovalResponse, error, messages, sendMessage, setMessages, status, stop } =
+    useChat({
+      id: chatId,
+      sendAutomaticallyWhen: ({ messages: nextMessages }) => {
+        const continuationKey = getApprovalContinuationKey(nextMessages);
+
+        if (!continuationKey || submittedApprovalContinuations.current.has(continuationKey)) {
+          return false;
+        }
+
+        submittedApprovalContinuations.current.add(continuationKey);
+        return true;
+      },
+      transport,
+    });
 
   useEffect(() => {
     if (handoffPrompt === null) {
@@ -220,7 +265,7 @@ function ChatConversationPage() {
   return (
     <main className="flex min-h-[calc(100svh-var(--header-height))] flex-col">
       <Conversation className="min-h-0">
-        <ConversationContent className="mx-auto w-full max-w-3xl px-4 py-8">
+        <ConversationContent className="mx-auto w-full max-w-4xl px-4 py-8">
           {messages.length === 0 ? (
             <ConversationEmptyState description="Send a prompt to begin." title="No messages yet" />
           ) : (
@@ -245,6 +290,16 @@ function ChatConversationPage() {
                           <ReasoningTrigger />
                           <ReasoningContent>{part.text}</ReasoningContent>
                         </Reasoning>
+                      );
+                    }
+
+                    if (isToolPart(part)) {
+                      return (
+                        <ChatToolPart
+                          key={`${message.id}-${index}`}
+                          onApprovalResponse={addToolApprovalResponse}
+                          part={part}
+                        />
                       );
                     }
 
@@ -308,6 +363,128 @@ function ChatConversationPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+type ToolApprovalResponse = Parameters<ReturnType<typeof useChat>["addToolApprovalResponse"]>[0];
+
+function ChatToolPart({
+  onApprovalResponse,
+  part,
+}: {
+  onApprovalResponse: (response: ToolApprovalResponse) => void;
+  part: ToolUIPart;
+}) {
+  const approval = "approval" in part ? part.approval : undefined;
+  const toolInput = getToolInput(part);
+  const toolName = part.type.replace(/^tool-/, "");
+
+  return (
+    <Tool
+      className="w-[min(calc(100vw-2rem),52rem)] max-w-full"
+      defaultOpen={part.state !== "output-available"}
+    >
+      <ToolHeader state={part.state} title={toolName} type={part.type} />
+      <ToolContent>
+        <ToolInput input={toolInput} key={JSON.stringify(toolInput)} />
+        <Confirmation approval={approval} state={part.state}>
+          <ConfirmationTitle className="flex items-center gap-2">
+            <ConfirmationRequest>Approve this tool call before it runs.</ConfirmationRequest>
+            <ConfirmationAccepted>
+              <CheckIcon data-icon="inline-start" />
+              <span>Approved</span>
+            </ConfirmationAccepted>
+            <ConfirmationRejected>
+              <XIcon data-icon="inline-start" />
+              <span>Denied</span>
+            </ConfirmationRejected>
+          </ConfirmationTitle>
+          {approval ? (
+            <ConfirmationActions>
+              <ConfirmationAction
+                onClick={() => onApprovalResponse({ approved: false, id: approval.id })}
+                variant="outline"
+              >
+                Deny
+              </ConfirmationAction>
+              <ConfirmationAction
+                onClick={() => onApprovalResponse({ approved: true, id: approval.id })}
+              >
+                Approve
+              </ConfirmationAction>
+            </ConfirmationActions>
+          ) : null}
+        </Confirmation>
+        <ToolOutput errorText={part.errorText} output={part.output} />
+      </ToolContent>
+    </Tool>
+  );
+}
+
+function isToolPart(part: UIMessage["parts"][number]): part is ToolUIPart {
+  return part.type.startsWith("tool-");
+}
+
+function getApprovalContinuationKey(messages: UIMessage[]) {
+  const message = messages[messages.length - 1];
+
+  if (!message || message.role !== "assistant") {
+    return null;
+  }
+
+  const lastStepStartIndex = message.parts.reduce(
+    (lastIndex, part, index) => (part.type === "step-start" ? index : lastIndex),
+    -1,
+  );
+  const toolParts = message.parts.slice(lastStepStartIndex + 1).filter(isToolPart);
+  const respondedApprovals = toolParts.filter(
+    (part) => part.state === "approval-responded" && "approval" in part,
+  );
+
+  if (respondedApprovals.length === 0) {
+    return null;
+  }
+
+  const canContinue = toolParts.every(
+    (part) =>
+      part.state === "output-available" ||
+      part.state === "output-error" ||
+      part.state === "approval-responded",
+  );
+
+  if (!canContinue) {
+    return null;
+  }
+
+  return respondedApprovals.map((part) => part.approval.id).join(":");
+}
+
+function getToolInput(part: ToolUIPart) {
+  if (part.input !== undefined) {
+    return part.input;
+  }
+
+  return "rawInput" in part ? part.rawInput : {};
+}
+
+function getLastMessageModel(messages: UIMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const metadata = messages[index]?.metadata;
+
+    if (isModelMetadata(metadata)) {
+      return metadata.model;
+    }
+  }
+
+  return undefined;
+}
+
+function isModelMetadata(metadata: UIMessage["metadata"]): metadata is { model: string } {
+  return (
+    typeof metadata === "object" &&
+    metadata !== null &&
+    "model" in metadata &&
+    typeof metadata.model === "string"
   );
 }
 

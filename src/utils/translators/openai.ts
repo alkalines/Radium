@@ -1,6 +1,5 @@
-import { convertToModelMessages, streamText, tool, UIMessageChunk } from "ai";
+import { jsonSchema, type ModelMessage, streamText, tool, UIMessageChunk } from "ai";
 import z from "zod";
-import { convertJsonSchemaToZod } from "zod-from-json-schema";
 import { completionUsage } from "../../../convex/key";
 import AIBalancer from "../ai_balancer";
 import { convertStreamToAsyncIterator } from "../tools/chunkReader";
@@ -18,12 +17,10 @@ function toolsParsing(reqData: ChatCompletions_RequestBody_Type) {
   rawTools?.forEach((rawTool) => {
     if (rawTool.type === "function") {
       const toolInfo = rawTool.function;
-      const inputSchema = convertJsonSchemaToZod(toolInfo.parameters) || z.any();
 
-      object[toolInfo.name] = tool({
-        name: toolInfo.name,
+      object[toolInfo.name] = tool<unknown>({
         description: toolInfo.description,
-        inputSchema, // Needs a lot of testing
+        inputSchema: jsonSchema(toolInfo.parameters ?? { type: "object", properties: {} }),
         /**
          * Strict is non existent on the AISDK
          * @comment i don't know why.
@@ -41,8 +38,7 @@ function toolsParsing(reqData: ChatCompletions_RequestBody_Type) {
           ? z.object({ input: z.string() })
           : z.object({ input: z.string() });
 
-      object[toolInfo.name] = tool({
-        name: toolInfo.name,
+      object[toolInfo.name] = tool<{ input: string }>({
         description: toolInfo.description,
         inputSchema,
       });
@@ -71,57 +67,136 @@ function toolChoiceParse(reqData: ChatCompletions_RequestBody_Type) {
   return undefined;
 }
 
-async function getAISDKStream(
-  reqData: ChatCompletions_RequestBody_Type,
-  provider: Awaited<ReturnType<typeof AIBalancer>>,
-  abort: AbortController,
-): Promise<ReturnType<typeof streamText>> {
-  const parsedToolChoice = toolChoiceParse(reqData);
-  /**
-   * @todo Reasoning parameter, and provider specific options
-   */
-  const uiMessages = await convertToModelMessages(
-    reqData.messages.map((m) => {
-      const role: "system" | "user" | "assistant" =
-        m.role === "developer"
-          ? "system"
-          : m.role === "function" || m.role === "tool"
-            ? "assistant"
-            : (m.role as any);
+function openAIToModelMessages(
+  messages: ChatCompletions_RequestBody_Type["messages"],
+): ModelMessage[] {
+  const toolNamesByCallId = new Map<string, string>();
 
-      const raw: any = m;
-      const content = raw.content;
-      const parts: { type: "text"; text: string }[] = [];
+  return messages.map<ModelMessage>((message) => {
+    if (message.role === "developer" || message.role === "system") {
+      return {
+        role: "system",
+        content: openAIContentToText(message.content),
+      } satisfies ModelMessage;
+    }
 
-      if (typeof content === "string") {
-        parts.push({ type: "text", text: content });
-      } else if (Array.isArray(content)) {
-        for (const c of content) {
-          if (c && typeof c === "object" && "text" in c && typeof (c as any).text === "string") {
-            parts.push({ type: "text", text: (c as any).text });
-          } else {
-            try {
-              parts.push({
-                type: "text",
-                text: `[${(c as any).type ?? "part"}] ${JSON.stringify(c)}`,
-              });
-            } catch {
-              parts.push({ type: "text", text: "[unrepresentable part]" });
-            }
-          }
-        }
-      } else {
-        parts.push({ type: "text", text: "" });
+    if (message.role === "user") {
+      return {
+        role: "user",
+        content: openAIContentToText(message.content),
+      } satisfies ModelMessage;
+    }
+
+    if (message.role === "assistant") {
+      const content: any[] = [];
+      const text = openAIContentToText(message.content);
+
+      if (text) {
+        content.push({ type: "text", text });
+      }
+
+      for (const toolCall of message.tool_calls ?? []) {
+        const toolName = "function" in toolCall ? toolCall.function.name : toolCall.custom.name;
+        const inputText =
+          "function" in toolCall ? toolCall.function.arguments : toolCall.custom.input;
+
+        toolNamesByCallId.set(toolCall.id, toolName);
+        content.push({
+          type: "tool-call",
+          toolCallId: toolCall.id,
+          toolName,
+          input: parseToolInput(inputText),
+        });
       }
 
       return {
-        role,
-        content: parts.map((p) => p.text).join(""),
-        parts,
-      };
-    }),
-  );
+        role: "assistant",
+        content: content.length > 0 ? content : "",
+      } satisfies ModelMessage;
+    }
 
+    if (message.role === "tool") {
+      const toolCallId = message.tool_call_id;
+      if (!toolCallId) {
+        throw new Error("Tool messages must include a tool_call_id.");
+      }
+
+      return {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: toolNamesByCallId.get(toolCallId) ?? toolCallId,
+            output: {
+              type: "text",
+              value: openAIContentToText(message.content),
+            },
+          },
+        ],
+      } satisfies ModelMessage;
+    }
+
+    const toolCallId = message.name;
+    if (!toolCallId) {
+      throw new Error("Function messages must include a name.");
+    }
+
+    return {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId,
+          toolName: toolCallId,
+          output: {
+            type: "text",
+            value: openAIContentToText(message.content),
+          },
+        },
+      ],
+    } satisfies ModelMessage;
+  });
+}
+
+function openAIContentToText(content: unknown) {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .map((part) => {
+      if (part && typeof part === "object" && "text" in part) {
+        return typeof part.text === "string" ? part.text : "";
+      }
+
+      return JSON.stringify(part);
+    })
+    .join("");
+}
+
+function parseToolInput(input: string) {
+  try {
+    return JSON.parse(input);
+  } catch {
+    return { input };
+  }
+}
+
+function getAISDKStream(
+  reqData: ChatCompletions_RequestBody_Type,
+  provider: Awaited<ReturnType<typeof AIBalancer>>,
+  abort: AbortController,
+): ReturnType<typeof streamText> {
+  const parsedToolChoice = toolChoiceParse(reqData);
+  const modelMessages = openAIToModelMessages(reqData.messages);
+  /**
+   * @todo Reasoning parameter, and provider specific options
+   */
   return streamText({
     model: provider.connector(reqData.model, {
       logitBias: reqData.logit_bias,
@@ -145,7 +220,7 @@ async function getAISDKStream(
       //web_search_options: reqData.web_search_options
       user: reqData.prompt_cache_key || reqData.user,
     }),
-    messages: uiMessages,
+    messages: modelMessages,
     abortSignal: abort.signal,
     maxOutputTokens: reqData.max_completion_tokens ?? undefined,
     tools: toolsParsing(reqData) as any,
@@ -223,6 +298,7 @@ export async function StreamCompletion(
         controllerOutput(JSON.stringify(response));
       };
 
+      const emittedToolCalls = new Set<string>();
       for await (const chunk of chunkLoadStream) {
         // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
         switch (chunk.type) {
@@ -295,6 +371,8 @@ export async function StreamCompletion(
             }
             break;
           case "tool-input-start":
+            emittedToolCalls.add(chunk.toolCallId);
+            finishReasons.toolCalls = true;
             openaiOutput({
               id: genID || "not-available",
               created: createdDateUnix,
@@ -353,6 +431,42 @@ export async function StreamCompletion(
             });
             break;
           case "tool-input-available":
+            finishReasons.toolCalls = true;
+            if (!emittedToolCalls.has(chunk.toolCallId)) {
+              emittedToolCalls.add(chunk.toolCallId);
+              openaiOutput({
+                id: genID || "not-available",
+                created: createdDateUnix,
+                model: reqData.model, // @todo Not fuck everything in case of routers
+                object: "chat.completion.chunk",
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      role: "assistant",
+                      content: "",
+                      tool_calls: [
+                        {
+                          id: chunk.toolCallId,
+                          index: 0,
+                          type: "function", // @todo dynamicTools - According with OpenAI docs only function is currently supported.
+                          function: {
+                            name: chunk.toolName,
+                            arguments:
+                              typeof chunk.input === "string"
+                                ? chunk.input
+                                : JSON.stringify(chunk.input),
+                          },
+                        },
+                      ],
+                    },
+                    finish_reason: null,
+                    logprobs: null,
+                  },
+                ],
+              });
+            }
+
             openaiOutput({
               id: genID || "not-available",
               created: createdDateUnix,

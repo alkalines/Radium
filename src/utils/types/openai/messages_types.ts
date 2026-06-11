@@ -73,6 +73,7 @@ export const OpenAI_Message_Assistant = z.object({
   ),
   content: z.union([
     z.string(),
+    z.null(),
     z.array(
       z.union([
         OpenAI_Input_TextPart,
@@ -94,25 +95,27 @@ export const OpenAI_Message_Assistant = z.object({
   ),
   name: z.optional(z.string()),
   refusal: z.optional(z.string()),
-  tool_calls: z.array(
-    z.union([
-      z.object({
-        function: z.object({
-          arguments: z.string(),
-          name: z.string(),
+  tool_calls: z.optional(
+    z.array(
+      z.union([
+        z.object({
+          function: z.object({
+            arguments: z.string(),
+            name: z.string(),
+          }),
+          id: z.string(),
+          type: z.string(),
         }),
-        id: z.string(),
-        type: z.string(),
-      }),
-      z.object({
-        custom: z.object({
-          input: z.string(),
-          name: z.string(),
+        z.object({
+          custom: z.object({
+            input: z.string(),
+            name: z.string(),
+          }),
+          id: z.string(),
+          type: z.literal("custom"),
         }),
-        id: z.string(),
-        type: z.literal("custom"),
-      }),
-    ]),
+      ]),
+    ),
   ),
 });
 
