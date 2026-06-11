@@ -228,7 +228,7 @@ export function ChatPromptInput({
             <VoiceInputButton />
 
             <PromptInputSubmit
-              className="bg-primary text-primary-foreground hover:bg-primary/90"
+              className="bg-foreground text-background hover:bg-foreground/90"
               disabled={submitDisabled && !isBusy}
               onClick={status === "streaming" ? onStop : undefined}
               size="icon-xs"

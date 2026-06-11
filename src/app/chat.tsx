@@ -15,10 +15,93 @@ import {
   ChatPromptInput,
   type ReasoningEffort,
 } from "@/components/chat/chat-prompt-input";
+import {
+  ChatHomeSkeleton,
+  chatComposerViewTransitionName,
+  rememberChatHandoff,
+} from "@/components/chat/chat-loading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { api } from "../../convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
+
+const welcomeTexts = {
+  anytime: [
+    "{name} returns!",
+    "Back at it, {name}",
+    "Back at it!",
+    "Greetings, whoever you are",
+    "Hey there",
+    "Hey there, {name}",
+    "Hi {name}, how are you?",
+    "Hi, how are you?",
+    "How was your day, {name}?",
+    "How was your day?",
+    "How's it going, {name}?",
+    "How's it going?",
+    "Ready when you are, {name}.",
+    "Start anywhere, {name}.",
+    "Welcome",
+    "Welcome, {name}",
+    "What's new, {name}?",
+    "What's new?",
+    "What's on your mind, {name}?",
+    "What's on your mind?",
+  ],
+  temporary: ["Let's chat incognito", "You're incognito"],
+  morning: ["Good morning", "Good morning, {name}"],
+  afternoon: ["Good afternoon", "Good afternoon, {name}"],
+  evening: [
+    "Coffee and Claude time?",
+    "Evening",
+    "Evening, {name}",
+    "Good evening",
+    "Good evening, {name}",
+    "Hello, night owl",
+    "What's on your mind tonight?",
+  ],
+  weekend: [
+    "Welcome to the weekend",
+    "Welcome to the weekend, {name}",
+  ],
+  weekdays: [
+    ["Happy Sunday", "Happy Sunday, {name}", "Sunday session?", "Sunday session, {name}?"],
+    ["Happy Monday", "Happy Monday, {name}"],
+    ["Happy Tuesday", "Happy Tuesday, {name}"],
+    ["Happy Wednesday", "Happy Wednesday, {name}"],
+    ["Happy Thursday", "Happy Thursday, {name}"],
+    ["Happy Friday", "Happy Friday, {name}", "That Friday feeling", "That Friday feeling, {name}"],
+    ["Happy Saturday!", "Happy Saturday, {name}"],
+  ],
+};
+
+const welcomeTextCount = Object.values(welcomeTexts).reduce((count, value) => {
+  if (value.length > 0 && Array.isArray(value[0])) {
+    return count + (value as string[][]).flat().length;
+  }
+
+  return count + (value as string[]).length;
+}, 0);
+
+function getRandomWelcomeText(name: string | undefined, index: number, date = new Date()) {
+  const hour = date.getHours();
+  const day = date.getDay();
+  const timeOfDayTexts =
+    hour < 12
+      ? welcomeTexts.morning
+      : hour < 17
+        ? welcomeTexts.afternoon
+        : welcomeTexts.evening;
+  const candidates = [
+    ...welcomeTexts.anytime,
+    ...timeOfDayTexts,
+    ...welcomeTexts.weekdays[day],
+    ...(day === 0 || day === 6 ? welcomeTexts.weekend : []),
+  ].filter((text) => name || !text.includes("{name}"));
+  const welcomeText = candidates[index % candidates.length] ?? "Welcome";
+
+  return name ? welcomeText.replace("{name}", name) : welcomeText;
+}
 
 export const Route = createFileRoute("/chat")({
   staticData: {
@@ -67,11 +150,10 @@ function ChatHomePage() {
   const [model, setModel] = useState<string>();
   const [reasoningBudget, setReasoningBudget] = useState<number>();
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
+  const [welcomeIndex] = useState(() => Math.floor(Math.random() * welcomeTextCount));
 
-  const userName =
-    typeof userInfo === "string"
-      ? "there"
-      : (userInfo?.name ?? "there");
+  const userName = typeof userInfo === "string" ? undefined : userInfo?.name;
+  const welcomeText = getRandomWelcomeText(userName, welcomeIndex);
   const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const canSubmit = Boolean(balance && model && !isSubmitting);
   const selectedModelData = models?.find((item) => item.slug === model);
@@ -79,16 +161,23 @@ function ChatHomePage() {
     setModel(nextModel);
   }, []);
 
+  if (userInfo === undefined || models === undefined) {
+    return <ChatHomeSkeleton />;
+  }
+
   return (
     <main className="flex min-h-[calc(100svh-var(--header-height))] flex-col items-center justify-center gap-8 p-4 md:p-8">
       <section className="flex w-full max-w-3xl items-center justify-center gap-4 text-center">
         <img alt="Radium" className="size-12 md:size-16" src="/letters/R.svg" />
-        <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">
-          Welcome back, {userName}
+        <h1 className="max-w-2xl text-balance text-[clamp(1.5rem,4vw,2.5rem)] font-semibold leading-tight tracking-tight">
+          {welcomeText}
         </h1>
       </section>
 
-      <section className="w-full max-w-3xl">
+      <section
+        className="w-full max-w-3xl"
+        style={{ viewTransitionName: chatComposerViewTransitionName }}
+      >
         {error ? (
           <Alert className="mb-4" variant="destructive">
             <AlertTitle>Unable to start chat</AlertTitle>
@@ -138,10 +227,14 @@ function ChatHomePage() {
                 throw new Error("Please sign in again.");
               }
 
-              await navigate({
-                to: "/chat/$chatId",
-                params: { chatId },
-              });
+              rememberChatHandoff(chatId, trimmedText);
+
+              await navigateWithChatTransition(() =>
+                navigate({
+                  to: "/chat/$chatId",
+                  params: { chatId },
+                })
+              );
             } catch (caughtError) {
               setError(
                 caughtError instanceof Error
@@ -161,4 +254,12 @@ function ChatHomePage() {
       </section>
     </main>
   );
+}
+
+function navigateWithChatTransition(navigateToChat: () => Promise<void>) {
+  if (typeof document === "undefined" || !("startViewTransition" in document)) {
+    return navigateToChat();
+  }
+
+  return document.startViewTransition(() => navigateToChat()).finished;
 }

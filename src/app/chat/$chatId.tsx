@@ -29,6 +29,13 @@ import {
   filterFilesWithUrl,
   type ReasoningEffort,
 } from "@/components/chat/chat-prompt-input";
+import {
+  ChatConversationSkeleton,
+  ChatStartingTransition,
+  chatComposerViewTransitionName,
+  clearChatHandoff,
+  readChatHandoff,
+} from "@/components/chat/chat-loading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
@@ -70,6 +77,8 @@ function ChatConversationPage() {
   const [model, setModel] = useState<string>();
   const [reasoningBudget, setReasoningBudget] = useState<number>();
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
+  const [handoffPrompt] = useState(() => readChatHandoff(chatId));
+  const [handoffSettled, setHandoffSettled] = useState(() => handoffPrompt === null);
   const loadedInitialMessages = useRef(false);
   const sentQueuedMessage = useRef(false);
   const queuedModel = typeof chat === "string" ? undefined : chat?.messages_queue?.model;
@@ -109,6 +118,24 @@ function ChatConversationPage() {
   });
 
   useEffect(() => {
+    if (handoffPrompt === null) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setHandoffSettled(true);
+    }, 1450);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [handoffPrompt]);
+
+  useEffect(() => {
+    if (chat !== undefined) {
+      clearChatHandoff(chatId);
+    }
+  }, [chat, chatId]);
+
+  useEffect(() => {
     if (loadedInitialMessages.current || !chat || typeof chat === "string") {
       return;
     }
@@ -146,10 +173,44 @@ function ChatConversationPage() {
   }, [chat, convexChatId, sendMessage, status]);
 
   if (chat === undefined) {
+    if (handoffPrompt !== null) {
+      return (
+        <ChatStartingTransition prompt={handoffPrompt}>
+          <ChatPromptInput
+            disabled
+            models={models}
+            onModelChange={handleModelChange}
+            onReasoningBudgetChange={setReasoningBudget}
+            onReasoningEffortChange={setReasoningEffort}
+            placeholder="Continue the conversation..."
+            reasoningBudget={reasoningBudget}
+            reasoningEffort={reasoningEffort}
+            selectedModel={selectedModel}
+            status="submitted"
+          />
+        </ChatStartingTransition>
+      );
+    }
+
+    return <ChatConversationSkeleton />;
+  }
+
+  if (!handoffSettled && handoffPrompt !== null) {
     return (
-      <main className="flex min-h-[calc(100svh-var(--header-height))] items-center justify-center p-4 text-muted-foreground">
-        Loading chat...
-      </main>
+      <ChatStartingTransition prompt={handoffPrompt}>
+        <ChatPromptInput
+          disabled
+          models={models}
+          onModelChange={handleModelChange}
+          onReasoningBudgetChange={setReasoningBudget}
+          onReasoningEffortChange={setReasoningEffort}
+          placeholder="Continue the conversation..."
+          reasoningBudget={reasoningBudget}
+          reasoningEffort={reasoningEffort}
+          selectedModel={selectedModel}
+          status="submitted"
+        />
+      </ChatStartingTransition>
     );
   }
 
@@ -209,7 +270,10 @@ function ChatConversationPage() {
       </Conversation>
 
       <div className="sticky bottom-0 border-t bg-background/95 p-4 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
+        <div
+          className="mx-auto flex w-full max-w-3xl flex-col gap-3"
+          style={{ viewTransitionName: chatComposerViewTransitionName }}
+        >
           {error ? (
             <Alert variant="destructive">
               <AlertTitle>Message failed</AlertTitle>
