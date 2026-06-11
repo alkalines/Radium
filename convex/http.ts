@@ -47,19 +47,18 @@ authComponent.registerRoutes(http, createAuth);
 http.route({
   method: "POST",
   path: "/api/aisdk/chat",
-  handler: httpAction((ctx, req) =>
-    handleAISDKChat(ctx, req, aisdkCorsHeaders()),
-  ),
+  handler: httpAction((ctx, req) => handleAISDKChat(ctx, req, aisdkCorsHeaders())),
 });
 
 http.route({
   method: "OPTIONS",
   path: "/api/aisdk/chat",
-  handler: httpAction(async () =>
-    new Response(null, {
-      status: 204,
-      headers: aisdkCorsHeaders(),
-    }),
+  handler: httpAction(
+    async () =>
+      new Response(null, {
+        status: 204,
+        headers: aisdkCorsHeaders(),
+      }),
   ),
 });
 

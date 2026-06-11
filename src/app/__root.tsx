@@ -68,10 +68,7 @@ function RootRouteComponent() {
   const context = useRouteContext({ from: Route.id });
 
   return (
-    <Providers
-      convexClient={context.convexQueryClient.convexClient}
-      initialToken={context.token}
-    >
+    <Providers convexClient={context.convexQueryClient.convexClient} initialToken={context.token}>
       <AppShell>
         <Outlet />
       </AppShell>

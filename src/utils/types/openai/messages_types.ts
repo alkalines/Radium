@@ -47,7 +47,7 @@ export const OpenAI_Message_DeveloperSystem = z.object({
       z.object({
         type: z.string(),
         text: z.string(),
-      })
+      }),
     ),
   ]),
   name: z.optional(z.string()),
@@ -58,12 +58,7 @@ export const OpenAI_Message_User = z.object({
   content: z.union([
     z.string(),
     z.array(
-      z.union([
-        OpenAI_Input_TextPart,
-        OpenAI_Input_Image,
-        OpenAI_Input_Audio,
-        OpenAI_Input_File,
-      ])
+      z.union([OpenAI_Input_TextPart, OpenAI_Input_Image, OpenAI_Input_Audio, OpenAI_Input_File]),
     ),
   ]),
   name: z.optional(z.string()),
@@ -74,7 +69,7 @@ export const OpenAI_Message_Assistant = z.object({
   audio: z.optional(
     z.object({
       id: z.string(),
-    })
+    }),
   ),
   content: z.union([
     z.string(),
@@ -85,7 +80,7 @@ export const OpenAI_Message_Assistant = z.object({
           refusal: z.string(),
           type: z.string(),
         }),
-      ])
+      ]),
     ),
   ]),
   /**
@@ -95,7 +90,7 @@ export const OpenAI_Message_Assistant = z.object({
     z.object({
       arguments: z.string(),
       name: z.string(),
-    })
+    }),
   ),
   name: z.optional(z.string()),
   refusal: z.optional(z.string()),
@@ -117,7 +112,7 @@ export const OpenAI_Message_Assistant = z.object({
         id: z.string(),
         type: z.literal("custom"),
       }),
-    ])
+    ]),
   ),
 });
 

@@ -1,9 +1,5 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import {
-  convertToModelMessages,
-  streamText,
-  type UIMessage,
-} from "ai";
+import { convertToModelMessages, streamText, type UIMessage } from "ai";
 import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
@@ -25,11 +21,7 @@ type AISDKChatRequestBody = {
   chatId?: Id<"aisdk_chats">;
 };
 
-function jsonResponse(
-  body: unknown,
-  responseHeaders: ResponseHeaders,
-  init?: ResponseInit,
-) {
+function jsonResponse(body: unknown, responseHeaders: ResponseHeaders, init?: ResponseInit) {
   return Response.json(body, {
     ...init,
     headers: {
@@ -54,11 +46,9 @@ export async function handleAISDKChat(
   const userId = authUser?._id ?? session?.user.id;
 
   if (!userId) {
-    return jsonResponse(
-      { error: { message: "Unauthorized", code: 401 } },
-      responseHeaders,
-      { status: 401 },
-    );
+    return jsonResponse({ error: { message: "Unauthorized", code: 401 } }, responseHeaders, {
+      status: 401,
+    });
   }
 
   const body = (await req.json()) as AISDKChatRequestBody;
@@ -77,17 +67,11 @@ export async function handleAISDKChat(
   });
 
   if (!chatInfo || chatInfo.userId !== userId)
-    return jsonResponse(
-      { error: { message: "Unauthorized", code: 401 } },
-      responseHeaders,
-      { status: 401 },
-    );
+    return jsonResponse({ error: { message: "Unauthorized", code: 401 } }, responseHeaders, {
+      status: 401,
+    });
 
-  const provider = createInternalGatewayProvider(
-    ctx,
-    chatInfo.balance,
-    responseHeaders,
-  );
+  const provider = createInternalGatewayProvider(ctx, chatInfo.balance, responseHeaders);
 
   await ctx.runMutation(internal.aisdk.EditChat, {
     chatId,
@@ -98,19 +82,20 @@ export async function handleAISDKChat(
   const result = streamText({
     model: provider(body.model),
     messages: await convertToModelMessages(body.messages),
-    providerOptions: body.reasoningEffort || body.reasoningBudget
-      ? {
-          openaiCompatible: {
-            ...(body.reasoningEffort && body.reasoningEffort !== "none"
-              ? { reasoningEffort: body.reasoningEffort }
-              : {}),
-            reasoning: {
-              ...(body.reasoningEffort ? { effort: body.reasoningEffort } : {}),
-              ...(body.reasoningBudget ? { max_tokens: body.reasoningBudget } : {}),
+    providerOptions:
+      body.reasoningEffort || body.reasoningBudget
+        ? {
+            openaiCompatible: {
+              ...(body.reasoningEffort && body.reasoningEffort !== "none"
+                ? { reasoningEffort: body.reasoningEffort }
+                : {}),
+              reasoning: {
+                ...(body.reasoningEffort ? { effort: body.reasoningEffort } : {}),
+                ...(body.reasoningBudget ? { max_tokens: body.reasoningBudget } : {}),
+              },
             },
-          },
-        }
-      : undefined,
+          }
+        : undefined,
     abortSignal: req.signal,
   });
 
@@ -193,9 +178,7 @@ function getGatewayRequestBody(body: BodyInit | null | undefined) {
     throw new Error("Expected OpenAI-compatible JSON request body.");
   }
 
-  return ChatCompletions_RequestBody.parse(
-    JSON.parse(body),
-  ) as ChatCompletions_RequestBody_Type;
+  return ChatCompletions_RequestBody.parse(JSON.parse(body)) as ChatCompletions_RequestBody_Type;
 }
 
 /**

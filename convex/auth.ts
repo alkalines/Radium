@@ -24,19 +24,20 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
     },
     plugins: [
       // The Convex plugin is required for Convex compatibility
-      convex({ authConfig, jwksRotateOnTokenGenerationError: true, }),
+      convex({ authConfig, jwksRotateOnTokenGenerationError: true }),
     ],
   });
 };
 
 export type UserInfoType = {
-  email: string
-  name: string,
-  profilePicture?: string | null,
-  balances: Doc<"balances">[]
-}
+  email: string;
+  name: string;
+  profilePicture?: string | null;
+  balances: Doc<"balances">[];
+};
 
 export const userInfo = query({
+  args: {},
   handler: async (ctx): Promise<UserInfoType | "Not logged in!"> => {
     const userAuth = await authComponent.getAuthUser(ctx);
     if (!userAuth) return "Not logged in!";
@@ -44,7 +45,10 @@ export const userInfo = query({
     /**
      * @todo Organization and teams support
      */
-    const balances = await ctx.db.query("balances").filter((q) => q.eq(q.field("userId"), userAuth._id)).collect()
+    const balances = await ctx.db
+      .query("balances")
+      .filter((q) => q.eq(q.field("userId"), userAuth._id))
+      .collect();
 
     return {
       email: userAuth.email,
@@ -57,15 +61,18 @@ export const userInfo = query({
 
 export const internalUserInfo = internalQuery({
   args: {
-    userId: v.string()
+    userId: v.string(),
   },
   handler: async (ctx, args): Promise<UserInfoType> => {
-    const userInfo = await authComponent.getAnyUserById(ctx, args.userId)
+    const userInfo = await authComponent.getAnyUserById(ctx, args.userId);
 
     /**
      * @todo Organization and teams support
      */
-    const balances = await ctx.db.query("balances").filter((q) => q.eq(q.field("userId"), userInfo!._id)).collect()
+    const balances = await ctx.db
+      .query("balances")
+      .filter((q) => q.eq(q.field("userId"), userInfo!._id))
+      .collect();
 
     return {
       email: userInfo!.email,

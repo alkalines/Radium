@@ -10,23 +10,16 @@ export const hashText = async (text: string) =>
         {
           name: hashAlgorithm,
         },
-        new TextEncoder().encode(text)
-      )
-    )
+        new TextEncoder().encode(text),
+      ),
+    ),
   )
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
-export const findUsableCredit = (
-  UserCredit: number,
-  UsedKey: number,
-  KeyLimit?: number
-) =>
+export const findUsableCredit = (UserCredit: number, UsedKey: number, KeyLimit?: number) =>
   parseFloat(
-    Math.max(
-      0,
-      (KeyLimit ? Math.min(KeyLimit, UserCredit) : UserCredit) - UsedKey
-    ).toFixed(7)
+    Math.max(0, (KeyLimit ? Math.min(KeyLimit, UserCredit) : UserCredit) - UsedKey).toFixed(7),
   );
 
 export const getKeyInfo = query({
@@ -42,11 +35,11 @@ export const getKeyInfo = query({
         .collect()
     )[0];
     if (!dbKey) throw new Error("This key is invalid!");
-    const balanceInfo = await ctx.db.get(dbKey.balance);
+    const balanceInfo = await ctx.db.get("balances", dbKey.balance);
     const usableCredits = findUsableCredit(
       balanceInfo!.credits,
       dbKey.usedCredits,
-      dbKey.creditLimit
+      dbKey.creditLimit,
     );
 
     return {
@@ -105,9 +98,7 @@ export const completionPricingSchema = v.object({
     cached_tokens: v.number(),
   }),
   cost: v.number(),
-  cost_details: v.optional(
-    v.object({ upstream_inference_cost: v.optional(v.number()) })
-  ),
+  cost_details: v.optional(v.object({ upstream_inference_cost: v.optional(v.number()) })),
 });
 
 export const billKey = internalMutation({
@@ -149,16 +140,14 @@ export const billKey = internalMutation({
   },
   async handler(ctx, args) {
     const [keyInfo, balanceInfo, modelInfo] = await Promise.all([
-      args.bill.key ? ctx.db.get(args.bill.key) : undefined,
-      ctx.db.get(args.bill.balance),
+      args.bill.key ? ctx.db.get("keys", args.bill.key) : undefined,
+      ctx.db.get("balances", args.bill.balance),
       ctx.db
         .query("models")
         .filter((q) => q.eq(q.field("slug"), args.request.model_slug))
         .first(),
     ]);
-    const modelFromProvider = modelInfo!.providers.find(
-      (q) => q.id === args.request.provider
-    );
+    const modelFromProvider = modelInfo!.providers.find((q) => q.id === args.request.provider);
 
     /**
      * Pricing
@@ -191,9 +180,7 @@ export const billKey = internalMutation({
     /**
      * @todo 1M per month should be free
      */
-    const billedCost = args.request.byok
-      ? totalCostInference * 0.05
-      : totalCostInference;
+    const billedCost = args.request.byok ? totalCostInference * 0.05 : totalCostInference;
 
     // Database actions
     await Promise.all([
@@ -221,12 +208,10 @@ export const billKey = internalMutation({
             prompt_tokens: args.response.usage.prompt_tokens,
             completion_tokens: args.response.usage.completion_tokens,
             completion_tokens_details: {
-              reasoning_tokens:
-                args.response.usage.completion_tokens_details.reasoning_tokens,
+              reasoning_tokens: args.response.usage.completion_tokens_details.reasoning_tokens,
             },
             prompt_tokens_details: {
-              cached_tokens:
-                args.response.usage.prompt_tokens_details.cached_tokens,
+              cached_tokens: args.response.usage.prompt_tokens_details.cached_tokens,
             },
           },
           pricing: {
@@ -236,19 +221,17 @@ export const billKey = internalMutation({
               cached_tokens: cacheReadPricing,
             },
             cost_details: {
-              upstream_inference_cost: args.request.byok
-                ? totalCostInference
-                : undefined,
+              upstream_inference_cost: args.request.byok ? totalCostInference : undefined,
             },
             cost: billedCost,
           },
         },
       }),
-      ctx.db.patch(balanceInfo!._id, {
+      ctx.db.patch("balances", balanceInfo!._id, {
         credits: AddFunction([balanceInfo!.credits, -billedCost]),
       }),
       keyInfo
-        ? ctx.db.patch(keyInfo?._id, {
+        ? ctx.db.patch("keys", keyInfo?._id, {
             usedCredits: AddFunction([keyInfo!.usedCredits, billedCost]),
           })
         : null,

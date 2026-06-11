@@ -29,9 +29,9 @@ const OpenRouterProvider: AIProviderConfig = {
           "HTTP-Referer": "https://github.com/alkalines/Radium",
           "X-Title": "Radium Chatroom",
         },
-      }).chat(model, (settings ?? {}) as any)
-    }
-  }
+      }).chat(model, (settings ?? {}) as any);
+    };
+  },
 };
 
 /**

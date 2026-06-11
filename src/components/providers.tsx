@@ -32,10 +32,9 @@ export function Providers({
           authClient={authClient}
           redirectTo="/settings/account"
           navigate={navigate}
-          plugins={
-            [
-              themePlugin({ useTheme }) 
-              /* @todo
+          plugins={[
+            themePlugin({ useTheme }),
+            /* @todo
               usernamePlugin(),
               apiKeyPlugin({ organization: true }),
               multiSessionPlugin(),
@@ -44,13 +43,10 @@ export function Providers({
                 slug: slug ?? null
               })
               */
-            ]
-          }
+          ]}
           Link={Link}
         >
-          <TooltipProvider>
-            {children}
-          </TooltipProvider>
+          <TooltipProvider>{children}</TooltipProvider>
         </AuthProvider>
       </ThemeProvider>
     </ConvexBetterAuthProvider>

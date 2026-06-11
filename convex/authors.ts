@@ -2,10 +2,11 @@ import { v } from "convex/values";
 import { query } from "./_generated/server";
 
 export const listAuthors = query({
+  args: {},
   handler(ctx) {
-    return ctx.db.query("authors").collect()
+    return ctx.db.query("authors").collect();
   },
-})
+});
 
 export const authorInfo = query({
   args: {

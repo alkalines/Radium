@@ -53,11 +53,7 @@ export default defineSchema({
     slug: v.string(),
     model_weights: v.optional(v.string()), // Link
     // @todo Embedding Support and Image Generation (fal.ai syntax probably)
-    type: v.union(
-      v.literal("chat"),
-      v.literal("embedding"),
-      v.literal("image-generation")
-    ),
+    type: v.union(v.literal("chat"), v.literal("embedding"), v.literal("image-generation")),
     description: v.string(),
     warning: v.optional(v.string()),
     reasoning: v.boolean(),
@@ -80,8 +76,8 @@ export default defineSchema({
             v.literal("fp8"), // Floating point (8 bit)
             v.literal("fp16"), // Floating point (16 bit)
             v.literal("bf16"), // Brain floating point (16 bit)
-            v.literal("fp32") // Floating point (32 bit)
-          )
+            v.literal("fp32"), // Floating point (32 bit)
+          ),
         ),
         context: v.number(), // 400k = 400,000
         max_output: v.number(),
@@ -114,8 +110,8 @@ export default defineSchema({
             v.literal("tools"),
             v.literal("tool_choice"),
             v.literal("parallel_tool_calls"),
-            v.literal("verbosity")
-          )
+            v.literal("verbosity"),
+          ),
         ),
         promotions: v.optional(
           v.object({
@@ -125,10 +121,10 @@ export default defineSchema({
             cache_read: v.optional(v.string()),
             cache_write: v.optional(v.string()),
             // @todo Support audio and video
-          })
+          }),
         ),
         moderated: v.boolean(),
-      })
+      }),
     ),
     architecture: v.object({
       input_modalities: v.array(
@@ -138,16 +134,11 @@ export default defineSchema({
           v.literal("file"),
           v.literal("audio"),
           v.literal("video"),
-          v.string()
-        )
+          v.string(),
+        ),
       ),
       output_modalities: v.array(
-        v.union(
-          v.literal("text"),
-          v.literal("image"),
-          v.literal("embeddings"),
-          v.string()
-        )
+        v.union(v.literal("text"), v.literal("image"), v.literal("embeddings"), v.string()),
       ),
       tokenizer: v.union(
         v.string(),
@@ -166,7 +157,7 @@ export default defineSchema({
         v.literal("Llama3"),
         v.literal("Llama4"),
         v.literal("PaLM"),
-        v.literal("RWKV")
+        v.literal("RWKV"),
       ),
     }),
     default_parameters: v.optional(
@@ -174,7 +165,7 @@ export default defineSchema({
         temperature: v.optional(v.number()),
         top_p: v.optional(v.number()),
         frequency_penalty: v.optional(v.number()),
-      })
+      }),
     ),
   }),
   // providers: doesn't need to have a table because they should be hardcoded otherwise inference implementation would suck.

@@ -8,11 +8,11 @@ type ProvidersType = {
 };
 
 /**
- * Providers available 
+ * Providers available
  */
 const Providers = {
-  // Only use lowercase letters for the Providers ID  
+  // Only use lowercase letters for the Providers ID
   openrouter: OpenRouterProvider,
 } as ProvidersType;
 
-export default Providers
+export default Providers;

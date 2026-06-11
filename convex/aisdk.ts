@@ -36,10 +36,10 @@ export const EditChat = internalMutation({
     chatId: v.id("aisdk_chats"),
   },
   handler: async (ctx, args) => {
-    const chat = await ctx.db.get(args.chatId);
+    const chat = await ctx.db.get("aisdk_chats", args.chatId);
     if (!chat) return "Chat not Found.";
 
-    await ctx.db.patch(args.chatId, {
+    await ctx.db.patch("aisdk_chats", args.chatId, {
       messages: args.messages || chat.messages,
       messages_queue: args.messages_queue,
       activeStream: args.activeStream,
@@ -55,7 +55,7 @@ export const GetChat = query({
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
-    const chat = await ctx.db.get(args.chatId);
+    const chat = await ctx.db.get("aisdk_chats", args.chatId);
     if (!chat || chat.userId !== identity._id) return "Chat not Found.";
 
     return {
@@ -73,7 +73,7 @@ export const InternalChatInfo = internalQuery({
     chatId: v.id("aisdk_chats"),
   },
   handler: async (ctx, args) => {
-    const chat = await ctx.db.get(args.chatId);
+    const chat = await ctx.db.get("aisdk_chats", args.chatId);
     return chat;
   },
 });
@@ -86,9 +86,7 @@ export const ListChats = query({
 
     const chats = await ctx.db
       .query("aisdk_chats")
-      .withIndex("by_userId_and_lastInteractionAt", (q) =>
-        q.eq("userId", identity._id)
-      )
+      .withIndex("by_userId_and_lastInteractionAt", (q) => q.eq("userId", identity._id))
       .order("desc")
       .take(30);
 

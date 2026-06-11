@@ -1,23 +1,23 @@
-import { authClient } from "./auth-client"
-import { handler } from "./auth-server"
+import { authClient } from "./auth-client";
+import { handler } from "./auth-server";
 
 type GetSessionParams = {
-  headers?: Headers
-  baseURL?: string | URL
-}
+  headers?: Headers;
+  baseURL?: string | URL;
+};
 
-const getSessionPath = "/api/auth/get-session"
+const getSessionPath = "/api/auth/get-session";
 
 function getSessionUrl(baseURL?: string | URL) {
   if (baseURL) {
-    return new URL(getSessionPath, baseURL).toString()
+    return new URL(getSessionPath, baseURL).toString();
   }
 
   if (typeof window !== "undefined") {
-    return getSessionPath
+    return getSessionPath;
   }
 
-  throw new Error("baseURL is required when loading auth sessions on the server")
+  throw new Error("baseURL is required when loading auth sessions on the server");
 }
 
 export const auth = {
@@ -26,24 +26,24 @@ export const auth = {
       if (params?.baseURL) {
         const response = await handler(
           new Request(getSessionUrl(params.baseURL), {
-            headers: params.headers
-          })
-        )
+            headers: params.headers,
+          }),
+        );
 
         if (!response.ok) {
-          return null
+          return null;
         }
 
-        return response.json()
+        return response.json();
       }
 
       const { data } = await authClient.getSession({
         fetchOptions: {
-          headers: params?.headers
-        }
-      } as any)
+          headers: params?.headers,
+        },
+      } as any);
 
-      return data
-    }
-  }
-}
+      return data;
+    },
+  },
+};

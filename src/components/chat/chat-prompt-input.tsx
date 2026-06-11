@@ -110,15 +110,13 @@ export function ChatPromptInput({
       onModelChange(model);
       setModelSelectorOpen(false);
     },
-    [onModelChange]
+    [onModelChange],
   );
 
   const isBusy = status === "submitted" || status === "streaming";
   const submitDisabled = disabled || !selectedModel || status === "submitted";
   const supportsReasoning = Boolean(selectedModelData?.reasoning);
-  const supportsReasoningBudget = Boolean(
-    selectedModelData?.features?.reasoning_budget
-  );
+  const supportsReasoningBudget = Boolean(selectedModelData?.features?.reasoning_budget);
   const reasoningEfforts = getReasoningEfforts(selectedModelData);
   const selectedReasoningLabel = supportsReasoning
     ? reasoningEffort === "none"
@@ -134,12 +132,7 @@ export function ChatPromptInput({
     if (!reasoningEfforts.includes(reasoningEffort)) {
       onReasoningEffortChange(reasoningEfforts[0]);
     }
-  }, [
-    onReasoningEffortChange,
-    reasoningEffort,
-    reasoningEfforts,
-    supportsReasoning,
-  ]);
+  }, [onReasoningEffortChange, reasoningEffort, reasoningEfforts, supportsReasoning]);
 
   return (
     <PromptInputProvider>
@@ -170,10 +163,7 @@ export function ChatPromptInput({
           </PromptInputTools>
 
           <PromptInputTools className="min-w-0 flex-1 justify-end">
-            <ModelSelector
-              onOpenChange={setModelSelectorOpen}
-              open={modelSelectorOpen}
-            >
+            <ModelSelector onOpenChange={setModelSelectorOpen} open={modelSelectorOpen}>
               <ModelSelectorTrigger asChild>
                 <PromptInputButton
                   className="max-w-[11rem] gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground sm:max-w-[15rem]"
@@ -191,9 +181,7 @@ export function ChatPromptInput({
                   <ChevronDownIcon className="size-3 shrink-0 opacity-70" />
                 </PromptInputButton>
               </ModelSelectorTrigger>
-              <ModelSelectorContent
-                className="w-[min(calc(100vw-2rem),34rem)] [&_[data-slot=dialog-close]]:right-2 [&_[data-slot=dialog-close]]:top-1"
-              >
+              <ModelSelectorContent className="w-[min(calc(100vw-2rem),34rem)] [&_[data-slot=dialog-close]]:right-2 [&_[data-slot=dialog-close]]:top-1">
                 <div className="pr-12">
                   <ModelSelectorInput placeholder="Search models..." />
                 </div>
@@ -284,10 +272,7 @@ function ReasoningDropdown({
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>Reasoning amount</DropdownMenuLabel>
         {supportsReasoning ? (
-          <DropdownMenuRadioGroup
-            onValueChange={onReasoningEffortChange}
-            value={reasoningEffort}
-          >
+          <DropdownMenuRadioGroup onValueChange={onReasoningEffortChange} value={reasoningEffort}>
             {reasoningEfforts.map((effort) => (
               <DropdownMenuRadioItem key={effort} value={effort}>
                 {effort === "none" ? "Off" : capitalize(effort)}
@@ -295,9 +280,7 @@ function ReasoningDropdown({
             ))}
           </DropdownMenuRadioGroup>
         ) : (
-          <DropdownMenuItem disabled>
-            This model does not support reasoning.
-          </DropdownMenuItem>
+          <DropdownMenuItem disabled>This model does not support reasoning.</DropdownMenuItem>
         )}
 
         {supportsReasoningBudget ? (
@@ -311,9 +294,7 @@ function ReasoningDropdown({
                 min={1}
                 onChange={(event) => {
                   const value = event.currentTarget.valueAsNumber;
-                  onReasoningBudgetChange(
-                    Number.isFinite(value) ? value : undefined
-                  );
+                  onReasoningBudgetChange(Number.isFinite(value) ? value : undefined);
                 }}
                 placeholder="Token budget"
                 type="number"
@@ -335,12 +316,7 @@ function ModelItem({ model, onSelect, selectedModel }: ModelItemProps) {
   return (
     <ModelSelectorItem
       data-checked={selected}
-      keywords={[
-        model.name,
-        model.author?.name ?? "",
-        model.author?.slug ?? "",
-        ...providerIds,
-      ]}
+      keywords={[model.name, model.author?.name ?? "", model.author?.slug ?? "", ...providerIds]}
       onSelect={handleSelect}
       value={model.slug}
     >
@@ -410,8 +386,7 @@ function VoiceInputButton() {
     const SpeechRecognitionConstructor =
       typeof window === "undefined"
         ? undefined
-        : ((window as any).SpeechRecognition ??
-          (window as any).webkitSpeechRecognition);
+        : ((window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition);
 
     if (!SpeechRecognitionConstructor) {
       return;
@@ -437,9 +412,7 @@ function VoiceInputButton() {
       if (finalTranscript) {
         const currentTextInput = textInputRef.current;
         currentTextInput.setInput(
-          currentTextInput.value +
-            (currentTextInput.value ? " " : "") +
-            finalTranscript
+          currentTextInput.value + (currentTextInput.value ? " " : "") + finalTranscript,
         );
       }
     };
@@ -476,8 +449,6 @@ function VoiceInputButton() {
   );
 }
 
-export function filterFilesWithUrl<T extends { url?: string }>(
-  file: T
-): file is T & FileUIPart {
+export function filterFilesWithUrl<T extends { url?: string }>(file: T): file is T & FileUIPart {
   return Boolean(file.url);
 }

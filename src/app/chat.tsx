@@ -1,20 +1,12 @@
 import { useMutation, useQuery } from "convex/react";
 import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
 import { ensureSession as ensureSessionServer } from "@better-auth-ui/react/server";
-import {
-  createFileRoute,
-  Outlet,
-  redirect,
-  useRouterState,
-} from "@tanstack/react-router";
+import { createFileRoute, Outlet, redirect, useRouterState } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 import { useCallback, useState } from "react";
 
-import {
-  ChatPromptInput,
-  type ReasoningEffort,
-} from "@/components/chat/chat-prompt-input";
+import { ChatPromptInput, type ReasoningEffort } from "@/components/chat/chat-prompt-input";
 import {
   ChatHomeSkeleton,
   chatComposerViewTransitionName,
@@ -60,10 +52,7 @@ const welcomeTexts = {
     "Hello, night owl",
     "What's on your mind tonight?",
   ],
-  weekend: [
-    "Welcome to the weekend",
-    "Welcome to the weekend, {name}",
-  ],
+  weekend: ["Welcome to the weekend", "Welcome to the weekend, {name}"],
   weekdays: [
     ["Happy Sunday", "Happy Sunday, {name}", "Sunday session?", "Sunday session, {name}?"],
     ["Happy Monday", "Happy Monday, {name}"],
@@ -87,11 +76,7 @@ function getRandomWelcomeText(name: string | undefined, index: number, date = ne
   const hour = date.getHours();
   const day = date.getDay();
   const timeOfDayTexts =
-    hour < 12
-      ? welcomeTexts.morning
-      : hour < 17
-        ? welcomeTexts.afternoon
-        : welcomeTexts.evening;
+    hour < 12 ? welcomeTexts.morning : hour < 17 ? welcomeTexts.afternoon : welcomeTexts.evening;
   const candidates = [
     ...welcomeTexts.anytime,
     ...timeOfDayTexts,
@@ -113,7 +98,7 @@ export const Route = createFileRoute("/chat")({
         ensureSessionServer(queryClient, auth as any, {
           baseURL: getRequestUrl().origin,
           headers: getRequestHeaders(),
-        })
+        }),
       )
       .client(() => ensureSessionClient(queryClient, authClient));
 
@@ -213,9 +198,7 @@ function ChatHomePage() {
                   text: trimmedText,
                   files,
                   model,
-                  ...(selectedModelData?.reasoning
-                    ? { reasoningEffort }
-                    : {}),
+                  ...(selectedModelData?.reasoning ? { reasoningEffort } : {}),
                   ...(selectedModelData?.features?.reasoning_budget && reasoningBudget
                     ? { reasoningBudget }
                     : {}),
@@ -233,13 +216,11 @@ function ChatHomePage() {
                 navigate({
                   to: "/chat/$chatId",
                   params: { chatId },
-                })
+                }),
               );
             } catch (caughtError) {
               setError(
-                caughtError instanceof Error
-                  ? caughtError.message
-                  : "Something went wrong."
+                caughtError instanceof Error ? caughtError.message : "Something went wrong.",
               );
             } finally {
               setIsSubmitting(false);

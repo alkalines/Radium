@@ -2,7 +2,6 @@ import { Models_Response_Type } from "@/utils/types/openai/models";
 import { v } from "convex/values";
 import { internalQuery, query } from "./_generated/server";
 
-
 export const openaiModels = internalQuery({
   args: {},
   handler: async (ctx, args): Promise<Models_Response_Type[]> => {
@@ -58,14 +57,15 @@ export const openaiModels = internalQuery({
 });
 
 export const availableModels = query({
+  args: {},
   async handler(ctx) {
     const models = await ctx.db.query("models").collect();
 
     return Promise.all(
       models.map(async (model) => ({
         ...model,
-        author: await ctx.db.get(model.author),
-      }))
+        author: await ctx.db.get("authors", model.author),
+      })),
     );
   },
 });

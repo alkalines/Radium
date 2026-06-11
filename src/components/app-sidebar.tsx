@@ -1,10 +1,10 @@
-import * as React from "react"
-import { useQuery } from "convex/react"
-import { useRouterState } from "@tanstack/react-router"
+import * as React from "react";
+import { useQuery } from "convex/react";
+import { useRouterState } from "@tanstack/react-router";
 
-import { NavMain } from "@/components/nav-main"
-import { NavSecondary } from "@/components/nav-secondary"
-import { UserButton } from "@/components/auth/user/user-button"
+import { NavMain } from "@/components/nav-main";
+import { NavSecondary } from "@/components/nav-secondary";
+import { UserButton } from "@/components/auth/user/user-button";
 import {
   Sidebar,
   SidebarContent,
@@ -17,13 +17,9 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
-} from "@/components/ui/sidebar"
-import { api } from "../../convex/_generated/api"
-import {
-  BotIcon,
-  Route as RouteIcon,
-  MessageSquareTextIcon,
-} from "lucide-react"
+} from "@/components/ui/sidebar";
+import { api } from "../../convex/_generated/api";
+import { BotIcon, Route as RouteIcon, MessageSquareTextIcon } from "lucide-react";
 
 const data = {
   navMain: [
@@ -56,12 +52,12 @@ const data = {
     //   icon: LifeBuoyIcon,
     // },
   ],
-}
+};
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
-  const chats = useQuery(api.aisdk.ListChats, {})
-  const pathname = useRouterState({ select: (state) => state.location.pathname })
-  const chatSections = Array.isArray(chats) ? groupChatsByLastInteraction(chats) : []
+  const chats = useQuery(api.aisdk.ListChats, {});
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const chatSections = Array.isArray(chats) ? groupChatsByLastInteraction(chats) : [];
 
   return (
     <Sidebar className="border-r-0" {...props}>
@@ -113,11 +109,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                       </div>
                     </SidebarMenuItem>
                     {section.chats.map((chat) => {
-                      const url = `/chat/${chat.id}`
-                      const title = chat.title?.trim()
-                      const fallbackTitle = chat.activeStream
-                        ? "Generating"
-                        : "No title defined"
+                      const url = `/chat/${chat.id}`;
+                      const title = chat.title?.trim();
+                      const fallbackTitle = chat.activeStream ? "Generating" : "No title defined";
 
                       return (
                         <SidebarMenuItem key={chat.id}>
@@ -128,12 +122,14 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                             tooltip={title || fallbackTitle}
                           >
                             <a href={url}>
-                              {title ? chat.emoji ? (
-                                <span className="flex size-4 shrink-0 items-center justify-center text-sm leading-none">
-                                  {chat.emoji}
-                                </span>
-                              ) : (
-                                <MessageSquareTextIcon />
+                              {title ? (
+                                chat.emoji ? (
+                                  <span className="flex size-4 shrink-0 items-center justify-center text-sm leading-none">
+                                    {chat.emoji}
+                                  </span>
+                                ) : (
+                                  <MessageSquareTextIcon />
+                                )
                               ) : (
                                 <AnimatedDotsIcon />
                               )}
@@ -147,7 +143,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                             </a>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
-                      )
+                      );
                     })}
                   </React.Fragment>
                 ))
@@ -162,16 +158,16 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>
-  )
+  );
 }
 
 type SidebarChat = {
-  id: string
-  title?: string
-  emoji?: string
-  lastInteractionAt: number
-  activeStream: boolean
-}
+  id: string;
+  title?: string;
+  emoji?: string;
+  lastInteractionAt: number;
+  activeStream: boolean;
+};
 
 function AnimatedDotsIcon() {
   return (
@@ -183,11 +179,11 @@ function AnimatedDotsIcon() {
       <span className="size-1 rounded-full bg-current motion-safe:animate-pulse motion-safe:[animation-delay:150ms]" />
       <span className="size-1 rounded-full bg-current motion-safe:animate-pulse motion-safe:[animation-delay:300ms]" />
     </span>
-  )
+  );
 }
 
 function groupChatsByLastInteraction(chats: SidebarChat[]) {
-  const now = Date.now()
+  const now = Date.now();
   const sections = [
     { label: "Past 7 days", chats: [] as SidebarChat[] },
     ...Array.from({ length: 12 }, (_, index) => ({
@@ -195,20 +191,20 @@ function groupChatsByLastInteraction(chats: SidebarChat[]) {
       chats: [] as SidebarChat[],
     })),
     { label: "Past years", chats: [] as SidebarChat[] },
-  ]
+  ];
 
   for (const chat of chats) {
-    const ageInDays = (now - chat.lastInteractionAt) / (1000 * 60 * 60 * 24)
+    const ageInDays = (now - chat.lastInteractionAt) / (1000 * 60 * 60 * 24);
 
     if (ageInDays <= 7) {
-      sections[0].chats.push(chat)
+      sections[0].chats.push(chat);
     } else if (ageInDays <= 365) {
-      const monthIndex = Math.min(Math.ceil(ageInDays / 30), 12)
-      sections[monthIndex].chats.push(chat)
+      const monthIndex = Math.min(Math.ceil(ageInDays / 30), 12);
+      sections[monthIndex].chats.push(chat);
     } else {
-      sections[13].chats.push(chat)
+      sections[13].chats.push(chat);
     }
   }
 
-  return sections.filter((section) => section.chats.length > 0)
+  return sections.filter((section) => section.chats.length > 0);
 }

@@ -1,31 +1,26 @@
-"use client"
+"use client";
 
-import { useAuth, useResetPassword } from "@better-auth-ui/react"
-import { Eye, EyeOff } from "lucide-react"
-import { type SyntheticEvent, useEffect, useState } from "react"
-import { toast } from "sonner"
+import { useAuth, useResetPassword } from "@better-auth-ui/react";
+import { Eye, EyeOff } from "lucide-react";
+import { type SyntheticEvent, useEffect, useState } from "react";
+import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup
-} from "@/components/ui/field"
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup } from "@/components/ui/field";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
-  InputGroupInput
-} from "@/components/ui/input-group"
-import { Label } from "@/components/ui/label"
-import { Spinner } from "@/components/ui/spinner"
-import { cn } from "@/lib/utils"
+  InputGroupInput,
+} from "@/components/ui/input-group";
+import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 
 export type ResetPasswordProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Render a password reset form that validates the reset token from the URL, accepts a new password (and optional confirmation), and submits it to the auth client.
@@ -35,77 +30,67 @@ export type ResetPasswordProps = {
  * @returns The password reset form UI ready to be mounted in the app layout.
  */
 export function ResetPassword({ className }: ResetPasswordProps) {
-  const {
-    authClient,
-    basePaths,
-    emailAndPassword,
-    localization,
-    viewPaths,
-    navigate,
-    Link
-  } = useAuth()
+  const { authClient, basePaths, emailAndPassword, localization, viewPaths, navigate, Link } =
+    useAuth();
 
   const { mutate: resetPassword, isPending } = useResetPassword(authClient, {
     onSuccess: () => {
-      toast.success(localization.auth.passwordResetSuccess)
-      navigate({ to: `${basePaths.auth}/${viewPaths.auth.signIn}` })
-    }
-  })
+      toast.success(localization.auth.passwordResetSuccess);
+      navigate({ to: `${basePaths.auth}/${viewPaths.auth.signIn}` });
+    },
+  });
 
-  const [isPasswordVisible, setIsPasswordVisible] = useState(false)
-  const [isConfirmPasswordVisible, setIsConfirmPasswordVisible] =
-    useState(false)
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
+  const [isConfirmPasswordVisible, setIsConfirmPasswordVisible] = useState(false);
 
   const [fieldErrors, setFieldErrors] = useState<{
-    password?: string
-    confirmPassword?: string
-  }>({})
+    password?: string;
+    confirmPassword?: string;
+  }>({});
 
   useEffect(() => {
-    const searchParams = new URLSearchParams(window.location.search)
-    const token = searchParams.get("token") as string
+    const searchParams = new URLSearchParams(window.location.search);
+    const token = searchParams.get("token") as string;
 
     if (!token) {
-      toast.error(localization.auth.invalidResetPasswordToken)
-      navigate({ to: `${basePaths.auth}/${viewPaths.auth.signIn}` })
+      toast.error(localization.auth.invalidResetPasswordToken);
+      navigate({ to: `${basePaths.auth}/${viewPaths.auth.signIn}` });
     }
   }, [
     basePaths.auth,
     localization.auth.invalidResetPasswordToken,
     viewPaths.auth.signIn,
-    navigate
-  ])
+    navigate,
+  ]);
 
   function handleSubmit(e: SyntheticEvent<HTMLFormElement>) {
-    e.preventDefault()
+    e.preventDefault();
 
-    const searchParams = new URLSearchParams(window.location.search)
-    const token = searchParams.get("token") as string
+    const searchParams = new URLSearchParams(window.location.search);
+    const token = searchParams.get("token") as string;
 
     if (!token) {
-      toast.error(localization.auth.invalidResetPasswordToken)
-      navigate({ to: `${basePaths.auth}/${viewPaths.auth.signIn}` })
-      return
+      toast.error(localization.auth.invalidResetPasswordToken);
+      navigate({ to: `${basePaths.auth}/${viewPaths.auth.signIn}` });
+      return;
     }
 
-    const formData = new FormData(e.currentTarget)
-    const password = formData.get("password") as string
-    const confirmPassword = formData.get("confirmPassword") as string
+    const formData = new FormData(e.currentTarget);
+    const password = formData.get("password") as string;
+    const confirmPassword = formData.get("confirmPassword") as string;
 
     if (emailAndPassword?.confirmPassword && password !== confirmPassword) {
-      toast.error(localization.auth.passwordsDoNotMatch)
-      return
+      toast.error(localization.auth.passwordsDoNotMatch);
+      return;
     }
 
-    resetPassword({ token, newPassword: password })
+    resetPassword({ token, newPassword: password });
   }
 
   return (
     <Card className={cn("w-full max-w-sm", className)}>
       <CardHeader>
-        <CardTitle className="text-xl font-semibold">
-          {localization.auth.resetPassword}
-        </CardTitle>
+        <CardTitle className="text-xl font-semibold">{localization.auth.resetPassword}</CardTitle>
       </CardHeader>
 
       <CardContent>
@@ -128,30 +113,24 @@ export function ResetPassword({ className }: ResetPasswordProps) {
                   onChange={() => {
                     setFieldErrors((prev) => ({
                       ...prev,
-                      password: undefined
-                    }))
+                      password: undefined,
+                    }));
                   }}
                   onInvalid={(e) => {
-                    e.preventDefault()
-                    const el = e.target as HTMLInputElement
-                    const min = emailAndPassword?.minPasswordLength
-                    const max = emailAndPassword?.maxPasswordLength
+                    e.preventDefault();
+                    const el = e.target as HTMLInputElement;
+                    const min = emailAndPassword?.minPasswordLength;
+                    const max = emailAndPassword?.maxPasswordLength;
                     const msg = el.validity.valueMissing
                       ? localization.auth.fieldRequired
                       : el.validity.tooShort
-                        ? localization.auth.tooShort.replace(
-                            "{{min}}",
-                            String(min)
-                          )
-                        : localization.auth.tooLong.replace(
-                            "{{max}}",
-                            String(max)
-                          )
+                        ? localization.auth.tooShort.replace("{{min}}", String(min))
+                        : localization.auth.tooLong.replace("{{max}}", String(max));
 
                     setFieldErrors((prev) => ({
                       ...prev,
-                      password: msg
-                    }))
+                      password: msg,
+                    }));
                   }}
                   aria-invalid={!!fieldErrors.password}
                 />
@@ -169,7 +148,7 @@ export function ResetPassword({ className }: ResetPasswordProps) {
                         : localization.auth.showPassword
                     }
                     onClick={() => {
-                      setIsPasswordVisible(!isPasswordVisible)
+                      setIsPasswordVisible(!isPasswordVisible);
                     }}
                   >
                     {isPasswordVisible ? <EyeOff /> : <Eye />}
@@ -182,9 +161,7 @@ export function ResetPassword({ className }: ResetPasswordProps) {
 
             {emailAndPassword?.confirmPassword && (
               <Field data-invalid={!!fieldErrors.confirmPassword}>
-                <Label htmlFor="confirmPassword">
-                  {localization.auth.confirmPassword}
-                </Label>
+                <Label htmlFor="confirmPassword">{localization.auth.confirmPassword}</Label>
 
                 <InputGroup>
                   <InputGroupInput
@@ -200,30 +177,24 @@ export function ResetPassword({ className }: ResetPasswordProps) {
                     onChange={() => {
                       setFieldErrors((prev) => ({
                         ...prev,
-                        confirmPassword: undefined
-                      }))
+                        confirmPassword: undefined,
+                      }));
                     }}
                     onInvalid={(e) => {
-                      e.preventDefault()
-                      const el = e.target as HTMLInputElement
-                      const min = emailAndPassword?.minPasswordLength
-                      const max = emailAndPassword?.maxPasswordLength
+                      e.preventDefault();
+                      const el = e.target as HTMLInputElement;
+                      const min = emailAndPassword?.minPasswordLength;
+                      const max = emailAndPassword?.maxPasswordLength;
                       const msg = el.validity.valueMissing
                         ? localization.auth.fieldRequired
                         : el.validity.tooShort
-                          ? localization.auth.tooShort.replace(
-                              "{{min}}",
-                              String(min)
-                            )
-                          : localization.auth.tooLong.replace(
-                              "{{max}}",
-                              String(max)
-                            )
+                          ? localization.auth.tooShort.replace("{{min}}", String(min))
+                          : localization.auth.tooLong.replace("{{max}}", String(max));
 
                       setFieldErrors((prev) => ({
                         ...prev,
-                        confirmPassword: msg
-                      }))
+                        confirmPassword: msg,
+                      }));
                     }}
                     aria-invalid={!!fieldErrors.confirmPassword}
                   />
@@ -241,7 +212,7 @@ export function ResetPassword({ className }: ResetPasswordProps) {
                           : localization.auth.showPassword
                       }
                       onClick={() => {
-                        setIsConfirmPasswordVisible(!isConfirmPasswordVisible)
+                        setIsConfirmPasswordVisible(!isConfirmPasswordVisible);
                       }}
                     >
                       {isConfirmPasswordVisible ? <EyeOff /> : <Eye />}
@@ -276,5 +247,5 @@ export function ResetPassword({ className }: ResetPasswordProps) {
         </div>
       </CardContent>
     </Card>
-  )
+  );
 }

@@ -58,8 +58,8 @@ export const messageSchema = v.object({
       SourceDocumentUIPartSchema,
       FileUIPartPartSchema,
       StepStartUIPartSchema,
-      DataUIPartSchema
-    )
+      DataUIPartSchema,
+    ),
   ),
 });
 
@@ -78,5 +78,5 @@ export const queuedMessageSchema = v.object({
   reasoningEffort: v.optional(v.string()),
   reasoningBudget: v.optional(v.number()),
   // @todo: Better tool selector
-  webSearch: v.boolean()
+  webSearch: v.boolean(),
 });

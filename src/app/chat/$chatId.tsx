@@ -14,16 +14,8 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
-import {
-  Message,
-  MessageContent,
-  MessageResponse,
-} from "@/components/ai-elements/message";
-import {
-  Reasoning,
-  ReasoningContent,
-  ReasoningTrigger,
-} from "@/components/ai-elements/reasoning";
+import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
+import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import {
   ChatPromptInput,
   filterFilesWithUrl,
@@ -52,7 +44,7 @@ export const Route = createFileRoute("/chat/$chatId")({
         ensureSessionServer(queryClient, auth as any, {
           baseURL: getRequestUrl().origin,
           headers: getRequestHeaders(),
-        })
+        }),
       )
       .client(() => ensureSessionClient(queryClient, authClient));
 
@@ -110,7 +102,7 @@ function ChatConversationPage() {
       selectedModel,
       selectedModelData?.features?.reasoning_budget,
       selectedModelData?.reasoning,
-    ]
+    ],
   );
   const { error, messages, sendMessage, setMessages, status, stop } = useChat({
     id: chatId,
@@ -168,7 +160,7 @@ function ChatConversationPage() {
           reasoningBudget: chat.messages_queue.reasoningBudget,
           reasoningEffort: chat.messages_queue.reasoningEffort,
         },
-      }
+      },
     );
   }, [chat, convexChatId, sendMessage, status]);
 
@@ -230,10 +222,7 @@ function ChatConversationPage() {
       <Conversation className="min-h-0">
         <ConversationContent className="mx-auto w-full max-w-3xl px-4 py-8">
           {messages.length === 0 ? (
-            <ConversationEmptyState
-              description="Send a prompt to begin."
-              title="No messages yet"
-            />
+            <ConversationEmptyState description="Send a prompt to begin." title="No messages yet" />
           ) : (
             messages.map((message) => (
               <Message from={message.role} key={message.id}>
@@ -301,15 +290,13 @@ function ChatConversationPage() {
                   body: {
                     chatId: convexChatId,
                     model: selectedModel,
-                    reasoningEffort: selectedModelData?.reasoning
-                      ? reasoningEffort
-                      : undefined,
+                    reasoningEffort: selectedModelData?.reasoning ? reasoningEffort : undefined,
                     reasoningBudget:
                       selectedModelData?.features?.reasoning_budget && reasoningBudget
                         ? reasoningBudget
                         : undefined,
                   },
-                }
+                },
               );
             }}
             placeholder="Continue the conversation..."
@@ -327,9 +314,7 @@ function ChatConversationPage() {
 function getAiSdkChatApi() {
   const siteUrl = import.meta.env.VITE_CONVEX_SITE_URL;
 
-  return siteUrl
-    ? `${siteUrl.replace(/\/$/, "")}/api/aisdk/chat`
-    : "/api/aisdk/chat";
+  return siteUrl ? `${siteUrl.replace(/\/$/, "")}/api/aisdk/chat` : "/api/aisdk/chat";
 }
 
 async function getConvexAuthHeaders(): Promise<Record<string, string>> {

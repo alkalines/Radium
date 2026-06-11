@@ -4,8 +4,8 @@
 import { LanguageModel } from "ai";
 
 export type AIProviderSDK_Config = {
-  apiKey: string
-}
+  apiKey: string;
+};
 
 // Copied from @openrouter/ai-sdk-provider OpenRouterChatSettings
 export type AIProviderSDK_ModelSettings = {
@@ -78,7 +78,9 @@ export type AIProviderSDK_ModelSettings = {
   };
   // Provider is supposed to be at src/utils/ai_balancer.ts
 };
-export type AIProviderSDK = (Config: AIProviderSDK_Config) => (model: string, settings?: AIProviderSDK_ModelSettings) => LanguageModel
+export type AIProviderSDK = (
+  Config: AIProviderSDK_Config,
+) => (model: string, settings?: AIProviderSDK_ModelSettings) => LanguageModel;
 
 /**
  * Configuration at type

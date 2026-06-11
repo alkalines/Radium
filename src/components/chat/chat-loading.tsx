@@ -91,10 +91,7 @@ export function ChatStartingTransition({
   return (
     <main className="flex min-h-[calc(100svh-var(--header-height))] flex-col">
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-8">
-        <Message
-          className="animate-in fade-in slide-in-from-bottom-2 duration-500"
-          from="user"
-        >
+        <Message className="animate-in fade-in slide-in-from-bottom-2 duration-500" from="user">
           <MessageContent>
             <p className="line-clamp-4 whitespace-pre-wrap">{prompt || "New chat"}</p>
           </MessageContent>
@@ -113,13 +110,7 @@ export function ChatStartingTransition({
   );
 }
 
-function MessageSkeleton({
-  align,
-  wide,
-}: {
-  align: "start" | "end";
-  wide?: boolean;
-}) {
+function MessageSkeleton({ align, wide }: { align: "start" | "end"; wide?: boolean }) {
   return (
     <div className={`flex ${align === "end" ? "justify-end" : "justify-start"}`}>
       <div className="flex w-full max-w-[82%] flex-col gap-2">

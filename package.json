@@ -1,23 +1,25 @@
 {
   "name": "radium",
-  "author": "alkalines",
   "version": "0.1.0",
   "private": false,
+  "homepage": "https://github.com/alkalines/Radium#readme",
+  "bugs": {
+    "url": "https://github.com/alkalines/Radium/issues"
+  },
+  "author": "alkalines",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alkalines/Radium.git"
   },
-  "bugs": {
-    "url": "https://github.com/alkalines/Radium/issues"
-  },
-  "homepage": "https://github.com/alkalines/Radium#readme",
   "scripts": {
     "dev": "concurrently -c magenta,yellow --names vite-dev,convex-dev \"bun run vite:dev --clearScreen false\" \"bun run convex:dev\"",
     "convex:dev": "convex dev",
     "vite:dev": "vite dev",
     "vite:build": "vite build",
     "vite:start": "node .output/server/index.mjs",
-    "lint": "eslint"
+    "lint": "eslint",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.48",
@@ -73,11 +75,15 @@
     "zod-from-json-schema": "^0.5.2"
   },
   "devDependencies": {
+    "@convex-dev/eslint-plugin": "^2.0.0",
     "@tailwindcss/vite": "^4.3.0",
+    "@tanstack/eslint-config": "^0.4.0",
     "@types/node": "^25.9.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "eslint": "^10.4.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "oxfmt": "^0.54.0",
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3"
   }
