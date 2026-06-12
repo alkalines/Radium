@@ -8,11 +8,11 @@ import { useCallback, useState } from "react";
 
 import { ChatPromptInput, type ReasoningEffort } from "@/components/chat/chat-prompt-input";
 import {
-  ChatHomeSkeleton,
   chatComposerViewTransitionName,
   rememberChatHandoff,
 } from "@/components/chat/chat-loading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "../../convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
@@ -146,16 +146,16 @@ function ChatHomePage() {
     setModel(nextModel);
   }, []);
 
-  if (userInfo === undefined || models === undefined) {
-    return <ChatHomeSkeleton />;
-  }
-
   return (
-    <main className="flex min-h-[calc(100svh-var(--header-height))] flex-col items-center justify-center gap-8 p-4 md:p-8">
+    <main className="flex min-h-[calc(100svh-var(--header-height))] flex-col items-center justify-center gap-8 px-4 pb-[calc(1rem+var(--header-height))] pt-4 md:px-8 md:pb-[calc(2rem+var(--header-height))] md:pt-8">
       <section className="flex w-full max-w-3xl items-center justify-center gap-4 text-center">
         <img alt="Radium" className="size-12 md:size-16" src="/letters/R.svg" />
         <h1 className="max-w-2xl text-balance text-[clamp(1.5rem,4vw,2.5rem)] font-semibold leading-tight tracking-tight">
-          {welcomeText}
+          {userInfo === undefined ? (
+            <Skeleton className="mx-auto h-[1.2em] w-56 max-w-[60vw] md:w-96" />
+          ) : (
+            welcomeText
+          )}
         </h1>
       </section>
 

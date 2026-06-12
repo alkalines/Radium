@@ -18,12 +18,8 @@ import { Message, MessageContent, MessageResponse } from "@/components/ai-elemen
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import {
   Confirmation,
-  ConfirmationAccepted,
   ConfirmationAction,
   ConfirmationActions,
-  ConfirmationRejected,
-  ConfirmationRequest,
-  ConfirmationTitle,
 } from "@/components/ai-elements/confirmation";
 import {
   Tool,
@@ -45,7 +41,6 @@ import {
   readChatHandoff,
 } from "@/components/chat/chat-loading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { CheckIcon, XIcon } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { auth } from "@/lib/auth";
@@ -80,6 +75,11 @@ export const Route = createFileRoute("/chat/$chatId")({
 
 function ChatConversationPage() {
   const { chatId } = Route.useParams();
+
+  return <ChatConversationContent chatId={chatId} key={chatId} />;
+}
+
+function ChatConversationContent({ chatId }: { chatId: string }) {
   const convexChatId = chatId as Id<"aisdk_chats">;
   const chat = useQuery(api.aisdk.GetChat, { chatId: convexChatId });
   const models = useQuery(api.models.availableModels);
@@ -296,6 +296,9 @@ function ChatConversationPage() {
                     if (isToolPart(part)) {
                       return (
                         <ChatToolPart
+                          hasLaterAssistantContent={message.parts
+                            .slice(index + 1)
+                            .some(hasRenderableAssistantContent)}
                           key={`${message.id}-${index}`}
                           onApprovalResponse={addToolApprovalResponse}
                           part={part}
@@ -369,38 +372,54 @@ function ChatConversationPage() {
 type ToolApprovalResponse = Parameters<ReturnType<typeof useChat>["addToolApprovalResponse"]>[0];
 
 function ChatToolPart({
+  hasLaterAssistantContent,
   onApprovalResponse,
   part,
 }: {
+  hasLaterAssistantContent: boolean;
   onApprovalResponse: (response: ToolApprovalResponse) => void;
   part: ToolUIPart;
 }) {
   const approval = "approval" in part ? part.approval : undefined;
   const toolInput = getToolInput(part);
   const toolName = part.type.replace(/^tool-/, "");
+  // @ts-expect-error state only available in AI SDK v6
+  const isApprovalRequested = part.state === "approval-requested";
+  const shouldAutoClose =
+    part.state === "approval-responded" ||
+    part.state === "output-available" ||
+    part.state === "output-error" ||
+    part.state === "output-denied" ||
+    (hasLaterAssistantContent && !isApprovalRequested);
+  const [isOpen, setIsOpen] = useState(!shouldAutoClose);
+
+  useEffect(() => {
+    if (isApprovalRequested) {
+      setIsOpen(true);
+      return;
+    }
+
+    if (shouldAutoClose) {
+      setIsOpen(false);
+    }
+  }, [isApprovalRequested, shouldAutoClose]);
 
   return (
     <Tool
-      className="w-[min(calc(100vw-2rem),52rem)] max-w-full"
-      defaultOpen={part.state !== "output-available"}
+      className="w-[min(calc(100vw-2rem),42rem)] max-w-full"
+      onOpenChange={setIsOpen}
+      open={isOpen}
     >
       <ToolHeader state={part.state} title={toolName} type={part.type} />
       <ToolContent>
         <ToolInput input={toolInput} key={JSON.stringify(toolInput)} />
-        <Confirmation approval={approval} state={part.state}>
-          <ConfirmationTitle className="flex items-center gap-2">
-            <ConfirmationRequest>Approve this tool call before it runs.</ConfirmationRequest>
-            <ConfirmationAccepted>
-              <CheckIcon data-icon="inline-start" />
-              <span>Approved</span>
-            </ConfirmationAccepted>
-            <ConfirmationRejected>
-              <XIcon data-icon="inline-start" />
-              <span>Denied</span>
-            </ConfirmationRejected>
-          </ConfirmationTitle>
-          {approval ? (
-            <ConfirmationActions>
+        {approval && isApprovalRequested ? (
+          <Confirmation
+            approval={approval}
+            className="border-0 bg-transparent px-4 pt-0 pb-4 shadow-none"
+            state={part.state}
+          >
+            <ConfirmationActions className="w-full justify-end pt-1">
               <ConfirmationAction
                 onClick={() => onApprovalResponse({ approved: false, id: approval.id })}
                 variant="outline"
@@ -413,8 +432,8 @@ function ChatToolPart({
                 Approve
               </ConfirmationAction>
             </ConfirmationActions>
-          ) : null}
-        </Confirmation>
+          </Confirmation>
+        ) : null}
         <ToolOutput errorText={part.errorText} output={part.output} />
       </ToolContent>
     </Tool>
@@ -423,6 +442,18 @@ function ChatToolPart({
 
 function isToolPart(part: UIMessage["parts"][number]): part is ToolUIPart {
   return part.type.startsWith("tool-");
+}
+
+function hasRenderableAssistantContent(part: UIMessage["parts"][number]) {
+  if (part.type === "text") {
+    return part.text.trim().length > 0;
+  }
+
+  if (part.type === "reasoning") {
+    return part.text.trim().length > 0;
+  }
+
+  return !isToolPart(part) && part.type !== "step-start";
 }
 
 function getApprovalContinuationKey(messages: UIMessage[]) {

@@ -44,6 +44,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export type ReasoningEffort = string;
 
@@ -170,18 +171,24 @@ export function ChatPromptInput({
                   disabled={!models?.length}
                   size="xs"
                 >
-                  <ModelSelectorName className="flex-none truncate">
-                    {selectedModelData?.name ?? "Select model"}
-                  </ModelSelectorName>
-                  {supportsReasoning ? (
-                    <span className="shrink-0 text-muted-foreground/80">
-                      {selectedReasoningLabel}
-                    </span>
-                  ) : null}
-                  <ChevronDownIcon className="size-3 shrink-0 opacity-70" />
+                  {models === undefined ? (
+                    <Skeleton className="h-3.5 w-28 sm:w-40" />
+                  ) : (
+                    <>
+                      <ModelSelectorName className="min-w-0">
+                        {selectedModelData?.name ?? "Select model"}
+                      </ModelSelectorName>
+                      {supportsReasoning ? (
+                        <span className="shrink-0 text-muted-foreground/80">
+                          {selectedReasoningLabel}
+                        </span>
+                      ) : null}
+                      <ChevronDownIcon className="size-3 shrink-0 opacity-70" />
+                    </>
+                  )}
                 </PromptInputButton>
               </ModelSelectorTrigger>
-              <ModelSelectorContent className="w-[min(calc(100vw-2rem),34rem)] [&_[data-slot=dialog-close]]:right-2 [&_[data-slot=dialog-close]]:top-1">
+              <ModelSelectorContent className="w-[min(calc(100vw-2rem),34rem)] [&_[data-slot=dialog-close]]:right-2 [&_[data-slot=dialog-close]]:top-2">
                 <div className="pr-12">
                   <ModelSelectorInput placeholder="Search models..." />
                 </div>
@@ -312,24 +319,31 @@ function ModelItem({ model, onSelect, selectedModel }: ModelItemProps) {
   const handleSelect = useCallback(() => onSelect(model.slug), [model.slug, onSelect]);
   const providerIds = model.providers.map((provider) => provider.id);
   const selected = selectedModel === model.slug;
+  const modelDisplayName = getModelDisplayName(model);
 
   return (
     <ModelSelectorItem
       data-checked={selected}
-      keywords={[model.name, model.author?.name ?? "", model.author?.slug ?? "", ...providerIds]}
+      keywords={[
+        modelDisplayName,
+        model.name,
+        model.author?.name ?? "",
+        model.author?.slug ?? "",
+        ...providerIds,
+      ]}
       onSelect={handleSelect}
       value={model.slug}
     >
       {model.author ? (
         <img
           alt={`${model.author.name} logo`}
-          className="size-4 shrink-0 rounded-sm"
+          className="size-5 shrink-0 rounded-full bg-white p-0.5 ring-1 ring-border/70"
           height={16}
           src={`https://models.dev/logos/labs/${model.author.slug}.svg`}
           width={16}
         />
       ) : null}
-      <ModelSelectorName>{model.name}</ModelSelectorName>
+      <ModelSelectorName>{modelDisplayName}</ModelSelectorName>
       <ModelSelectorLogoGroup aria-label="Available providers" title="Available providers">
         {providerIds.map((provider) => (
           <ModelSelectorLogo key={provider} provider={provider} title={provider} />
@@ -337,6 +351,10 @@ function ModelItem({ model, onSelect, selectedModel }: ModelItemProps) {
       </ModelSelectorLogoGroup>
     </ModelSelectorItem>
   );
+}
+
+function getModelDisplayName(model: ChatModel) {
+  return model.author ? `${model.author.name}: ${model.name}` : model.name;
 }
 
 function capitalize(value: string) {

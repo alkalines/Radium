@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useQuery } from "convex/react";
-import { useRouterState } from "@tanstack/react-router";
+import { Link, useRouterState } from "@tanstack/react-router";
 
 import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
@@ -65,13 +65,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton className="h-10 w-fit px-1.5" asChild>
-              <a href="/chat">
+              <Link to="/chat">
                 <img
                   src="/radium_extended.svg"
                   alt="Radium"
                   className="h-5 w-auto invert dark:invert-0"
                 />
-              </a>
+              </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
@@ -121,7 +121,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                             size="sm"
                             tooltip={title || fallbackTitle}
                           >
-                            <a href={url}>
+                            <Link to="/chat/$chatId" params={{ chatId: chat.id }}>
                               {title ? (
                                 chat.emoji ? (
                                   <span className="flex size-4 shrink-0 items-center justify-center text-sm leading-none">
@@ -140,7 +140,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                                   {fallbackTitle}
                                 </span>
                               )}
-                            </a>
+                            </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                       );

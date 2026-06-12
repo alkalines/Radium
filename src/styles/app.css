@@ -157,3 +157,43 @@
 ::view-transition-new(root) {
   animation: none;
 }
+
+.collapsible-content {
+  overflow: hidden;
+}
+
+.collapsible-content[data-state="open"] {
+  animation: collapsible-down 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.collapsible-content[data-state="closed"] {
+  animation: collapsible-up 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes collapsible-down {
+  from {
+    height: 0;
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes collapsible-up {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  to {
+    height: 0;
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+}
