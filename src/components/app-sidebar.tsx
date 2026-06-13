@@ -25,18 +25,18 @@ const data = {
   navMain: [
     {
       title: "Chat",
-      url: "/chat",
+      url: "/chat" as const,
       icon: MessageSquareTextIcon,
       isActive: true,
     },
     {
       title: "Models",
-      url: "#",
+      url: "#" as const,
       icon: BotIcon,
     },
     {
       title: "Gateway",
-      url: "#",
+      url: "/gateway" as const,
       icon: RouteIcon,
     },
   ],

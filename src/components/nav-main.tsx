@@ -7,7 +7,7 @@ import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui
 
 type NavMainItem = {
   title: string;
-  url: "/chat" | "#";
+  url: "/chat" | "/gateway" | "#";
   icon: LucideIcon;
   isActive?: boolean;
 };

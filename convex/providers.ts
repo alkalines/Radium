@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { credentialPreview, encryptCredentialRecord } from "@/utils/credential_crypto";
-import { internalQuery, mutation, query } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
+import { internalQuery, mutation, query, type MutationCtx } from "./_generated/server";
 import { authComponent } from "./auth";
 
 const providerNpmValidator = v.union(
@@ -68,6 +69,44 @@ const providerModelValidator = v.object({
   moderated: v.boolean(),
 });
 
+/**
+ * Validator for a global `models` table record as supplied by the import UI.
+ * Mirrors {@link schema} minus the resolved `author` id — callers pass the
+ * author as a `{ name, slug }` pair which the mutation resolves (or creates).
+ */
+const globalModelValidator = v.object({
+  name: v.string(),
+  slug: v.string(),
+  launch_date: v.number(),
+  type: v.union(v.literal("chat"), v.literal("embedding"), v.literal("image-generation")),
+  description: v.string(),
+  warning: v.optional(v.string()),
+  model_weights: v.optional(v.string()),
+  reasoning: v.boolean(),
+  features: v.object({
+    reasoning_minimal: v.optional(v.boolean()),
+    reasoning_none: v.optional(v.boolean()),
+    reasoning_budget: v.optional(v.boolean()),
+    reasoning_efforts: v.optional(v.array(v.string())),
+  }),
+  architecture: v.object({
+    input_modalities: v.array(v.string()),
+    output_modalities: v.array(v.string()),
+    tokenizer: v.string(),
+  }),
+  default_parameters: v.optional(
+    v.object({
+      temperature: v.optional(v.number()),
+      top_p: v.optional(v.number()),
+      frequency_penalty: v.optional(v.number()),
+    }),
+  ),
+  author: v.object({
+    name: v.string(),
+    slug: v.string(),
+  }),
+});
+
 export const list = query({
   args: {},
   handler: async (ctx) => {
@@ -75,37 +114,104 @@ export const list = query({
   },
 });
 
-export const upsertFromModelsDev = mutation({
+/**
+ * Resolve an author by slug, creating it on demand for unknown authors.
+ * `cache` deduplicates lookups/inserts within a single import batch so the
+ * same author shared by several models is only written once.
+ */
+async function resolveAuthor(
+  ctx: MutationCtx,
+  author: { name: string; slug: string },
+  cache: Map<string, Id<"authors">>,
+): Promise<Id<"authors">> {
+  const cached = cache.get(author.slug);
+  if (cached) return cached;
+
+  const existing = await ctx.db
+    .query("authors")
+    .filter((q) => q.eq(q.field("slug"), author.slug))
+    .first();
+  const id = existing
+    ? existing._id
+    : await ctx.db.insert("authors", { name: author.name, slug: author.slug });
+
+  cache.set(author.slug, id);
+  return id;
+}
+
+/**
+ * Single entry point for adding a gateway provider from the UI. In one
+ * transaction it: creates any unknown {@link authors}, upserts each selected
+ * model into the global {@link models} table (deduped by slug), and upserts the
+ * {@link providers} row (deduped by slug) with its provider-specific model list.
+ *
+ * Used for both models.dev imports and manual/custom providers — the client
+ * shapes the data, this owns persistence and dedup.
+ */
+export const importProvider = mutation({
   args: {
-    slug: v.string(),
     provider: v.object({
+      slug: v.string(),
       name: v.string(),
       npm: providerNpmValidator,
       env: v.array(v.string()),
       doc: v.optional(v.string()),
       api: v.optional(v.string()),
-      models: v.optional(v.array(providerModelValidator)),
+      enabled: v.optional(v.boolean()),
     }),
-    enabled: v.optional(v.boolean()),
+    models: v.array(
+      v.object({
+        global: globalModelValidator,
+        provider: providerModelValidator,
+      }),
+    ),
   },
   handler: async (ctx, args) => {
+    const identity = await authComponent.getAuthUser(ctx);
+    if (!identity) throw new Error("Not logged in.");
+
     if (args.provider.npm === "@ai-sdk/openai-compatible" && !args.provider.api) {
-      throw new Error("OpenAI-compatible providers require the models.dev api field.");
+      throw new Error("OpenAI-compatible providers require an api base URL.");
+    }
+
+    const authorCache = new Map<string, Id<"authors">>();
+
+    for (const entry of args.models) {
+      if (entry.provider.model !== entry.global.slug) {
+        throw new Error(
+          `Provider model "${entry.provider.model}" must reference its global model slug "${entry.global.slug}".`,
+        );
+      }
+
+      const authorId = await resolveAuthor(ctx, entry.global.author, authorCache);
+      const { author: _author, ...modelFields } = entry.global;
+      const modelValue = { ...modelFields, author: authorId };
+
+      const existingModel = await ctx.db
+        .query("models")
+        .withIndex("by_slug", (q) => q.eq("slug", entry.global.slug))
+        .unique();
+
+      if (existingModel) {
+        await ctx.db.patch("models", existingModel._id, modelValue);
+      } else {
+        await ctx.db.insert("models", modelValue);
+      }
     }
 
     const existing = await ctx.db
       .query("providers")
-      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
+      .withIndex("by_slug", (q) => q.eq("slug", args.provider.slug))
       .unique();
     const value = {
-      slug: args.slug,
+      slug: args.provider.slug,
       name: args.provider.name,
       npm: args.provider.npm,
       env: args.provider.env,
       doc: args.provider.doc,
       api: args.provider.api,
-      enabled: args.enabled ?? true,
-      models: args.provider.models ?? [],
+      enabled: args.provider.enabled ?? true,
+      models: args.models.map((entry) => entry.provider),
     };
 
     if (existing) {
@@ -117,43 +223,22 @@ export const upsertFromModelsDev = mutation({
   },
 });
 
-export const upsertManual = mutation({
+export const setEnabled = mutation({
   args: {
     slug: v.string(),
-    name: v.string(),
-    npm: providerNpmValidator,
-    env: v.array(v.string()),
-    doc: v.optional(v.string()),
-    api: v.optional(v.string()),
     enabled: v.boolean(),
-    models: v.array(providerModelValidator),
   },
   handler: async (ctx, args) => {
-    if (args.npm === "@ai-sdk/openai-compatible" && !args.api) {
-      throw new Error("OpenAI-compatible providers require an api base URL.");
-    }
+    const identity = await authComponent.getAuthUser(ctx);
+    if (!identity) throw new Error("Not logged in.");
 
-    const existing = await ctx.db
+    const provider = await ctx.db
       .query("providers")
       .withIndex("by_slug", (q) => q.eq("slug", args.slug))
       .unique();
-    const value = {
-      slug: args.slug,
-      name: args.name,
-      npm: args.npm,
-      env: args.env,
-      doc: args.doc,
-      api: args.api,
-      enabled: args.enabled,
-      models: args.models,
-    };
+    if (!provider) throw new Error(`Provider ${args.slug} not found.`);
 
-    if (existing) {
-      await ctx.db.replace("providers", existing._id, value);
-      return existing._id;
-    }
-
-    return await ctx.db.insert("providers", value);
+    await ctx.db.patch("providers", provider._id, { enabled: args.enabled });
   },
 });
 
