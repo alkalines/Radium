@@ -1,10 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { CreditCardIcon, KeyRoundIcon, KeySquareIcon, RouteIcon, type LucideIcon } from "lucide-react";
+import { CreditCardIcon, KeyRoundIcon, KeySquareIcon, RouteIcon } from "lucide-react";
 
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ProvidersPanel } from "./providers-panel";
 import { CredentialsPanel } from "./credentials-panel";
+import { KeysPanel } from "./keys-panel";
+import { CreditsPanel } from "./credits-panel";
 
 export const gatewaySections = [
   { value: "providers", label: "Providers", icon: RouteIcon },
@@ -49,46 +50,12 @@ export function GatewaySettings({
       </TabsContent>
 
       <TabsContent value="keys" tabIndex={-1}>
-        {section === "keys" && (
-          <ComingSoon
-            icon={KeySquareIcon}
-            title="API keys"
-            description="Issue and manage keys for calling models through the Radium Gateway."
-          />
-        )}
+        {section === "keys" && <KeysPanel />}
       </TabsContent>
 
       <TabsContent value="credits" tabIndex={-1}>
-        {section === "credits" && (
-          <ComingSoon
-            icon={CreditCardIcon}
-            title="Credits"
-            description="Top up and track gateway credit usage across your balances."
-          />
-        )}
+        {section === "credits" && <CreditsPanel />}
       </TabsContent>
     </Tabs>
-  );
-}
-
-function ComingSoon({
-  icon: Icon,
-  title,
-  description,
-}: {
-  icon: LucideIcon;
-  title: string;
-  description: string;
-}) {
-  return (
-    <Empty className="border border-dashed">
-      <EmptyHeader>
-        <EmptyMedia variant="icon">
-          <Icon />
-        </EmptyMedia>
-        <EmptyTitle>{title}</EmptyTitle>
-        <EmptyDescription>{description} Coming soon.</EmptyDescription>
-      </EmptyHeader>
-    </Empty>
   );
 }

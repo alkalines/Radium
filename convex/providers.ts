@@ -139,6 +139,47 @@ async function resolveAuthor(
   return id;
 }
 
+const importModelValidator = v.object({
+  global: globalModelValidator,
+  provider: providerModelValidator,
+});
+
+/**
+ * Upsert each global {@link models} record for an import batch, resolving
+ * authors on demand. Validates that every provider model references its global
+ * slug so the two stores never drift. Shared by {@link importProvider} and
+ * {@link addProviderModels}.
+ */
+async function upsertGlobalModels(
+  ctx: MutationCtx,
+  models: { global: typeof globalModelValidator.type; provider: { model: string } }[],
+) {
+  const authorCache = new Map<string, Id<"authors">>();
+
+  for (const entry of models) {
+    if (entry.provider.model !== entry.global.slug) {
+      throw new Error(
+        `Provider model "${entry.provider.model}" must reference its global model slug "${entry.global.slug}".`,
+      );
+    }
+
+    const authorId = await resolveAuthor(ctx, entry.global.author, authorCache);
+    const { author: _author, ...modelFields } = entry.global;
+    const modelValue = { ...modelFields, author: authorId };
+
+    const existingModel = await ctx.db
+      .query("models")
+      .withIndex("by_slug", (q) => q.eq("slug", entry.global.slug))
+      .unique();
+
+    if (existingModel) {
+      await ctx.db.patch("models", existingModel._id, modelValue);
+    } else {
+      await ctx.db.insert("models", modelValue);
+    }
+  }
+}
+
 /**
  * Single entry point for adding a gateway provider from the UI. In one
  * transaction it: creates any unknown {@link authors}, upserts each selected
@@ -146,7 +187,9 @@ async function resolveAuthor(
  * {@link providers} row (deduped by slug) with its provider-specific model list.
  *
  * Used for both models.dev imports and manual/custom providers — the client
- * shapes the data, this owns persistence and dedup.
+ * shapes the data, this owns persistence and dedup. Replacing an existing
+ * provider overwrites its whole model list; use {@link addProviderModels} to
+ * merge models into a provider without dropping the rest.
  */
 export const importProvider = mutation({
   args: {
@@ -159,12 +202,7 @@ export const importProvider = mutation({
       api: v.optional(v.string()),
       enabled: v.optional(v.boolean()),
     }),
-    models: v.array(
-      v.object({
-        global: globalModelValidator,
-        provider: providerModelValidator,
-      }),
-    ),
+    models: v.array(importModelValidator),
   },
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
@@ -174,30 +212,7 @@ export const importProvider = mutation({
       throw new Error("OpenAI-compatible providers require an api base URL.");
     }
 
-    const authorCache = new Map<string, Id<"authors">>();
-
-    for (const entry of args.models) {
-      if (entry.provider.model !== entry.global.slug) {
-        throw new Error(
-          `Provider model "${entry.provider.model}" must reference its global model slug "${entry.global.slug}".`,
-        );
-      }
-
-      const authorId = await resolveAuthor(ctx, entry.global.author, authorCache);
-      const { author: _author, ...modelFields } = entry.global;
-      const modelValue = { ...modelFields, author: authorId };
-
-      const existingModel = await ctx.db
-        .query("models")
-        .withIndex("by_slug", (q) => q.eq("slug", entry.global.slug))
-        .unique();
-
-      if (existingModel) {
-        await ctx.db.patch("models", existingModel._id, modelValue);
-      } else {
-        await ctx.db.insert("models", modelValue);
-      }
-    }
+    await upsertGlobalModels(ctx, args.models);
 
     const existing = await ctx.db
       .query("providers")
@@ -239,6 +254,90 @@ export const setEnabled = mutation({
     if (!provider) throw new Error(`Provider ${args.slug} not found.`);
 
     await ctx.db.patch("providers", provider._id, { enabled: args.enabled });
+  },
+});
+
+/**
+ * Merge models into an existing provider without replacing its whole list.
+ * Upserts the global {@link models} records, then adds each provider model
+ * (replacing any entry with the same slug). Used by the per-provider model
+ * manager to add catalogue or custom models incrementally.
+ */
+export const addProviderModels = mutation({
+  args: {
+    slug: v.string(),
+    models: v.array(importModelValidator),
+  },
+  handler: async (ctx, args) => {
+    const identity = await authComponent.getAuthUser(ctx);
+    if (!identity) throw new Error("Not logged in.");
+    if (args.models.length === 0) return;
+
+    const provider = await ctx.db
+      .query("providers")
+      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
+      .unique();
+    if (!provider) throw new Error(`Provider ${args.slug} not found.`);
+
+    await upsertGlobalModels(ctx, args.models);
+
+    const byModel = new Map(provider.models.map((entry) => [entry.model, entry]));
+    for (const entry of args.models) byModel.set(entry.provider.model, entry.provider);
+
+    await ctx.db.patch("providers", provider._id, { models: [...byModel.values()] });
+  },
+});
+
+/**
+ * Remove a single model from a provider's offered list. Leaves the shared
+ * global {@link models} record untouched, since other providers may serve it.
+ */
+export const removeProviderModel = mutation({
+  args: {
+    slug: v.string(),
+    model: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await authComponent.getAuthUser(ctx);
+    if (!identity) throw new Error("Not logged in.");
+
+    const provider = await ctx.db
+      .query("providers")
+      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
+      .unique();
+    if (!provider) throw new Error(`Provider ${args.slug} not found.`);
+
+    await ctx.db.patch("providers", provider._id, {
+      models: provider.models.filter((entry) => entry.model !== args.model),
+    });
+  },
+});
+
+/**
+ * Delete a provider and any BYOK credentials stored against it. Shared global
+ * {@link models} records are left in place — they are provider-independent.
+ */
+export const deleteProvider = mutation({
+  args: {
+    slug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await authComponent.getAuthUser(ctx);
+    if (!identity) throw new Error("Not logged in.");
+
+    const provider = await ctx.db
+      .query("providers")
+      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
+      .unique();
+    if (!provider) throw new Error(`Provider ${args.slug} not found.`);
+
+    const credentials = await ctx.db
+      .query("provider_credentials")
+      .filter((q) => q.eq(q.field("provider"), args.slug))
+      .take(500);
+    await Promise.all(credentials.map((credential) => ctx.db.delete("provider_credentials", credential._id)));
+
+    await ctx.db.delete("providers", provider._id);
   },
 });
 

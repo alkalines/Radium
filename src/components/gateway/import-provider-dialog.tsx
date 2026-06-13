@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation } from "convex/react";
 import {
   ArrowLeftIcon,
   BrainIcon,
   CheckIcon,
   SearchIcon,
+  SlidersHorizontalIcon,
   TriangleAlertIcon,
   WrenchIcon,
 } from "lucide-react";
@@ -30,7 +31,6 @@ import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
-  fetchModelsDev,
   isSupportedNpm,
   mapModelsDevModel,
   type MappedModel,
@@ -40,17 +40,13 @@ import {
 import type { AIProviderNpmPackage } from "@/utils/types/ai_provider";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
+import {
+  formatPerMillion,
+  formatTokens,
+  useModelsDevCatalogue,
+} from "./models-dev-catalogue";
+import { CustomProviderForm } from "./custom-provider-form";
 import { ProviderLogo } from "./provider-logo";
-
-/** Module-level cache so reopening the dialog doesn't refetch 2 MB of catalogue. */
-let catalogueCache: Promise<ModelsDevApi> | null = null;
-function loadCatalogue(): Promise<ModelsDevApi> {
-  catalogueCache ??= fetchModelsDev().catch((error) => {
-    catalogueCache = null;
-    throw error;
-  });
-  return catalogueCache;
-}
 
 type SupportedProvider = ModelsDevProvider & { npm: AIProviderNpmPackage };
 
@@ -65,23 +61,18 @@ export function ImportProviderDialog({
   importedSlugs: string[];
   balanceId: Id<"balances"> | undefined;
 }) {
-  const [catalogue, setCatalogue] = useState<ModelsDevApi | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { catalogue, error: loadError } = useModelsDevCatalogue(open);
   const [selectedProvider, setSelectedProvider] = useState<SupportedProvider | null>(null);
-
-  useEffect(() => {
-    if (!open || catalogue) return;
-    let active = true;
-    loadCatalogue()
-      .then((data) => active && setCatalogue(data))
-      .catch((error: unknown) => active && setLoadError(error instanceof Error ? error.message : String(error)));
-    return () => {
-      active = false;
-    };
-  }, [open, catalogue]);
+  const [custom, setCustom] = useState(false);
 
   function reset() {
     setSelectedProvider(null);
+    setCustom(false);
+  }
+
+  function done() {
+    onOpenChange(false);
+    reset();
   }
 
   return (
@@ -93,16 +84,19 @@ export function ImportProviderDialog({
       }}
     >
       <DialogContent className="max-h-[85svh] gap-0 overflow-hidden p-0 sm:max-w-2xl">
-        {selectedProvider ? (
+        {custom ? (
+          <CustomProviderForm
+            importedSlugs={importedSlugs}
+            onBack={() => setCustom(false)}
+            onDone={done}
+          />
+        ) : selectedProvider ? (
           <ConfigureProvider
             provider={selectedProvider}
             alreadyImported={importedSlugs.includes(selectedProvider.id)}
             balanceId={balanceId}
             onBack={() => setSelectedProvider(null)}
-            onDone={() => {
-              onOpenChange(false);
-              reset();
-            }}
+            onDone={done}
           />
         ) : (
           <BrowseProviders
@@ -110,6 +104,7 @@ export function ImportProviderDialog({
             loadError={loadError}
             importedSlugs={importedSlugs}
             onSelect={setSelectedProvider}
+            onCustom={() => setCustom(true)}
           />
         )}
       </DialogContent>
@@ -122,11 +117,13 @@ function BrowseProviders({
   loadError,
   importedSlugs,
   onSelect,
+  onCustom,
 }: {
   catalogue: ModelsDevApi | null;
   loadError: string | null;
   importedSlugs: string[];
   onSelect: (provider: SupportedProvider) => void;
+  onCustom: () => void;
 }) {
   const [search, setSearch] = useState("");
 
@@ -152,8 +149,8 @@ function BrowseProviders({
         </DialogDescription>
       </DialogHeader>
 
-      <div className="px-6 pb-4">
-        <InputGroup>
+      <div className="flex items-center gap-2 px-6 pb-4">
+        <InputGroup className="flex-1">
           <InputGroupInput
             placeholder="Search providers…"
             value={search}
@@ -163,6 +160,10 @@ function BrowseProviders({
             <SearchIcon />
           </InputGroupAddon>
         </InputGroup>
+        <Button variant="outline" onClick={onCustom}>
+          <SlidersHorizontalIcon data-icon="inline-start" />
+          Custom
+        </Button>
       </div>
 
       <ScrollArea className="h-[50svh] border-t">
@@ -485,15 +486,4 @@ function ConfigureProvider({
       </DialogFooter>
     </>
   );
-}
-
-function formatTokens(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 ? 1 : 0)}M`;
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
-  return String(tokens);
-}
-
-function formatPerMillion(perToken: string): string {
-  const value = parseFloat(perToken) * 1_000_000;
-  return Number.isFinite(value) ? value.toFixed(2) : "0.00";
 }

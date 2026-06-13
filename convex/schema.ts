@@ -16,7 +16,11 @@ export default defineSchema({
     usedCredits: v.number(),
     name: v.string(),
     hash: v.string(),
-  }).index("by_hash", ["hash"]),
+    /** Masked, non-secret display value (e.g. `rad-sk-…aB12`). */
+    preview: v.optional(v.string()),
+  })
+    .index("by_hash", ["hash"])
+    .index("by_balance", ["balance"]),
   ai_apps: defineTable({
     title: v.string(),
     url: v.string(),
@@ -45,7 +49,7 @@ export default defineSchema({
       gen_time: v.number(),
       finish_reason: v.string(),
     }),
-  }),
+  }).index("by_balance", ["bill.balance"]),
   models: defineTable({
     name: v.string(),
     launch_date: v.number(), // UNIX in ms

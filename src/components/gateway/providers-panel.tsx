@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { KeyRoundIcon, PlusIcon, RouteIcon } from "lucide-react";
+import { MoreVerticalIcon, PlusIcon, RouteIcon, SlidersHorizontalIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -13,12 +13,28 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { api } from "../../../convex/_generated/api";
-import { CredentialsDialog, type CredentialsTarget } from "./credentials-dialog";
+import type { Doc } from "../../../convex/_generated/dataModel";
 import { ImportProviderDialog } from "./import-provider-dialog";
+import { ModelManagerDialog } from "./model-manager-dialog";
 import { ProviderLogo } from "./provider-logo";
 
 export function ProvidersPanel() {
@@ -32,16 +48,21 @@ export function ProvidersPanel() {
     balanceId ? { balance: balanceId } : "skip",
   );
 
-  const credentialsBySlug = useMemo(() => {
-    const map = new Map<string, Record<string, string>>();
-    for (const credential of credentials ?? []) map.set(credential.provider, credential.preview);
-    return map;
+  const connectedSlugs = useMemo(() => {
+    const set = new Set<string>();
+    for (const credential of credentials ?? []) set.add(credential.provider);
+    return set;
   }, [credentials]);
 
   const [importOpen, setImportOpen] = useState(false);
-  const [credTarget, setCredTarget] = useState<CredentialsTarget | null>(null);
+  const [managingSlug, setManagingSlug] = useState<string | null>(null);
+  const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
 
   const importedSlugs = (providers ?? []).map((provider) => provider.slug);
+
+  // Resolve dialog targets from live query data so edits reflect immediately.
+  const managing = providers?.find((provider) => provider.slug === managingSlug) ?? null;
+  const deleting = providers?.find((provider) => provider.slug === deletingSlug) ?? null;
 
   async function toggle(slug: string, enabled: boolean) {
     try {
@@ -57,7 +78,7 @@ export function ProvidersPanel() {
         <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold tracking-tight">Providers</h2>
           <p className="text-sm text-muted-foreground">
-            Connect upstream providers from models.dev and choose which models to expose.
+            Connect upstream providers, manage their models, and choose which to expose.
           </p>
         </div>
         <Button onClick={() => setImportOpen(true)}>
@@ -79,7 +100,7 @@ export function ProvidersPanel() {
             </EmptyMedia>
             <EmptyTitle>No providers yet</EmptyTitle>
             <EmptyDescription>
-              Import a provider from models.dev to start routing requests through the gateway.
+              Import a provider from models.dev — or add a custom one — to start routing requests.
             </EmptyDescription>
           </EmptyHeader>
           <Button onClick={() => setImportOpen(true)}>
@@ -90,9 +111,14 @@ export function ProvidersPanel() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
           {providers.map((provider) => {
-            const preview = credentialsBySlug.get(provider.slug);
+            const needsKey = provider.env.length > 0;
+            const disconnected = needsKey && !connectedSlugs.has(provider.slug);
             return (
-              <Card key={provider._id} data-disabled={!provider.enabled} className="data-[disabled=true]:opacity-60">
+              <Card
+                key={provider._id}
+                data-disabled={!provider.enabled}
+                className="data-[disabled=true]:opacity-60"
+              >
                 <CardHeader>
                   <div className="flex items-center gap-3">
                     <ProviderLogo slug={provider.slug} className="size-9" />
@@ -103,39 +129,48 @@ export function ProvidersPanel() {
                       </CardDescription>
                     </div>
                   </div>
-                  <CardAction>
+                  <CardAction className="flex items-center gap-1">
                     <Switch
                       checked={provider.enabled}
                       onCheckedChange={(value) => toggle(provider.slug, value)}
                       aria-label={`${provider.enabled ? "Disable" : "Enable"} ${provider.name}`}
                     />
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" aria-label={`${provider.name} actions`}>
+                          <MoreVerticalIcon />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => setManagingSlug(provider.slug)}>
+                          <SlidersHorizontalIcon />
+                          Manage models
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={() => setDeletingSlug(provider.slug)}
+                        >
+                          <Trash2Icon />
+                          Delete provider
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </CardAction>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-3">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Badge variant="secondary">{provider.models.length} models</Badge>
-                    <Badge variant="outline" className="font-mono text-[0.6875rem]">
-                      {provider.npm.replace(/^@(ai-sdk|openrouter)\//, "")}
-                    </Badge>
-                    {preview ? (
-                      <Badge className="gap-1">
-                        <KeyRoundIcon className="size-3" /> Connected
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline">No key</Badge>
-                    )}
+                    {disconnected && <Badge variant="outline">Not connected</Badge>}
                   </div>
 
                   <Button
                     variant="outline"
                     size="sm"
                     className="w-full"
-                    onClick={() =>
-                      setCredTarget({ slug: provider.slug, name: provider.name, env: provider.env })
-                    }
+                    onClick={() => setManagingSlug(provider.slug)}
                   >
-                    <KeyRoundIcon data-icon="inline-start" />
-                    {preview ? "Manage credentials" : "Add credentials"}
+                    <SlidersHorizontalIcon data-icon="inline-start" />
+                    Manage models
                   </Button>
                 </CardContent>
               </Card>
@@ -151,13 +186,63 @@ export function ProvidersPanel() {
         balanceId={balanceId}
       />
 
-      <CredentialsDialog
-        target={credTarget}
-        balanceId={balanceId}
-        hasExisting={Boolean(credTarget && credentialsBySlug.has(credTarget.slug))}
-        preview={credTarget ? credentialsBySlug.get(credTarget.slug) : undefined}
-        onOpenChange={(open) => !open && setCredTarget(null)}
+      <ModelManagerDialog
+        provider={managing}
+        onOpenChange={(open) => !open && setManagingSlug(null)}
+      />
+
+      <DeleteProviderDialog
+        provider={deleting}
+        onOpenChange={(open) => !open && setDeletingSlug(null)}
       />
     </div>
+  );
+}
+
+function DeleteProviderDialog({
+  provider,
+  onOpenChange,
+}: {
+  provider: Doc<"providers"> | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const deleteProvider = useMutation(api.providers.deleteProvider);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function confirm() {
+    if (!provider) return;
+    setSubmitting(true);
+    try {
+      await deleteProvider({ slug: provider.slug });
+      toast.success(`Deleted ${provider.name}.`);
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete provider.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={provider !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Delete {provider?.name}?</DialogTitle>
+          <DialogDescription>
+            This removes the provider and any stored BYOK credentials for it. Models stay in the
+            global catalogue and remain available through other providers.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="sm:justify-between">
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button variant="destructive" onClick={confirm} disabled={submitting}>
+            {submitting && <Spinner data-icon="inline-start" />}
+            Delete provider
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
