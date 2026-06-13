@@ -1,9 +1,15 @@
-import { DefaultChatTransport, type ToolUIPart, type UIMessage } from "ai";
+import {
+  DefaultChatTransport,
+  type FileUIPart,
+  type LanguageModelUsage,
+  type ToolUIPart,
+  type UIMessage,
+} from "ai";
 import { useChat } from "@ai-sdk/react";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
 import { ensureSession as ensureSessionServer } from "@better-auth-ui/react/server";
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,6 +20,18 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
+import {
+  Context,
+  ContextCacheUsage,
+  ContextContent,
+  ContextContentBody,
+  ContextContentFooter,
+  ContextContentHeader,
+  ContextInputUsage,
+  ContextOutputUsage,
+  ContextReasoningUsage,
+  ContextTrigger,
+} from "@/components/ai-elements/context";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import {
@@ -40,7 +58,10 @@ import {
   clearChatHandoff,
   readChatHandoff,
 } from "@/components/chat/chat-loading";
+import { ChatMessageActions, type ForkPickerModel } from "@/components/chat/message-actions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { auth } from "@/lib/auth";
@@ -50,6 +71,9 @@ export const Route = createFileRoute("/chat/$chatId")({
   staticData: {
     pageTitle: "Chat",
   },
+  validateSearch: (search: Record<string, unknown>): { model?: string } => ({
+    model: typeof search.model === "string" ? search.model : undefined,
+  }),
   async beforeLoad({ context: { queryClient }, location }) {
     const ensureSession = createIsomorphicFn()
       .server(() =>
@@ -81,9 +105,14 @@ function ChatConversationPage() {
 
 function ChatConversationContent({ chatId }: { chatId: string }) {
   const convexChatId = chatId as Id<"aisdk_chats">;
+  const search = Route.useSearch();
+  const navigate = useNavigate();
   const chat = useQuery(api.aisdk.GetChat, { chatId: convexChatId });
   const models = useQuery(api.models.availableModels);
-  const [model, setModel] = useState<string>();
+  const userInfo = useQuery(api.auth.userInfo);
+  const forkChat = useMutation(api.aisdk.ForkChat);
+  const [model, setModel] = useState<string | undefined>(search.model);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [reasoningBudget, setReasoningBudget] = useState<number>();
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [handoffPrompt] = useState(() => readChatHandoff(chatId));
@@ -138,8 +167,16 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       selectedModelData?.reasoning,
     ],
   );
-  const { addToolApprovalResponse, error, messages, sendMessage, setMessages, status, stop } =
-    useChat({
+  const {
+    addToolApprovalResponse,
+    error,
+    messages,
+    regenerate,
+    sendMessage,
+    setMessages,
+    status,
+    stop,
+  } = useChat({
       id: chatId,
       sendAutomaticallyWhen: ({ messages: nextMessages }) => {
         const continuationKey = getApprovalContinuationKey(nextMessages);
@@ -209,6 +246,144 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     );
   }, [chat, convexChatId, sendMessage, status]);
 
+  const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
+  const forkPickerModels = useMemo<ForkPickerModel[] | undefined>(
+    () =>
+      models?.map((item) => ({
+        slug: item.slug,
+        name: item.name,
+        author: item.author ? { name: item.author.name, slug: item.author.slug } : null,
+      })),
+    [models],
+  );
+  const maxTokens = selectedModelData?.providers?.[0]?.context;
+  const latestUsage = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const usage = getUsageMetadata(messages[index]?.metadata);
+      if (usage) {
+        return usage;
+      }
+    }
+    return undefined;
+  }, [messages]);
+
+  /** Builds the per-request body (model + reasoning settings) for a given model. */
+  const buildSendBody = useCallback(
+    (modelSlug: string) => {
+      const modelData = models?.find((item) => item.slug === modelSlug);
+      return {
+        chatId: convexChatId,
+        model: modelSlug,
+        reasoningEffort: modelData?.reasoning ? reasoningEffort : undefined,
+        reasoningBudget:
+          modelData?.features?.reasoning_budget && reasoningBudget ? reasoningBudget : undefined,
+      };
+    },
+    [convexChatId, models, reasoningBudget, reasoningEffort],
+  );
+
+  const handleCopy = useCallback((message: UIMessage) => {
+    const text = getMessageText(message);
+    if (text) {
+      void navigator.clipboard?.writeText(text);
+    }
+  }, []);
+
+  const handleRetry = useCallback(
+    (message: UIMessage) => {
+      if (!selectedModel) {
+        return;
+      }
+      void regenerate({ messageId: message.id, body: buildSendBody(selectedModel) });
+    },
+    [buildSendBody, regenerate, selectedModel],
+  );
+
+  const handleEditSubmit = useCallback(
+    (message: UIMessage, nextText: string) => {
+      if (!selectedModel) {
+        return;
+      }
+      const index = messages.findIndex((item) => item.id === message.id);
+      if (index === -1) {
+        return;
+      }
+      const files = getMessageFiles(message);
+      setEditingId(null);
+      setMessages(messages.slice(0, index));
+      void sendMessage({ text: nextText, files }, { body: buildSendBody(selectedModel) });
+    },
+    [buildSendBody, messages, selectedModel, sendMessage, setMessages],
+  );
+
+  /**
+   * Forks a user turn into a fresh chat: prior history is seeded as the new
+   * chat's messages and the forked turn is queued so it regenerates with the
+   * chosen model on load.
+   */
+  const handleForkUser = useCallback(
+    async (message: UIMessage, forkModel: string) => {
+      if (!balance) {
+        return;
+      }
+      const index = messages.findIndex((item) => item.id === message.id);
+      if (index === -1) {
+        return;
+      }
+      const modelData = models?.find((item) => item.slug === forkModel);
+      const newChatId = await forkChat({
+        balance: balance._id,
+        messages: messages.slice(0, index),
+        messages_queue: {
+          text: getMessageText(message),
+          files: getMessageFiles(message),
+          model: forkModel,
+          ...(modelData?.reasoning ? { reasoningEffort } : {}),
+          ...(modelData?.features?.reasoning_budget && reasoningBudget ? { reasoningBudget } : {}),
+          webSearch: false,
+        },
+      });
+      if (newChatId === "Not logged in!") {
+        return;
+      }
+      await navigate({
+        to: "/chat/$chatId",
+        params: { chatId: newChatId },
+        search: { model: forkModel },
+      });
+    },
+    [balance, forkChat, messages, models, navigate, reasoningBudget, reasoningEffort],
+  );
+
+  /**
+   * Forks an assistant turn into a fresh chat seeded with the conversation up to
+   * and including that turn, pre-selecting another model for the next turn.
+   */
+  const handleForkAssistant = useCallback(
+    async (message: UIMessage, forkModel: string) => {
+      if (!balance) {
+        return;
+      }
+      const index = messages.findIndex((item) => item.id === message.id);
+      if (index === -1) {
+        return;
+      }
+      const newChatId = await forkChat({
+        balance: balance._id,
+        messages: messages.slice(0, index + 1),
+      });
+      if (newChatId === "Not logged in!") {
+        return;
+      }
+      await navigate({
+        to: "/chat/$chatId",
+        params: { chatId: newChatId },
+        search: { model: forkModel },
+      });
+    },
+    [balance, forkChat, messages, navigate],
+  );
+
   if (chat === undefined) {
     if (handoffPrompt !== null) {
       return (
@@ -269,47 +444,26 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
           {messages.length === 0 ? (
             <ConversationEmptyState description="Send a prompt to begin." title="No messages yet" />
           ) : (
-            messages.map((message) => (
-              <Message from={message.role} key={message.id}>
-                <MessageContent>
-                  {message.parts.map((part, index) => {
-                    if (part.type === "text") {
-                      return (
-                        <MessageResponse key={`${message.id}-${index}`}>
-                          {part.text}
-                        </MessageResponse>
-                      );
-                    }
-
-                    if (part.type === "reasoning") {
-                      return (
-                        <Reasoning
-                          isStreaming={part.state === "streaming"}
-                          key={`${message.id}-${index}`}
-                        >
-                          <ReasoningTrigger />
-                          <ReasoningContent>{part.text}</ReasoningContent>
-                        </Reasoning>
-                      );
-                    }
-
-                    if (isToolPart(part)) {
-                      return (
-                        <ChatToolPart
-                          hasLaterAssistantContent={message.parts
-                            .slice(index + 1)
-                            .some(hasRenderableAssistantContent)}
-                          key={`${message.id}-${index}`}
-                          onApprovalResponse={addToolApprovalResponse}
-                          part={part}
-                        />
-                      );
-                    }
-
-                    return null;
-                  })}
-                </MessageContent>
-              </Message>
+            messages.map((message, messageIndex) => (
+              <ChatMessage
+                isEditing={editingId === message.id}
+                isStreaming={status === "streaming" && messageIndex === messages.length - 1}
+                key={message.id}
+                message={message}
+                models={forkPickerModels}
+                onApprovalResponse={addToolApprovalResponse}
+                onCopy={() => handleCopy(message)}
+                onEditCancel={() => setEditingId(null)}
+                onEditStart={() => setEditingId(message.id)}
+                onEditSubmit={(nextText) => handleEditSubmit(message, nextText)}
+                onFork={(forkModel) =>
+                  message.role === "assistant"
+                    ? void handleForkAssistant(message, forkModel)
+                    : void handleForkUser(message, forkModel)
+                }
+                onRetry={() => handleRetry(message)}
+                status={status}
+              />
             ))
           )}
         </ConversationContent>
@@ -326,6 +480,31 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
               <AlertTitle>Message failed</AlertTitle>
               <AlertDescription>{error.message}</AlertDescription>
             </Alert>
+          ) : null}
+
+          {latestUsage && maxTokens ? (
+            <div className="flex items-center justify-end">
+              <Context
+                maxTokens={maxTokens}
+                modelId={selectedModel}
+                usage={latestUsage}
+                usedTokens={latestUsage.totalTokens ?? 0}
+              >
+                <ContextTrigger className="h-7 gap-1.5 px-2" size="sm" />
+                <ContextContent>
+                  <ContextContentHeader />
+                  <ContextContentBody>
+                    <div className="space-y-2">
+                      <ContextInputUsage />
+                      <ContextOutputUsage />
+                      <ContextReasoningUsage />
+                      <ContextCacheUsage />
+                    </div>
+                  </ContextContentBody>
+                  <ContextContentFooter />
+                </ContextContent>
+              </Context>
+            </div>
           ) : null}
 
           <ChatPromptInput
@@ -366,6 +545,143 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         </div>
       </div>
     </main>
+  );
+}
+
+type ChatMessageProps = {
+  message: UIMessage;
+  models: ForkPickerModel[] | undefined;
+  status: ReturnType<typeof useChat>["status"];
+  isStreaming: boolean;
+  isEditing: boolean;
+  onApprovalResponse: (response: ToolApprovalResponse) => void;
+  onCopy: () => void;
+  onEditStart: () => void;
+  onEditCancel: () => void;
+  onEditSubmit: (nextText: string) => void;
+  onFork: (model: string) => void;
+  onRetry: () => void;
+};
+
+function ChatMessage({
+  message,
+  models,
+  status,
+  isStreaming,
+  isEditing,
+  onApprovalResponse,
+  onCopy,
+  onEditStart,
+  onEditCancel,
+  onEditSubmit,
+  onFork,
+  onRetry,
+}: ChatMessageProps) {
+  const actionsDisabled = status === "submitted" || status === "streaming";
+  const showActions = !isStreaming && !isEditing && message.role !== "system";
+
+  return (
+    <Message from={message.role}>
+      <MessageContent>
+        {isEditing ? (
+          <MessageEditor
+            defaultValue={getMessageText(message)}
+            onCancel={onEditCancel}
+            onSubmit={onEditSubmit}
+          />
+        ) : (
+          message.parts.map((part, index) => {
+            if (part.type === "text") {
+              return <MessageResponse key={`${message.id}-${index}`}>{part.text}</MessageResponse>;
+            }
+
+            if (part.type === "reasoning") {
+              return (
+                <Reasoning
+                  isStreaming={part.state === "streaming"}
+                  key={`${message.id}-${index}`}
+                >
+                  <ReasoningTrigger />
+                  <ReasoningContent>{part.text}</ReasoningContent>
+                </Reasoning>
+              );
+            }
+
+            if (isToolPart(part)) {
+              return (
+                <ChatToolPart
+                  hasLaterAssistantContent={message.parts
+                    .slice(index + 1)
+                    .some(hasRenderableAssistantContent)}
+                  key={`${message.id}-${index}`}
+                  onApprovalResponse={onApprovalResponse}
+                  part={part}
+                />
+              );
+            }
+
+            return null;
+          })
+        )}
+      </MessageContent>
+
+      {showActions ? (
+        <ChatMessageActions
+          disabled={actionsDisabled}
+          models={models}
+          onCopy={onCopy}
+          onEdit={onEditStart}
+          onFork={onFork}
+          onRetry={onRetry}
+          role={message.role}
+        />
+      ) : null}
+    </Message>
+  );
+}
+
+type MessageEditorProps = {
+  defaultValue: string;
+  onCancel: () => void;
+  onSubmit: (nextText: string) => void;
+};
+
+function MessageEditor({ defaultValue, onCancel, onSubmit }: MessageEditorProps) {
+  const [value, setValue] = useState(defaultValue);
+
+  return (
+    <div className="flex w-[min(calc(100vw-2rem),32rem)] max-w-full flex-col gap-2">
+      <Textarea
+        autoFocus
+        className="min-h-20 bg-background text-foreground"
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            if (value.trim()) {
+              onSubmit(value.trim());
+            }
+          }
+          if (event.key === "Escape") {
+            onCancel();
+          }
+        }}
+        value={value}
+      />
+      <div className="flex justify-end gap-2">
+        <Button onClick={onCancel} size="sm" type="button" variant="ghost">
+          Cancel
+        </Button>
+        <Button
+          disabled={!value.trim()}
+          onClick={() => onSubmit(value.trim())}
+          size="sm"
+          type="button"
+        >
+          Send
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -496,6 +812,31 @@ function getToolInput(part: ToolUIPart) {
   }
 
   return "rawInput" in part ? part.rawInput : {};
+}
+
+/** Joins all text parts of a message into a single copy/edit-friendly string. */
+function getMessageText(message: UIMessage) {
+  return message.parts
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n");
+}
+
+/** Extracts attachment parts from a message so forks/edits keep their files. */
+function getMessageFiles(message: UIMessage): FileUIPart[] {
+  return message.parts.filter(
+    (part): part is FileUIPart => part.type === "file" && Boolean((part as FileUIPart).url),
+  );
+}
+
+/** Reads the cumulative token usage attached to an assistant message, if any. */
+function getUsageMetadata(metadata: UIMessage["metadata"]): LanguageModelUsage | undefined {
+  if (typeof metadata === "object" && metadata !== null && "usage" in metadata) {
+    const { usage } = metadata as { usage?: LanguageModelUsage };
+    return usage;
+  }
+
+  return undefined;
 }
 
 function getLastMessageModel(messages: UIMessage[]) {

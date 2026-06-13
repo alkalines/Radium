@@ -28,6 +28,37 @@ export const CreateChat = mutation({
   },
 });
 
+/**
+ * Creates a new chat seeded with an existing conversation history (a "fork").
+ *
+ * Used by the message-level fork actions: assistant forks pass the history up to
+ * and including the assistant turn and no queue (the user continues with a new
+ * model), while user forks pass the prior history plus a `messages_queue` so the
+ * forked user turn is regenerated with another model on load.
+ */
+export const ForkChat = mutation({
+  args: {
+    balance: v.id("balances"),
+    messages: v.array(messageSchema),
+    messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
+  },
+  handler: async (ctx, args): Promise<Id<"aisdk_chats"> | "Not logged in!"> => {
+    const identity = await authComponent.getAuthUser(ctx);
+
+    if (!identity) return "Not logged in!";
+
+    return await ctx.db.insert("aisdk_chats", {
+      chat_completions: [],
+      messages: args.messages,
+      messages_queue: args.messages_queue ?? undefined,
+      balance: args.balance,
+      userId: identity._id,
+      activeStream: false,
+      lastInteractionAt: Date.now(),
+    });
+  },
+});
+
 export const EditChat = internalMutation({
   args: {
     messages: v.optional(v.array(messageSchema)),

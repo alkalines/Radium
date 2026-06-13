@@ -130,6 +130,14 @@ export async function handleAISDKChat(
           reasoningStartTime = Date.now();
         }
       }
+      // Attach cumulative token usage once the response finishes so the client
+      // can render context-window usage and cost for the message.
+      if (part.type === "finish") {
+        return {
+          model: body.model,
+          usage: part.totalUsage,
+        };
+      }
       return {
         model: body.model,
       };
