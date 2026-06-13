@@ -22,6 +22,8 @@
     "format:check": "oxfmt --check"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.84",
+    "@ai-sdk/openai": "^3.0.71",
     "@ai-sdk/openai-compatible": "^2.0.48",
     "@ai-sdk/react": "^3.0.201",
     "@base-ui/react": "^1.5.0",

@@ -3,8 +3,17 @@
  */
 import { LanguageModel } from "ai";
 
+export type AIProviderNpmPackage =
+  | "@openrouter/ai-sdk-provider"
+  | "@ai-sdk/openai"
+  | "@ai-sdk/openai-compatible"
+  | "@ai-sdk/anthropic";
+
 export type AIProviderSDK_Config = {
   apiKey: string;
+  name?: string;
+  baseURL?: string;
+  credentials: Record<string, string>;
 };
 
 // Copied from @openrouter/ai-sdk-provider OpenRouterChatSettings
@@ -94,6 +103,9 @@ export type AIProviderConfig = {
    * Slug for use (ex: openai)
    */
   slug: string;
+  npm: AIProviderNpmPackage;
+  env: string[];
+  doc?: string;
   /**
    * Training policy of the provider
    */

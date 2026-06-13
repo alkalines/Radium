@@ -16,7 +16,7 @@ export default defineSchema({
     usedCredits: v.number(),
     name: v.string(),
     hash: v.string(),
-  }),
+  }).index("by_hash", ["hash"]),
   ai_apps: defineTable({
     title: v.string(),
     url: v.string(),
@@ -63,69 +63,6 @@ export default defineSchema({
       reasoning_budget: v.optional(v.boolean()),
       reasoning_efforts: v.optional(v.array(v.string())),
     }),
-    // Model Context, Pricing and Others should be gotten from providers
-    providers: v.array(
-      v.object({
-        id: v.string(),
-        quantization: v.optional(
-          v.union(
-            v.literal("int4"), // Integer (4 bit)
-            v.literal("int8"), // Integer (8 bit)
-            v.literal("fp4"), // Floating point (4 bit)
-            v.literal("fp6"), // Floating point (6 bit)
-            v.literal("fp8"), // Floating point (8 bit)
-            v.literal("fp16"), // Floating point (16 bit)
-            v.literal("bf16"), // Brain floating point (16 bit)
-            v.literal("fp32"), // Floating point (32 bit)
-          ),
-        ),
-        context: v.number(), // 400k = 400,000
-        max_output: v.number(),
-        pricing: v.object({
-          // Needs to be a string otherwise JS just fucks everything
-          input: v.string(),
-          output: v.string(),
-          cache_read: v.optional(v.string()),
-          cache_write: v.optional(v.string()),
-          // @todo Support audio and video
-        }),
-        supported_parameters: v.array(
-          v.union(
-            v.literal("temperature"),
-            v.literal("top_p"),
-            v.literal("top_k"),
-            v.literal("frequency_penalty"),
-            v.literal("presence_penalty"),
-            v.literal("repetition_penalty"),
-            v.literal("min_p"),
-            v.literal("top_a"),
-            v.literal("seed"),
-            v.literal("max_tokens"),
-            v.literal("logit_bias"),
-            v.literal("logprobs"),
-            v.literal("top_logprobs"),
-            v.literal("response_format"),
-            v.literal("structured_outputs"),
-            v.literal("stop"),
-            v.literal("tools"),
-            v.literal("tool_choice"),
-            v.literal("parallel_tool_calls"),
-            v.literal("verbosity"),
-          ),
-        ),
-        promotions: v.optional(
-          v.object({
-            // Needs to be a string otherwise JS just fucks everything
-            input: v.optional(v.string()),
-            output: v.optional(v.string()),
-            cache_read: v.optional(v.string()),
-            cache_write: v.optional(v.string()),
-            // @todo Support audio and video
-          }),
-        ),
-        moderated: v.boolean(),
-      }),
-    ),
     architecture: v.object({
       input_modalities: v.array(
         v.union(
@@ -167,8 +104,92 @@ export default defineSchema({
         frequency_penalty: v.optional(v.number()),
       }),
     ),
-  }),
-  // providers: doesn't need to have a table because they should be hardcoded otherwise inference implementation would suck.
+  }).index("by_slug", ["slug"]),
+  providers: defineTable({
+    slug: v.string(),
+    name: v.string(),
+    npm: v.union(
+      v.literal("@openrouter/ai-sdk-provider"),
+      v.literal("@ai-sdk/openai"),
+      v.literal("@ai-sdk/openai-compatible"),
+      v.literal("@ai-sdk/anthropic"),
+    ),
+    env: v.array(v.string()),
+    doc: v.optional(v.string()),
+    api: v.optional(v.string()),
+    enabled: v.boolean(),
+    models: v.array(
+      v.object({
+        model: v.string(),
+        upstream_model_id: v.optional(v.string()),
+        quantization: v.optional(
+          v.union(
+            v.literal("int4"),
+            v.literal("int8"),
+            v.literal("fp4"),
+            v.literal("fp6"),
+            v.literal("fp8"),
+            v.literal("fp16"),
+            v.literal("bf16"),
+            v.literal("fp32"),
+          ),
+        ),
+        context: v.number(),
+        max_output: v.number(),
+        pricing: v.object({
+          input: v.string(),
+          output: v.string(),
+          cache_read: v.optional(v.string()),
+          cache_write: v.optional(v.string()),
+        }),
+        supported_parameters: v.array(
+          v.union(
+            v.literal("temperature"),
+            v.literal("top_p"),
+            v.literal("top_k"),
+            v.literal("frequency_penalty"),
+            v.literal("presence_penalty"),
+            v.literal("repetition_penalty"),
+            v.literal("min_p"),
+            v.literal("top_a"),
+            v.literal("seed"),
+            v.literal("max_tokens"),
+            v.literal("logit_bias"),
+            v.literal("logprobs"),
+            v.literal("top_logprobs"),
+            v.literal("response_format"),
+            v.literal("structured_outputs"),
+            v.literal("stop"),
+            v.literal("tools"),
+            v.literal("tool_choice"),
+            v.literal("parallel_tool_calls"),
+            v.literal("verbosity"),
+          ),
+        ),
+        promotions: v.optional(
+          v.object({
+            input: v.optional(v.string()),
+            output: v.optional(v.string()),
+            cache_read: v.optional(v.string()),
+            cache_write: v.optional(v.string()),
+          }),
+        ),
+        moderated: v.boolean(),
+      }),
+    ),
+  }).index("by_slug", ["slug"]),
+  provider_credentials: defineTable({
+    balance: v.id("balances"),
+    provider: v.string(),
+    encrypted: v.record(
+      v.string(),
+      v.object({
+        iv: v.string(),
+        ciphertext: v.string(),
+      }),
+    ),
+    preview: v.record(v.string(), v.string()),
+  }).index("by_balance_and_provider", ["balance", "provider"]),
   authors: defineTable({
     name: v.string(),
     slug: v.string(),

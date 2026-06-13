@@ -55,13 +55,13 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
         { status: 402 },
       );
 
-    const provider = await AIBalancer(reqData);
+    const provider = await AIBalancer(ctx, checkKey.balance!._id, reqData);
     // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
     return CreateCompletion(reqData, provider, {
       ctx,
       balanceId: checkKey.balance!._id,
       keyId: checkKey._id,
-      byok: false, // @todo
+      byok: true,
     });
   } catch (e: any) {
     if (e instanceof z.ZodError) {
@@ -77,12 +77,12 @@ export const Internal_Chat_Completion = async (
   reqData: ChatCompletions_RequestBody_Type,
   balanceId: Id<"balances">,
 ) => {
-  const provider = await AIBalancer(reqData);
+  const provider = await AIBalancer(ctx, balanceId, reqData);
   // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
   return CreateCompletion(reqData, provider, {
     ctx,
     balanceId,
-    byok: false, // @todo
+    byok: true,
   });
 };
 

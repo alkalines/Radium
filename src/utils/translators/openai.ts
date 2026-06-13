@@ -198,7 +198,7 @@ function getAISDKStream(
    * @todo Reasoning parameter, and provider specific options
    */
   return streamText({
-    model: provider.connector(reqData.model, {
+    model: provider.connector(provider.info.modelId, {
       logitBias: reqData.logit_bias,
       /**
        * @todo OpenRouter have this option currently bugged

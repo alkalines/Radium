@@ -23,6 +23,7 @@ export const ChatCompletions_RequestBody = z.object({
     ]),
   ),
   model: z.string(),
+  provider: z.optional(z.string()),
   audio: z.nullish(
     z.object({
       // https://platform.openai.com/docs/api-reference/chat/create#chat-create-audio

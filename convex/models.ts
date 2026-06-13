@@ -4,13 +4,19 @@ import { internalQuery, query } from "./_generated/server";
 
 export const openaiModels = internalQuery({
   args: {},
-  handler: async (ctx, args): Promise<Models_Response_Type[]> => {
-    const modelsList = await ctx.db.query("models").collect();
+  handler: async (ctx): Promise<Models_Response_Type[]> => {
+    const [modelsList, providersList] = await Promise.all([
+      ctx.db.query("models").take(200),
+      ctx.db.query("providers").take(200),
+    ]);
 
     return modelsList.map((m) => {
       // @todo: Get more consistent statics
-      const baseProvider = m.providers[0];
-      const topProvider = m.providers[0];
+      const modelProviders = providersList.flatMap((provider) =>
+        provider.models.filter((providerModel) => providerModel.model === m.slug),
+      );
+      const baseProvider = modelProviders[0];
+      const topProvider = modelProviders[0];
 
       return {
         id: m.slug,
@@ -37,20 +43,24 @@ export const openaiModels = internalQuery({
           prompt_tokens: null,
         },
         // Provider based
-        supported_parameters: baseProvider.supported_parameters,
-        pricing: {
-          prompt: baseProvider.pricing.input,
-          completion: baseProvider.pricing.output,
-          input_cache_read: baseProvider.pricing.cache_read,
-          input_cache_write: baseProvider.pricing.cache_write,
-          // @todo
-        },
-        context_length: baseProvider.context,
-        top_provider: {
-          context_length: topProvider.context,
-          max_completion_tokens: topProvider.max_output,
-          is_moderated: topProvider.moderated,
-        },
+        supported_parameters: baseProvider?.supported_parameters,
+        pricing: baseProvider
+          ? {
+              prompt: baseProvider.pricing.input,
+              completion: baseProvider.pricing.output,
+              input_cache_read: baseProvider.pricing.cache_read,
+              input_cache_write: baseProvider.pricing.cache_write,
+              // @todo
+            }
+          : null,
+        context_length: baseProvider?.context,
+        top_provider: topProvider
+          ? {
+              context_length: topProvider.context,
+              max_completion_tokens: topProvider.max_output,
+              is_moderated: topProvider.moderated,
+            }
+          : null,
       } as Models_Response_Type;
     });
   },
@@ -59,12 +69,22 @@ export const openaiModels = internalQuery({
 export const availableModels = query({
   args: {},
   async handler(ctx) {
-    const models = await ctx.db.query("models").collect();
+    const [models, providers] = await Promise.all([
+      ctx.db.query("models").take(200),
+      ctx.db.query("providers").take(200),
+    ]);
 
     return Promise.all(
       models.map(async (model) => ({
         ...model,
         author: await ctx.db.get("authors", model.author),
+        providers: providers.flatMap((provider) => {
+          const providerModel = provider.models.find(
+            (candidate) => candidate.model === model.slug,
+          );
+
+          return providerModel ? [{ ...providerModel, id: provider.slug }] : [];
+        }),
       })),
     );
   },
@@ -77,7 +97,7 @@ export const modelInfo = query({
   handler(ctx, args) {
     return ctx.db
       .query("models")
-      .filter((q) => q.eq(q.field("slug"), args.slug))
-      .first();
+      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
+      .unique();
   },
 });

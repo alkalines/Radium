@@ -28,12 +28,10 @@ export const getKeyInfo = query({
   },
   handler: async (ctx, args) => {
     const hash = await hashText(args.key);
-    const dbKey = (
-      await ctx.db
-        .query("keys")
-        .filter((q) => q.eq(q.field("hash"), hash))
-        .collect()
-    )[0];
+    const dbKey = await ctx.db
+      .query("keys")
+      .withIndex("by_hash", (q) => q.eq("hash", hash))
+      .unique();
     if (!dbKey) throw new Error("This key is invalid!");
     const balanceInfo = await ctx.db.get("balances", dbKey.balance);
     const usableCredits = findUsableCredit(
@@ -139,15 +137,27 @@ export const billKey = internalMutation({
     }),
   },
   async handler(ctx, args) {
-    const [keyInfo, balanceInfo, modelInfo] = await Promise.all([
+    const [keyInfo, balanceInfo, modelInfo, providerInfo] = await Promise.all([
       args.bill.key ? ctx.db.get("keys", args.bill.key) : undefined,
       ctx.db.get("balances", args.bill.balance),
       ctx.db
         .query("models")
-        .filter((q) => q.eq(q.field("slug"), args.request.model_slug))
-        .first(),
+        .withIndex("by_slug", (q) => q.eq("slug", args.request.model_slug))
+        .unique(),
+      ctx.db
+        .query("providers")
+        .withIndex("by_slug", (q) => q.eq("slug", args.request.provider))
+        .unique(),
     ]);
-    const modelFromProvider = modelInfo!.providers.find((q) => q.id === args.request.provider);
+    if (!modelInfo) throw new Error(`Unknown model: ${args.request.model_slug}`);
+    const modelFromProvider = providerInfo?.models.find(
+      (q) => q.model === args.request.model_slug,
+    );
+    if (!modelFromProvider) {
+      throw new Error(
+        `Model ${args.request.model_slug} is not available on provider ${args.request.provider}.`,
+      );
+    }
 
     /**
      * Pricing
@@ -193,7 +203,7 @@ export const billKey = internalMutation({
           byok: args.request.byok,
           streamed: args.request.stream,
           canceled: args.request.canceled,
-          model: modelInfo!._id,
+          model: modelInfo._id,
           provider: args.request.provider,
           app: args.request.app,
         },
