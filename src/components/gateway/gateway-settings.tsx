@@ -15,10 +15,17 @@ export const gatewaySections = [
 
 export type GatewaySection = (typeof gatewaySections)[number]["value"];
 
-export function GatewaySettings({ section }: { section: GatewaySection }) {
+export function GatewaySettings({
+  section,
+  hideNav,
+}: {
+  section: GatewaySection;
+  /** When `true`, hides the top tab navigation (used when nav lives in the sidebar). */
+  hideNav?: boolean;
+}) {
   return (
     <Tabs value={section} className="w-full gap-4 md:gap-6">
-      <TabsList aria-label="Gateway settings">
+      <TabsList aria-label="Gateway settings" className={hideNav ? "hidden" : undefined}>
         {gatewaySections.map((entry) => (
           <TabsTrigger key={entry.value} value={entry.value} asChild>
             <Link

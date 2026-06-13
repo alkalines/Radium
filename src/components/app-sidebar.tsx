@@ -4,6 +4,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 
 import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
+import { SettingsSidebarSections } from "@/components/settings-sidebar";
 import { UserButton } from "@/components/auth/user/user-button";
 import {
   Sidebar,
@@ -55,13 +56,39 @@ const data = {
 };
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  // Subscribe to chats here (not in MainSidebarSections) so the query stays alive while
+  // the settings/gateway nav is shown, avoiding a "Loading chats..." flash on return.
   const chats = useQuery(api.aisdk.ListChats, {});
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const chatSections = Array.isArray(chats) ? groupChatsByLastInteraction(chats) : [];
+  const inSettings = pathname.startsWith("/settings") || pathname.startsWith("/gateway");
 
   return (
     <Sidebar className="border-r-0" {...props}>
-      <SidebarHeader>
+      {inSettings ? (
+        <SettingsSidebarSections pathname={pathname} />
+      ) : (
+        <MainSidebarSections pathname={pathname} chats={chats} />
+      )}
+      <SidebarFooter>
+        <UserButton align="start" className="w-full justify-start" />
+      </SidebarFooter>
+      <SidebarRail />
+    </Sidebar>
+  );
+}
+
+function MainSidebarSections({
+  pathname,
+  chats,
+}: {
+  pathname: string;
+  chats: ReturnType<typeof useQuery<typeof api.aisdk.ListChats>>;
+}) {
+  const chatSections = Array.isArray(chats) ? groupChatsByLastInteraction(chats) : [];
+
+  return (
+    <>
+      <SidebarHeader className="animate-in fade-in-0 slide-in-from-left-8 duration-300">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton className="h-10 w-fit px-1.5" asChild>
@@ -77,7 +104,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
         <NavMain items={data.navMain} />
       </SidebarHeader>
-      <SidebarContent>
+      <SidebarContent className="animate-in fade-in-0 slide-in-from-left-8 duration-300">
         <SidebarGroup className="group-data-[collapsible=icon]:hidden">
           <SidebarGroupLabel>Recent chats</SidebarGroupLabel>
           <SidebarGroupContent>
@@ -153,11 +180,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarGroup>
         <NavSecondary items={data.navSecondary} className="mt-auto" />
       </SidebarContent>
-      <SidebarFooter>
-        <UserButton align="start" className="w-full justify-start" />
-      </SidebarFooter>
-      <SidebarRail />
-    </Sidebar>
+    </>
   );
 }
 
