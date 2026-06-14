@@ -158,11 +158,9 @@ export async function handleAISDKChat(
           return part;
         }),
       }));
-
-      const allMessages = [...body.messages, ...messagesWithDuration];
       await ctx.runMutation(internal.aisdk.EditChat, {
         chatId,
-        messages: allMessages,
+        messages: messagesWithDuration,
         activeStream: false,
       });
     },
