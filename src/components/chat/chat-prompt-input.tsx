@@ -1,6 +1,6 @@
 import type { ChatStatus, FileUIPart } from "ai";
 import { BrainIcon, ChevronDownIcon, MicIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
   ModelSelector,
@@ -81,6 +81,8 @@ type ChatPromptInputProps = {
   reasoningEffort: ReasoningEffort;
   selectedModel: string | undefined;
   status: ChatStatus;
+  /** Optional "Tools" submenu rendered inside the `+` action menu. */
+  toolsMenu?: ReactNode;
 };
 
 export function ChatPromptInput({
@@ -96,6 +98,7 @@ export function ChatPromptInput({
   reasoningEffort,
   selectedModel,
   status,
+  toolsMenu,
 }: ChatPromptInputProps) {
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const selectedModelData = models?.find((model) => model.slug === selectedModel);
@@ -159,6 +162,7 @@ export function ChatPromptInput({
               <PromptInputActionMenuTrigger />
               <PromptInputActionMenuContent>
                 <PromptInputActionAddAttachments />
+                {toolsMenu}
               </PromptInputActionMenuContent>
             </PromptInputActionMenu>
           </PromptInputTools>

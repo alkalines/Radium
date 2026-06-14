@@ -4,6 +4,7 @@ import { useAuth } from "@better-auth-ui/react";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeftIcon, Shield, User2 } from "lucide-react";
 
+import { chatroomSections } from "@/components/chatroom/chatroom-settings";
 import { gatewaySections } from "@/components/gateway/gateway-settings";
 import {
   SidebarContent,
@@ -102,6 +103,24 @@ export function SettingsSidebarSections({ pathname }: { pathname: string }) {
                 <SidebarMenuItem key={entry.value}>
                   <SidebarMenuButton asChild isActive={pathname === `/gateway/${entry.value}`}>
                     <Link to="/gateway/$section" params={{ section: entry.value }}>
+                      <entry.icon />
+                      <span>{entry.label}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Chatroom</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {chatroomSections.map((entry) => (
+                <SidebarMenuItem key={entry.value}>
+                  <SidebarMenuButton asChild isActive={pathname === `/chatroom/${entry.value}`}>
+                    <Link to="/chatroom/$section" params={{ section: entry.value }}>
                       <entry.icon />
                       <span>{entry.label}</span>
                     </Link>

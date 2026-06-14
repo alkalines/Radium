@@ -199,6 +199,39 @@ export default defineSchema({
     slug: v.string(),
   }),
   // Chatroom
+  /**
+   * A user-attached MCP (Model Context Protocol) server. Secrets (e.g. the
+   * bearer token) are stored encrypted at rest using the same scheme as BYOK
+   * provider credentials — see {@link provider_credentials} and
+   * `src/utils/credential_crypto.ts`.
+   */
+  mcp_servers: defineTable({
+    balance: v.id("balances"),
+    name: v.string(),
+    url: v.string(),
+    transport: v.literal("http"), // @todo support v.literal("sse")
+    auth: v.union(
+      v.object({ type: v.literal("none") }),
+      v.object({ type: v.literal("bearer") }),
+      // @todo v.object({ type: v.literal("oauth"), ... }) — OAuth 2.0
+      // @todo v.object({ type: v.literal("oauth2.1"), ... }) — OAuth 2.1 + PKCE
+    ),
+    /** AES-GCM encrypted secrets, keyed by secret name (e.g. `token`). */
+    encrypted: v.optional(
+      v.record(v.string(), v.object({ iv: v.string(), ciphertext: v.string() })),
+    ),
+    /** Masked, non-secret previews of the stored secrets for display. */
+    preview: v.optional(v.record(v.string(), v.string())),
+  }).index("by_balance", ["balance"]),
+  /**
+   * The user's default tool selection (per balance), copied as the starting
+   * point for new chats and editable from the Chatroom → Tools settings page.
+   */
+  chatroom_tool_defaults: defineTable({
+    balance: v.id("balances"),
+    builtinToolSets: v.array(v.string()),
+    mcpServers: v.array(v.id("mcp_servers")),
+  }).index("by_balance", ["balance"]),
   aisdk_chats: defineTable({
     userId: v.string(), // Better Auth ID
     balance: v.id("balances"),
@@ -209,6 +242,16 @@ export default defineSchema({
     emoji: v.optional(v.string()),
     activeStream: v.optional(v.boolean()),
     lastInteractionAt: v.optional(v.number()),
+    /**
+     * Per-chat tool override. When absent, the chat resolves tools from the
+     * user's {@link chatroom_tool_defaults}.
+     */
+    tools: v.optional(
+      v.object({
+        builtinToolSets: v.array(v.string()),
+        mcpServers: v.array(v.id("mcp_servers")),
+      }),
+    ),
   })
     .index("by_userId", ["userId"])
     .index("by_userId_and_lastInteractionAt", ["userId", "lastInteractionAt"]),

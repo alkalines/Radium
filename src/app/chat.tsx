@@ -7,6 +7,7 @@ import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 import { useCallback, useState } from "react";
 
 import { ChatPromptInput, type ReasoningEffort } from "@/components/chat/chat-prompt-input";
+import { ChatToolsMenu } from "@/components/chat/chat-tools-menu";
 import {
   chatComposerViewTransitionName,
   rememberChatHandoff,
@@ -231,6 +232,7 @@ function ChatHomePage() {
           reasoningEffort={reasoningEffort}
           selectedModel={model}
           status={isSubmitting ? "submitted" : "ready"}
+          toolsMenu={<ChatToolsMenu balance={balance?._id} />}
         />
       </section>
     </main>

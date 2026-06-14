@@ -1,10 +1,12 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { convertToModelMessages, streamText, tool, type UIMessage } from "ai";
-import * as z from "zod";
+import { createMCPClient } from "@ai-sdk/mcp";
+import { convertToModelMessages, streamText, type ToolSet, type UIMessage } from "ai";
 import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
 } from "../../src/utils/types/openai/types";
+import { decryptCredentialRecord } from "../../src/utils/credential_crypto";
+import { MCP_BEARER_SECRET_KEY } from "../../src/utils/chatroom/tools";
 import { Internal_Chat_Completion } from "./chat_completion";
 import type { Id } from "../_generated/dataModel";
 import { authComponent, createAuth } from "../auth";
@@ -80,24 +82,15 @@ export async function handleAISDKChat(
     messages_queue: null,
   });
 
-  const tools = {
-    weather: tool({
-      description: "Get the weather in a location",
-      inputSchema: z.object({
-        location: z.string().describe("The location to get the weather for"),
-      }),
-      needsApproval: true,
-      execute: ({ location }) => ({
-        location,
-        temperature: 72 + Math.floor(Math.random() * 21) - 10,
-      }),
-    }),
-  };
+  // Resolve the chat's enabled tools. MCP servers contribute real, executable
+  // tools (HTTP transport); built-in tool sets are config-only for now.
+  const { tools, close: closeTools } = await buildChatTools(ctx, chatId);
 
   const result = streamText({
     model: provider(body.model),
     messages: await convertToModelMessages(body.messages, { tools }),
     tools,
+    onError: () => void closeTools(),
     providerOptions:
       body.reasoningEffort || body.reasoningBudget
         ? {
@@ -163,8 +156,99 @@ export async function handleAISDKChat(
         messages: messagesWithDuration,
         activeStream: false,
       });
+      await closeTools();
     },
   });
+}
+
+/**
+ * Resolve and connect the tools enabled for a chat.
+ *
+ * Each enabled MCP server is connected over its Streamable HTTP transport and
+ * its tools merged in, namespaced by server so names from different servers
+ * never collide. Bearer tokens are decrypted here (never sent to the client)
+ * and passed as an `Authorization` header. A failing server is skipped rather
+ * than failing the whole request.
+ *
+ * Returns the merged tool set plus an idempotent `close` that tears down every
+ * connection — call it once the stream finishes or errors.
+ *
+ * @todo Built-in tool sets (`builtinToolSets`) are config-only today and add no
+ *   runtime tools. Wire their executable builders in here when implemented.
+ * @todo OAuth / OAuth 2.1 servers: supply an `OAuthClientProvider` via the
+ *   transport's `authProvider` instead of a static bearer header.
+ */
+async function buildChatTools(
+  ctx: ActionCtx,
+  chatId: Id<"aisdk_chats">,
+): Promise<{ tools: ToolSet; close: () => Promise<void> }> {
+  const config = await ctx.runQuery(internal.chatroom.resolveChatTools, { chatId });
+
+  const clients: Awaited<ReturnType<typeof createMCPClient>>[] = [];
+  // MCP tools are typed with `unknown` inputs; collect them loosely and cast to
+  // `ToolSet` once at the boundary to avoid the invariance friction.
+  const tools: Record<string, ToolSet[string]> = {};
+
+  for (const server of config.mcpServers) {
+    try {
+      const headers = await resolveMcpHeaders(server.auth, server.encrypted);
+      const client = await createMCPClient({
+        transport: { type: "http", url: server.url, headers },
+      });
+      clients.push(client);
+
+      const serverTools = await client.tools();
+      const prefix = toolNamePrefix(server.name);
+      for (const [name, definition] of Object.entries(serverTools)) {
+        tools[uniqueToolName(tools, `${prefix}_${name}`)] = definition as ToolSet[string];
+      }
+    } catch (error) {
+      console.error(`Failed to connect MCP server "${server.name}" (${server.url}):`, error);
+    }
+  }
+
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    await Promise.all(
+      clients.map((client) => client.close().catch((error) => console.error(error))),
+    );
+  };
+
+  return { tools: tools as ToolSet, close };
+}
+
+/** Build the request headers for an MCP server connection from its auth config. */
+async function resolveMcpHeaders(
+  auth: { type: "none" | "bearer" },
+  encrypted: Record<string, { iv: string; ciphertext: string }> | undefined,
+): Promise<Record<string, string> | undefined> {
+  if (auth.type !== "bearer" || !encrypted) return undefined;
+
+  const decrypted = await decryptCredentialRecord(
+    process.env.PROVIDER_CREDENTIALS_SECRET ?? "",
+    encrypted,
+  );
+  const token = decrypted[MCP_BEARER_SECRET_KEY];
+  return token ? { Authorization: `Bearer ${token}` } : undefined;
+}
+
+/** Sanitise a server name into a safe tool-name prefix (`[a-zA-Z0-9_]`). */
+function toolNamePrefix(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug || "mcp";
+}
+
+/** Ensure a tool name is unique within `tools`, appending a counter if needed. */
+function uniqueToolName(tools: ToolSet, name: string): string {
+  if (!(name in tools)) return name;
+  let counter = 2;
+  while (`${name}_${counter}` in tools) counter++;
+  return `${name}_${counter}`;
 }
 
 function createInternalGatewayProvider(

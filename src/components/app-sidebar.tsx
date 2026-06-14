@@ -60,7 +60,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   // the settings/gateway nav is shown, avoiding a "Loading chats..." flash on return.
   const chats = useQuery(api.aisdk.ListChats, {});
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const inSettings = pathname.startsWith("/settings") || pathname.startsWith("/gateway");
+  const inSettings =
+    pathname.startsWith("/settings") ||
+    pathname.startsWith("/gateway") ||
+    pathname.startsWith("/chatroom");
 
   return (
     <Sidebar className="border-r-0" {...props}>

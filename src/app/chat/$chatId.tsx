@@ -59,6 +59,7 @@ import {
   readChatHandoff,
 } from "@/components/chat/chat-loading";
 import { ChatMessageActions, type ForkPickerModel } from "@/components/chat/message-actions";
+import { ChatToolsMenu } from "@/components/chat/chat-tools-menu";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -541,6 +542,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
             reasoningEffort={reasoningEffort}
             selectedModel={selectedModel}
             status={status}
+            toolsMenu={<ChatToolsMenu balance={balance?._id} chatId={convexChatId} />}
           />
         </div>
       </div>
