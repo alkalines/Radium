@@ -1,12 +1,15 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createMCPClient } from "@ai-sdk/mcp";
-import { convertToModelMessages, streamText, type ToolSet, type UIMessage } from "ai";
+import { webSearch } from "@exalabs/ai-sdk";
+import { convertToModelMessages, stepCountIs, streamText, type ToolSet, type UIMessage } from "ai";
 import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
 } from "../../src/utils/types/openai/types";
 import { decryptCredentialRecord } from "../../src/utils/credential_crypto";
 import { MCP_BEARER_SECRET_KEY } from "../../src/utils/chatroom/tools";
+import { toExaCountry } from "../../src/utils/chatroom/user-location";
+import { EXA_API_KEY_SECRET } from "../exa";
 import { Internal_Chat_Completion } from "./chat_completion";
 import type { Id } from "../_generated/dataModel";
 import { authComponent, createAuth } from "../auth";
@@ -90,6 +93,9 @@ export async function handleAISDKChat(
     model: provider(body.model),
     messages: await convertToModelMessages(body.messages, { tools }),
     tools,
+    // Allow follow-up turns so the model can act on executable tool results
+    // (Exa web search, MCP tools) instead of stopping at the first tool call.
+    stopWhen: stepCountIs(5),
     onError: () => void closeTools(),
     providerOptions:
       body.reasoningEffort || body.reasoningBudget
@@ -173,8 +179,9 @@ export async function handleAISDKChat(
  * Returns the merged tool set plus an idempotent `close` that tears down every
  * connection — call it once the stream finishes or errors.
  *
- * @todo Built-in tool sets (`builtinToolSets`) are config-only today and add no
- *   runtime tools. Wire their executable builders in here when implemented.
+ * The Web Search built-in tool set contributes the Exa search tool when it is
+ * enabled and the balance has an Exa API key configured.
+ *
  * @todo OAuth / OAuth 2.1 servers: supply an `OAuthClientProvider` via the
  *   transport's `authProvider` instead of a static bearer header.
  */
@@ -188,6 +195,9 @@ async function buildChatTools(
   // MCP tools are typed with `unknown` inputs; collect them loosely and cast to
   // `ToolSet` once at the boundary to avoid the invariance friction.
   const tools: Record<string, ToolSet[string]> = {};
+
+  const exaTool = await resolveExaWebSearch(ctx, chatId);
+  if (exaTool) tools.web_search = exaTool;
 
   for (const server of config.mcpServers) {
     try {
@@ -217,6 +227,34 @@ async function buildChatTools(
   };
 
   return { tools: tools as ToolSet, close };
+}
+
+/**
+ * Resolve the Exa web-search tool for a chat. Returns `undefined` (search
+ * simply isn't offered) when Web Search is disabled or the balance has no Exa
+ * API key. The key is decrypted here and never sent to the client; the user's
+ * location is a mock for now (see `src/utils/chatroom/user-location.ts`).
+ */
+async function resolveExaWebSearch(
+  ctx: ActionCtx,
+  chatId: Id<"aisdk_chats">,
+): Promise<ToolSet[string] | undefined> {
+  const { enabled, exaEncrypted } = await ctx.runQuery(internal.chatroom.resolveWebSearch, {
+    chatId,
+  });
+  if (!enabled || !exaEncrypted) {
+    if (enabled) console.warn("Web Search is enabled but no Exa API key is configured.");
+    return undefined;
+  }
+
+  const decrypted = await decryptCredentialRecord(
+    process.env.PROVIDER_CREDENTIALS_SECRET ?? "",
+    exaEncrypted,
+  );
+  const apiKey = decrypted[EXA_API_KEY_SECRET];
+  if (!apiKey) return undefined;
+
+  return webSearch({ apiKey, userLocation: toExaCountry() }) as ToolSet[string];
 }
 
 /** Build the request headers for an MCP server connection from its auth config. */

@@ -224,6 +224,19 @@ export default defineSchema({
     preview: v.optional(v.record(v.string(), v.string())),
   }).index("by_balance", ["balance"]),
   /**
+   * The user's Exa API key (per balance), used by the Web Search built-in tool.
+   * Encrypted at rest with the same AES-GCM scheme as BYOK provider credentials
+   * and MCP secrets — see {@link provider_credentials}, {@link mcp_servers}, and
+   * `src/utils/credential_crypto.ts`.
+   */
+  exa_credentials: defineTable({
+    balance: v.id("balances"),
+    /** AES-GCM encrypted secrets, keyed by secret name (e.g. `apiKey`). */
+    encrypted: v.record(v.string(), v.object({ iv: v.string(), ciphertext: v.string() })),
+    /** Masked, non-secret previews of the stored secrets for display. */
+    preview: v.record(v.string(), v.string()),
+  }).index("by_balance", ["balance"]),
+  /**
    * The user's default tool selection (per balance), copied as the starting
    * point for new chats and editable from the Chatroom → Tools settings page.
    */

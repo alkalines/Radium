@@ -94,8 +94,8 @@ export const BUILTIN_TOOL_SETS = [
   {
     id: "web_search",
     name: "Web Search",
-    description: "Let the model search the web for up-to-date information.",
-    available: false,
+    description: "Let the model search the web for up-to-date information (powered by Exa).",
+    available: true,
   },
   {
     id: "code_interpreter",
@@ -113,6 +113,12 @@ export const BUILTIN_TOOL_SETS = [
 
 /** Union of every shipped built-in tool set id. */
 export type BuiltinToolSetId = (typeof BUILTIN_TOOL_SETS)[number]["id"];
+
+/**
+ * Id of the Web Search built-in tool set. Shared so the chat handler and Exa
+ * credential UI can refer to it without a magic string.
+ */
+export const WEB_SEARCH_TOOL_ID = "web_search" satisfies BuiltinToolSetId;
 
 /** Look up a built-in tool set definition by id. */
 export function getBuiltinToolSet(id: string): BuiltinToolSet | undefined {

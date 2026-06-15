@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { BUILTIN_TOOL_SETS } from "@/utils/chatroom/tools";
+import { BUILTIN_TOOL_SETS, WEB_SEARCH_TOOL_ID } from "@/utils/chatroom/tools";
 import { internalQuery, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
@@ -164,6 +164,36 @@ export const resolveChatTools = internalQuery({
     }
 
     return { builtinToolSets: selection.builtinToolSets, mcpServers };
+  },
+});
+
+/**
+ * Resolve the Web Search tool's runtime needs for a chat: whether it is enabled
+ * in the chat's effective selection, and the balance's still-encrypted Exa
+ * credential record (decrypted by the caller at request time, never here).
+ */
+export const resolveWebSearch = internalQuery({
+  args: { chatId: v.id("aisdk_chats") },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    enabled: boolean;
+    exaEncrypted: Doc<"exa_credentials">["encrypted"] | null;
+  }> => {
+    const chat = await ctx.db.get("aisdk_chats", args.chatId);
+    if (!chat) return { enabled: false, exaEncrypted: null };
+
+    const selection = chat.tools ?? (await resolveDefaults(ctx, chat.balance));
+    const enabled = selection.builtinToolSets.includes(WEB_SEARCH_TOOL_ID);
+    if (!enabled) return { enabled: false, exaEncrypted: null };
+
+    const credential = await ctx.db
+      .query("exa_credentials")
+      .withIndex("by_balance", (q) => q.eq("balance", chat.balance))
+      .unique();
+
+    return { enabled, exaEncrypted: credential?.encrypted ?? null };
   },
 });
 

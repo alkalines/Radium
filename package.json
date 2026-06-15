@@ -33,6 +33,7 @@
     "@convex-dev/better-auth": "0.12.3",
     "@convex-dev/react-query": "^0.1.0",
     "@daveyplate/better-auth-ui": "^3.4.0",
+    "@exalabs/ai-sdk": "^2.1.0",
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/merriweather": "^5.2.6",
     "@openrouter/ai-sdk-provider": "^2.9.0",

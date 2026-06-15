@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { PencilIcon, PlusIcon, ServerIcon, Trash2Icon, WrenchIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -6,11 +6,14 @@ import { toast } from "sonner";
 import {
   BUILTIN_TOOL_SETS,
   EMPTY_TOOL_SELECTION,
+  WEB_SEARCH_TOOL_ID,
   type ToolSelection,
 } from "@/utils/chatroom/tools";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
@@ -95,26 +98,36 @@ export function ToolsPanel() {
         </div>
 
         <div className="flex flex-col divide-y rounded-lg border">
-          {BUILTIN_TOOL_SETS.map((toolSet) => (
-            <div key={toolSet.id} className="flex items-center gap-3 p-3">
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
-                <WrenchIcon className="size-4" />
+          {BUILTIN_TOOL_SETS.map((toolSet) => {
+            const enabled = selection.builtinToolSets.includes(toolSet.id);
+            return (
+              <div key={toolSet.id} className="flex flex-col">
+                <div className="flex items-center gap-3 p-3">
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
+                    <WrenchIcon className="size-4" />
+                  </div>
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="flex items-center gap-2 font-medium">
+                      {toolSet.name}
+                      {!toolSet.available && <Badge variant="secondary">Soon</Badge>}
+                    </span>
+                    <span className="truncate text-xs text-muted-foreground">
+                      {toolSet.description}
+                    </span>
+                  </div>
+                  <Switch
+                    checked={enabled}
+                    onCheckedChange={(checked) => toggleBuiltin(toolSet.id, checked)}
+                    disabled={!balanceId || defaults === undefined}
+                    aria-label={`Enable ${toolSet.name} by default`}
+                  />
+                </div>
+                {toolSet.id === WEB_SEARCH_TOOL_ID && enabled && balanceId && (
+                  <ExaApiKeyField balanceId={balanceId} />
+                )}
               </div>
-              <div className="flex min-w-0 flex-1 flex-col">
-                <span className="flex items-center gap-2 font-medium">
-                  {toolSet.name}
-                  {!toolSet.available && <Badge variant="secondary">Soon</Badge>}
-                </span>
-                <span className="truncate text-xs text-muted-foreground">{toolSet.description}</span>
-              </div>
-              <Switch
-                checked={selection.builtinToolSets.includes(toolSet.id)}
-                onCheckedChange={(checked) => toggleBuiltin(toolSet.id, checked)}
-                disabled={!balanceId || defaults === undefined}
-                aria-label={`Enable ${toolSet.name} by default`}
-              />
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
@@ -231,6 +244,99 @@ export function ToolsPanel() {
         target={deleting}
         onOpenChange={(open) => !open && setDeleting(null)}
       />
+    </div>
+  );
+}
+
+/**
+ * Exa API key manager shown under the Web Search tool when it is enabled. The
+ * key is required for Web Search to run; it is stored encrypted per balance and
+ * only its masked preview is ever returned.
+ */
+function ExaApiKeyField({ balanceId }: { balanceId: Id<"balances"> }) {
+  const stored = useQuery(api.exa.getApiKey, { balance: balanceId });
+  const setApiKey = useMutation(api.exa.setApiKey);
+  const deleteApiKey = useMutation(api.exa.deleteApiKey);
+
+  const [value, setValue] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  // Clear the input once a key is saved so the field shows the placeholder.
+  useEffect(() => {
+    if (stored) setValue("");
+  }, [stored]);
+
+  async function save() {
+    const apiKey = value.trim();
+    if (!apiKey) return;
+    setSubmitting(true);
+    try {
+      await setApiKey({ balance: balanceId, apiKey });
+      toast.success("Exa API key saved.");
+      setValue("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save Exa API key.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function remove() {
+    setSubmitting(true);
+    try {
+      await deleteApiKey({ balance: balanceId });
+      toast.success("Exa API key removed.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to remove Exa API key.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 bg-muted/20 px-3 pb-3 pt-1">
+      <Label htmlFor="exa-api-key" className="text-xs text-muted-foreground">
+        Exa API key {!stored && <span className="text-destructive">(required for Web Search)</span>}
+      </Label>
+      <div className="flex items-center gap-2">
+        <Input
+          id="exa-api-key"
+          type="password"
+          autoComplete="off"
+          placeholder={stored ? `Saved · ${stored.preview}` : "exa_…"}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          disabled={submitting || stored === undefined}
+        />
+        <Button onClick={save} disabled={submitting || !value.trim()}>
+          {submitting && <Spinner data-icon="inline-start" />}
+          {stored ? "Replace" : "Save"}
+        </Button>
+        {stored && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-muted-foreground hover:text-destructive"
+            onClick={remove}
+            disabled={submitting}
+            aria-label="Remove Exa API key"
+          >
+            <Trash2Icon />
+          </Button>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Get a key at{" "}
+        <a
+          href="https://dashboard.exa.ai/api-keys"
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2"
+        >
+          dashboard.exa.ai
+        </a>
+        .
+      </p>
     </div>
   );
 }
