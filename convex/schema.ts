@@ -182,18 +182,6 @@ export default defineSchema({
       }),
     ),
   }).index("by_slug", ["slug"]),
-  provider_credentials: defineTable({
-    balance: v.id("balances"),
-    provider: v.string(),
-    encrypted: v.record(
-      v.string(),
-      v.object({
-        iv: v.string(),
-        ciphertext: v.string(),
-      }),
-    ),
-    preview: v.record(v.string(), v.string()),
-  }).index("by_balance_and_provider", ["balance", "provider"]),
   authors: defineTable({
     name: v.string(),
     slug: v.string(),
@@ -201,9 +189,8 @@ export default defineSchema({
   // Chatroom
   /**
    * A user-attached MCP (Model Context Protocol) server. Secrets (e.g. the
-   * bearer token) are stored encrypted at rest using the same scheme as BYOK
-   * provider credentials — see {@link provider_credentials} and
-   * `src/utils/credential_crypto.ts`.
+   * bearer token) are stored in the Secret Store component; this table only
+   * keeps non-secret connection metadata and masked previews.
    */
   mcp_servers: defineTable({
     balance: v.id("balances"),
@@ -216,25 +203,8 @@ export default defineSchema({
       // @todo v.object({ type: v.literal("oauth"), ... }) — OAuth 2.0
       // @todo v.object({ type: v.literal("oauth2.1"), ... }) — OAuth 2.1 + PKCE
     ),
-    /** AES-GCM encrypted secrets, keyed by secret name (e.g. `token`). */
-    encrypted: v.optional(
-      v.record(v.string(), v.object({ iv: v.string(), ciphertext: v.string() })),
-    ),
     /** Masked, non-secret previews of the stored secrets for display. */
     preview: v.optional(v.record(v.string(), v.string())),
-  }).index("by_balance", ["balance"]),
-  /**
-   * The user's Exa API key (per balance), used by the Web Search built-in tool.
-   * Encrypted at rest with the same AES-GCM scheme as BYOK provider credentials
-   * and MCP secrets — see {@link provider_credentials}, {@link mcp_servers}, and
-   * `src/utils/credential_crypto.ts`.
-   */
-  exa_credentials: defineTable({
-    balance: v.id("balances"),
-    /** AES-GCM encrypted secrets, keyed by secret name (e.g. `apiKey`). */
-    encrypted: v.record(v.string(), v.object({ iv: v.string(), ciphertext: v.string() })),
-    /** Masked, non-secret previews of the stored secrets for display. */
-    preview: v.record(v.string(), v.string()),
   }).index("by_balance", ["balance"]),
   /**
    * The user's default tool selection (per balance), copied as the starting

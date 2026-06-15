@@ -1,17 +1,14 @@
 import { v } from "convex/values";
-import { credentialPreview, encryptCredentialRecord } from "@/utils/credential_crypto";
+import { credentialPreview } from "@/utils/credential_preview";
 import { MCP_BEARER_SECRET_KEY } from "@/utils/chatroom/tools";
 import { mutation, query } from "./_generated/server";
 import { requireOwnedBalance } from "./keys";
+import { MCP_SECRET_NAME, mcpSecretNamespace, secrets } from "./secrets";
 
 /**
  * MCP (Model Context Protocol) server management. Each server belongs to a
- * balance and may carry an encrypted secret (a bearer token today). The
- * encryption scheme mirrors BYOK provider credentials: AES-GCM via
- * `PROVIDER_CREDENTIALS_SECRET`, with a masked preview kept for display.
- *
- * The chat HTTP handler reads servers through `internal.chatroom.resolveChatTools`
- * and decrypts secrets at request time — secrets are never returned to clients.
+ * balance and may carry a secret (a bearer token today) stored in the shared
+ * Secret Store component, with a masked preview kept for display.
  */
 
 /**
@@ -40,24 +37,9 @@ function normalizeUrl(url: string): string {
   return parsed.toString();
 }
 
-/**
- * Build the encrypted/preview pair for a server's secret. Returns `undefined`
- * for both when the auth type carries no secret or no value was supplied.
- */
-async function buildSecret(auth: { type: "none" | "bearer" }, secret: string | undefined) {
-  if (auth.type !== "bearer" || !secret?.trim()) {
-    return { encrypted: undefined, preview: undefined };
-  }
-
-  const record = { [MCP_BEARER_SECRET_KEY]: secret.trim() };
-  const encrypted = await encryptCredentialRecord(
-    process.env.PROVIDER_CREDENTIALS_SECRET ?? "",
-    record,
-  );
-  return {
-    encrypted,
-    preview: { [MCP_BEARER_SECRET_KEY]: credentialPreview(secret.trim()) },
-  };
+function buildPreview(auth: { type: "none" | "bearer" }, secret: string | undefined) {
+  if (auth.type !== "bearer" || !secret?.trim()) return undefined;
+  return { [MCP_BEARER_SECRET_KEY]: credentialPreview(secret.trim()) };
 }
 
 /** List the signed-in user's MCP servers for a balance (never returns secrets). */
@@ -71,20 +53,29 @@ export const listServers = query({
       .withIndex("by_balance", (q) => q.eq("balance", args.balance))
       .take(200);
 
-    return servers.map((server) => ({
-      _id: server._id,
-      _creationTime: server._creationTime,
-      name: server.name,
-      url: server.url,
-      transport: server.transport,
-      auth: { type: server.auth.type },
-      preview: server.preview,
-      hasSecret: Boolean(server.encrypted),
-    }));
+    const result = [];
+    for (const server of servers) {
+      const secret = await secrets.get(ctx, {
+        namespace: mcpSecretNamespace(server._id),
+        name: MCP_SECRET_NAME,
+      });
+      result.push({
+        _id: server._id,
+        _creationTime: server._creationTime,
+        name: server.name,
+        url: server.url,
+        transport: server.transport,
+        auth: { type: server.auth.type },
+        preview: server.preview,
+        hasSecret: secret.ok,
+      });
+    }
+
+    return result;
   },
 });
 
-/** Create an MCP server, encrypting any supplied bearer token. */
+/** Create an MCP server, storing any supplied bearer token in Secret Store. */
 export const createServer = mutation({
   args: {
     balance: v.id("balances"),
@@ -103,17 +94,27 @@ export const createServer = mutation({
       throw new Error("A bearer token is required for bearer authentication.");
     }
 
-    const { encrypted, preview } = await buildSecret(args.auth, args.secret);
+    const preview = buildPreview(args.auth, args.secret);
 
-    return await ctx.db.insert("mcp_servers", {
+    const serverId = await ctx.db.insert("mcp_servers", {
       balance: args.balance,
       name,
       url,
       transport: "http",
       auth: args.auth,
-      encrypted,
       preview,
     });
+
+    if (args.auth.type === "bearer") {
+      await secrets.put(ctx, {
+        namespace: mcpSecretNamespace(serverId),
+        name: MCP_SECRET_NAME,
+        value: args.secret!.trim(),
+        metadata: { kind: "mcp", balance: args.balance, mcpServer: serverId, preview },
+      });
+    }
+
+    return serverId;
   },
 });
 
@@ -149,14 +150,28 @@ export const updateServer = mutation({
 
     // Resolve the secret. A non-bearer auth type drops any stored token.
     if (auth.type !== "bearer") {
-      patch.encrypted = undefined;
       patch.preview = undefined;
+      await secrets.remove(ctx, {
+        namespace: mcpSecretNamespace(args.server),
+        name: MCP_SECRET_NAME,
+      });
     } else if (args.secret?.trim()) {
-      const { encrypted, preview } = await buildSecret(auth, args.secret);
-      patch.encrypted = encrypted;
+      const preview = buildPreview(auth, args.secret);
       patch.preview = preview;
-    } else if (!server.encrypted) {
-      throw new Error("A bearer token is required for bearer authentication.");
+      await secrets.put(ctx, {
+        namespace: mcpSecretNamespace(args.server),
+        name: MCP_SECRET_NAME,
+        value: args.secret.trim(),
+        metadata: { kind: "mcp", balance: server.balance, mcpServer: args.server, preview },
+      });
+    } else {
+      const existingSecret = await secrets.get(ctx, {
+        namespace: mcpSecretNamespace(args.server),
+        name: MCP_SECRET_NAME,
+      });
+      if (!existingSecret.ok) {
+        throw new Error("A bearer token is required for bearer authentication.");
+      }
     }
 
     await ctx.db.patch("mcp_servers", args.server, patch);
@@ -174,6 +189,10 @@ export const deleteServer = mutation({
     if (!server) return true;
     await requireOwnedBalance(ctx, server.balance);
 
+    await secrets.remove(ctx, {
+      namespace: mcpSecretNamespace(args.server),
+      name: MCP_SECRET_NAME,
+    });
     await ctx.db.delete("mcp_servers", args.server);
     return true;
   },

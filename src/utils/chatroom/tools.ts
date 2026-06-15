@@ -22,7 +22,7 @@ export type McpTransportType = "http";
  *
  * - `none` — public server, no credentials sent.
  * - `bearer` — a static token sent as `Authorization: Bearer <token>`. The token
- *   is stored encrypted at rest, the same way BYOK provider credentials are.
+ *   is stored in the backend Secret Store.
  *
  * @todo `oauth` (OAuth 2.0) and `oauth2.1` (OAuth 2.1 + PKCE) — these need an
  *   `OAuthClientProvider` wired into the MCP transport's `authProvider` plus a
@@ -42,7 +42,7 @@ export const MCP_AUTH_TYPES = [
   {
     value: "bearer",
     label: "Bearer token",
-    description: "A static token sent as an Authorization header. Stored encrypted.",
+    description: "A static token sent as an Authorization header. Stored in Secret Store.",
     requiresSecret: true,
   },
   // @todo { value: "oauth", label: "OAuth 2.0", ... }
@@ -54,7 +54,7 @@ export const MCP_AUTH_TYPES = [
   requiresSecret: boolean;
 }[];
 
-/** The encrypted-record key under which a bearer token is stored/decrypted. */
+/** The preview key for an MCP bearer token. */
 export const MCP_BEARER_SECRET_KEY = "token";
 
 /**

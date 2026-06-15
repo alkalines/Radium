@@ -6,15 +6,13 @@ import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
 } from "../../src/utils/types/openai/types";
-import { decryptCredentialRecord } from "../../src/utils/credential_crypto";
-import { MCP_BEARER_SECRET_KEY } from "../../src/utils/chatroom/tools";
 import { toExaCountry } from "../../src/utils/chatroom/user-location";
-import { EXA_API_KEY_SECRET } from "../exa";
 import { Internal_Chat_Completion } from "./chat_completion";
 import type { Id } from "../_generated/dataModel";
 import { authComponent, createAuth } from "../auth";
 import { internal } from "../_generated/api";
 import type { ActionCtx } from "../_generated/server";
+import { MCP_SECRET_NAME, mcpSecretNamespace, secrets } from "../secrets";
 
 type ResponseHeaders = Record<string, string>;
 
@@ -201,7 +199,7 @@ async function buildChatTools(
 
   for (const server of config.mcpServers) {
     try {
-      const headers = await resolveMcpHeaders(server.auth, server.encrypted);
+      const headers = await resolveMcpHeaders(ctx, server._id, server.auth);
       const client = await createMCPClient({
         transport: { type: "http", url: server.url, headers },
       });
@@ -232,26 +230,22 @@ async function buildChatTools(
 /**
  * Resolve the Exa web-search tool for a chat. Returns `undefined` (search
  * simply isn't offered) when Web Search is disabled or the balance has no Exa
- * API key. The key is decrypted here and never sent to the client; the user's
+ * API key. The key is loaded here and never sent to the client; the user's
  * location is a mock for now (see `src/utils/chatroom/user-location.ts`).
  */
 async function resolveExaWebSearch(
   ctx: ActionCtx,
   chatId: Id<"aisdk_chats">,
 ): Promise<ToolSet[string] | undefined> {
-  const { enabled, exaEncrypted } = await ctx.runQuery(internal.chatroom.resolveWebSearch, {
+  const { enabled, balance } = await ctx.runQuery(internal.chatroom.resolveWebSearch, {
     chatId,
   });
-  if (!enabled || !exaEncrypted) {
+  if (!enabled || !balance) {
     if (enabled) console.warn("Web Search is enabled but no Exa API key is configured.");
     return undefined;
   }
 
-  const decrypted = await decryptCredentialRecord(
-    process.env.PROVIDER_CREDENTIALS_SECRET ?? "",
-    exaEncrypted,
-  );
-  const apiKey = decrypted[EXA_API_KEY_SECRET];
+  const apiKey = await ctx.runQuery(internal.exa.getApiKeyForRuntime, { balance });
   if (!apiKey) return undefined;
 
   return webSearch({ apiKey, userLocation: toExaCountry() }) as ToolSet[string];
@@ -259,17 +253,17 @@ async function resolveExaWebSearch(
 
 /** Build the request headers for an MCP server connection from its auth config. */
 async function resolveMcpHeaders(
+  ctx: ActionCtx,
+  serverId: Id<"mcp_servers">,
   auth: { type: "none" | "bearer" },
-  encrypted: Record<string, { iv: string; ciphertext: string }> | undefined,
 ): Promise<Record<string, string> | undefined> {
-  if (auth.type !== "bearer" || !encrypted) return undefined;
+  if (auth.type !== "bearer") return undefined;
 
-  const decrypted = await decryptCredentialRecord(
-    process.env.PROVIDER_CREDENTIALS_SECRET ?? "",
-    encrypted,
-  );
-  const token = decrypted[MCP_BEARER_SECRET_KEY];
-  return token ? { Authorization: `Bearer ${token}` } : undefined;
+  const token = await secrets.get(ctx, {
+    namespace: mcpSecretNamespace(serverId),
+    name: MCP_SECRET_NAME,
+  });
+  return token.ok ? { Authorization: `Bearer ${token.value}` } : undefined;
 }
 
 /** Sanitise a server name into a safe tool-name prefix (`[a-zA-Z0-9_]`). */

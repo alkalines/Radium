@@ -1,18 +1,15 @@
 import { v } from "convex/values";
-import { credentialPreview, encryptCredentialRecord } from "@/utils/credential_crypto";
+import { credentialPreview } from "@/utils/credential_preview";
 import { internalQuery, mutation, query } from "./_generated/server";
 import { requireOwnedBalance } from "./keys";
+import { EXA_SECRET_NAME, exaSecretNamespace, secrets } from "./secrets";
 
 /**
  * Exa API key management (per balance). The key powers the Web Search built-in
- * tool. Encryption mirrors BYOK provider credentials and MCP secrets: AES-GCM
- * via `PROVIDER_CREDENTIALS_SECRET`, with a masked preview kept for display.
- *
- * The chat HTTP handler reads the key through `internal.exa.getEncrypted` and
- * decrypts it at request time — the secret is never returned to clients.
+ * tool and is stored in the shared Secret Store component.
  */
 
-/** The encrypted-record key under which the Exa API key is stored/decrypted. */
+/** The secret key under which the Exa API key is stored. */
 export const EXA_API_KEY_SECRET = "apiKey";
 
 /** Read the masked preview of the balance's Exa key, or `null` if none is set. */
@@ -21,12 +18,12 @@ export const getApiKey = query({
   handler: async (ctx, args): Promise<{ preview: string } | null> => {
     await requireOwnedBalance(ctx, args.balance);
 
-    const row = await ctx.db
-      .query("exa_credentials")
-      .withIndex("by_balance", (q) => q.eq("balance", args.balance))
-      .unique();
+    const row = await secrets.get(ctx, {
+      namespace: exaSecretNamespace(args.balance),
+      name: EXA_SECRET_NAME,
+    });
 
-    const preview = row?.preview[EXA_API_KEY_SECRET];
+    const preview = row.ok ? row.metadata?.preview?.[EXA_API_KEY_SECRET] : undefined;
     return preview ? { preview } : null;
   },
 });
@@ -40,21 +37,16 @@ export const setApiKey = mutation({
     const apiKey = args.apiKey.trim();
     if (!apiKey) throw new Error("An Exa API key is required.");
 
-    const encrypted = await encryptCredentialRecord(process.env.PROVIDER_CREDENTIALS_SECRET ?? "", {
-      [EXA_API_KEY_SECRET]: apiKey,
-    });
     const preview = { [EXA_API_KEY_SECRET]: credentialPreview(apiKey) };
 
-    const existing = await ctx.db
-      .query("exa_credentials")
-      .withIndex("by_balance", (q) => q.eq("balance", args.balance))
-      .unique();
+    const result = await secrets.put(ctx, {
+      namespace: exaSecretNamespace(args.balance),
+      name: EXA_SECRET_NAME,
+      value: apiKey,
+      metadata: { kind: "exa", balance: args.balance, preview },
+    });
 
-    if (existing) {
-      await ctx.db.patch("exa_credentials", existing._id, { encrypted, preview });
-      return existing._id;
-    }
-    return await ctx.db.insert("exa_credentials", { balance: args.balance, encrypted, preview });
+    return result.secretId;
   },
 });
 
@@ -64,27 +56,22 @@ export const deleteApiKey = mutation({
   handler: async (ctx, args) => {
     await requireOwnedBalance(ctx, args.balance);
 
-    const existing = await ctx.db
-      .query("exa_credentials")
-      .withIndex("by_balance", (q) => q.eq("balance", args.balance))
-      .unique();
-
-    if (existing) await ctx.db.delete("exa_credentials", existing._id);
+    await secrets.remove(ctx, {
+      namespace: exaSecretNamespace(args.balance),
+      name: EXA_SECRET_NAME,
+    });
     return true;
   },
 });
 
-/**
- * The balance's still-encrypted Exa secret record, or `null` if none is set.
- * Decryption happens in the calling action at request time.
- */
-export const getEncrypted = internalQuery({
+/** The balance's Exa API key, or `null` if none is set. */
+export const getApiKeyForRuntime = internalQuery({
   args: { balance: v.id("balances") },
   handler: async (ctx, args) => {
-    const row = await ctx.db
-      .query("exa_credentials")
-      .withIndex("by_balance", (q) => q.eq("balance", args.balance))
-      .unique();
-    return row?.encrypted ?? null;
+    const row = await secrets.get(ctx, {
+      namespace: exaSecretNamespace(args.balance),
+      name: EXA_SECRET_NAME,
+    });
+    return row.ok ? row.value : null;
   },
 });

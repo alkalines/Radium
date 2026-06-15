@@ -1,8 +1,9 @@
 import { v } from "convex/values";
-import { credentialPreview, encryptCredentialRecord } from "@/utils/credential_crypto";
+import { credentialPreview } from "@/utils/credential_preview";
 import type { Id } from "./_generated/dataModel";
 import { internalQuery, mutation, query, type MutationCtx } from "./_generated/server";
 import { authComponent } from "./auth";
+import { balanceSecretName, providerSecretNamespace, secrets } from "./secrets";
 
 const providerNpmValidator = v.union(
   v.literal("@openrouter/ai-sdk-provider"),
@@ -68,6 +69,21 @@ const providerModelValidator = v.object({
   ),
   moderated: v.boolean(),
 });
+
+function parseProviderCredentials(provider: string, value: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Provider credential payload must be an object.");
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    );
+  } catch (error) {
+    throw new Error(`Stored credentials for provider ${provider} are invalid.`, { cause: error });
+  }
+}
 
 /**
  * Validator for a global `models` table record as supplied by the import UI.
@@ -331,11 +347,18 @@ export const deleteProvider = mutation({
       .unique();
     if (!provider) throw new Error(`Provider ${args.slug} not found.`);
 
-    const credentials = await ctx.db
-      .query("provider_credentials")
-      .filter((q) => q.eq(q.field("provider"), args.slug))
-      .take(500);
-    await Promise.all(credentials.map((credential) => ctx.db.delete("provider_credentials", credential._id)));
+    const credentialPage = await secrets.list(ctx, {
+      namespace: providerSecretNamespace(args.slug),
+      paginationOpts: { numItems: 500, cursor: null },
+    });
+    await Promise.all(
+      credentialPage.page.map((credential) =>
+        secrets.remove(ctx, {
+          namespace: providerSecretNamespace(args.slug),
+          name: credential.name,
+        }),
+      ),
+    );
 
     await ctx.db.delete("providers", provider._id);
   },
@@ -352,16 +375,25 @@ export const listCredentials = query({
     const balance = await ctx.db.get("balances", args.balance);
     if (!balance || balance.userId !== identity._id) throw new Error("Balance not found.");
 
-    const credentials = await ctx.db
-      .query("provider_credentials")
-      .withIndex("by_balance_and_provider", (q) => q.eq("balance", args.balance))
-      .take(200);
+    const providers = await ctx.db.query("providers").take(200);
+    const credentials = [];
 
-    return credentials.map((credential) => ({
-      _id: credential._id,
-      provider: credential.provider,
-      preview: credential.preview,
-    }));
+    for (const provider of providers) {
+      const credential = await secrets.get(ctx, {
+        namespace: providerSecretNamespace(provider.slug),
+        name: balanceSecretName(args.balance),
+      });
+
+      if (!credential.ok) continue;
+
+      credentials.push({
+        _id: provider.slug,
+        provider: provider.slug,
+        preview: credential.metadata?.preview ?? {},
+      });
+    }
+
+    return credentials;
   },
 });
 
@@ -389,33 +421,23 @@ export const upsertCredentials = mutation({
       }
     }
 
-    const encrypted = await encryptCredentialRecord(
-      process.env.PROVIDER_CREDENTIALS_SECRET ?? "",
-      args.credentials,
-    );
     const preview = Object.fromEntries(
       Object.entries(args.credentials).map(([name, value]) => [name, credentialPreview(value)]),
     );
 
-    const existing = await ctx.db
-      .query("provider_credentials")
-      .withIndex("by_balance_and_provider", (q) =>
-        q.eq("balance", args.balance).eq("provider", args.provider),
-      )
-      .unique();
-    const value = {
-      balance: args.balance,
-      provider: args.provider,
-      encrypted,
-      preview,
-    };
+    await secrets.put(ctx, {
+      namespace: providerSecretNamespace(args.provider),
+      name: balanceSecretName(args.balance),
+      value: JSON.stringify(args.credentials),
+      metadata: {
+        kind: "provider",
+        provider: args.provider,
+        balance: args.balance,
+        preview,
+      },
+    });
 
-    if (existing) {
-      await ctx.db.replace("provider_credentials", existing._id, value);
-      return existing._id;
-    }
-
-    return await ctx.db.insert("provider_credentials", value);
+    return args.provider;
   },
 });
 
@@ -431,14 +453,10 @@ export const deleteCredentials = mutation({
     const balance = await ctx.db.get("balances", args.balance);
     if (!balance || balance.userId !== identity._id) throw new Error("Balance not found.");
 
-    const existing = await ctx.db
-      .query("provider_credentials")
-      .withIndex("by_balance_and_provider", (q) =>
-        q.eq("balance", args.balance).eq("provider", args.provider),
-      )
-      .unique();
-
-    if (existing) await ctx.db.delete("provider_credentials", existing._id);
+    await secrets.remove(ctx, {
+      namespace: providerSecretNamespace(args.provider),
+      name: balanceSecretName(args.balance),
+    });
     return true;
   },
 });
@@ -482,14 +500,12 @@ export const resolveProviderCandidatesForModel = internalQuery({
     const candidates = [];
 
     for (const modelProvider of modelProviders) {
-      const credentials = await ctx.db
-        .query("provider_credentials")
-        .withIndex("by_balance_and_provider", (q) =>
-          q.eq("balance", args.balance).eq("provider", modelProvider.provider.slug),
-        )
-        .unique();
+      const credentials = await secrets.get(ctx, {
+        namespace: providerSecretNamespace(modelProvider.provider.slug),
+        name: balanceSecretName(args.balance),
+      });
 
-      if (!credentials) continue;
+      if (!credentials.ok) continue;
 
       candidates.push({
         slug: modelProvider.provider.slug,
@@ -499,7 +515,7 @@ export const resolveProviderCandidatesForModel = internalQuery({
         doc: modelProvider.provider.doc,
         baseURL: modelProvider.provider.api,
         modelId: modelProvider.model!.upstream_model_id ?? model.slug,
-        credentials: credentials.encrypted,
+        credentials: parseProviderCredentials(modelProvider.provider.slug, credentials.value),
       });
     }
 

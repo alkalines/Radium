@@ -3,7 +3,6 @@ import Providers from "./providers";
 import { internal } from "../../convex/_generated/api";
 import type { GenericActionCtx } from "convex/server";
 import type { Id } from "../../convex/_generated/dataModel";
-import { decryptCredentialRecord } from "./credential_crypto";
 
 export default async function AIBalancer(
   ctx: GenericActionCtx<any>,
@@ -16,10 +15,7 @@ export default async function AIBalancer(
     providerSlug: Request.provider ?? undefined,
   });
   const provider = providerCandidates[Math.floor(Math.random() * providerCandidates.length)];
-  const credentials = await decryptCredentialRecord(
-    process.env.PROVIDER_CREDENTIALS_SECRET ?? "",
-    provider.credentials,
-  );
+  const credentials = provider.credentials;
   const apiKey = provider.env.map((name) => credentials[name]).find(Boolean);
 
   if (!apiKey) {

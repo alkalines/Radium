@@ -55,6 +55,7 @@
     "cmdk": "^1.1.1",
     "concurrently": "^10.0.3",
     "convex": "^1.41.0",
+    "convex-secret-store": "^0.2.0",
     "date-fns": "^4.4.0",
     "embla-carousel-react": "^8.6.0",
     "lucide-react": "^1.17.0",

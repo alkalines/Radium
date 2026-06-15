@@ -10,8 +10,9 @@ import { requireOwnedBalance } from "./keys";
  * per-chat override. A "selection" is which built-in tool sets and which MCP
  * servers are active. Chats without an override inherit the user's defaults.
  *
- * The chat HTTP handler resolves a chat's effective selection (and the secrets
- * it needs) via {@link resolveChatTools}.
+ * The chat HTTP handler resolves a chat's effective selection via
+ * {@link resolveChatTools}; runtime secrets are loaded from Secret Store by the
+ * action that needs them.
  */
 
 const VALID_BUILTIN_IDS = new Set<string>(BUILTIN_TOOL_SETS.map((toolSet) => toolSet.id));
@@ -138,8 +139,7 @@ async function resolveDefaults(
 
 /**
  * Resolve a chat's effective tool selection into something the HTTP handler can
- * act on: the enabled built-in ids plus the full (still-encrypted) MCP server
- * records. Secrets are decrypted by the caller at request time, never here.
+ * act on: the enabled built-in ids plus the selected MCP server records.
  */
 export const resolveChatTools = internalQuery({
   args: { chatId: v.id("aisdk_chats") },
@@ -159,7 +159,6 @@ export const resolveChatTools = internalQuery({
         url: server.url,
         transport: server.transport,
         auth: server.auth,
-        encrypted: server.encrypted,
       });
     }
 
@@ -168,9 +167,8 @@ export const resolveChatTools = internalQuery({
 });
 
 /**
- * Resolve the Web Search tool's runtime needs for a chat: whether it is enabled
- * in the chat's effective selection, and the balance's still-encrypted Exa
- * credential record (decrypted by the caller at request time, never here).
+ * Resolve whether the Web Search tool is enabled for a chat and which balance
+ * owns its Exa credential.
  */
 export const resolveWebSearch = internalQuery({
   args: { chatId: v.id("aisdk_chats") },
@@ -179,21 +177,16 @@ export const resolveWebSearch = internalQuery({
     args,
   ): Promise<{
     enabled: boolean;
-    exaEncrypted: Doc<"exa_credentials">["encrypted"] | null;
+    balance: Id<"balances"> | null;
   }> => {
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat) return { enabled: false, exaEncrypted: null };
+    if (!chat) return { enabled: false, balance: null };
 
     const selection = chat.tools ?? (await resolveDefaults(ctx, chat.balance));
     const enabled = selection.builtinToolSets.includes(WEB_SEARCH_TOOL_ID);
-    if (!enabled) return { enabled: false, exaEncrypted: null };
+    if (!enabled) return { enabled: false, balance: null };
 
-    const credential = await ctx.db
-      .query("exa_credentials")
-      .withIndex("by_balance", (q) => q.eq("balance", chat.balance))
-      .unique();
-
-    return { enabled, exaEncrypted: credential?.encrypted ?? null };
+    return { enabled, balance: chat.balance };
   },
 });
 
@@ -203,5 +196,4 @@ type ResolvedMcpServer = {
   url: string;
   transport: Doc<"mcp_servers">["transport"];
   auth: Doc<"mcp_servers">["auth"];
-  encrypted: Doc<"mcp_servers">["encrypted"];
 };
