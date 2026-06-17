@@ -52,11 +52,37 @@ export async function generateChatTitle({
   }
 }
 
+export function firstUserMessageText(
+  chat: Pick<Doc<"aisdk_chats">, "messages" | "messages_queue">,
+) {
+  const queuedText = chat.messages_queue?.text.trim();
+  if (queuedText) return queuedText;
+
+  const firstUserMessage = chat.messages.find((message) => message.role === "user");
+  if (!firstUserMessage) return "";
+
+  return firstUserMessage.parts.map(textFromMessagePart).filter(Boolean).join(" ").trim();
+}
+
+function textFromMessagePart(part: unknown) {
+  if (!part || typeof part !== "object") return "";
+
+  const record = part as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text.trim();
+  if (typeof record.content === "string") return record.content.trim();
+  if (typeof record.input === "string") return record.input.trim();
+  if (typeof record.output === "string") return record.output.trim();
+
+  return "";
+}
+
 export const generateForChat = internalAction({
-  args: { chatId: v.id("aisdk_chats") },
+  args: { chatId: v.id("aisdk_chats"), force: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
-    const chat = await ctx.runQuery(internal.chat_titles.titleGenerationInfo, args);
-    if (!chat || chat.title || !chat.initialUserMessage.trim()) return null;
+    const chat = await ctx.runQuery(internal.chat_titles.titleGenerationInfo, {
+      chatId: args.chatId,
+    });
+    if (!chat || (!args.force && chat.title) || !chat.initialUserMessage.trim()) return null;
 
     const provider = createInternalGatewayProvider(ctx, chat.balance, () =>
       Response.json({ error: { message: "Internal gateway request failed", code: 500 } }, { status: 500 }),
@@ -67,7 +93,11 @@ export const generateForChat = internalAction({
         model: provider(chat.model),
         initialUserMessage: chat.initialUserMessage,
       });
-      await ctx.runMutation(internal.chat_titles.saveGeneratedTitle, { chatId: args.chatId, ...title });
+      await ctx.runMutation(internal.chat_titles.saveGeneratedTitle, {
+        chatId: args.chatId,
+        force: args.force,
+        ...title,
+      });
     } catch (error) {
       console.error("Failed to generate chat title:", error);
     }
@@ -80,7 +110,10 @@ export const titleGenerationInfo = internalQuery({
   args: { chatId: v.id("aisdk_chats") },
   handler: async (ctx, args) => {
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat?.messages_queue) return null;
+    if (!chat) return null;
+
+    const initialUserMessage = firstUserMessageText(chat);
+    if (!initialUserMessage) return null;
 
     const settings = await ctx.db
       .query("chatroom_settings")
@@ -92,7 +125,7 @@ export const titleGenerationInfo = internalQuery({
 
     return {
       balance: chat.balance,
-      initialUserMessage: chat.messages_queue.text,
+      initialUserMessage,
       model,
       title: chat.title,
     };
@@ -104,10 +137,11 @@ export const saveGeneratedTitle = internalMutation({
     chatId: v.id("aisdk_chats"),
     emoji: v.string(),
     title: v.string(),
+    force: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat || chat.title) return null;
+    if (!chat || (!args.force && chat.title)) return null;
 
     await ctx.db.patch("aisdk_chats", args.chatId, sanitizeTitle(args));
     return null;

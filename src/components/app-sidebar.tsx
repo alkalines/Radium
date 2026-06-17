@@ -1,12 +1,34 @@
 import * as React from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { useMutation } from "convex/react";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { toast } from "sonner";
 
 import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
 import { SettingsSidebarSections } from "@/components/settings-sidebar";
 import { UserButton } from "@/components/auth/user/user-button";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import {
   Sidebar,
   SidebarContent,
@@ -15,13 +37,25 @@ import {
   SidebarGroupContent,
   SidebarGroupLabel,
   SidebarHeader,
+  SidebarMenuAction,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar";
 import { api } from "../../convex/_generated/api";
-import { BotIcon, Route as RouteIcon, MessageSquareTextIcon } from "lucide-react";
+import type { Id } from "../../convex/_generated/dataModel";
+import {
+  BotIcon,
+  MoreHorizontalIcon,
+  MessageSquareTextIcon,
+  PencilIcon,
+  PinIcon,
+  PinOffIcon,
+  Route as RouteIcon,
+  SparklesIcon,
+  Trash2Icon,
+} from "lucide-react";
 
 const data = {
   navMain: [
@@ -89,6 +123,7 @@ function MainSidebarSections({
   chats: SidebarChat[] | string | undefined;
 }) {
   const chatSections = Array.isArray(chats) ? groupChatsByLastInteraction(chats) : [];
+  const navigate = useNavigate();
 
   return (
     <>
@@ -151,6 +186,7 @@ function MainSidebarSections({
                             isActive={pathname === url}
                             size="sm"
                             tooltip={title || fallbackTitle}
+                            className="pr-7"
                           >
                             <Link to="/chat/$chatId" params={{ chatId: chat.id }}>
                               {title ? (
@@ -173,6 +209,7 @@ function MainSidebarSections({
                               )}
                             </Link>
                           </SidebarMenuButton>
+                          <ChatMenu chat={chat} pathname={pathname} navigate={navigate} />
                         </SidebarMenuItem>
                       );
                     })}
@@ -189,12 +226,189 @@ function MainSidebarSections({
 }
 
 type SidebarChat = {
-  id: string;
+  id: Id<"aisdk_chats">;
   title?: string;
   emoji?: string;
+  pinnedAt?: number;
   lastInteractionAt: number;
   activeStream: boolean;
 };
+
+function ChatMenu({
+  chat,
+  pathname,
+  navigate,
+}: {
+  chat: SidebarChat;
+  pathname: string;
+  navigate: ReturnType<typeof useNavigate>;
+}) {
+  const [renameOpen, setRenameOpen] = React.useState(false);
+  const [deleteOpen, setDeleteOpen] = React.useState(false);
+  const [title, setTitle] = React.useState(chat.title?.trim() ?? "");
+  const [pendingAction, setPendingAction] = React.useState<string | null>(null);
+
+  const setPinned = useMutation(api.aisdk.SetChatPinned);
+  const renameChat = useMutation(api.aisdk.RenameChat);
+  const regenerateTitle = useMutation(api.aisdk.RegenerateChatTitle);
+  const deleteChat = useMutation(api.aisdk.DeleteChat);
+
+  React.useEffect(() => {
+    if (!renameOpen) setTitle(chat.title?.trim() ?? "");
+  }, [chat.title, renameOpen]);
+
+  const runMenuAction = async (action: string, callback: () => Promise<unknown>) => {
+    setPendingAction(action);
+    try {
+      const result = await callback();
+      if (typeof result === "string") {
+        toast.error(result);
+        return;
+      }
+
+      if (action === "pin") toast.success(chat.pinnedAt ? "Chat unpinned." : "Chat pinned.");
+      if (action === "regenerate") toast.success("Regenerating chat title.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Chat action failed.");
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const submitRename = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = title.trim();
+    if (!trimmed) return;
+
+    await runMenuAction("rename", async () => {
+      const result = await renameChat({ chatId: chat.id, title: trimmed });
+      if (typeof result !== "string") {
+        toast.success("Chat renamed.");
+        setRenameOpen(false);
+      }
+      return result;
+    });
+  };
+
+  const confirmDelete = async () => {
+    await runMenuAction("delete", async () => {
+      const result = await deleteChat({ chatId: chat.id });
+      if (typeof result !== "string") {
+        toast.success("Chat deleted.");
+        setDeleteOpen(false);
+        if (pathname === `/chat/${chat.id}`) await navigate({ to: "/chat" });
+      }
+      return result;
+    });
+  };
+
+  const disabled = pendingAction !== null;
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <SidebarMenuAction showOnHover aria-label="Open chat actions">
+            <MoreHorizontalIcon />
+          </SidebarMenuAction>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-44">
+          <DropdownMenuGroup>
+            <DropdownMenuItem
+              disabled={disabled}
+              onSelect={() =>
+                runMenuAction("pin", () =>
+                  setPinned({ chatId: chat.id, pinned: !chat.pinnedAt }),
+                )
+              }
+            >
+              {chat.pinnedAt ? <PinOffIcon /> : <PinIcon />}
+              {chat.pinnedAt ? "Unpin" : "Pin"}
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled={disabled} onSelect={() => setRenameOpen(true)}>
+              <PencilIcon />
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={disabled}
+              onSelect={() =>
+                runMenuAction("regenerate", () => regenerateTitle({ chatId: chat.id }))
+              }
+            >
+              <SparklesIcon />
+              Regenerate title
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuGroup>
+            <DropdownMenuItem
+              disabled={disabled}
+              variant="destructive"
+              onSelect={() => setDeleteOpen(true)}
+            >
+              <Trash2Icon />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <form onSubmit={submitRename} className="contents">
+            <DialogHeader>
+              <DialogTitle>Rename chat</DialogTitle>
+              <DialogDescription>Give this conversation a short sidebar title.</DialogDescription>
+            </DialogHeader>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor={`chat-title-${chat.id}`}>Title</FieldLabel>
+                <Input
+                  id={`chat-title-${chat.id}`}
+                  value={title}
+                  maxLength={32}
+                  autoFocus
+                  onChange={(event) => setTitle(event.target.value)}
+                />
+              </Field>
+            </FieldGroup>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline">
+                  Cancel
+                </Button>
+              </DialogClose>
+              <Button type="submit" disabled={disabled || !title.trim()}>
+                Save
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete chat?</DialogTitle>
+            <DialogDescription>
+              This removes the conversation from your chat history. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline">
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button type="button" variant="destructive" disabled={disabled} onClick={confirmDelete}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
 
 function AnimatedDotsIcon() {
   return (
@@ -212,6 +426,7 @@ function AnimatedDotsIcon() {
 function groupChatsByLastInteraction(chats: SidebarChat[]) {
   const now = Date.now();
   const sections = [
+    { label: "Pinned", chats: [] as SidebarChat[] },
     { label: "Past 7 days", chats: [] as SidebarChat[] },
     ...Array.from({ length: 12 }, (_, index) => ({
       label: `${index + 1} month${index === 0 ? "" : "s"} ago`,
@@ -221,15 +436,20 @@ function groupChatsByLastInteraction(chats: SidebarChat[]) {
   ];
 
   for (const chat of chats) {
+    if (chat.pinnedAt) {
+      sections[0].chats.push(chat);
+      continue;
+    }
+
     const ageInDays = (now - chat.lastInteractionAt) / (1000 * 60 * 60 * 24);
 
     if (ageInDays <= 7) {
-      sections[0].chats.push(chat);
+      sections[1].chats.push(chat);
     } else if (ageInDays <= 365) {
       const monthIndex = Math.min(Math.ceil(ageInDays / 30), 12);
-      sections[monthIndex].chats.push(chat);
+      sections[monthIndex + 1].chats.push(chat);
     } else {
-      sections[13].chats.push(chat);
+      sections[14].chats.push(chat);
     }
   }
 

@@ -107,6 +107,76 @@ export const GetChat = query({
   },
 });
 
+export const RenameChat = mutation({
+  args: {
+    chatId: v.id("aisdk_chats"),
+    title: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await authComponent.getAuthUser(ctx);
+    if (!identity) return "Not logged in!";
+
+    const chat = await ctx.db.get("aisdk_chats", args.chatId);
+    if (!chat || chat.userId !== identity._id) return "Chat not Found.";
+
+    const title = args.title.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 32);
+    if (!title) return "Title is required.";
+
+    await ctx.db.patch("aisdk_chats", args.chatId, { title });
+    return null;
+  },
+});
+
+export const SetChatPinned = mutation({
+  args: {
+    chatId: v.id("aisdk_chats"),
+    pinned: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await authComponent.getAuthUser(ctx);
+    if (!identity) return "Not logged in!";
+
+    const chat = await ctx.db.get("aisdk_chats", args.chatId);
+    if (!chat || chat.userId !== identity._id) return "Chat not Found.";
+
+    await ctx.db.patch("aisdk_chats", args.chatId, { pinnedAt: args.pinned ? Date.now() : undefined });
+    return null;
+  },
+});
+
+export const RegenerateChatTitle = mutation({
+  args: { chatId: v.id("aisdk_chats") },
+  handler: async (ctx, args) => {
+    const identity = await authComponent.getAuthUser(ctx);
+    if (!identity) return "Not logged in!";
+
+    const chat = await ctx.db.get("aisdk_chats", args.chatId);
+    if (!chat || chat.userId !== identity._id) return "Chat not Found.";
+    if (!firstUserMessageText(chat)) return "Chat has no prompt to title.";
+
+    await ctx.db.patch("aisdk_chats", args.chatId, { title: undefined, emoji: undefined });
+    await ctx.scheduler.runAfter(0, internal.chat_titles.generateForChat, {
+      chatId: args.chatId,
+      force: true,
+    });
+    return null;
+  },
+});
+
+export const DeleteChat = mutation({
+  args: { chatId: v.id("aisdk_chats") },
+  handler: async (ctx, args) => {
+    const identity = await authComponent.getAuthUser(ctx);
+    if (!identity) return "Not logged in!";
+
+    const chat = await ctx.db.get("aisdk_chats", args.chatId);
+    if (!chat || chat.userId !== identity._id) return "Chat not Found.";
+
+    await ctx.db.delete("aisdk_chats", args.chatId);
+    return null;
+  },
+});
+
 export const InternalChatInfo = internalQuery({
   args: {
     chatId: v.id("aisdk_chats"),
@@ -125,16 +195,23 @@ export const ListChats = query({
 
     const chats = await ctx.db
       .query("aisdk_chats")
-      .withIndex("by_userId_and_lastInteractionAt", (q) => q.eq("userId", identity._id))
-      .order("desc")
-      .take(30);
+      .withIndex("by_userId", (q) => q.eq("userId", identity._id))
+      .take(100);
 
-    return chats.map((chat) => ({
-      id: chat._id,
-      title: chat.title,
-      emoji: chat.emoji,
-      lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
-      activeStream: chat.activeStream ?? false,
-    }));
+    return chats
+      .sort((a, b) => {
+        const pinnedDelta = (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0);
+        if (pinnedDelta !== 0) return pinnedDelta;
+        return (b.lastInteractionAt ?? b._creationTime) - (a.lastInteractionAt ?? a._creationTime);
+      })
+      .slice(0, 30)
+      .map((chat) => ({
+        id: chat._id,
+        title: chat.title,
+        emoji: chat.emoji,
+        pinnedAt: chat.pinnedAt,
+        lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
+        activeStream: chat.activeStream ?? false,
+      }));
   },
 });

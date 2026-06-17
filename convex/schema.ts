@@ -226,6 +226,7 @@ export default defineSchema({
     chat_completions: v.array(v.id("chat_completions")),
     title: v.optional(v.string()),
     emoji: v.optional(v.string()),
+    pinnedAt: v.optional(v.number()),
     activeStream: v.optional(v.boolean()),
     lastInteractionAt: v.optional(v.number()),
     /**
