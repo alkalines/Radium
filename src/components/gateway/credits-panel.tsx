@@ -1,4 +1,5 @@
-import { useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,9 +11,11 @@ function formatCredits(value: number): string {
 }
 
 export function CreditsPanel() {
-  const userInfo = useQuery(api.auth.userInfo);
+  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
-  const credits = useQuery(api.credits.getCredits, balanceId ? { balance: balanceId } : "skip");
+  const { data: credits } = useQuery(
+    convexQuery(api.credits.getCredits, balanceId ? { balance: balanceId } : "skip"),
+  );
 
   return (
     <div className="flex flex-col gap-4">

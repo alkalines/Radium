@@ -139,6 +139,10 @@
   }
   html {
     @apply font-sans;
+    /* Always reserve the scrollbar gutter so centered content never shifts
+       horizontally when a vertical scrollbar appears or disappears between
+       page/state changes (e.g. entering a chat). */
+    scrollbar-gutter: stable;
   }
 }
 

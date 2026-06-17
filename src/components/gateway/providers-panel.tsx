@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { useMutation } from "convex/react";
 import { MoreVerticalIcon, PlusIcon, RouteIcon, SlidersHorizontalIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -37,15 +39,52 @@ import { ImportProviderDialog } from "./import-provider-dialog";
 import { ModelManagerDialog } from "./model-manager-dialog";
 import { ProviderLogo } from "./provider-logo";
 
+/**
+ * Keeps `isLoading` reported as `true` for at least `minMs` once it ever starts,
+ * so fast-resolving data does not produce a jarring skeleton flash. Returns
+ * `false` from the first render if loading never started (e.g. warm cache).
+ */
+function useMinimumLoading(isLoading: boolean, minMs = 450): boolean {
+  const [held, setHeld] = useState(isLoading);
+  const startedAt = useRef<number | null>(isLoading ? Date.now() : null);
+
+  useEffect(() => {
+    if (isLoading) {
+      if (startedAt.current === null) startedAt.current = Date.now();
+      setHeld(true);
+      return;
+    }
+
+    if (startedAt.current === null) {
+      setHeld(false);
+      return;
+    }
+
+    const remaining = minMs - (Date.now() - startedAt.current);
+    if (remaining <= 0) {
+      startedAt.current = null;
+      setHeld(false);
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      startedAt.current = null;
+      setHeld(false);
+    }, remaining);
+    return () => window.clearTimeout(timeout);
+  }, [isLoading, minMs]);
+
+  return held;
+}
+
 export function ProvidersPanel() {
-  const providers = useQuery(api.providers.list);
-  const userInfo = useQuery(api.auth.userInfo);
+  const { data: providers } = useQuery(convexQuery(api.providers.list, {}));
+  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const setEnabled = useMutation(api.providers.setEnabled);
 
   const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
-  const credentials = useQuery(
-    api.providers.listCredentials,
-    balanceId ? { balance: balanceId } : "skip",
+  const { data: credentials } = useQuery(
+    convexQuery(api.providers.listCredentials, balanceId ? { balance: balanceId } : "skip"),
   );
 
   const connectedSlugs = useMemo(() => {
@@ -57,6 +96,8 @@ export function ProvidersPanel() {
   const [importOpen, setImportOpen] = useState(false);
   const [managingSlug, setManagingSlug] = useState<string | null>(null);
   const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
+
+  const showSkeleton = useMinimumLoading(providers === undefined);
 
   const importedSlugs = (providers ?? []).map((provider) => provider.slug);
 
@@ -87,7 +128,7 @@ export function ProvidersPanel() {
         </Button>
       </div>
 
-      {providers === undefined ? (
+      {showSkeleton || providers === undefined ? (
         <div className="grid gap-3 sm:grid-cols-2">
           <Skeleton className="h-40" />
           <Skeleton className="h-40" />

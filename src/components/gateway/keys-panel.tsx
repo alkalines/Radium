@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { useMutation } from "convex/react";
 import { CheckIcon, CopyIcon, KeySquareIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -28,9 +30,11 @@ function formatCredits(value: number): string {
 }
 
 export function KeysPanel() {
-  const userInfo = useQuery(api.auth.userInfo);
+  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
-  const keys = useQuery(api.keys.listKeys, balanceId ? { balance: balanceId } : "skip");
+  const { data: keys } = useQuery(
+    convexQuery(api.keys.listKeys, balanceId ? { balance: balanceId } : "skip"),
+  );
 
   const [createOpen, setCreateOpen] = useState(false);
   const [deleting, setDeleting] = useState<{ _id: Id<"keys">; name: string } | null>(null);

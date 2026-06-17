@@ -3,12 +3,13 @@ import { BUILTIN_TOOL_SETS, WEB_SEARCH_TOOL_ID } from "@/utils/chatroom/tools";
 import { internalQuery, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
-import { requireOwnedBalance } from "./keys";
+import { requireUserId } from "./keys";
 
 /**
- * Chatroom tool configuration: the per-user default tool selection and the
- * per-chat override. A "selection" is which built-in tool sets and which MCP
- * servers are active. Chats without an override inherit the user's defaults.
+ * Chatroom configuration, keyed by BetterAuth user. A user has a single
+ * {@link chatroom_settings} row holding their default model and default tool
+ * "selection" (which built-in tool sets and MCP servers are active). Chats
+ * without a per-chat tool override inherit those defaults.
  *
  * The chat HTTP handler resolves a chat's effective selection via
  * {@link resolveChatTools}; runtime secrets are loaded from Secret Store by the
@@ -39,14 +40,22 @@ async function requireOwnedChat(ctx: QueryCtx | MutationCtx, chatId: Id<"aisdk_c
   return chat;
 }
 
+/** Read the signed-in user's settings row, if any. */
+function settingsForUser(ctx: QueryCtx | MutationCtx, userId: string) {
+  return ctx.db
+    .query("chatroom_settings")
+    .withIndex("by_userId", (q) => q.eq("userId", userId))
+    .unique();
+}
+
 /**
- * Sanitise a client-supplied selection against `balance`: drop unknown built-in
- * ids and any MCP server that does not belong to the balance. Keeps stored
+ * Sanitise a client-supplied selection against `userId`: drop unknown built-in
+ * ids and any MCP server that does not belong to the user. Keeps stored
  * selections from drifting to invalid or cross-tenant references.
  */
 async function sanitizeSelection(
   ctx: MutationCtx,
-  balance: Id<"balances">,
+  userId: string,
   selection: ToolSelection,
 ): Promise<ToolSelection> {
   const builtinToolSets = selection.builtinToolSets.filter((id) => VALID_BUILTIN_IDS.has(id));
@@ -54,45 +63,84 @@ async function sanitizeSelection(
   const mcpServers: Id<"mcp_servers">[] = [];
   for (const serverId of selection.mcpServers) {
     const server = await ctx.db.get("mcp_servers", serverId);
-    if (server && server.balance === balance) mcpServers.push(serverId);
+    if (server && server.userId === userId) mcpServers.push(serverId);
   }
 
   return { builtinToolSets, mcpServers };
 }
 
-/** Read the user's default tool selection for a balance. */
+/** Read the user's default tool selection. */
 export const getToolDefaults = query({
-  args: { balance: v.id("balances") },
-  handler: async (ctx, args): Promise<ToolSelection> => {
-    await requireOwnedBalance(ctx, args.balance);
-
-    const row = await ctx.db
-      .query("chatroom_tool_defaults")
-      .withIndex("by_balance", (q) => q.eq("balance", args.balance))
-      .unique();
-
+  args: {},
+  handler: async (ctx): Promise<ToolSelection> => {
+    const userId = await requireUserId(ctx);
+    const row = await settingsForUser(ctx, userId);
     if (!row) return EMPTY_SELECTION;
     return { builtinToolSets: row.builtinToolSets, mcpServers: row.mcpServers };
   },
 });
 
-/** Replace the user's default tool selection for a balance. */
+/** Replace the user's default tool selection. */
 export const setToolDefaults = mutation({
-  args: { balance: v.id("balances"), selection: toolSelectionValidator },
+  args: { selection: toolSelectionValidator },
   handler: async (ctx, args) => {
-    await requireOwnedBalance(ctx, args.balance);
-    const selection = await sanitizeSelection(ctx, args.balance, args.selection);
+    const userId = await requireUserId(ctx);
+    const selection = await sanitizeSelection(ctx, userId, args.selection);
 
-    const existing = await ctx.db
-      .query("chatroom_tool_defaults")
-      .withIndex("by_balance", (q) => q.eq("balance", args.balance))
-      .unique();
-
+    const existing = await settingsForUser(ctx, userId);
     if (existing) {
-      await ctx.db.patch("chatroom_tool_defaults", existing._id, selection);
+      await ctx.db.patch("chatroom_settings", existing._id, selection);
       return existing._id;
     }
-    return await ctx.db.insert("chatroom_tool_defaults", { balance: args.balance, ...selection });
+    return await ctx.db.insert("chatroom_settings", { userId, ...selection });
+  },
+});
+
+/**
+ * Read the user's default model slug, or `null` if unset. The stored slug is
+ * validated against the catalogue so a removed model never sticks as a phantom
+ * default.
+ */
+export const getModelDefault = query({
+  args: {},
+  handler: async (ctx): Promise<string | null> => {
+    const userId = await requireUserId(ctx);
+    const row = await settingsForUser(ctx, userId);
+    if (!row?.defaultModel) return null;
+
+    const model = await ctx.db
+      .query("models")
+      .withIndex("by_slug", (q) => q.eq("slug", row.defaultModel!))
+      .unique();
+    return model ? row.defaultModel : null;
+  },
+});
+
+/** Set (or clear, when `model` is omitted) the user's default model slug. */
+export const setModelDefault = mutation({
+  args: { model: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+
+    if (args.model) {
+      const model = await ctx.db
+        .query("models")
+        .withIndex("by_slug", (q) => q.eq("slug", args.model!))
+        .unique();
+      if (!model) throw new Error("Unknown model.");
+    }
+
+    const existing = await settingsForUser(ctx, userId);
+    if (existing) {
+      await ctx.db.patch("chatroom_settings", existing._id, { defaultModel: args.model });
+      return existing._id;
+    }
+    return await ctx.db.insert("chatroom_settings", {
+      userId,
+      defaultModel: args.model,
+      builtinToolSets: [],
+      mcpServers: [],
+    });
   },
 });
 
@@ -103,14 +151,11 @@ export const setToolDefaults = mutation({
  */
 export const getChatTools = query({
   args: { chatId: v.id("aisdk_chats") },
-  handler: async (
-    ctx,
-    args,
-  ): Promise<ToolSelection & { source: "chat" | "defaults" }> => {
+  handler: async (ctx, args): Promise<ToolSelection & { source: "chat" | "defaults" }> => {
     const chat = await requireOwnedChat(ctx, args.chatId);
     if (chat.tools) return { ...chat.tools, source: "chat" };
 
-    const defaults = await resolveDefaults(ctx, chat.balance);
+    const defaults = await resolveDefaults(ctx, chat.userId);
     return { ...defaults, source: "defaults" };
   },
 });
@@ -120,19 +165,13 @@ export const setChatTools = mutation({
   args: { chatId: v.id("aisdk_chats"), selection: toolSelectionValidator },
   handler: async (ctx, args) => {
     const chat = await requireOwnedChat(ctx, args.chatId);
-    const selection = await sanitizeSelection(ctx, chat.balance, args.selection);
+    const selection = await sanitizeSelection(ctx, chat.userId, args.selection);
     await ctx.db.patch("aisdk_chats", args.chatId, { tools: selection });
   },
 });
 
-async function resolveDefaults(
-  ctx: QueryCtx,
-  balance: Id<"balances">,
-): Promise<ToolSelection> {
-  const defaults = await ctx.db
-    .query("chatroom_tool_defaults")
-    .withIndex("by_balance", (q) => q.eq("balance", balance))
-    .unique();
+async function resolveDefaults(ctx: QueryCtx, userId: string): Promise<ToolSelection> {
+  const defaults = await settingsForUser(ctx, userId);
   if (!defaults) return EMPTY_SELECTION;
   return { builtinToolSets: defaults.builtinToolSets, mcpServers: defaults.mcpServers };
 }
@@ -147,12 +186,12 @@ export const resolveChatTools = internalQuery({
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
     if (!chat) return { builtinToolSets: [] as string[], mcpServers: [] as ResolvedMcpServer[] };
 
-    const selection = chat.tools ?? (await resolveDefaults(ctx, chat.balance));
+    const selection = chat.tools ?? (await resolveDefaults(ctx, chat.userId));
 
     const mcpServers: ResolvedMcpServer[] = [];
     for (const serverId of selection.mcpServers) {
       const server = await ctx.db.get("mcp_servers", serverId);
-      if (!server || server.balance !== chat.balance) continue;
+      if (!server || server.userId !== chat.userId) continue;
       mcpServers.push({
         _id: server._id,
         name: server.name,
@@ -182,7 +221,7 @@ export const resolveWebSearch = internalQuery({
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
     if (!chat) return { enabled: false, balance: null };
 
-    const selection = chat.tools ?? (await resolveDefaults(ctx, chat.balance));
+    const selection = chat.tools ?? (await resolveDefaults(ctx, chat.userId));
     const enabled = selection.builtinToolSets.includes(WEB_SEARCH_TOOL_ID);
     if (!enabled) return { enabled: false, balance: null };
 

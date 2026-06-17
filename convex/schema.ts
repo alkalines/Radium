@@ -193,7 +193,7 @@ export default defineSchema({
    * keeps non-secret connection metadata and masked previews.
    */
   mcp_servers: defineTable({
-    balance: v.id("balances"),
+    userId: v.string(), // Better Auth ID
     name: v.string(),
     url: v.string(),
     transport: v.literal("http"), // @todo support v.literal("sse")
@@ -205,16 +205,18 @@ export default defineSchema({
     ),
     /** Masked, non-secret previews of the stored secrets for display. */
     preview: v.optional(v.record(v.string(), v.string())),
-  }).index("by_balance", ["balance"]),
+  }).index("by_userId", ["userId"]),
   /**
-   * The user's default tool selection (per balance), copied as the starting
-   * point for new chats and editable from the Chatroom → Tools settings page.
+   * The user's chatroom settings (per BetterAuth user). Holds the default tool
+   * selection copied into new chats (editable from Chatroom → Tools) and the
+   * default model new chats pre-select (editable from Chatroom → Preferences).
    */
-  chatroom_tool_defaults: defineTable({
-    balance: v.id("balances"),
+  chatroom_settings: defineTable({
+    userId: v.string(), // Better Auth ID
+    defaultModel: v.optional(v.string()),
     builtinToolSets: v.array(v.string()),
     mcpServers: v.array(v.id("mcp_servers")),
-  }).index("by_balance", ["balance"]),
+  }).index("by_userId", ["userId"]),
   aisdk_chats: defineTable({
     userId: v.string(), // Better Auth ID
     balance: v.id("balances"),
@@ -227,7 +229,7 @@ export default defineSchema({
     lastInteractionAt: v.optional(v.number()),
     /**
      * Per-chat tool override. When absent, the chat resolves tools from the
-     * user's {@link chatroom_tool_defaults}.
+     * user's {@link chatroom_settings}.
      */
     tools: v.optional(
       v.object({

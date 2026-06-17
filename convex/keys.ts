@@ -5,6 +5,16 @@ import { authComponent } from "./auth";
 import { findUsableCredit, hashText } from "./key";
 
 /**
+ * Return the signed-in user's BetterAuth id, or throw. Shared gate for per-user
+ * resources (chatroom settings, MCP servers).
+ */
+export async function requireUserId(ctx: QueryCtx | MutationCtx): Promise<string> {
+  const identity = await authComponent.getAuthUser(ctx);
+  if (!identity) throw new Error("Not logged in.");
+  return identity._id;
+}
+
+/**
  * Load a balance and assert it belongs to the signed-in user. Shared ownership
  * gate for the gateway's per-balance resources (keys, credits, credentials).
  */

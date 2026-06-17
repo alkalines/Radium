@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { KeyRoundIcon } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -12,12 +13,11 @@ import { CredentialsDialog, type CredentialsTarget } from "./credentials-dialog"
 import { ProviderLogo } from "./provider-logo";
 
 export function CredentialsPanel() {
-  const providers = useQuery(api.providers.list);
-  const userInfo = useQuery(api.auth.userInfo);
+  const { data: providers } = useQuery(convexQuery(api.providers.list, {}));
+  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
-  const credentials = useQuery(
-    api.providers.listCredentials,
-    balanceId ? { balance: balanceId } : "skip",
+  const { data: credentials } = useQuery(
+    convexQuery(api.providers.listCredentials, balanceId ? { balance: balanceId } : "skip"),
   );
 
   const credentialsBySlug = useMemo(() => {

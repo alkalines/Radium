@@ -4,11 +4,14 @@ import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
 import { ensureSession as ensureSessionServer } from "@better-auth-ui/react/server";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 
+import { convexQuery } from "@convex-dev/react-query";
+
 import {
   ChatroomSettings,
   chatroomSections,
   type ChatroomSection,
 } from "@/components/chatroom/chatroom-settings";
+import { api } from "../../../convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
 
@@ -41,6 +44,12 @@ export const Route = createFileRoute("/chatroom/$section")({
     }
 
     return { session };
+  },
+  loader: ({ context: { queryClient }, params: { section } }) => {
+    void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+    if (section === "preferences") {
+      void queryClient.prefetchQuery(convexQuery(api.models.availableModels, {}));
+    }
   },
   component: ChatroomPage,
 });

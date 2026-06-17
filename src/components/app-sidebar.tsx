@@ -1,5 +1,6 @@
 import * as React from "react";
-import { useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
 
 import { NavMain } from "@/components/nav-main";
@@ -58,7 +59,7 @@ const data = {
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   // Subscribe to chats here (not in MainSidebarSections) so the query stays alive while
   // the settings/gateway nav is shown, avoiding a "Loading chats..." flash on return.
-  const chats = useQuery(api.aisdk.ListChats, {});
+  const { data: chats } = useQuery(convexQuery(api.aisdk.ListChats, {}));
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const inSettings =
     pathname.startsWith("/settings") ||
@@ -85,7 +86,7 @@ function MainSidebarSections({
   chats,
 }: {
   pathname: string;
-  chats: ReturnType<typeof useQuery<typeof api.aisdk.ListChats>>;
+  chats: SidebarChat[] | string | undefined;
 }) {
   const chatSections = Array.isArray(chats) ? groupChatsByLastInteraction(chats) : [];
 

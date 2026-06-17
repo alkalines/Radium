@@ -1,4 +1,6 @@
-import { useMutation, useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { useMutation } from "convex/react";
 import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
 import { ensureSession as ensureSessionServer } from "@better-auth-ui/react/server";
 import { createFileRoute, Outlet, redirect, useRouterState } from "@tanstack/react-router";
@@ -115,6 +117,10 @@ export const Route = createFileRoute("/chat")({
 
     return { session };
   },
+  loader: ({ context: { queryClient } }) => {
+    void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+    void queryClient.prefetchQuery(convexQuery(api.models.availableModels, {}));
+  },
   component: ChatRouteComponent,
 });
 
@@ -128,8 +134,8 @@ function ChatRouteComponent() {
 
 function ChatHomePage() {
   const navigate = Route.useNavigate();
-  const userInfo = useQuery(api.auth.userInfo);
-  const models = useQuery(api.models.availableModels);
+  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
+  const { data: models } = useQuery(convexQuery(api.models.availableModels, {}));
   const createChat = useMutation(api.aisdk.CreateChat);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -141,8 +147,15 @@ function ChatHomePage() {
   const userName = typeof userInfo === "string" ? undefined : userInfo?.name;
   const welcomeText = getRandomWelcomeText(userName, welcomeIndex);
   const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
-  const canSubmit = Boolean(balance && model && !isSubmitting);
-  const selectedModelData = models?.find((item) => item.slug === model);
+  const signedIn = userInfo !== undefined && typeof userInfo !== "string";
+  const { data: defaultModel } = useQuery(
+    convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
+  );
+  // The composer's effective model: explicit choice, then the user's saved
+  // default, then the first available model as a last resort.
+  const selectedModel = model ?? defaultModel ?? models?.[0]?.slug;
+  const canSubmit = Boolean(balance && selectedModel && !isSubmitting);
+  const selectedModelData = models?.find((item) => item.slug === selectedModel);
   const handleModelChange = useCallback((nextModel: string) => {
     setModel(nextModel);
   }, []);
@@ -184,7 +197,7 @@ function ChatHomePage() {
               return;
             }
 
-            if (!balance || !model) {
+            if (!balance || !selectedModel) {
               setError("Your account is not ready for chat yet.");
               return;
             }
@@ -198,7 +211,7 @@ function ChatHomePage() {
                 messages_queue: {
                   text: trimmedText,
                   files,
-                  model,
+                  model: selectedModel,
                   ...(selectedModelData?.reasoning ? { reasoningEffort } : {}),
                   ...(selectedModelData?.features?.reasoning_budget && reasoningBudget
                     ? { reasoningBudget }
@@ -230,7 +243,7 @@ function ChatHomePage() {
           placeholder="Ask Radium anything..."
           reasoningBudget={reasoningBudget}
           reasoningEffort={reasoningEffort}
-          selectedModel={model}
+          selectedModel={selectedModel}
           status={isSubmitting ? "submitted" : "ready"}
           toolsMenu={<ChatToolsMenu balance={balance?._id} />}
         />

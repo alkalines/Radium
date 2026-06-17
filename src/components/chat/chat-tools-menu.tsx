@@ -1,5 +1,7 @@
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { useMutation } from "convex/react";
 import { SettingsIcon, WrenchIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -38,11 +40,14 @@ export function ChatToolsMenu({
   balance: Id<"balances"> | undefined;
   chatId?: Id<"aisdk_chats">;
 }) {
-  const servers = useQuery(api.mcp.listServers, balance ? { balance } : "skip");
-  const chatTools = useQuery(api.chatroom.getChatTools, chatId ? { chatId } : "skip");
-  const defaults = useQuery(
-    api.chatroom.getToolDefaults,
-    !chatId && balance ? { balance } : "skip",
+  const { data: servers } = useQuery(
+    convexQuery(api.mcp.listServers, balance ? {} : "skip"),
+  );
+  const { data: chatTools } = useQuery(
+    convexQuery(api.chatroom.getChatTools, chatId ? { chatId } : "skip"),
+  );
+  const { data: defaults } = useQuery(
+    convexQuery(api.chatroom.getToolDefaults, !chatId && balance ? {} : "skip"),
   );
   const setChatTools = useMutation(api.chatroom.setChatTools);
   const setToolDefaults = useMutation(api.chatroom.setToolDefaults);
@@ -57,9 +62,8 @@ export function ChatToolsMenu({
           chatId,
           selection: { builtinToolSets, mcpServers: mcpServers as Id<"mcp_servers">[] },
         });
-      } else if (balance) {
+      } else {
         await setToolDefaults({
-          balance,
           selection: { builtinToolSets, mcpServers: mcpServers as Id<"mcp_servers">[] },
         });
       }

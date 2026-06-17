@@ -2,13 +2,13 @@ import { v } from "convex/values";
 import { credentialPreview } from "@/utils/credential_preview";
 import { MCP_BEARER_SECRET_KEY } from "@/utils/chatroom/tools";
 import { mutation, query } from "./_generated/server";
-import { requireOwnedBalance } from "./keys";
+import { requireUserId } from "./keys";
 import { MCP_SECRET_NAME, mcpSecretNamespace, secrets } from "./secrets";
 
 /**
  * MCP (Model Context Protocol) server management. Each server belongs to a
- * balance and may carry a secret (a bearer token today) stored in the shared
- * Secret Store component, with a masked preview kept for display.
+ * BetterAuth user and may carry a secret (a bearer token today) stored in the
+ * shared Secret Store component, with a masked preview kept for display.
  */
 
 /**
@@ -42,15 +42,15 @@ function buildPreview(auth: { type: "none" | "bearer" }, secret: string | undefi
   return { [MCP_BEARER_SECRET_KEY]: credentialPreview(secret.trim()) };
 }
 
-/** List the signed-in user's MCP servers for a balance (never returns secrets). */
+/** List the signed-in user's MCP servers (never returns secrets). */
 export const listServers = query({
-  args: { balance: v.id("balances") },
-  handler: async (ctx, args) => {
-    await requireOwnedBalance(ctx, args.balance);
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
 
     const servers = await ctx.db
       .query("mcp_servers")
-      .withIndex("by_balance", (q) => q.eq("balance", args.balance))
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
       .take(200);
 
     const result = [];
@@ -78,14 +78,13 @@ export const listServers = query({
 /** Create an MCP server, storing any supplied bearer token in Secret Store. */
 export const createServer = mutation({
   args: {
-    balance: v.id("balances"),
     name: v.string(),
     url: v.string(),
     auth: mcpAuthValidator,
     secret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await requireOwnedBalance(ctx, args.balance);
+    const userId = await requireUserId(ctx);
 
     const name = args.name.trim();
     if (!name) throw new Error("Server name is required.");
@@ -97,7 +96,7 @@ export const createServer = mutation({
     const preview = buildPreview(args.auth, args.secret);
 
     const serverId = await ctx.db.insert("mcp_servers", {
-      balance: args.balance,
+      userId,
       name,
       url,
       transport: "http",
@@ -110,7 +109,7 @@ export const createServer = mutation({
         namespace: mcpSecretNamespace(serverId),
         name: MCP_SECRET_NAME,
         value: args.secret!.trim(),
-        metadata: { kind: "mcp", balance: args.balance, mcpServer: serverId, preview },
+        metadata: { kind: "mcp", mcpServer: serverId, preview },
       });
     }
 
@@ -132,9 +131,9 @@ export const updateServer = mutation({
     secret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
     const server = await ctx.db.get("mcp_servers", args.server);
-    if (!server) throw new Error("MCP server not found.");
-    await requireOwnedBalance(ctx, server.balance);
+    if (!server || server.userId !== userId) throw new Error("MCP server not found.");
 
     const auth = args.auth ?? server.auth;
     const patch: Record<string, unknown> = { auth };
@@ -162,7 +161,7 @@ export const updateServer = mutation({
         namespace: mcpSecretNamespace(args.server),
         name: MCP_SECRET_NAME,
         value: args.secret.trim(),
-        metadata: { kind: "mcp", balance: server.balance, mcpServer: args.server, preview },
+        metadata: { kind: "mcp", mcpServer: args.server, preview },
       });
     } else {
       const existingSecret = await secrets.get(ctx, {
@@ -185,9 +184,9 @@ export const updateServer = mutation({
 export const deleteServer = mutation({
   args: { server: v.id("mcp_servers") },
   handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
     const server = await ctx.db.get("mcp_servers", args.server);
-    if (!server) return true;
-    await requireOwnedBalance(ctx, server.balance);
+    if (!server || server.userId !== userId) return true;
 
     await secrets.remove(ctx, {
       namespace: mcpSecretNamespace(args.server),

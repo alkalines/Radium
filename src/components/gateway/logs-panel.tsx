@@ -1,4 +1,5 @@
-import { useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { FunctionReturnType } from "convex/server";
 import { CalendarIcon, CheckIcon, CopyIcon, ScrollTextIcon } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -73,11 +74,10 @@ const RANGE_PRESETS = {
 type RangePreset = keyof typeof RANGE_PRESETS;
 
 export function LogsPanel() {
-  const userInfo = useQuery(api.auth.userInfo);
+  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
-  const generations = useQuery(
-    api.logs.getGenerations,
-    balanceId ? { balance: balanceId } : "skip",
+  const { data: generations } = useQuery(
+    convexQuery(api.logs.getGenerations, balanceId ? { balance: balanceId } : "skip"),
   );
 
   const [preset, setPreset] = useState<RangePreset>("all");

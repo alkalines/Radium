@@ -103,12 +103,6 @@ export function ChatPromptInput({
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const selectedModelData = models?.find((model) => model.slug === selectedModel);
 
-  useEffect(() => {
-    if (!selectedModel && models?.[0]) {
-      onModelChange(models[0].slug);
-    }
-  }, [models, onModelChange, selectedModel]);
-
   const handleModelSelect = useCallback(
     (model: string) => {
       onModelChange(model);

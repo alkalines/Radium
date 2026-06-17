@@ -59,7 +59,7 @@ export function ChatHomeSkeleton() {
 export function ChatConversationSkeleton() {
   return (
     <main className="flex min-h-[calc(100svh-var(--header-height))] flex-col">
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-8">
+      <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-8 px-4 py-8">
         <Skeleton className="h-5 w-40" />
         <div className="flex flex-col gap-6">
           <MessageSkeleton align="start" />
@@ -90,12 +90,14 @@ export function ChatStartingTransition({
 }) {
   return (
     <main className="flex min-h-[calc(100svh-var(--header-height))] flex-col">
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-8">
-        <Message className="animate-in fade-in slide-in-from-bottom-2 duration-500" from="user">
-          <MessageContent>
-            <p className="line-clamp-4 whitespace-pre-wrap">{prompt || "New chat"}</p>
-          </MessageContent>
-        </Message>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-4xl flex-col px-4 py-8">
+          <Message className="animate-in fade-in slide-in-from-bottom-2 duration-500" from="user">
+            <MessageContent>
+              <p className="line-clamp-4 whitespace-pre-wrap">{prompt || "New chat"}</p>
+            </MessageContent>
+          </Message>
+        </div>
       </div>
 
       <div className="sticky bottom-0 border-t bg-background/95 p-4 backdrop-blur">

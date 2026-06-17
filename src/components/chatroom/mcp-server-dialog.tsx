@@ -43,12 +43,10 @@ export type McpServerEditTarget = {
 export function McpServerDialog({
   open,
   target,
-  balanceId,
   onOpenChange,
 }: {
   open: boolean;
   target: McpServerEditTarget;
-  balanceId: Id<"balances"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
   const createServer = useMutation(api.mcp.createServer);
@@ -91,9 +89,7 @@ export function McpServerDialog({
         });
         toast.success(`Updated ${name.trim()}.`);
       } else {
-        if (!balanceId) return;
         await createServer({
-          balance: balanceId,
           name: name.trim(),
           url: url.trim(),
           auth: { type: authType },
@@ -185,7 +181,7 @@ export function McpServerDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             Cancel
           </Button>
-          <Button onClick={save} disabled={submitting || !complete || (!isEditing && !balanceId)}>
+          <Button onClick={save} disabled={submitting || !complete}>
             {submitting && <Spinner data-icon="inline-start" />}
             {isEditing ? "Save changes" : "Add server"}
           </Button>

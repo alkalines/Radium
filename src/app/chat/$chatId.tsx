@@ -6,7 +6,9 @@ import {
   type UIMessage,
 } from "ai";
 import { useChat } from "@ai-sdk/react";
-import { useMutation, useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { useMutation } from "convex/react";
 import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
 import { ensureSession as ensureSessionServer } from "@better-auth-ui/react/server";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
@@ -95,6 +97,13 @@ export const Route = createFileRoute("/chat/$chatId")({
       });
     }
   },
+  loader: ({ context: { queryClient }, params: { chatId } }) => {
+    void queryClient.prefetchQuery(
+      convexQuery(api.aisdk.GetChat, { chatId: chatId as Id<"aisdk_chats"> }),
+    );
+    void queryClient.prefetchQuery(convexQuery(api.models.availableModels, {}));
+    void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+  },
   component: ChatConversationPage,
 });
 
@@ -108,9 +117,9 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const convexChatId = chatId as Id<"aisdk_chats">;
   const search = Route.useSearch();
   const navigate = useNavigate();
-  const chat = useQuery(api.aisdk.GetChat, { chatId: convexChatId });
-  const models = useQuery(api.models.availableModels);
-  const userInfo = useQuery(api.auth.userInfo);
+  const { data: chat } = useQuery(convexQuery(api.aisdk.GetChat, { chatId: convexChatId }));
+  const { data: models } = useQuery(convexQuery(api.models.availableModels, {}));
+  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const forkChat = useMutation(api.aisdk.ForkChat);
   const [model, setModel] = useState<string | undefined>(search.model);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -121,8 +130,21 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const loadedInitialMessages = useRef(false);
   const sentQueuedMessage = useRef(false);
   const submittedApprovalContinuations = useRef(new Set<string>());
+  const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
+  const signedIn = userInfo !== undefined && typeof userInfo !== "string";
+  const { data: defaultModel } = useQuery(
+    convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
+  );
   const queuedModel = typeof chat === "string" ? undefined : chat?.messages_queue?.model;
-  const selectedModel = model ?? queuedModel ?? models?.[0]?.slug;
+  // The model already used in this chat (last assistant turn), read from the
+  // persisted doc so the picker reflects it before the live session hydrates.
+  const chatModel =
+    typeof chat === "string" || !chat
+      ? undefined
+      : getLastMessageModel(chat.messages as UIMessage[]);
+  // Resolution order: explicit choice, this chat's model, queued model, the
+  // user's saved default, then the first available model.
+  const selectedModel = model ?? chatModel ?? queuedModel ?? defaultModel ?? models?.[0]?.slug;
   const selectedModelData = models?.find((item) => item.slug === selectedModel);
   const handleModelChange = useCallback((nextModel: string) => {
     setModel(nextModel);
@@ -247,7 +269,6 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     );
   }, [chat, convexChatId, sendMessage, status]);
 
-  const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const forkPickerModels = useMemo<ForkPickerModel[] | undefined>(
     () =>
       models?.map((item) => ({

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { useMutation } from "convex/react";
 import { PencilIcon, PlusIcon, ServerIcon, Trash2Icon, WrenchIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -36,12 +38,15 @@ import { McpServerDialog, type McpServerEditTarget } from "./mcp-server-dialog";
  * MCP servers themselves. Per-chat overrides are edited from the chat composer.
  */
 export function ToolsPanel() {
-  const userInfo = useQuery(api.auth.userInfo);
+  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
+  const signedIn = userInfo !== undefined && typeof userInfo !== "string";
+  // Exa keys are still stored per balance; everything else here is per user.
   const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
-  const servers = useQuery(api.mcp.listServers, balanceId ? { balance: balanceId } : "skip");
-  const defaults = useQuery(
-    api.chatroom.getToolDefaults,
-    balanceId ? { balance: balanceId } : "skip",
+  const { data: servers } = useQuery(
+    convexQuery(api.mcp.listServers, signedIn ? {} : "skip"),
+  );
+  const { data: defaults } = useQuery(
+    convexQuery(api.chatroom.getToolDefaults, signedIn ? {} : "skip"),
   );
   const setToolDefaults = useMutation(api.chatroom.setToolDefaults);
 
@@ -54,10 +59,9 @@ export function ToolsPanel() {
   // Persist a new default selection. MCP server ids round-trip as strings and
   // are narrowed back to ids by Convex.
   async function persist(next: ToolSelection) {
-    if (!balanceId) return;
+    if (!signedIn) return;
     try {
       await setToolDefaults({
-        balance: balanceId,
         selection: {
           builtinToolSets: next.builtinToolSets,
           mcpServers: next.mcpServers as Id<"mcp_servers">[],
@@ -118,7 +122,7 @@ export function ToolsPanel() {
                   <Switch
                     checked={enabled}
                     onCheckedChange={(checked) => toggleBuiltin(toolSet.id, checked)}
-                    disabled={!balanceId || defaults === undefined}
+                    disabled={!signedIn || defaults === undefined}
                     aria-label={`Enable ${toolSet.name} by default`}
                   />
                 </div>
@@ -139,25 +143,25 @@ export function ToolsPanel() {
               Connect Model Context Protocol servers to expose their tools to your chats.
             </p>
           </div>
-          <Button onClick={openCreate} disabled={!balanceId}>
+          <Button onClick={openCreate} disabled={!signedIn}>
             <PlusIcon data-icon="inline-start" />
             Add server
           </Button>
         </div>
 
-        {!balanceId && userInfo !== undefined && (
+        {!signedIn && userInfo !== undefined && (
           <Alert>
-            <AlertTitle>No balance yet</AlertTitle>
-            <AlertDescription>A balance is required before adding MCP servers.</AlertDescription>
+            <AlertTitle>Sign in required</AlertTitle>
+            <AlertDescription>Sign in to add MCP servers.</AlertDescription>
           </Alert>
         )}
 
-        {balanceId && servers === undefined ? (
+        {signedIn && servers === undefined ? (
           <div className="flex flex-col gap-2">
             <Skeleton className="h-16" />
             <Skeleton className="h-16" />
           </div>
-        ) : balanceId && servers && servers.length === 0 ? (
+        ) : signedIn && servers && servers.length === 0 ? (
           <Empty className="border border-dashed">
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -173,7 +177,7 @@ export function ToolsPanel() {
               Add server
             </Button>
           </Empty>
-        ) : balanceId && servers ? (
+        ) : signedIn && servers ? (
           <div className="flex flex-col divide-y rounded-lg border">
             {servers.map((server) => (
               <div key={server._id} className="flex items-center gap-3 p-3">
@@ -234,7 +238,6 @@ export function ToolsPanel() {
       <McpServerDialog
         open={dialogOpen}
         target={editTarget}
-        balanceId={balanceId}
         onOpenChange={(open) => {
           setDialogOpen(open);
           if (!open) setEditTarget(null);
@@ -254,7 +257,7 @@ export function ToolsPanel() {
  * only its masked preview is ever returned.
  */
 function ExaApiKeyField({ balanceId }: { balanceId: Id<"balances"> }) {
-  const stored = useQuery(api.exa.getApiKey, { balance: balanceId });
+  const { data: stored } = useQuery(convexQuery(api.exa.getApiKey, { balance: balanceId }));
   const setApiKey = useMutation(api.exa.setApiKey);
   const deleteApiKey = useMutation(api.exa.deleteApiKey);
 

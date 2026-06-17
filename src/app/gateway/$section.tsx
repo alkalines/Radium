@@ -4,7 +4,10 @@ import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
 import { ensureSession as ensureSessionServer } from "@better-auth-ui/react/server";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 
+import { convexQuery } from "@convex-dev/react-query";
+
 import { GatewaySettings, gatewaySections, type GatewaySection } from "@/components/gateway/gateway-settings";
+import { api } from "../../../convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
 
@@ -37,6 +40,12 @@ export const Route = createFileRoute("/gateway/$section")({
     }
 
     return { session };
+  },
+  loader: ({ context: { queryClient }, params: { section } }) => {
+    void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+    if (section === "providers" || section === "credentials") {
+      void queryClient.prefetchQuery(convexQuery(api.providers.list, {}));
+    }
   },
   component: GatewayPage,
 });
