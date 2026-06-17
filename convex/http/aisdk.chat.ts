@@ -1,18 +1,13 @@
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createMCPClient } from "@ai-sdk/mcp";
 import { webSearch } from "@exalabs/ai-sdk";
 import { convertToModelMessages, stepCountIs, streamText, type ToolSet, type UIMessage } from "ai";
-import {
-  ChatCompletions_RequestBody,
-  type ChatCompletions_RequestBody_Type,
-} from "../../src/utils/types/openai/types";
 import { toExaCountry } from "../../src/utils/chatroom/user-location";
-import { Internal_Chat_Completion } from "./chat_completion";
 import type { Id } from "../_generated/dataModel";
 import { authComponent, createAuth } from "../auth";
 import { internal } from "../_generated/api";
 import type { ActionCtx } from "../_generated/server";
 import { MCP_SECRET_NAME, mcpSecretNamespace, secrets } from "../secrets";
+import { createInternalGatewayProvider } from "../ai_gateway";
 
 type ResponseHeaders = Record<string, string>;
 
@@ -75,7 +70,13 @@ export async function handleAISDKChat(
       status: 401,
     });
 
-  const provider = createInternalGatewayProvider(ctx, chatInfo.balance, responseHeaders);
+  const provider = createInternalGatewayProvider(ctx, chatInfo.balance, () =>
+    jsonResponse(
+      { error: { message: "Internal gateway request failed", code: 500 } },
+      responseHeaders,
+      { status: 500 },
+    ),
+  );
 
   await ctx.runMutation(internal.aisdk.EditChat, {
     chatId,
@@ -281,43 +282,6 @@ function uniqueToolName(tools: ToolSet, name: string): string {
   let counter = 2;
   while (`${name}_${counter}` in tools) counter++;
   return `${name}_${counter}`;
-}
-
-function createInternalGatewayProvider(
-  ctx: ActionCtx,
-  balanceId: Id<"balances">,
-  responseHeaders: ResponseHeaders,
-) {
-  return createOpenAICompatible({
-    name: "Radium Gateway",
-    apiKey: "internal-gateway",
-    baseURL: "https://radium.internal/openai/v1",
-    headers: {
-      "HTTP-Referer": "https://github.com/alkalines/Radium",
-      "X-Title": "Radium Chatroom",
-    },
-    fetch: async (_input, init): Promise<Response> => {
-      try {
-        const requestBody = getGatewayRequestBody(init?.body);
-        return await Internal_Chat_Completion(ctx, requestBody, balanceId);
-      } catch (error) {
-        console.error(error);
-        return jsonResponse(
-          { error: { message: "Internal gateway request failed", code: 500 } },
-          responseHeaders,
-          { status: 500 },
-        );
-      }
-    },
-  });
-}
-
-function getGatewayRequestBody(body: BodyInit | null | undefined) {
-  if (typeof body !== "string") {
-    throw new Error("Expected OpenAI-compatible JSON request body.");
-  }
-
-  return ChatCompletions_RequestBody.parse(JSON.parse(body)) as ChatCompletions_RequestBody_Type;
 }
 
 /**

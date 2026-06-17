@@ -3,7 +3,7 @@ import { internalMutation, internalQuery, mutation, query } from "./_generated/s
 import type { Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
-import { components } from "./_generated/api";
+import { internal } from "./_generated/api";
 
 // Mutation
 export const CreateChat = mutation({
@@ -16,7 +16,7 @@ export const CreateChat = mutation({
 
     if (!identity) return "Not logged in!";
 
-    return await ctx.db.insert("aisdk_chats", {
+    const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
       messages: [],
       messages_queue: args.messages_queue,
@@ -25,6 +25,9 @@ export const CreateChat = mutation({
       activeStream: false,
       lastInteractionAt: Date.now(),
     });
+
+    await ctx.scheduler.runAfter(0, internal.chat_titles.generateForChat, { chatId });
+    return chatId;
   },
 });
 
@@ -47,7 +50,7 @@ export const ForkChat = mutation({
 
     if (!identity) return "Not logged in!";
 
-    return await ctx.db.insert("aisdk_chats", {
+    const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
       messages: args.messages,
       messages_queue: args.messages_queue ?? undefined,
@@ -56,6 +59,11 @@ export const ForkChat = mutation({
       activeStream: false,
       lastInteractionAt: Date.now(),
     });
+
+    if (args.messages_queue?.text.trim()) {
+      await ctx.scheduler.runAfter(0, internal.chat_titles.generateForChat, { chatId });
+    }
+    return chatId;
   },
 });
 

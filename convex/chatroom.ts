@@ -7,7 +7,7 @@ import { requireUserId } from "./keys";
 
 /**
  * Chatroom configuration, keyed by BetterAuth user. A user has a single
- * {@link chatroom_settings} row holding their default model and default tool
+ * {@link chatroom_settings} row holding their default models and default tool
  * "selection" (which built-in tool sets and MCP servers are active). Chats
  * without a per-chat tool override inherit those defaults.
  *
@@ -144,6 +144,50 @@ export const setModelDefault = mutation({
   },
 });
 
+/** Read the user's title-generator model slug, or `null` if unset/removed. */
+export const getTitleModelDefault = query({
+  args: {},
+  handler: async (ctx): Promise<string | null> => {
+    const userId = await requireUserId(ctx);
+    const row = await settingsForUser(ctx, userId);
+    if (!row?.titleModel) return null;
+
+    const model = await ctx.db
+      .query("models")
+      .withIndex("by_slug", (q) => q.eq("slug", row.titleModel!))
+      .unique();
+    return isTitleGenerationModel(model) ? row.titleModel : null;
+  },
+});
+
+/** Set (or clear, when `model` is omitted) the title-generator model slug. */
+export const setTitleModelDefault = mutation({
+  args: { model: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+
+    if (args.model) {
+      const model = await ctx.db
+        .query("models")
+        .withIndex("by_slug", (q) => q.eq("slug", args.model!))
+        .unique();
+      if (!isTitleGenerationModel(model)) throw new Error("Unknown title model.");
+    }
+
+    const existing = await settingsForUser(ctx, userId);
+    if (existing) {
+      await ctx.db.patch("chatroom_settings", existing._id, { titleModel: args.model });
+      return existing._id;
+    }
+    return await ctx.db.insert("chatroom_settings", {
+      userId,
+      titleModel: args.model,
+      builtinToolSets: [],
+      mcpServers: [],
+    });
+  },
+});
+
 /**
  * The effective tool selection for a chat: its own override when present,
  * otherwise the user's defaults. `source` tells the UI whether toggling will
@@ -236,3 +280,11 @@ type ResolvedMcpServer = {
   transport: Doc<"mcp_servers">["transport"];
   auth: Doc<"mcp_servers">["auth"];
 };
+
+function isTitleGenerationModel(model: Doc<"models"> | null) {
+  return (
+    model?.type === "chat" &&
+    model.architecture.input_modalities.includes("text") &&
+    model.architecture.output_modalities.includes("text")
+  );
+}

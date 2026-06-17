@@ -214,6 +214,7 @@ export default defineSchema({
   chatroom_settings: defineTable({
     userId: v.string(), // Better Auth ID
     defaultModel: v.optional(v.string()),
+    titleModel: v.optional(v.string()),
     builtinToolSets: v.array(v.string()),
     mcpServers: v.array(v.id("mcp_servers")),
   }).index("by_userId", ["userId"]),
