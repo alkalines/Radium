@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "releases/v*.*.*"
   workflow_dispatch:
     inputs:
       version:
