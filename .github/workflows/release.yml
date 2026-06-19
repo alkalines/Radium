@@ -33,6 +33,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
+            VERSION="${VERSION#v}"
             TAG="v${VERSION}"
             if git rev-parse "$TAG" >/dev/null 2>&1; then
               echo "Tag $TAG already exists" >&2
@@ -40,7 +41,8 @@ jobs:
             fi
           else
             TAG="${GITHUB_REF_NAME}"
-            VERSION="${TAG#v}"
+            VERSION="${TAG#releases/}"
+            VERSION="${VERSION#v}"
           fi
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
           if [ "$VERSION" != "$PACKAGE_VERSION" ]; then
