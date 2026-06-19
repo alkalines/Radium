@@ -20,9 +20,10 @@ export const ChatCompletions_RequestBody = z.object({
       OpenAI_Message_Tool,
       // @deprecated
       OpenAI_Message_Function,
-    ])
+    ]),
   ),
   model: z.string(),
+  provider: z.optional(z.string()),
   audio: z.nullish(
     z.object({
       // https://platform.openai.com/docs/api-reference/chat/create#chat-create-audio
@@ -34,7 +35,7 @@ export const ChatCompletions_RequestBody = z.object({
         z.literal("pcm16"),
       ]),
       voice: z.string(),
-    })
+    }),
   ),
   frequency_penalty: z.nullish(z.number().min(-2).max(2)),
   // @deprecated use `tool_choice` instead
@@ -44,7 +45,7 @@ export const ChatCompletions_RequestBody = z.object({
       z.object({
         name: z.string(),
       }),
-    ])
+    ]),
   ),
   // @deprecated use `tools` instead
   functions: z.optional(
@@ -53,8 +54,8 @@ export const ChatCompletions_RequestBody = z.object({
         name: z.string(),
         description: z.optional(z.string()),
         parameters: z.optional(z.object()),
-      })
-    )
+      }),
+    ),
   ),
   logit_bias: z.optional(z.any()), // Map
   logprobs: z.nullish(z.boolean()),
@@ -73,11 +74,11 @@ export const ChatCompletions_RequestBody = z.object({
           z.object({
             text: z.string(),
             type: z.string(),
-          })
+          }),
         ),
       ]),
       type: z.literal("content"),
-    })
+    }),
   ),
   presence_penalty: z.nullish(z.number().min(-2).max(2)),
   prompt_cache_key: z.optional(z.string()),
@@ -87,7 +88,9 @@ export const ChatCompletions_RequestBody = z.object({
       z.literal("low"),
       z.literal("medium"),
       z.literal("high"),
-    ])
+      z.literal("xhigh"),
+      z.literal("max"),
+    ]),
   ),
   response_format: z.optional(
     z.union([
@@ -106,7 +109,7 @@ export const ChatCompletions_RequestBody = z.object({
           strict: z.optional(z.boolean()),
         }),
       }),
-    ])
+    ]),
   ),
   safety_identifier: z.optional(z.string()),
   // @deprecated
@@ -119,7 +122,7 @@ export const ChatCompletions_RequestBody = z.object({
     z.object({
       include_obfuscation: z.optional(z.boolean()),
       include_usage: z.optional(z.boolean()),
-    })
+    }),
   ),
   temperature: z.optional(z.number().min(0).max(2)),
   tool_choice: z.optional(
@@ -135,7 +138,7 @@ export const ChatCompletions_RequestBody = z.object({
               function: z.object({
                 name: z.string(),
               }),
-            })
+            }),
           ),
         }),
       }),
@@ -151,7 +154,7 @@ export const ChatCompletions_RequestBody = z.object({
           name: z.string(),
         }),
       }),
-    ])
+    ]),
   ),
   tools: z.optional(
     z.array(
@@ -182,12 +185,12 @@ export const ChatCompletions_RequestBody = z.object({
                     syntax: z.string(),
                   }),
                 }),
-              ])
+              ]),
             ),
           }),
         }),
-      ])
-    )
+      ]),
+    ),
   ),
   top_logprobs: z.optional(z.int().min(0).max(20)),
   top_p: z.optional(z.number()),
@@ -197,7 +200,7 @@ export const ChatCompletions_RequestBody = z.object({
   web_search_options: z.optional(
     z.object({
       search_context_size: z.optional(
-        z.union([z.literal("low"), z.literal("medium"), z.literal("high")])
+        z.union([z.literal("low"), z.literal("medium"), z.literal("high")]),
       ),
       user_location: z.nullish(
         z.object({
@@ -208,9 +211,9 @@ export const ChatCompletions_RequestBody = z.object({
             region: z.optional(z.string()),
             timezone: z.optional(z.string()),
           }),
-        })
+        }),
       ),
-    })
+    }),
   ),
   // Unofficial
   top_k: z.optional(z.int().min(0)),
@@ -223,8 +226,8 @@ export const ChatCompletions_RequestBody = z.object({
         id: z.literal("web"),
         max_results: z.number(),
         search_prompt: z.string(),
-      })
-    )
+      }),
+    ),
   ),
   reasoning: z.optional(
     z.object({
@@ -235,12 +238,14 @@ export const ChatCompletions_RequestBody = z.object({
           z.literal("low"),
           z.literal("minimal"),
           z.literal("none"),
-        ])
+          z.literal("xhigh"),
+          z.literal("max"),
+        ]),
       ),
       max_tokens: z.nullish(z.number()),
       enabled: z.nullish(z.boolean()),
       exclude: z.nullish(z.boolean()),
-    })
+    }),
   ),
 });
 
@@ -255,7 +260,7 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
           z.literal("content_filter"),
           z.literal("tool_calls"),
           z.literal("function_call"),
-        ])
+        ]),
       ),
       index: z.int(),
       logprobs: z.nullish(
@@ -270,9 +275,9 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
                   bytes: z.array(z.any()),
                   logprob: z.number(),
                   token: z.string(),
-                })
+                }),
               ),
-            })
+            }),
           ),
           refusal: z.array(
             z.object({
@@ -284,11 +289,11 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
                   bytes: z.array(z.any()),
                   logprob: z.number(),
                   token: z.string(),
-                })
+                }),
               ),
-            })
+            }),
           ),
-        })
+        }),
       ),
       message: z.object({
         content: z.nullish(z.string()),
@@ -304,8 +309,8 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
                 title: z.string(),
                 url: z.string(),
               }),
-            })
-          )
+            }),
+          ),
         ),
         audio: z.nullish(
           z.object({
@@ -313,14 +318,14 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
             expires_at: z.int(), // UNIX Timestamp
             id: z.string(),
             transcript: z.string(),
-          })
+          }),
         ),
         // @Deprecated
         function_call: z.nullish(
           z.object({
             arguments: z.string(),
             name: z.string(),
-          })
+          }),
         ),
         tool_calls: z.nullish(
           z.array(
@@ -341,13 +346,13 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
                 id: z.string(),
                 type: z.literal("custom"),
               }),
-            ])
-          )
+            ]),
+          ),
         ),
         // Unofficial
         reasoning: z.nullish(z.string()),
       }),
-    })
+    }),
   ),
   created: z.int(), // UNIX Timestamp
   id: z.string(),
@@ -360,7 +365,7 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
       z.literal("default"),
       z.literal("flex"),
       z.literal("priority"),
-    ])
+    ]),
   ),
   // @deprecated
   system_fingerprint: z.nullish(z.string()),
@@ -374,13 +379,13 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
         audio_tokens: z.nullish(z.int()),
         reasoning_tokens: z.nullish(z.int()),
         rejected_prediction_tokens: z.nullish(z.int()),
-      })
+      }),
     ),
     prompt_tokens_details: z.nullish(
       z.object({
         audio_tokens: z.nullish(z.int()),
         cached_tokens: z.nullish(z.int()),
-      })
+      }),
     ),
   }),
   // Non-official
@@ -397,7 +402,7 @@ export const ChatCompletions_Streaming_Chunk = z.object({
           z.object({
             arguments: z.string(),
             name: z.string(),
-          })
+          }),
         ),
         refusal: z.nullish(z.string()),
         role: z.string(),
@@ -411,8 +416,8 @@ export const ChatCompletions_Streaming_Chunk = z.object({
               }),
               id: z.nullish(z.string()),
               type: z.literal("function"),
-            })
-          )
+            }),
+          ),
         ),
         // Unofficial
         reasoning: z.nullish(z.string()),
@@ -426,7 +431,7 @@ export const ChatCompletions_Streaming_Chunk = z.object({
           z.literal("tool_calls"),
           // @deprecated
           z.literal("function_call"),
-        ])
+        ]),
       ),
       logprobs: z.nullish(
         z.object({
@@ -441,14 +446,14 @@ export const ChatCompletions_Streaming_Chunk = z.object({
                     bytes: z.array(z.any()), // OpenAI reference just say is a array.
                     logprob: z.number(),
                     token: z.string(),
-                  })
+                  }),
                 ),
-              })
-            )
+              }),
+            ),
           ),
-        })
+        }),
       ),
-    })
+    }),
   ),
   created: z.int(),
   id: z.string(),
@@ -461,7 +466,7 @@ export const ChatCompletions_Streaming_Chunk = z.object({
       z.literal("default"),
       z.literal("flex"),
       z.literal("priority"),
-    ])
+    ]),
   ),
   // @deprecated
   system_fingerprint: z.nullish(z.string()),
@@ -476,15 +481,15 @@ export const ChatCompletions_Streaming_Chunk = z.object({
           audio_tokens: z.nullish(z.int()),
           reasoning_tokens: z.nullish(z.int()),
           rejected_prediction_tokens: z.nullish(z.int()),
-        })
+        }),
       ),
       prompt_tokens_details: z.nullish(
         z.object({
           audio_tokens: z.nullish(z.int()),
           cached_tokens: z.nullish(z.int()),
-        })
+        }),
       ),
-    })
+    }),
   ),
   // Unofficial
   provider: z.nullish(z.string()),
@@ -494,12 +499,8 @@ export const ChatCompletions_Streaming_Chunk = z.object({
  * Types
  */
 
-export type ChatCompletions_RequestBody_Type = z.infer<
-  typeof ChatCompletions_RequestBody
->;
+export type ChatCompletions_RequestBody_Type = z.infer<typeof ChatCompletions_RequestBody>;
 export type ChatCompletions_NotStreaming_ResponseBody_Type = z.infer<
   typeof ChatCompletions_NotStreaming_ResponseBody
 >;
-export type ChatCompletions_Streaming_Chunk_Type = z.infer<
-  typeof ChatCompletions_Streaming_Chunk
->;
+export type ChatCompletions_Streaming_Chunk_Type = z.infer<typeof ChatCompletions_Streaming_Chunk>;

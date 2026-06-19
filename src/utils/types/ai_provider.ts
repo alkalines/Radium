@@ -3,9 +3,18 @@
  */
 import { LanguageModel } from "ai";
 
+export type AIProviderNpmPackage =
+  | "@openrouter/ai-sdk-provider"
+  | "@ai-sdk/openai"
+  | "@ai-sdk/openai-compatible"
+  | "@ai-sdk/anthropic";
+
 export type AIProviderSDK_Config = {
-  apiKey: string
-}
+  apiKey: string;
+  name?: string;
+  baseURL?: string;
+  credentials: Record<string, string>;
+};
 
 // Copied from @openrouter/ai-sdk-provider OpenRouterChatSettings
 export type AIProviderSDK_ModelSettings = {
@@ -18,7 +27,7 @@ export type AIProviderSDK_ModelSettings = {
      *
      * @todo Some models don't have `minimal` or `none`
      */
-    effort?: "high" | "medium" | "low" | "minimal" | "none"; // None on some GPT models
+    effort?: string;
     /**
      * Max reasoning tokens per request
      */
@@ -78,7 +87,9 @@ export type AIProviderSDK_ModelSettings = {
   };
   // Provider is supposed to be at src/utils/ai_balancer.ts
 };
-export type AIProviderSDK = (Config: AIProviderSDK_Config) => (model: string, settings?: AIProviderSDK_ModelSettings) => LanguageModel
+export type AIProviderSDK = (
+  Config: AIProviderSDK_Config,
+) => (model: string, settings?: AIProviderSDK_ModelSettings) => LanguageModel;
 
 /**
  * Configuration at type
@@ -92,6 +103,9 @@ export type AIProviderConfig = {
    * Slug for use (ex: openai)
    */
   slug: string;
+  npm: AIProviderNpmPackage;
+  env: string[];
+  doc?: string;
   /**
    * Training policy of the provider
    */

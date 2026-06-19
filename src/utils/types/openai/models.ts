@@ -23,7 +23,7 @@ export const Models_Response = z.object({
       input_cache_read: z.nullish(z.union([z.number(), z.string()])),
       input_cache_write: z.nullish(z.union([z.number(), z.string()])),
       discount: z.nullish(z.union([z.number(), z.string()])),
-    })
+    }),
   ),
   context_length: z.nullish(z.number()),
   architecture: z.nullish(
@@ -37,15 +37,10 @@ export const Models_Response = z.object({
           z.literal("audio"),
           z.literal("video"),
           z.string(),
-        ])
+        ]),
       ),
       output_modalities: z.array(
-        z.union([
-          z.literal("text"),
-          z.literal("image"),
-          z.literal("embeddings"),
-          z.string(),
-        ])
+        z.union([z.literal("text"), z.literal("image"), z.literal("embeddings"), z.string()]),
       ),
       tokenizer: z.union([
         z.string(),
@@ -67,20 +62,20 @@ export const Models_Response = z.object({
         z.literal("RWKV"),
       ]),
       instruct_type: z.nullish(z.string()),
-    })
+    }),
   ),
   top_provider: z.nullish(
     z.object({
       is_moderated: z.boolean(),
       context_length: z.number(),
       max_completion_tokens: z.number(),
-    })
+    }),
   ),
   per_request_limits: z.nullish(
     z.object({
       prompt_tokens: z.nullish(z.number()),
       completion_tokens: z.nullish(z.number()),
-    })
+    }),
   ),
   supported_parameters: z.nullish(
     z.array(
@@ -105,15 +100,15 @@ export const Models_Response = z.object({
         z.literal("tool_choice"),
         z.literal("parallel_tool_calls"),
         z.literal("verbosity"),
-      ])
-    )
+      ]),
+    ),
   ),
   default_parameters: z.nullish(
     z.object({
       temperature: z.number().min(0).max(2),
       top_p: z.number().min(0).max(1),
       frequency_penalty: z.number().min(-2).max(2),
-    })
+    }),
   ),
   hugging_face_id: z.nullish(z.string()),
   description: z.nullish(z.string()),

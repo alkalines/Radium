@@ -10,15 +10,9 @@
 !.yarn/releases
 !.yarn/versions
 
-# testing
-/coverage
-
-# next.js
-/.next/
-/out/
-
 # production
 /build
+/out/
 
 # misc
 .DS_Store
@@ -32,14 +26,15 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
-
-# vercel
-.vercel
+!.env.example
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts
 
 # convex
 convex/_generated
-!.env.example
+
+# tanstack
+.tanstack/
+.output/
+src/routeTree.gen.ts
