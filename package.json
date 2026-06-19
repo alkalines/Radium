@@ -16,7 +16,8 @@
     "convex:dev": "convex dev",
     "vite:dev": "vite dev",
     "vite:build": "vite build",
-    "vite:start": "node .output/server/index.mjs",
+    "vite:start": "bun .output/server/index.mjs",
+    "start": "bun .output/server/index.mjs",
     "lint": "eslint",
     "format": "oxfmt",
     "format:check": "oxfmt --check"

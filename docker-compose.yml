@@ -1,0 +1,34 @@
+services:
+  radium:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_CONVEX_URL: ${VITE_CONVEX_URL:-http://localhost:3210}
+        VITE_CONVEX_SITE_URL: ${VITE_CONVEX_SITE_URL:-http://localhost:3211}
+    image: radium:local
+    ports:
+      - "${PORT:-3000}:3000"
+      - "${CONVEX_PORT:-3210}:3210"
+      - "${CONVEX_SITE_PORT:-3211}:3211"
+    volumes:
+      - convex-data:/convex/data
+    environment:
+      SITE_URL: ${SITE_URL:-http://localhost:3000}
+      SECRET_STORE_KEYS: ${SECRET_STORE_KEYS:?Set SECRET_STORE_KEYS to 1:<base64-32-byte-key>}
+      Openrouter_API_Key: ${Openrouter_API_Key:-}
+      AISDK_MaxRetries: ${AISDK_MaxRetries:-0}
+      INSTANCE_NAME: ${INSTANCE_NAME:-}
+      INSTANCE_SECRET: ${INSTANCE_SECRET:-}
+      CONVEX_CLOUD_ORIGIN: ${CONVEX_CLOUD_ORIGIN:-http://localhost:3210}
+      CONVEX_SITE_ORIGIN: ${CONVEX_SITE_ORIGIN:-http://localhost:3211}
+      CONVEX_URL: ${CONVEX_URL:-http://localhost:3210}
+      CONVEX_SITE_URL: ${CONVEX_SITE_URL:-http://localhost:3211}
+      VITE_CONVEX_URL: ${VITE_CONVEX_URL:-http://localhost:3210}
+      VITE_CONVEX_SITE_URL: ${VITE_CONVEX_SITE_URL:-http://localhost:3211}
+      DISABLE_BEACON: ${DISABLE_BEACON:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    restart: unless-stopped
+
+volumes:
+  convex-data:

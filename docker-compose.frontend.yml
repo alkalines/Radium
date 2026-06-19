@@ -1,0 +1,17 @@
+services:
+  radium-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_CONVEX_URL: ${VITE_CONVEX_URL:?Set VITE_CONVEX_URL}
+        VITE_CONVEX_SITE_URL: ${VITE_CONVEX_SITE_URL:?Set VITE_CONVEX_SITE_URL}
+    image: radium-frontend:local
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      CONVEX_URL: ${CONVEX_URL:-${VITE_CONVEX_URL}}
+      CONVEX_SITE_URL: ${CONVEX_SITE_URL:-${VITE_CONVEX_SITE_URL}}
+      VITE_CONVEX_URL: ${VITE_CONVEX_URL}
+      VITE_CONVEX_SITE_URL: ${VITE_CONVEX_SITE_URL}
+    restart: unless-stopped

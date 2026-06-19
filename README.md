@@ -156,8 +156,98 @@ sequenceDiagram
 | `Openrouter_API_Key`          | Yes      | Your OpenRouter API key            |
 | `AISDK_MaxRetries`            | No       | Max retry attempts (default: 0)    |
 | `CONVEX_DEPLOYMENT`           | Yes      | Convex deployment identifier       |
-| `NEXT_PUBLIC_CONVEX_URL`      | Yes      | Convex cloud URL                   |
-| `NEXT_PUBLIC_CONVEX_SITE_URL` | Yes      | Convex site URL for HTTP endpoints |
+| `VITE_CONVEX_URL`             | Yes      | Convex cloud URL                   |
+| `VITE_CONVEX_SITE_URL`        | Yes      | Convex site URL for HTTP endpoints |
+
+---
+
+## 🐳 Containers
+
+Two production images are supported:
+
+- `Dockerfile`: full self-hosted image with the TanStack Start server and a local Convex backend in one container.
+- `Dockerfile.frontend`: frontend/server image only, intended to point at Convex Cloud or a separately hosted Convex backend.
+
+Build the full image:
+
+```bash
+docker build -t radium:local .
+```
+
+Or use Docker Compose:
+
+```bash
+SECRET_STORE_KEYS="1:$(openssl rand -base64 32)" docker compose up --build
+```
+
+Run the full image:
+
+```bash
+docker run --rm \
+  -p 3000:3000 \
+  -p 3210:3210 \
+  -p 3211:3211 \
+  -v radium-convex-data:/convex/data \
+  -e SITE_URL=http://localhost:3000 \
+  -e SECRET_STORE_KEYS='1:<openssl rand -base64 32>' \
+  radium:local
+```
+
+The full image starts Convex first, generates a self-hosted admin key if one was not provided through `CONVEX_SELF_HOSTED_ADMIN_KEY`, deploys the bundled `convex/` functions, then starts the TanStack server on port `3000`. Convex listens on `3210`, and HTTP actions listen on `3211`.
+
+Convex self-hosted instance credentials are generated into `/convex/data/credentials` on first boot. For reproducible production deployments, provide a persistent volume and optionally set `INSTANCE_NAME` plus a 32-byte hex `INSTANCE_SECRET`.
+
+Build the frontend-only image:
+
+```bash
+docker build \
+  -f Dockerfile.frontend \
+  --build-arg VITE_CONVEX_URL=https://your-deployment.convex.cloud \
+  --build-arg VITE_CONVEX_SITE_URL=https://your-deployment.convex.site \
+  -t radium-frontend:local .
+```
+
+Or use Docker Compose:
+
+```bash
+VITE_CONVEX_URL=https://your-deployment.convex.cloud \
+VITE_CONVEX_SITE_URL=https://your-deployment.convex.site \
+docker compose -f docker-compose.frontend.yml up --build
+```
+
+Run the frontend-only image:
+
+```bash
+docker run --rm \
+  -p 3000:3000 \
+  -e CONVEX_URL=https://your-deployment.convex.cloud \
+  -e CONVEX_SITE_URL=https://your-deployment.convex.site \
+  radium-frontend:local
+```
+
+For hosted deployments, set `CONVEX_CLOUD_ORIGIN`, `CONVEX_SITE_ORIGIN`, `CONVEX_URL`, `CONVEX_SITE_URL`, `VITE_CONVEX_URL`, and `VITE_CONVEX_SITE_URL` to externally reachable URLs. The Vite variables are build-time values, so rebuild the image when those public URLs change.
+
+---
+
+## 🚢 Releases
+
+Releases are tag-based and use the `version` field in `package.json` as the source of truth.
+
+1. Update `package.json` to the next semver version, for example `0.2.0`.
+2. Merge the version bump to the default branch.
+3. Create and push a matching tag:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The release workflow builds and pushes these images to GitHub Container Registry:
+
+- `ghcr.io/alkalines/radium:<version>` and `latest` from `Dockerfile`
+- `ghcr.io/alkalines/radium-frontend:<version>` and `latest` from `Dockerfile.frontend`
+
+It also creates a GitHub Release using generated release notes, which include merged pull requests since the previous release. You can also run the workflow manually with a version input; it will create the `v<version>` tag after verifying it matches `package.json`.
 
 ### Provider Configuration
 
