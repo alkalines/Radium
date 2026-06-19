@@ -8,9 +8,12 @@ RUN bun install --frozen-lockfile
 FROM deps AS builder
 ARG VITE_CONVEX_URL
 ARG VITE_CONVEX_SITE_URL
+ARG CONVEX_DEPLOYMENT=anonymous-agent
 ENV VITE_CONVEX_URL=$VITE_CONVEX_URL
 ENV VITE_CONVEX_SITE_URL=$VITE_CONVEX_SITE_URL
+ENV CONVEX_DEPLOYMENT=$CONVEX_DEPLOYMENT
 COPY . .
+RUN bunx convex codegen --system-udfs --typecheck disable
 RUN bun run vite:build
 
 FROM oven/bun:1 AS runner
