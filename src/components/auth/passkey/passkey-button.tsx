@@ -1,22 +1,19 @@
-import { type AuthView, authMutationKeys } from "@better-auth-ui/core"
-import type { PasskeyAuthClient } from "@better-auth-ui/core/plugins/passkey"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import {
-  usePasskeyAutoFill,
-  useSignInPasskey
-} from "@better-auth-ui/react/plugins/passkey"
-import { useIsMutating } from "@tanstack/react-query"
-import { Fingerprint } from "lucide-react"
+import { type AuthView, authMutationKeys } from "@better-auth-ui/core";
+import type { PasskeyAuthClient } from "@better-auth-ui/core/plugins/passkey";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { usePasskeyAutoFill, useSignInPasskey } from "@better-auth-ui/react/plugins/passkey";
+import { useIsMutating } from "@tanstack/react-query";
+import { Fingerprint } from "lucide-react";
 
-import { Button } from "@/components/ui/button"
-import { Spinner } from "@/components/ui/spinner"
-import { passkeyPlugin } from "@/lib/auth/passkey-plugin"
-import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { passkeyPlugin } from "@/lib/auth/passkey-plugin";
+import { cn } from "@/lib/utils";
 
 export type PasskeyButtonProps = {
   /** @remarks `AuthView` */
-  view?: AuthView
-}
+  view?: AuthView;
+};
 
 /**
  * "Continue with Passkey" button rendered alongside the password sign-in form.
@@ -26,34 +23,30 @@ export type PasskeyButtonProps = {
  * @param view - Current auth view. Hides the button on `"signUp"`.
  */
 export function PasskeyButton({ view }: PasskeyButtonProps) {
-  const { authClient, localization, redirectTo, navigate } =
-    useAuth<PasskeyAuthClient>()
-  const { localization: passkeyLocalization } = useAuthPlugin(passkeyPlugin)
+  const { authClient, localization, redirectTo, navigate } = useAuth<PasskeyAuthClient>();
+  const { localization: passkeyLocalization } = useAuthPlugin(passkeyPlugin);
 
-  const { mutate: signInPasskey, isPending: passkeyPending } = useSignInPasskey(
-    authClient,
-    {
-      onSuccess: () => navigate({ to: redirectTo })
-    }
-  )
+  const { mutate: signInPasskey, isPending: passkeyPending } = useSignInPasskey(authClient, {
+    onSuccess: () => navigate({ to: redirectTo }),
+  });
 
   // Surfaces passkeys in the browser's autofill dropdown while the sign-in
   // form is open. The button stays for anyone who dismisses it.
   usePasskeyAutoFill(authClient, {
     enabled: view !== "signUp",
-    onSuccess: () => navigate({ to: redirectTo })
-  })
+    onSuccess: () => navigate({ to: redirectTo }),
+  });
 
   const signInMutating = useIsMutating({
-    mutationKey: authMutationKeys.signIn.all
-  })
+    mutationKey: authMutationKeys.signIn.all,
+  });
   const signUpMutating = useIsMutating({
-    mutationKey: authMutationKeys.signUp.all
-  })
-  const isPending = signInMutating + signUpMutating > 0
+    mutationKey: authMutationKeys.signUp.all,
+  });
+  const isPending = signInMutating + signUpMutating > 0;
 
   // Passkey sign-in isn't relevant on the sign-up flow.
-  if (view === "signUp") return null
+  if (view === "signUp") return null;
 
   return (
     <Button
@@ -64,10 +57,7 @@ export function PasskeyButton({ view }: PasskeyButtonProps) {
       onClick={() => signInPasskey({ autoFill: false })}
     >
       {passkeyPending ? <Spinner /> : <Fingerprint />}
-      {localization.auth.continueWith.replace(
-        "{{provider}}",
-        passkeyLocalization.passkey
-      )}
+      {localization.auth.continueWith.replace("{{provider}}", passkeyLocalization.passkey)}
     </Button>
-  )
+  );
 }

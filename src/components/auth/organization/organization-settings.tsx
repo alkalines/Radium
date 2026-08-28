@@ -1,17 +1,17 @@
-"use client"
+"use client";
 
-import { getOrganizationCardKey, useAuth } from "@better-auth-ui/react"
-import type { ComponentProps } from "react"
+import { getOrganizationCardKey, useAuth } from "@better-auth-ui/react";
+import type { ComponentProps } from "react";
 
-import { cn } from "@/lib/utils"
-import { OrganizationDangerZone } from "./organization-danger-zone"
-import { OrganizationProfile } from "./organization-profile"
+import { cn } from "@/lib/utils";
+import { OrganizationDangerZone } from "./organization-danger-zone";
+import { OrganizationProfile } from "./organization-profile";
 
 export type OrganizationSettingsProps = {
-  className?: string
-  organizationId: string
-  organizationSlug: string
-}
+  className?: string;
+  organizationId: string;
+  organizationSlug: string;
+};
 
 /**
  * Organization settings UI: profile card, plugin-contributed cards
@@ -23,7 +23,7 @@ export function OrganizationSettings({
   organizationSlug,
   ...props
 }: OrganizationSettingsProps & ComponentProps<"div">) {
-  const { plugins } = useAuth()
+  const { plugins } = useAuth();
 
   return (
     <div className={cn("flex flex-col gap-4 md:gap-6", className)} {...props}>
@@ -36,10 +36,10 @@ export function OrganizationSettings({
             organizationId={organizationId}
             organizationSlug={organizationSlug}
           />
-        ))
+        )),
       )}
 
       <OrganizationDangerZone />
     </div>
-  )
+  );
 }

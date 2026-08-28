@@ -1,4 +1,4 @@
-import { Skeleton } from "@/components/ui/skeleton"
+import { Skeleton } from "@/components/ui/skeleton";
 
 /**
  * Placeholder matching `DeleteOrganization` while the delete permission resolves.
@@ -13,5 +13,5 @@ export function DeleteOrganizationSkeleton() {
 
       <Skeleton className="h-8 w-36 shrink-0 rounded-md" />
     </div>
-  )
+  );
 }

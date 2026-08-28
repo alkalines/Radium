@@ -1,19 +1,16 @@
-"use client"
+"use client";
 
-import type { ComponentProps } from "react"
+import type { ComponentProps } from "react";
 
-import { Skeleton } from "@/components/ui/skeleton"
-import { cn } from "@/lib/utils"
-import {
-  OrganizationLogo,
-  type OrganizationLogoSize
-} from "./organization-logo"
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
+import { OrganizationLogo, type OrganizationLogoSize } from "./organization-logo";
 
 export type OrganizationViewSkeletonProps = {
-  className?: string
-  hideSlug?: boolean
-  size?: OrganizationLogoSize
-}
+  className?: string;
+  hideSlug?: boolean;
+  size?: OrganizationLogoSize;
+};
 
 /**
  * Placeholder matching `OrganizationView` while organization data loads.
@@ -25,10 +22,7 @@ export function OrganizationViewSkeleton({
   ...props
 }: OrganizationViewSkeletonProps & ComponentProps<"div">) {
   return (
-    <div
-      className={cn("flex min-w-0 items-center gap-2", className)}
-      {...props}
-    >
+    <div className={cn("flex min-w-0 items-center gap-2", className)} {...props}>
       <OrganizationLogo
         isPending
         className={size === "sm" ? "size-5" : undefined}
@@ -41,5 +35,5 @@ export function OrganizationViewSkeleton({
         {!hideSlug && <Skeleton className="h-3 w-28 rounded-md" />}
       </div>
     </div>
-  )
+  );
 }

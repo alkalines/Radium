@@ -1,13 +1,13 @@
-"use client"
+"use client";
 
 import type {
   AuthorizedOAuthApplication,
-  OAuthProviderAuthClient
-} from "@better-auth-ui/core/plugins/oauth-provider"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useDeleteOAuthConsent } from "@better-auth-ui/react/plugins/oauth-provider"
-import { ShieldOff } from "lucide-react"
-import { useState } from "react"
+  OAuthProviderAuthClient,
+} from "@better-auth-ui/core/plugins/oauth-provider";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useDeleteOAuthConsent } from "@better-auth-ui/react/plugins/oauth-provider";
+import { ShieldOff } from "lucide-react";
+import { useState } from "react";
 
 import {
   AlertDialog,
@@ -17,19 +17,19 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogMedia,
-  AlertDialogTitle
-} from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
-import { Spinner } from "@/components/ui/spinner"
-import { oauthProviderPlugin } from "@/lib/auth/oauth-provider-plugin"
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { oauthProviderPlugin } from "@/lib/auth/oauth-provider-plugin";
 
 export type RemoveAuthorizationDialogProps = {
   /** @remarks `AuthorizedOAuthApplication` */
-  application: AuthorizedOAuthApplication
-  clientName: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
+  application: AuthorizedOAuthApplication;
+  clientName: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+};
 
 /**
  * Confirmation for removing every consent record tied to one OAuth client.
@@ -42,34 +42,34 @@ export function RemoveAuthorizationDialog({
   application,
   clientName,
   open,
-  onOpenChange
+  onOpenChange,
 }: RemoveAuthorizationDialogProps) {
-  const { authClient, localization } = useAuth()
-  const { localization: oauthLocalization } = useAuthPlugin(oauthProviderPlugin)
-  const [isRemoving, setIsRemoving] = useState(false)
+  const { authClient, localization } = useAuth();
+  const { localization: oauthLocalization } = useAuthPlugin(oauthProviderPlugin);
+  const [isRemoving, setIsRemoving] = useState(false);
 
   const { mutateAsync: deleteConsent } = useDeleteOAuthConsent(
-    authClient as OAuthProviderAuthClient
-  )
+    authClient as OAuthProviderAuthClient,
+  );
 
   const removeAuthorization = async () => {
-    setIsRemoving(true)
+    setIsRemoving(true);
 
     try {
       // Sequential so a mid-list failure leaves a predictable server state
       // that the refetched list reflects accurately.
       for (const id of application.consentIds) {
-        await deleteConsent({ id })
+        await deleteConsent({ id });
       }
 
-      onOpenChange(false)
+      onOpenChange(false);
     } catch {
       // The error toaster reports the failure; the dialog stays open so the
       // remaining records can be retried.
     } finally {
-      setIsRemoving(false)
+      setIsRemoving(false);
     }
-  }
+  };
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -79,9 +79,7 @@ export function RemoveAuthorizationDialog({
             <ShieldOff />
           </AlertDialogMedia>
 
-          <AlertDialogTitle>
-            {oauthLocalization.removeAuthorizationTitle}
-          </AlertDialogTitle>
+          <AlertDialogTitle>{oauthLocalization.removeAuthorizationTitle}</AlertDialogTitle>
 
           <AlertDialogDescription>
             {oauthLocalization.removeAuthorizationDescription}
@@ -108,5 +106,5 @@ export function RemoveAuthorizationDialog({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
-  )
+  );
 }

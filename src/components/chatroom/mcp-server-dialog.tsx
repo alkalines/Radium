@@ -113,8 +113,8 @@ export function McpServerDialog({
         <DialogHeader>
           <DialogTitle>{isEditing ? "Edit MCP server" : "Add MCP server"}</DialogTitle>
           <DialogDescription>
-            Connect a Model Context Protocol server over HTTP. Tokens are encrypted at rest and
-            only used for your own requests.
+            Connect a Model Context Protocol server over HTTP. Tokens are encrypted at rest and only
+            used for your own requests.
           </DialogDescription>
         </DialogHeader>
 

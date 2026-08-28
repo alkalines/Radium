@@ -1,6 +1,6 @@
-"use client"
+"use client";
 
-import { useSyncExternalStore } from "react"
+import { useSyncExternalStore } from "react";
 
 /**
  * Returns `true` once the component is mounted on the client (hydrated) and
@@ -10,10 +10,10 @@ import { useSyncExternalStore } from "react"
  * @returns Whether the component has hydrated on the client.
  */
 export function useIsHydrated() {
-  const subscribe = () => () => {}
+  const subscribe = () => () => {};
   return useSyncExternalStore(
     subscribe,
     () => true,
-    () => false
-  )
+    () => false,
+  );
 }

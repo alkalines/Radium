@@ -1,7 +1,7 @@
-"use client"
+"use client";
 
-import { Item, ItemContent, ItemMedia } from "@/components/ui/item"
-import { Skeleton } from "@/components/ui/skeleton"
+import { Item, ItemContent, ItemMedia } from "@/components/ui/item";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export function AuthorizedApplicationSkeleton() {
   return (
@@ -19,5 +19,5 @@ export function AuthorizedApplicationSkeleton() {
         </div>
       </ItemContent>
     </Item>
-  )
+  );
 }

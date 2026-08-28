@@ -1,54 +1,49 @@
 import type {
   OrganizationAuthClient,
-  OrganizationView
-} from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthenticate, useAuthPlugin } from "@better-auth-ui/react"
+  OrganizationView,
+} from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthenticate, useAuthPlugin } from "@better-auth-ui/react";
 import {
   useActiveOrganization,
-  useHasPermission
-} from "@better-auth-ui/react/plugins/organization"
+  useHasPermission,
+} from "@better-auth-ui/react/plugins/organization";
 import {
   ShieldCheck as RolesIcon,
   Settings as SettingsIcon,
   UsersRound as TeamsIcon,
-  User2 as UserIcon
-} from "lucide-react"
-import { useEffect, useMemo } from "react"
+  User2 as UserIcon,
+} from "lucide-react";
+import { useEffect, useMemo } from "react";
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { cn } from "@/lib/utils"
-import { OrganizationPeople } from "./organization-people"
-import { OrganizationRoles } from "./organization-roles"
-import { OrganizationSettings } from "./organization-settings"
-import { OrganizationTeams } from "./organization-teams"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { cn } from "@/lib/utils";
+import { OrganizationPeople } from "./organization-people";
+import { OrganizationRoles } from "./organization-roles";
+import { OrganizationSettings } from "./organization-settings";
+import { OrganizationTeams } from "./organization-teams";
 
 export type OrganizationProps = {
-  className?: string
-  hideNav?: boolean
-  path?: string
+  className?: string;
+  hideNav?: boolean;
+  path?: string;
   /** @remarks `OrganizationView` */
-  view?: OrganizationView | string
-}
+  view?: OrganizationView | string;
+};
 
 /**
  * Organization management shell: tabs for profile / danger zone and for
  * people (members / invitations). Path segments come from
  * `useAuthPlugin(organizationPlugin).viewPaths.organization`.
  */
-export function Organization({
-  className,
-  hideNav,
-  path,
-  view
-}: OrganizationProps) {
+export function Organization({ className, hideNav, path, view }: OrganizationProps) {
   if (!view && !path) {
-    throw new Error("[Better Auth UI] Either `view` or `path` must be provided")
+    throw new Error("[Better Auth UI] Either `view` or `path` must be provided");
   }
 
   const { authClient, basePaths, localization, navigate, plugins } =
-    useAuth<OrganizationAuthClient>()
-  useAuthenticate(authClient)
+    useAuth<OrganizationAuthClient>();
+  useAuthenticate(authClient);
 
   const {
     localization: organizationLocalization,
@@ -56,82 +51,70 @@ export function Organization({
     slug,
     slugPrefix,
     teams,
-    dynamicAccessControl
-  } = useAuthPlugin(organizationPlugin)
+    dynamicAccessControl,
+  } = useAuthPlugin(organizationPlugin);
 
-  const { data: activeOrganization, isPending } =
-    useActiveOrganization(authClient)
+  const { data: activeOrganization, isPending } = useActiveOrganization(authClient);
   const extensionTabs = useMemo(
     () => plugins.flatMap((plugin) => plugin.organizationTabs ?? []),
-    [plugins]
-  )
-  const rolesEnabled = dynamicAccessControl?.enabled === true
+    [plugins],
+  );
+  const rolesEnabled = dynamicAccessControl?.enabled === true;
   const canReadRoles = useHasPermission(authClient, {
     organizationId: activeOrganization?.id,
     permissions: { ac: ["read"] },
-    enabled: rolesEnabled && Boolean(activeOrganization?.id)
-  })
+    enabled: rolesEnabled && Boolean(activeOrganization?.id),
+  });
 
   useEffect(() => {
     if (!isPending && !activeOrganization) {
       navigate({
         to: `${basePaths.settings}/${organizationViewPaths.settings?.organizations}`,
-        replace: true
-      })
+        replace: true,
+      });
     }
   }, [
     basePaths.settings,
     isPending,
     navigate,
     organizationViewPaths.settings?.organizations,
-    activeOrganization
-  ])
+    activeOrganization,
+  ]);
 
   const currentView = useMemo(() => {
-    if (view) return view === "roles" && !rolesEnabled ? undefined : view
+    if (view) return view === "roles" && !rolesEnabled ? undefined : view;
 
     const match = [
       ...Object.entries(organizationViewPaths.organization).filter(
-        ([name]) => rolesEnabled || name !== "roles"
+        ([name]) => rolesEnabled || name !== "roles",
       ),
-      ...extensionTabs.map((tab) => [tab.id, tab.path] as const)
-    ].find(([, segment]) => segment === path)
+      ...extensionTabs.map((tab) => [tab.id, tab.path] as const),
+    ].find(([, segment]) => segment === path);
 
-    return match?.[0] as OrganizationView | undefined
-  }, [
-    extensionTabs,
-    view,
-    path,
-    organizationViewPaths.organization,
-    rolesEnabled
-  ])
+    return match?.[0] as OrganizationView | undefined;
+  }, [extensionTabs, view, path, organizationViewPaths.organization, rolesEnabled]);
 
   if (!currentView) {
     const validPaths = Object.entries(organizationViewPaths.organization)
       .filter(([name]) => rolesEnabled || name !== "roles")
       .map(([, segment]) => segment)
-      .join(", ")
+      .join(", ");
     throw new Error(
-      `[Better Auth UI] Unknown organization path "${path}". Valid paths are: ${validPaths}`
-    )
+      `[Better Auth UI] Unknown organization path "${path}". Valid paths are: ${validPaths}`,
+    );
   }
 
   if (!isPending && !activeOrganization) {
-    return null
+    return null;
   }
 
   const selectedView =
-    currentView === "roles" &&
-    !canReadRoles.isPending &&
-    !canReadRoles.data?.success
+    currentView === "roles" && !canReadRoles.isPending && !canReadRoles.data?.success
       ? "settings"
-      : currentView
+      : currentView;
 
   return (
-    <Tabs
-      value={selectedView}
-      className={cn("w-full gap-4 md:gap-6", className)}
-    >
+    <Tabs value={selectedView} className={cn("w-full gap-4 md:gap-6", className)}>
       <div className={cn(hideNav && "hidden")}>
         <TabsList aria-label={localization.settings.settings}>
           <TabsTrigger
@@ -141,7 +124,7 @@ export function Organization({
               navigate({
                 to: slug
                   ? `${basePaths.organization}/${slugPrefix}${slug}/${organizationViewPaths.organization.settings}`
-                  : `${basePaths.organization}/${organizationViewPaths.organization.settings}`
+                  : `${basePaths.organization}/${organizationViewPaths.organization.settings}`,
               })
             }
           >
@@ -158,7 +141,7 @@ export function Organization({
                 navigate({
                   to: slug
                     ? `${basePaths.organization}/${slugPrefix}${slug}/${organizationViewPaths.organization.teams}`
-                    : `${basePaths.organization}/${organizationViewPaths.organization.teams}`
+                    : `${basePaths.organization}/${organizationViewPaths.organization.teams}`,
                 })
               }
             >
@@ -176,7 +159,7 @@ export function Organization({
                 navigate({
                   to: slug
                     ? `${basePaths.organization}/${slugPrefix}${slug}/${organizationViewPaths.organization.roles}`
-                    : `${basePaths.organization}/${organizationViewPaths.organization.roles}`
+                    : `${basePaths.organization}/${organizationViewPaths.organization.roles}`,
                 })
               }
             >
@@ -193,7 +176,7 @@ export function Organization({
                 navigate({
                   to: slug
                     ? `${basePaths.organization}/${slugPrefix}${slug}/${tab.path}`
-                    : `${basePaths.organization}/${tab.path}`
+                    : `${basePaths.organization}/${tab.path}`,
                 })
               }
             >
@@ -208,7 +191,7 @@ export function Organization({
               navigate({
                 to: slug
                   ? `${basePaths.organization}/${slugPrefix}${slug}/${organizationViewPaths.organization.people}`
-                  : `${basePaths.organization}/${organizationViewPaths.organization.people}`
+                  : `${basePaths.organization}/${organizationViewPaths.organization.people}`,
               })
             }
           >
@@ -247,7 +230,7 @@ export function Organization({
       )}
 
       {extensionTabs.map((tab) => {
-        const Extension = tab.component
+        const Extension = tab.component;
         return (
           <TabsContent key={tab.id} value={tab.id} tabIndex={-1}>
             <Extension
@@ -255,8 +238,8 @@ export function Organization({
               organizationSlug={activeOrganization?.slug ?? ""}
             />
           </TabsContent>
-        )
+        );
       })}
     </Tabs>
-  )
+  );
 }

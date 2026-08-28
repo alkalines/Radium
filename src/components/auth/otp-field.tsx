@@ -1,32 +1,28 @@
-import { REGEXP_ONLY_DIGITS } from "input-otp"
-import { useId } from "react"
+import { REGEXP_ONLY_DIGITS } from "input-otp";
+import { useId } from "react";
 
-import { Field, FieldError, FieldLabel } from "@/components/ui/field"
-import {
-  InputOTP,
-  InputOTPGroup,
-  InputOTPSlot
-} from "@/components/ui/input-otp"
-import { cn } from "@/lib/utils"
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
+import { cn } from "@/lib/utils";
 
 export type OtpFieldProps = {
   /** Visible label rendered above the slots. */
-  label: string
+  label: string;
   /** Number of slots — keep in sync with the server's code length. */
-  length: number
-  value: string
-  onChange: (value: string) => void
-  onComplete?: (value: string) => void
-  autoFocus?: boolean
-  className?: string
-  errorMessage?: string
-  disabled?: boolean
-  name?: string
-}
+  length: number;
+  value: string;
+  onChange: (value: string) => void;
+  onComplete?: (value: string) => void;
+  autoFocus?: boolean;
+  className?: string;
+  errorMessage?: string;
+  disabled?: boolean;
+  name?: string;
+};
 
 /** Strip everything the numeric slots can't hold — pasted codes often carry spaces or dashes. */
 function normalizeCode(value: string) {
-  return value.replace(/\D/g, "")
+  return value.replace(/\D/g, "");
 }
 
 /**
@@ -50,9 +46,9 @@ export function OtpField({
   name,
   onChange,
   onComplete,
-  value
+  value,
 }: OtpFieldProps) {
-  const inputId = useId()
+  const inputId = useId();
 
   return (
     <Field className={cn(className)} data-invalid={!!errorMessage}>
@@ -73,21 +69,16 @@ export function OtpField({
         pattern={REGEXP_ONLY_DIGITS}
         value={value}
         onChange={(next) => onChange(normalizeCode(next))}
-        onComplete={(completedCode) =>
-          onComplete?.(normalizeCode(completedCode))
-        }
+        onComplete={(completedCode) => onComplete?.(normalizeCode(completedCode))}
       >
         <InputOTPGroup>
           {Array.from({ length }, (_, slotIndex) => (
-            <InputOTPSlot
-              index={slotIndex}
-              key={`otp-slot-${String(slotIndex + 1)}`}
-            />
+            <InputOTPSlot index={slotIndex} key={`otp-slot-${String(slotIndex + 1)}`} />
           ))}
         </InputOTPGroup>
       </InputOTP>
 
       <FieldError>{errorMessage}</FieldError>
     </Field>
-  )
+  );
 }

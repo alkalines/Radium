@@ -119,7 +119,11 @@ export const RenameChat = mutation({
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
     if (!chat || chat.userId !== identity._id) return "Chat not Found.";
 
-    const title = args.title.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 32);
+    const title = args.title
+      .replace(/[\r\n]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 32);
     if (!title) return "Title is required.";
 
     await ctx.db.patch("aisdk_chats", args.chatId, { title });
@@ -139,7 +143,9 @@ export const SetChatPinned = mutation({
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
     if (!chat || chat.userId !== identity._id) return "Chat not Found.";
 
-    await ctx.db.patch("aisdk_chats", args.chatId, { pinnedAt: args.pinned ? Date.now() : undefined });
+    await ctx.db.patch("aisdk_chats", args.chatId, {
+      pinnedAt: args.pinned ? Date.now() : undefined,
+    });
     return null;
   },
 });

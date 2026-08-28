@@ -1,30 +1,23 @@
-import { getAuthLinkURL } from "@better-auth-ui/core"
-import type { EmailOtpAuthClient } from "@better-auth-ui/core/plugins/email-otp"
-import { useAuth, useAuthPlugin, useFetchOptions } from "@better-auth-ui/react"
-import { useRequestPasswordResetOtp } from "@better-auth-ui/react/plugins/email-otp"
-import { type SyntheticEvent, useState } from "react"
+import { getAuthLinkURL } from "@better-auth-ui/core";
+import type { EmailOtpAuthClient } from "@better-auth-ui/core/plugins/email-otp";
+import { useAuth, useAuthPlugin, useFetchOptions } from "@better-auth-ui/react";
+import { useRequestPasswordResetOtp } from "@better-auth-ui/react/plugins/email-otp";
+import { type SyntheticEvent, useState } from "react";
 
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel
-} from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Spinner } from "@/components/ui/spinner"
-import { emailOtpPlugin } from "@/lib/auth/email-otp-plugin"
-import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { emailOtpPlugin } from "@/lib/auth/email-otp-plugin";
+import { cn } from "@/lib/utils";
 
 /** `sessionStorage` key the reset-code form reads the pending address from. */
-export const RESET_PASSWORD_OTP_STORAGE_KEY =
-  "better-auth-ui.reset-password-otp"
+export const RESET_PASSWORD_OTP_STORAGE_KEY = "better-auth-ui.reset-password-otp";
 
 export type ForgotPasswordOtpProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Request a password-reset code instead of a reset link.
@@ -37,50 +30,40 @@ export type ForgotPasswordOtpProps = {
  * @param className - Additional CSS classes applied to the card.
  */
 export function ForgotPasswordOtp({ className }: ForgotPasswordOtpProps) {
-  const {
-    authClient,
-    basePaths,
-    localization,
-    navigate,
-    plugins,
-    redirectTo,
-    viewPaths,
-    Link
-  } = useAuth()
-  const { localization: emailOtpLocalization } = useAuthPlugin(emailOtpPlugin)
+  const { authClient, basePaths, localization, navigate, plugins, redirectTo, viewPaths, Link } =
+    useAuth();
+  const { localization: emailOtpLocalization } = useAuthPlugin(emailOtpPlugin);
 
-  const { fetchOptions, resetFetchOptions } = useFetchOptions()
-  const [fieldErrors, setFieldErrors] = useState<{ email?: string }>({})
+  const { fetchOptions, resetFetchOptions } = useFetchOptions();
+  const [fieldErrors, setFieldErrors] = useState<{ email?: string }>({});
 
-  const { mutate: requestPasswordResetOtp, isPending } =
-    useRequestPasswordResetOtp(authClient as EmailOtpAuthClient, {
+  const { mutate: requestPasswordResetOtp, isPending } = useRequestPasswordResetOtp(
+    authClient as EmailOtpAuthClient,
+    {
       onError: () => resetFetchOptions(),
       onSuccess: (_data, { email }) => {
-        sessionStorage.setItem(RESET_PASSWORD_OTP_STORAGE_KEY, email)
-        navigate({ to: `${basePaths.auth}/${viewPaths.auth.resetPassword}` })
-      }
-    })
+        sessionStorage.setItem(RESET_PASSWORD_OTP_STORAGE_KEY, email);
+        navigate({ to: `${basePaths.auth}/${viewPaths.auth.resetPassword}` });
+      },
+    },
+  );
 
   const handleSubmit = (e: SyntheticEvent<HTMLFormElement>) => {
-    e.preventDefault()
+    e.preventDefault();
 
-    const formData = new FormData(e.currentTarget)
+    const formData = new FormData(e.currentTarget);
     requestPasswordResetOtp({
       email: formData.get("email") as string,
-      fetchOptions
-    })
-  }
+      fetchOptions,
+    });
+  };
 
-  const Captcha = plugins.find(
-    (plugin) => plugin.captchaComponent
-  )?.captchaComponent
+  const Captcha = plugins.find((plugin) => plugin.captchaComponent)?.captchaComponent;
 
   return (
     <Card className={cn("w-full max-w-sm", className)}>
       <CardHeader>
-        <CardTitle className="text-xl">
-          {localization.auth.forgotPassword}
-        </CardTitle>
+        <CardTitle className="text-xl">{localization.auth.forgotPassword}</CardTitle>
       </CardHeader>
 
       <CardContent>
@@ -97,16 +80,14 @@ export function ForgotPasswordOtp({ className }: ForgotPasswordOtpProps) {
                 placeholder={localization.auth.emailPlaceholder}
                 required
                 disabled={isPending}
-                onChange={() =>
-                  setFieldErrors((prev) => ({ ...prev, email: undefined }))
-                }
+                onChange={() => setFieldErrors((prev) => ({ ...prev, email: undefined }))}
                 onInvalid={(e) => {
-                  e.preventDefault()
+                  e.preventDefault();
 
                   setFieldErrors((prev) => ({
                     ...prev,
-                    email: (e.target as HTMLInputElement).validationMessage
-                  }))
+                    email: (e.target as HTMLInputElement).validationMessage,
+                  }));
                 }}
                 aria-invalid={!!fieldErrors.email}
               />
@@ -128,10 +109,7 @@ export function ForgotPasswordOtp({ className }: ForgotPasswordOtpProps) {
           <FieldDescription className="text-center">
             {localization.auth.rememberYourPassword}{" "}
             <Link
-              href={getAuthLinkURL(
-                `${basePaths.auth}/${viewPaths.auth.signIn}`,
-                redirectTo
-              )}
+              href={getAuthLinkURL(`${basePaths.auth}/${viewPaths.auth.signIn}`, redirectTo)}
               className="underline underline-offset-4"
             >
               {localization.auth.signIn}
@@ -140,5 +118,5 @@ export function ForgotPasswordOtp({ className }: ForgotPasswordOtpProps) {
         </div>
       </CardContent>
     </Card>
-  )
+  );
 }

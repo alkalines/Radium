@@ -1,35 +1,32 @@
 import type {
   ListedUserTeam,
-  OrganizationAuthClient
-} from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import {
-  useListUserTeams,
-  useSetActiveTeam
-} from "@better-auth-ui/react/plugins/organization"
-import { Check, ChevronsUpDown, Users } from "lucide-react"
-import { type ReactElement, useState } from "react"
-import { buttonVariants } from "@/components/ui/button"
+  OrganizationAuthClient,
+} from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useListUserTeams, useSetActiveTeam } from "@better-auth-ui/react/plugins/organization";
+import { Check, ChevronsUpDown, Users } from "lucide-react";
+import { type ReactElement, useState } from "react";
+import { buttonVariants } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuTrigger
-} from "@/components/ui/dropdown-menu"
-import { Skeleton } from "@/components/ui/skeleton"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { cn } from "@/lib/utils"
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Skeleton } from "@/components/ui/skeleton";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { cn } from "@/lib/utils";
 
 export type TeamSwitcherProps = {
-  organizationId: string
-  teamId?: string | null
-  onTeamChange?: (team: ListedUserTeam | null) => void
-  syncSession?: boolean
-  allowClear?: boolean
-  className?: string
-  align?: "center" | "end" | "start"
-  trigger?: ReactElement
-}
+  organizationId: string;
+  teamId?: string | null;
+  onTeamChange?: (team: ListedUserTeam | null) => void;
+  syncSession?: boolean;
+  allowClear?: boolean;
+  className?: string;
+  align?: "center" | "end" | "start";
+  trigger?: ReactElement;
+};
 
 export function TeamSwitcher({
   organizationId,
@@ -39,23 +36,23 @@ export function TeamSwitcher({
   allowClear = true,
   className,
   align,
-  trigger
+  trigger,
 }: TeamSwitcherProps) {
-  const { authClient } = useAuth<OrganizationAuthClient>()
-  const { localization } = useAuthPlugin(organizationPlugin)
-  const [open, setOpen] = useState(false)
+  const { authClient } = useAuth<OrganizationAuthClient>();
+  const { localization } = useAuthPlugin(organizationPlugin);
+  const [open, setOpen] = useState(false);
   const teams = useListUserTeams(authClient, {
-    query: { organizationId }
-  })
-  const setActiveTeam = useSetActiveTeam(authClient)
-  const selectedTeam = teams.data?.find((team) => team.id === teamId)
+    query: { organizationId },
+  });
+  const setActiveTeam = useSetActiveTeam(authClient);
+  const selectedTeam = teams.data?.find((team) => team.id === teamId);
 
   function selectTeam(team: ListedUserTeam | null) {
-    onTeamChange?.(team)
-    setOpen(false)
+    onTeamChange?.(team);
+    setOpen(false);
 
     if (syncSession) {
-      setActiveTeam.mutate({ organizationId, teamId: team?.id ?? null })
+      setActiveTeam.mutate({ organizationId, teamId: team?.id ?? null });
     }
   }
 
@@ -65,11 +62,7 @@ export function TeamSwitcher({
         <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       ) : (
         <DropdownMenuTrigger
-          className={cn(
-            buttonVariants({ variant: "outline" }),
-            "justify-between gap-3",
-            className
-          )}
+          className={cn(buttonVariants({ variant: "outline" }), "justify-between gap-3", className)}
           disabled={teams.isPending || setActiveTeam.isPending}
         >
           <span className="flex min-w-0 items-center gap-2">
@@ -77,9 +70,7 @@ export function TeamSwitcher({
             {teams.isPending ? (
               <Skeleton className="h-4 w-24" />
             ) : (
-              <span className="truncate">
-                {selectedTeam?.name ?? localization.selectTeam}
-              </span>
+              <span className="truncate">{selectedTeam?.name ?? localization.selectTeam}</span>
             )}
           </span>
           <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
@@ -88,9 +79,7 @@ export function TeamSwitcher({
       <DropdownMenuContent align={align} className="min-w-56">
         {allowClear && (
           <DropdownMenuItem onClick={() => selectTeam(null)}>
-            <span className="min-w-0 flex-1 truncate">
-              {localization.allTeams}
-            </span>
+            <span className="min-w-0 flex-1 truncate">{localization.allTeams}</span>
             {!teamId && <Check className="size-4" />}
           </DropdownMenuItem>
         )}
@@ -101,11 +90,9 @@ export function TeamSwitcher({
           </DropdownMenuItem>
         ))}
         {!teams.isPending && teams.data?.length === 0 && (
-          <div className="px-2 py-1.5 text-sm text-muted-foreground">
-            {localization.noTeams}
-          </div>
+          <div className="px-2 py-1.5 text-sm text-muted-foreground">{localization.noTeams}</div>
         )}
       </DropdownMenuContent>
     </DropdownMenu>
-  )
+  );
 }

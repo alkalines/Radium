@@ -1,25 +1,24 @@
-"use client"
+"use client";
 
-import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useActiveOrganization } from "@better-auth-ui/react/plugins/organization"
-import { useState } from "react"
+import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useActiveOrganization } from "@better-auth-ui/react/plugins/organization";
+import { useState } from "react";
 
-import { Button } from "@/components/ui/button"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { LeaveOrganizationDialog } from "./leave-organization-dialog"
+import { Button } from "@/components/ui/button";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { LeaveOrganizationDialog } from "./leave-organization-dialog";
 
 /**
  * Danger-zone row to leave the active organization.
  */
 export function LeaveOrganization() {
-  const { authClient } = useAuth<OrganizationAuthClient>()
-  const { localization: organizationLocalization } =
-    useAuthPlugin(organizationPlugin)
+  const { authClient } = useAuth<OrganizationAuthClient>();
+  const { localization: organizationLocalization } = useAuthPlugin(organizationPlugin);
 
-  const { data: activeOrganization } = useActiveOrganization(authClient)
+  const { data: activeOrganization } = useActiveOrganization(authClient);
 
-  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -51,5 +50,5 @@ export function LeaveOrganization() {
         />
       )}
     </div>
-  )
+  );
 }

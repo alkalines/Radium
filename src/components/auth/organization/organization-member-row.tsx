@@ -1,101 +1,102 @@
-import { formatAdditionalFieldValue } from "@better-auth-ui/core"
+import { formatAdditionalFieldValue } from "@better-auth-ui/core";
 import {
   hasMemberRole,
   memberRoleLabels,
   mergeOrganizationRoleLabels,
-  type OrganizationAuthClient
-} from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react"
+  type OrganizationAuthClient,
+} from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react";
 import {
   useHasPermission,
   useListRoles,
-  useListUserTeams
-} from "@better-auth-ui/react/plugins/organization"
-import type { Member, Organization, User } from "better-auth/client"
-import { LogOut, Pencil, Trash2 } from "lucide-react"
-import { useState } from "react"
+  useListUserTeams,
+} from "@better-auth-ui/react/plugins/organization";
+import type { Member, Organization, User } from "better-auth/client";
+import { LogOut, Pencil, Trash2 } from "lucide-react";
+import { useState } from "react";
 
-import { Button } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
-import { TableCell, TableRow } from "@/components/ui/table"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { UserView } from "../user/user-view"
-import { EditMemberRolesDialog } from "./edit-member-roles-dialog"
-import { LeaveOrganizationDialog } from "./leave-organization-dialog"
-import { RemoveMemberDialog } from "./remove-member-dialog"
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { TableCell, TableRow } from "@/components/ui/table";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { UserView } from "../user/user-view";
+import { EditMemberRolesDialog } from "./edit-member-roles-dialog";
+import { LeaveOrganizationDialog } from "./leave-organization-dialog";
+import { RemoveMemberDialog } from "./remove-member-dialog";
 
 export type OrganizationMemberRowProps = {
-  member: Member & { user: Partial<User> }
-  isOwner?: boolean
-  ownerCount?: number
-  organization: Organization
-  showTeams?: boolean
-}
+  member: Member & { user: Partial<User> };
+  isOwner?: boolean;
+  ownerCount?: number;
+  organization: Organization;
+  showTeams?: boolean;
+};
 
 export function OrganizationMemberRow({
   member,
   isOwner,
   ownerCount,
   organization,
-  showTeams
+  showTeams,
 }: OrganizationMemberRowProps) {
-  const { authClient } = useAuth<OrganizationAuthClient>()
+  const { authClient } = useAuth<OrganizationAuthClient>();
   const {
     modelFields: { member: memberFields },
     dynamicAccessControl,
     creatorRole,
     localization: organizationLocalization,
-    roles
-  } = useAuthPlugin(organizationPlugin)
+    roles,
+  } = useAuthPlugin(organizationPlugin);
 
-  const { data: session } = useSession(authClient)
+  const { data: session } = useSession(authClient);
   const canReadRoles = useHasPermission(authClient, {
     organizationId: organization.id,
-    permissions: { ac: ["read"] }
-  })
+    permissions: { ac: ["read"] },
+  });
   const dynamicRoles = useListRoles(authClient, {
     query: { organizationId: organization.id },
-    enabled:
-      dynamicAccessControl?.enabled === true &&
-      canReadRoles.data?.success === true
-  })
+    enabled: dynamicAccessControl?.enabled === true && canReadRoles.data?.success === true,
+  });
   const memberTeams = useListUserTeams(authClient, {
     query: {
       organizationId: organization.id,
-      userId: member.userId
+      userId: member.userId,
     },
-    enabled: showTeams === true
-  })
+    enabled: showTeams === true,
+  });
 
-  const { data: hasUpdatePermission, isPending: updatePermissionPending } =
-    useHasPermission(authClient, {
+  const { data: hasUpdatePermission, isPending: updatePermissionPending } = useHasPermission(
+    authClient,
+    {
       organizationId: organization.id,
-      permissions: { member: ["update"] }
-    })
+      permissions: { member: ["update"] },
+    },
+  );
 
-  const { data: hasDeletePermission, isPending: deletePermissionPending } =
-    useHasPermission(authClient, {
+  const { data: hasDeletePermission, isPending: deletePermissionPending } = useHasPermission(
+    authClient,
+    {
       organizationId: organization.id,
-      permissions: { member: ["delete"] }
-    })
+      permissions: { member: ["delete"] },
+    },
+  );
 
-  const mergedRoles = mergeOrganizationRoleLabels(roles, dynamicRoles.data)
-  const roleLabel = memberRoleLabels(member.role, mergedRoles).join(", ")
-  const teamNames = memberTeams.data?.map((team) => team.name).join(", ")
+  const mergedRoles = mergeOrganizationRoleLabels(roles, dynamicRoles.data);
+  const roleLabel = memberRoleLabels(member.role, mergedRoles).join(", ");
+  const teamNames = memberTeams.data?.map((team) => team.name).join(", ");
 
   const assignableRoles = Object.entries(mergedRoles).filter(
-    ([key]) => isOwner || key !== creatorRole
-  )
+    ([key]) => isOwner || key !== creatorRole,
+  );
 
-  const isCurrentUser = session?.user.id === member.userId
-  const targetIsOwner = hasMemberRole(member.role, creatorRole)
-  const canManageTarget = isOwner || !targetIsOwner
-  const onlyOwnerActionDisabled =
-    targetIsOwner && (ownerCount === undefined || ownerCount <= 1)
+  const isCurrentUser = session?.user.id === member.userId;
+  const targetIsOwner = hasMemberRole(member.role, creatorRole);
+  const canManageTarget = isOwner || !targetIsOwner;
+  const onlyOwnerActionDisabled = targetIsOwner && (ownerCount === undefined || ownerCount <= 1);
 
-  const [removeOpen, setRemoveOpen] = useState(false)
-  const [leaveOpen, setLeaveOpen] = useState(false)
-  const [roleEditorOpen, setRoleEditorOpen] = useState(false)
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const [leaveOpen, setLeaveOpen] = useState(false);
+  const [roleEditorOpen, setRoleEditorOpen] = useState(false);
 
   return (
     <TableRow>
@@ -104,13 +105,13 @@ export function OrganizationMemberRow({
           <UserView user={member.user} />
           {memberFields.map((field) => {
             const value = formatAdditionalFieldValue(
-              (member as unknown as Record<string, unknown>)[field.name]
-            )
+              (member as unknown as Record<string, unknown>)[field.name],
+            );
             return value ? (
               <span className="text-xs text-muted-foreground" key={field.name}>
                 {field.label}: {value}
               </span>
-            ) : null
+            ) : null;
           })}
         </div>
       </TableCell>
@@ -124,9 +125,7 @@ export function OrganizationMemberRow({
           ) : memberTeams.isError ? null : teamNames ? (
             teamNames
           ) : (
-            <span className="text-muted-foreground">
-              {organizationLocalization.noTeams}
-            </span>
+            <span className="text-muted-foreground">{organizationLocalization.noTeams}</span>
           )}
         </TableCell>
       )}
@@ -152,9 +151,7 @@ export function OrganizationMemberRow({
               variant="ghost"
             >
               <Pencil />
-              <span className="sr-only">
-                {organizationLocalization.changeMemberRole}
-              </span>
+              <span className="sr-only">{organizationLocalization.changeMemberRole}</span>
             </Button>
           )}
 
@@ -225,14 +222,10 @@ export function OrganizationMemberRow({
           canManageTarget &&
           hasDeletePermission?.success &&
           !onlyOwnerActionDisabled && (
-            <RemoveMemberDialog
-              open={removeOpen}
-              onOpenChange={setRemoveOpen}
-              member={member}
-            />
+            <RemoveMemberDialog open={removeOpen} onOpenChange={setRemoveOpen} member={member} />
           )
         )}
       </TableCell>
     </TableRow>
-  )
+  );
 }

@@ -200,19 +200,19 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     status,
     stop,
   } = useChat({
-      id: chatId,
-      sendAutomaticallyWhen: ({ messages: nextMessages }) => {
-        const continuationKey = getApprovalContinuationKey(nextMessages);
+    id: chatId,
+    sendAutomaticallyWhen: ({ messages: nextMessages }) => {
+      const continuationKey = getApprovalContinuationKey(nextMessages);
 
-        if (!continuationKey || submittedApprovalContinuations.current.has(continuationKey)) {
-          return false;
-        }
+      if (!continuationKey || submittedApprovalContinuations.current.has(continuationKey)) {
+        return false;
+      }
 
-        submittedApprovalContinuations.current.add(continuationKey);
-        return true;
-      },
-      transport,
-    });
+      submittedApprovalContinuations.current.add(continuationKey);
+      return true;
+    },
+    transport,
+  });
 
   useEffect(() => {
     if (handoffPrompt === null) {
@@ -620,10 +620,7 @@ function ChatMessage({
 
             if (part.type === "reasoning") {
               return (
-                <Reasoning
-                  isStreaming={part.state === "streaming"}
-                  key={`${message.id}-${index}`}
-                >
+                <Reasoning isStreaming={part.state === "streaming"} key={`${message.id}-${index}`}>
                   <ReasoningTrigger />
                   <ReasoningContent>{part.text}</ReasoningContent>
                 </Reasoning>

@@ -1,22 +1,22 @@
-"use client"
+"use client";
 
-import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useListOrganizations } from "@better-auth-ui/react/plugins/organization"
-import { Fragment, useState } from "react"
+import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useListOrganizations } from "@better-auth-ui/react/plugins/organization";
+import { Fragment, useState } from "react";
 
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { Item, ItemGroup, ItemSeparator } from "@/components/ui/item"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { CreateOrganizationDialog } from "./create-organization-dialog"
-import { OrganizationRow } from "./organization-row"
-import { OrganizationViewSkeleton } from "./organization-view-skeleton"
-import { OrganizationsEmpty } from "./organizations-empty"
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Item, ItemGroup, ItemSeparator } from "@/components/ui/item";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { CreateOrganizationDialog } from "./create-organization-dialog";
+import { OrganizationRow } from "./organization-row";
+import { OrganizationViewSkeleton } from "./organization-view-skeleton";
+import { OrganizationsEmpty } from "./organizations-empty";
 
 export type OrganizationsProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Lists organizations the user belongs to (via `useListOrganizations`): loading skeleton,
@@ -24,21 +24,19 @@ export type OrganizationsProps = {
  * Owns `CreateOrganizationDialog` open state and the create actions.
  */
 export function Organizations({ className }: OrganizationsProps) {
-  const { authClient } = useAuth<OrganizationAuthClient>()
+  const { authClient } = useAuth<OrganizationAuthClient>();
   const {
     allowOrganizationCreation,
     localization: organizationLocalization,
-    organizationLimit
-  } = useAuthPlugin(organizationPlugin)
+    organizationLimit,
+  } = useAuthPlugin(organizationPlugin);
 
-  const [createOpen, setCreateOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false);
 
-  const { data: organizations, isPending: organizationsPending } =
-    useListOrganizations(authClient)
+  const { data: organizations, isPending: organizationsPending } = useListOrganizations(authClient);
   const canCreate =
     allowOrganizationCreation &&
-    (organizationLimit === undefined ||
-      (organizations?.length ?? 0) < organizationLimit)
+    (organizationLimit === undefined || (organizations?.length ?? 0) < organizationLimit);
 
   return (
     <>
@@ -89,12 +87,7 @@ export function Organizations({ className }: OrganizationsProps) {
         </div>
       </div>
 
-      {canCreate && (
-        <CreateOrganizationDialog
-          open={createOpen}
-          onOpenChange={setCreateOpen}
-        />
-      )}
+      {canCreate && <CreateOrganizationDialog open={createOpen} onOpenChange={setCreateOpen} />}
     </>
-  )
+  );
 }

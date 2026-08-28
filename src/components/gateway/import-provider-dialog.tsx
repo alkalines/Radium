@@ -22,7 +22,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
@@ -40,11 +46,7 @@ import {
 import type { AIProviderNpmPackage } from "@/utils/types/ai_provider";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
-import {
-  formatPerMillion,
-  formatTokens,
-  useModelsDevCatalogue,
-} from "./models-dev-catalogue";
+import { formatPerMillion, formatTokens, useModelsDevCatalogue } from "./models-dev-catalogue";
 import { CustomProviderForm } from "./custom-provider-form";
 import { ProviderLogo } from "./provider-logo";
 
@@ -241,7 +243,8 @@ function ConfigureProvider({
   const upsertCredentials = useMutation(api.providers.upsertCredentials);
 
   const mapped = useMemo<MappedModel[]>(
-    () => Object.values(provider.models ?? {}).map((model) => mapModelsDevModel(provider.id, model)),
+    () =>
+      Object.values(provider.models ?? {}).map((model) => mapModelsDevModel(provider.id, model)),
     [provider],
   );
 
@@ -263,7 +266,8 @@ function ConfigureProvider({
   const authors = useMemo(() => {
     const bySlug = new Map<string, string>();
     for (const model of mapped) {
-      if (selected.has(model.upstreamId)) bySlug.set(model.global.author.slug, model.global.author.name);
+      if (selected.has(model.upstreamId))
+        bySlug.set(model.global.author.slug, model.global.author.name);
     }
     return [...bySlug.entries()].map(([slug, name]) => ({ slug, name }));
   }, [mapped, selected]);
@@ -384,7 +388,11 @@ function ConfigureProvider({
                   checked && "bg-accent/50",
                 )}
               >
-                <Checkbox checked={checked} onCheckedChange={() => toggle(model.upstreamId)} className="mt-0.5" />
+                <Checkbox
+                  checked={checked}
+                  onCheckedChange={() => toggle(model.upstreamId)}
+                  className="mt-0.5"
+                />
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium">{model.global.name}</span>

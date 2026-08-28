@@ -79,9 +79,7 @@ export const availableModels = query({
         ...model,
         author: await ctx.db.get("authors", model.author),
         providers: providers.flatMap((provider) => {
-          const providerModel = provider.models.find(
-            (candidate) => candidate.model === model.slug,
-          );
+          const providerModel = provider.models.find((candidate) => candidate.model === model.slug);
 
           return providerModel ? [{ ...providerModel, id: provider.slug }] : [];
         }),

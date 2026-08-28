@@ -1,34 +1,31 @@
-"use client"
+"use client";
 
-import { useAuthPlugin } from "@better-auth-ui/react"
-import { MailWarning, Send } from "lucide-react"
+import { useAuthPlugin } from "@better-auth-ui/react";
+import { MailWarning, Send } from "lucide-react";
 
 import {
   Empty,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
-  EmptyTitle
-} from "@/components/ui/empty"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
 
 /**
  * Empty state for `UserInvitations`.
  */
 export function UserInvitationsEmpty({
-  verificationRequired = false
+  verificationRequired = false,
 }: {
-  verificationRequired?: boolean
+  verificationRequired?: boolean;
 }) {
-  const { localization: organizationLocalization } =
-    useAuthPlugin(organizationPlugin)
+  const { localization: organizationLocalization } = useAuthPlugin(organizationPlugin);
 
   return (
     <Empty>
       <EmptyHeader>
-        <EmptyMedia variant="icon">
-          {verificationRequired ? <MailWarning /> : <Send />}
-        </EmptyMedia>
+        <EmptyMedia variant="icon">{verificationRequired ? <MailWarning /> : <Send />}</EmptyMedia>
         <EmptyTitle>
           {verificationRequired
             ? organizationLocalization.verifyEmailToViewInvitations
@@ -41,5 +38,5 @@ export function UserInvitationsEmpty({
         </EmptyDescription>
       </EmptyHeader>
     </Empty>
-  )
+  );
 }

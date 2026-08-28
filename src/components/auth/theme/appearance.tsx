@@ -2,25 +2,20 @@ import {
   ThemePreviewDark,
   ThemePreviewLight,
   ThemePreviewSystem,
-  useAuthPlugin
-} from "@better-auth-ui/react"
-import { Monitor, Moon, Sun } from "lucide-react"
-import { useEffect, useState } from "react"
+  useAuthPlugin,
+} from "@better-auth-ui/react";
+import { Monitor, Moon, Sun } from "lucide-react";
+import { useEffect, useState } from "react";
 
-import { Card, CardContent } from "@/components/ui/card"
-import {
-  Field,
-  FieldContent,
-  FieldLabel,
-  FieldTitle
-} from "@/components/ui/field"
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import { themePlugin } from "@/lib/auth/theme-plugin"
-import { cn } from "@/lib/utils"
+import { Card, CardContent } from "@/components/ui/card";
+import { Field, FieldContent, FieldLabel, FieldTitle } from "@/components/ui/field";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { themePlugin } from "@/lib/auth/theme-plugin";
+import { cn } from "@/lib/utils";
 
 export type AppearanceProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Renders a theme selector card with visual theme previews.
@@ -32,11 +27,11 @@ export type AppearanceProps = {
  * @returns A JSX element containing the theme selector card.
  */
 export function Appearance({ className }: AppearanceProps) {
-  const { useTheme, localization } = useAuthPlugin(themePlugin)
-  const { theme, setTheme, themes = [] } = useTheme()
+  const { useTheme, localization } = useAuthPlugin(themePlugin);
+  const { theme, setTheme, themes = [] } = useTheme();
 
-  const [isMounted, setIsMounted] = useState(false)
-  useEffect(() => setIsMounted(true), [])
+  const [isMounted, setIsMounted] = useState(false);
+  useEffect(() => setIsMounted(true), []);
 
   return (
     <div>
@@ -117,5 +112,5 @@ export function Appearance({ className }: AppearanceProps) {
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

@@ -1,24 +1,24 @@
-import { useAuthPlugin } from "@better-auth-ui/react"
-import { Key } from "lucide-react"
+import { useAuthPlugin } from "@better-auth-ui/react";
+import { Key } from "lucide-react";
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/button";
 import {
   Empty,
   EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
-  EmptyTitle
-} from "@/components/ui/empty"
-import { apiKeyPlugin } from "@/lib/auth/api-key-plugin"
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { apiKeyPlugin } from "@/lib/auth/api-key-plugin";
 
 export type ApiKeysEmptyProps = {
-  onCreatePress: () => void
-  hideCreate?: boolean
-}
+  onCreatePress: () => void;
+  hideCreate?: boolean;
+};
 
 export function ApiKeysEmpty({ onCreatePress, hideCreate }: ApiKeysEmptyProps) {
-  const { localization: apiKeyLocalization } = useAuthPlugin(apiKeyPlugin)
+  const { localization: apiKeyLocalization } = useAuthPlugin(apiKeyPlugin);
 
   return (
     <Empty>
@@ -27,9 +27,7 @@ export function ApiKeysEmpty({ onCreatePress, hideCreate }: ApiKeysEmptyProps) {
           <Key />
         </EmptyMedia>
         <EmptyTitle>{apiKeyLocalization.noApiKeys}</EmptyTitle>
-        <EmptyDescription>
-          {apiKeyLocalization.apiKeysDescription}
-        </EmptyDescription>
+        <EmptyDescription>{apiKeyLocalization.apiKeysDescription}</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
         {!hideCreate && (
@@ -39,5 +37,5 @@ export function ApiKeysEmpty({ onCreatePress, hideCreate }: ApiKeysEmptyProps) {
         )}
       </EmptyContent>
     </Empty>
-  )
+  );
 }

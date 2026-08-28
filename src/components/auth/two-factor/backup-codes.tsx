@@ -1,24 +1,16 @@
-"use client"
+"use client";
 
-import {
-  downloadTextFile,
-  formatBackupCodesText,
-  printTextFile
-} from "@better-auth-ui/core"
-import {
-  useAuth,
-  useAuthPlugin,
-  useCopyToClipboard
-} from "@better-auth-ui/react"
-import { Check, Copy, Download, Printer } from "lucide-react"
-import { toast } from "sonner"
+import { downloadTextFile, formatBackupCodesText, printTextFile } from "@better-auth-ui/core";
+import { useAuth, useAuthPlugin, useCopyToClipboard } from "@better-auth-ui/react";
+import { Check, Copy, Download, Printer } from "lucide-react";
+import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button"
-import { twoFactorPlugin } from "@/lib/auth/two-factor-plugin"
+import { Button } from "@/components/ui/button";
+import { twoFactorPlugin } from "@/lib/auth/two-factor-plugin";
 
 export type BackupCodesProps = {
-  codes: string[]
-}
+  codes: string[];
+};
 
 /**
  * One-time display of freshly generated backup codes.
@@ -30,15 +22,15 @@ export type BackupCodesProps = {
  * @param codes - Backup codes returned by enable or regenerate.
  */
 export function BackupCodes({ codes }: BackupCodesProps) {
-  const { localization } = useAuth()
-  const { localization: twoFactorLocalization } = useAuthPlugin(twoFactorPlugin)
+  const { localization } = useAuth();
+  const { localization: twoFactorLocalization } = useAuthPlugin(twoFactorPlugin);
   const { copied, copy } = useCopyToClipboard({
-    onError: () => toast.error(twoFactorLocalization.backupCodesCopyFailed)
-  })
+    onError: () => toast.error(twoFactorLocalization.backupCodesCopyFailed),
+  });
   const getBackupCodesText = () =>
-    formatBackupCodesText(codes, twoFactorLocalization, window.location.origin)
+    formatBackupCodesText(codes, twoFactorLocalization, window.location.origin);
 
-  const copyCodes = () => copy(getBackupCodesText())
+  const copyCodes = () => copy(getBackupCodesText());
 
   return (
     <div className="flex flex-col gap-3">
@@ -60,17 +52,11 @@ export function BackupCodes({ codes }: BackupCodesProps) {
           size="sm"
           variant="outline"
           aria-label={
-            copied
-              ? twoFactorLocalization.backupCodesCopied
-              : localization.settings.copyToClipboard
+            copied ? twoFactorLocalization.backupCodesCopied : localization.settings.copyToClipboard
           }
           onClick={copyCodes}
         >
-          {copied ? (
-            <Check data-icon="inline-start" />
-          ) : (
-            <Copy data-icon="inline-start" />
-          )}
+          {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
           {localization.settings.copyToClipboard}
         </Button>
 
@@ -78,9 +64,7 @@ export function BackupCodes({ codes }: BackupCodesProps) {
           type="button"
           size="sm"
           variant="outline"
-          onClick={() =>
-            downloadTextFile(getBackupCodesText(), "backup-codes.txt")
-          }
+          onClick={() => downloadTextFile(getBackupCodesText(), "backup-codes.txt")}
         >
           <Download data-icon="inline-start" />
           {twoFactorLocalization.downloadBackupCodes}
@@ -97,5 +81,5 @@ export function BackupCodes({ codes }: BackupCodesProps) {
         </Button>
       </div>
     </div>
-  )
+  );
 }

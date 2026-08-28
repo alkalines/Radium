@@ -1,71 +1,60 @@
-import { type AuthView, authMutationKeys } from "@better-auth-ui/core"
-import {
-  type SiweAuthClient,
-  siweMutationKeys
-} from "@better-auth-ui/core/plugins/siwe"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useSignInSiwe } from "@better-auth-ui/react/plugins/siwe"
-import { useIsMutating } from "@tanstack/react-query"
-import { Wallet } from "lucide-react"
-import { type FormEvent, useState } from "react"
+import { type AuthView, authMutationKeys } from "@better-auth-ui/core";
+import { type SiweAuthClient, siweMutationKeys } from "@better-auth-ui/core/plugins/siwe";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useSignInSiwe } from "@better-auth-ui/react/plugins/siwe";
+import { useIsMutating } from "@tanstack/react-query";
+import { Wallet } from "lucide-react";
+import { type FormEvent, useState } from "react";
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle
-} from "@/components/ui/dialog"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldLabel
-} from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Spinner } from "@/components/ui/spinner"
-import { siwePlugin } from "@/lib/auth/siwe-plugin"
-import { cn } from "@/lib/utils"
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { siwePlugin } from "@/lib/auth/siwe-plugin";
+import { cn } from "@/lib/utils";
 
-export type SignInEthereumButtonProps = { view?: AuthView }
+export type SignInEthereumButtonProps = { view?: AuthView };
 
 export function SignInEthereumButton({ view }: SignInEthereumButtonProps) {
-  const { authClient, localization, navigate, redirectTo } =
-    useAuth<SiweAuthClient>()
-  const plugin = useAuthPlugin(siwePlugin)
-  const [open, setOpen] = useState(false)
+  const { authClient, localization, navigate, redirectTo } = useAuth<SiweAuthClient>();
+  const plugin = useAuthPlugin(siwePlugin);
+  const [open, setOpen] = useState(false);
   const signIn = useSignInSiwe(authClient, {
     connector: plugin.connector,
     domain: plugin.domain,
     uri: plugin.uri,
-    statement: plugin.statement
-  })
+    statement: plugin.statement,
+  });
   const isPending =
     useIsMutating({ mutationKey: authMutationKeys.signIn.all }) +
       useIsMutating({ mutationKey: authMutationKeys.signUp.all }) +
       useIsMutating({ mutationKey: siweMutationKeys.all }) >
-    0
+    0;
 
-  if (view === "signUp") return null
+  if (view === "signUp") return null;
 
   const complete = (email?: string) => {
     signIn.mutate(email ? { email } : undefined, {
       onSuccess: () => {
-        setOpen(false)
-        navigate({ to: redirectTo })
-      }
-    })
-  }
+        setOpen(false);
+        navigate({ to: redirectTo });
+      },
+    });
+  };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const email = String(
-      new FormData(event.currentTarget).get("email") ?? ""
-    ).trim()
-    complete(email || undefined)
-  }
+    event.preventDefault();
+    const email = String(new FormData(event.currentTarget).get("email") ?? "").trim();
+    complete(email || undefined);
+  };
 
   return (
     <>
@@ -88,9 +77,7 @@ export function SignInEthereumButton({ view }: SignInEthereumButtonProps) {
                 <Wallet />
                 {plugin.localization.continueWithEthereum}
               </DialogTitle>
-              <DialogDescription>
-                {plugin.localization.emailDescription}
-              </DialogDescription>
+              <DialogDescription>{plugin.localization.emailDescription}</DialogDescription>
             </DialogHeader>
             <Field>
               <FieldLabel htmlFor="siwe-email">
@@ -106,9 +93,7 @@ export function SignInEthereumButton({ view }: SignInEthereumButtonProps) {
                 required={plugin.email === "required"}
                 disabled={signIn.isPending}
               />
-              <FieldDescription>
-                {plugin.localization.emailDescription}
-              </FieldDescription>
+              <FieldDescription>{plugin.localization.emailDescription}</FieldDescription>
               <FieldError />
             </Field>
             <DialogFooter>
@@ -129,5 +114,5 @@ export function SignInEthereumButton({ view }: SignInEthereumButtonProps) {
         </DialogContent>
       </Dialog>
     </>
-  )
+  );
 }

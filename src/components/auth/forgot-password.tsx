@@ -1,28 +1,18 @@
-import { getViewURL } from "@better-auth-ui/core"
-import {
-  useAuth,
-  useFetchOptions,
-  useRequestPasswordReset
-} from "@better-auth-ui/react"
-import { type SyntheticEvent, useState } from "react"
+import { getViewURL } from "@better-auth-ui/core";
+import { useAuth, useFetchOptions, useRequestPasswordReset } from "@better-auth-ui/react";
+import { type SyntheticEvent, useState } from "react";
 
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel
-} from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Spinner } from "@/components/ui/spinner"
-import { cn } from "@/lib/utils"
-import { RESET_LINK_SENT_STORAGE_KEY } from "./reset-link-sent"
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
+import { RESET_LINK_SENT_STORAGE_KEY } from "./reset-link-sent";
 
 export type ForgotPasswordProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Render a card-based "Forgot Password" form that sends a password-reset email.
@@ -36,60 +26,41 @@ export type ForgotPasswordProps = {
  * @returns The forgot-password form UI as a JSX element
  */
 export function ForgotPassword({ className }: ForgotPasswordProps) {
-  const {
-    authClient,
-    baseURL,
-    basePaths,
-    localization,
-    navigate,
-    plugins,
-    viewPaths,
-    Link
-  } = useAuth()
+  const { authClient, baseURL, basePaths, localization, navigate, plugins, viewPaths, Link } =
+    useAuth();
 
-  const { fetchOptions, resetFetchOptions } = useFetchOptions()
+  const { fetchOptions, resetFetchOptions } = useFetchOptions();
 
-  const { mutate: requestPasswordReset, isPending } = useRequestPasswordReset(
-    authClient,
-    {
-      onError: () => {
-        resetFetchOptions()
-      },
-      onSuccess: (_data, { email }) => {
-        sessionStorage.setItem(RESET_LINK_SENT_STORAGE_KEY, email)
-        navigate({ to: `${basePaths.auth}/${viewPaths.auth.resetLinkSent}` })
-      }
-    }
-  )
+  const { mutate: requestPasswordReset, isPending } = useRequestPasswordReset(authClient, {
+    onError: () => {
+      resetFetchOptions();
+    },
+    onSuccess: (_data, { email }) => {
+      sessionStorage.setItem(RESET_LINK_SENT_STORAGE_KEY, email);
+      navigate({ to: `${basePaths.auth}/${viewPaths.auth.resetLinkSent}` });
+    },
+  });
 
   function handleSubmit(e: SyntheticEvent<HTMLFormElement>) {
-    e.preventDefault()
-    const formData = new FormData(e.currentTarget)
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
     requestPasswordReset({
       email: formData.get("email") as string,
-      redirectTo: getViewURL(
-        baseURL,
-        basePaths.auth,
-        viewPaths.auth.resetPassword
-      ),
-      fetchOptions
-    })
+      redirectTo: getViewURL(baseURL, basePaths.auth, viewPaths.auth.resetPassword),
+      fetchOptions,
+    });
   }
 
-  const Captcha = plugins.find(
-    (plugin) => plugin.captchaComponent
-  )?.captchaComponent
+  const Captcha = plugins.find((plugin) => plugin.captchaComponent)?.captchaComponent;
 
   const [fieldErrors, setFieldErrors] = useState<{
-    email?: string
-  }>({})
+    email?: string;
+  }>({});
 
   return (
     <Card className={cn("w-full max-w-sm", className)}>
       <CardHeader>
-        <CardTitle className="text-xl font-semibold">
-          {localization.auth.forgotPassword}
-        </CardTitle>
+        <CardTitle className="text-xl font-semibold">{localization.auth.forgotPassword}</CardTitle>
       </CardHeader>
 
       <CardContent>
@@ -109,20 +80,20 @@ export function ForgotPassword({ className }: ForgotPasswordProps) {
                 onChange={() => {
                   setFieldErrors((prev) => ({
                     ...prev,
-                    email: undefined
-                  }))
+                    email: undefined,
+                  }));
                 }}
                 onInvalid={(e) => {
-                  e.preventDefault()
-                  const el = e.target as HTMLInputElement
+                  e.preventDefault();
+                  const el = e.target as HTMLInputElement;
                   const msg = el.validity.valueMissing
                     ? localization.auth.fieldRequired
-                    : localization.auth.invalidEmail
+                    : localization.auth.invalidEmail;
 
                   setFieldErrors((prev) => ({
                     ...prev,
-                    email: msg
-                  }))
+                    email: msg,
+                  }));
                 }}
                 aria-invalid={!!fieldErrors.email}
               />
@@ -155,5 +126,5 @@ export function ForgotPassword({ className }: ForgotPasswordProps) {
         </div>
       </CardContent>
     </Card>
-  )
+  );
 }

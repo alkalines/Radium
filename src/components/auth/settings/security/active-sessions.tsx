@@ -1,25 +1,19 @@
-"use client"
+"use client";
 
-import { isSessionNotFreshError } from "@better-auth-ui/core"
-import { useAuth, useListSessions, useSession } from "@better-auth-ui/react"
-import { Fragment } from "react"
-import { Card, CardContent } from "@/components/ui/card"
-import {
-  Item,
-  ItemContent,
-  ItemGroup,
-  ItemMedia,
-  ItemSeparator
-} from "@/components/ui/item"
-import { Skeleton } from "@/components/ui/skeleton"
-import { cn } from "@/lib/utils"
-import { ActiveSession } from "./active-session"
-import { FreshSessionPrompt } from "./fresh-session-prompt"
-import { SessionActions } from "./session-actions"
+import { isSessionNotFreshError } from "@better-auth-ui/core";
+import { useAuth, useListSessions, useSession } from "@better-auth-ui/react";
+import { Fragment } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Item, ItemContent, ItemGroup, ItemMedia, ItemSeparator } from "@/components/ui/item";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
+import { ActiveSession } from "./active-session";
+import { FreshSessionPrompt } from "./fresh-session-prompt";
+import { SessionActions } from "./session-actions";
 
 export type ActiveSessionsProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Render a card listing all active sessions for the current user with revoke controls.
@@ -30,21 +24,19 @@ export type ActiveSessionsProps = {
  * @returns A JSX element containing the sessions card
  */
 export function ActiveSessions({ className }: ActiveSessionsProps) {
-  const { authClient, localization } = useAuth()
-  const { data: session } = useSession(authClient)
+  const { authClient, localization } = useAuth();
+  const { data: session } = useSession(authClient);
 
-  const sessionsQuery = useListSessions(authClient)
-  const { data: sessions, error, isPending } = sessionsQuery
+  const sessionsQuery = useListSessions(authClient);
+  const { data: sessions, error, isPending } = sessionsQuery;
 
   const activeSessions = [...(sessions ?? [])].sort((activeSession) =>
-    activeSession.id === session?.session.id ? -1 : 1
-  )
+    activeSession.id === session?.session.id ? -1 : 1,
+  );
 
   return (
     <div>
-      <h2 className="text-sm font-semibold mb-3">
-        {localization.settings.activeSessions}
-      </h2>
+      <h2 className="text-sm font-semibold mb-3">{localization.settings.activeSessions}</h2>
 
       <Card className={cn("gap-0 p-0", className)}>
         <CardContent className="p-0">
@@ -66,13 +58,13 @@ export function ActiveSessions({ className }: ActiveSessionsProps) {
         {!isPending && !error && (
           <SessionActions
             hasOtherSessions={activeSessions.some(
-              (activeSession) => activeSession.id !== session?.session.id
+              (activeSession) => activeSession.id !== session?.session.id,
             )}
           />
         )}
       </Card>
     </div>
-  )
+  );
 }
 
 function SessionRowSkeleton() {
@@ -86,5 +78,5 @@ function SessionRowSkeleton() {
         <Skeleton className="h-3 w-32" />
       </ItemContent>
     </Item>
-  )
+  );
 }

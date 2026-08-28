@@ -1,9 +1,9 @@
-import type { TwoFactorAuthClient } from "@better-auth-ui/core/plugins/two-factor"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useGenerateBackupCodes } from "@better-auth-ui/react/plugins/two-factor"
-import { KeyRound } from "lucide-react"
-import { type SyntheticEvent, useState } from "react"
-import { toast } from "sonner"
+import type { TwoFactorAuthClient } from "@better-auth-ui/core/plugins/two-factor";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useGenerateBackupCodes } from "@better-auth-ui/react/plugins/two-factor";
+import { KeyRound } from "lucide-react";
+import { type SyntheticEvent, useState } from "react";
+import { toast } from "sonner";
 
 import {
   AlertDialog,
@@ -13,20 +13,20 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogMedia,
-  AlertDialogTitle
-} from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
-import { Field, FieldError, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Spinner } from "@/components/ui/spinner"
-import { twoFactorPlugin } from "@/lib/auth/two-factor-plugin"
-import { useTwoFactorPasswordRequirement } from "@/lib/auth/use-two-factor-password"
-import { BackupCodes } from "./backup-codes"
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { twoFactorPlugin } from "@/lib/auth/two-factor-plugin";
+import { useTwoFactorPasswordRequirement } from "@/lib/auth/use-two-factor-password";
+import { BackupCodes } from "./backup-codes";
 
 export type RegenerateBackupCodesDialogProps = {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+};
 
 /**
  * Replace the existing backup codes with a fresh set.
@@ -39,51 +39,51 @@ export type RegenerateBackupCodesDialogProps = {
  */
 export function RegenerateBackupCodesDialog({
   open,
-  onOpenChange
+  onOpenChange,
 }: RegenerateBackupCodesDialogProps) {
-  const { authClient, localization } = useAuth()
-  const { localization: twoFactorLocalization } = useAuthPlugin(twoFactorPlugin)
+  const { authClient, localization } = useAuth();
+  const { localization: twoFactorLocalization } = useAuthPlugin(twoFactorPlugin);
   const { isPending: isResolvingPasswordRequirement, requiresPassword } =
-    useTwoFactorPasswordRequirement()
+    useTwoFactorPasswordRequirement();
 
-  const [codes, setCodes] = useState<string[]>([])
+  const [codes, setCodes] = useState<string[]>([]);
 
   const {
     mutate: generateBackupCodes,
     isPending: isGenerating,
-    reset: resetGeneration
+    reset: resetGeneration,
   } = useGenerateBackupCodes(authClient as TwoFactorAuthClient, {
     onSuccess: (data) => {
-      setCodes(data.backupCodes)
-      toast.success(twoFactorLocalization.backupCodesRegenerated)
-    }
-  })
+      setCodes(data.backupCodes);
+      toast.success(twoFactorLocalization.backupCodesRegenerated);
+    },
+  });
 
-  const isPending = isGenerating || isResolvingPasswordRequirement
+  const isPending = isGenerating || isResolvingPasswordRequirement;
 
   const handleOpenChange = (nextOpen: boolean) => {
-    onOpenChange(nextOpen)
+    onOpenChange(nextOpen);
 
     if (!nextOpen) {
-      setCodes([])
+      setCodes([]);
       // Clears the resolved backup codes from the mutation cache.
-      resetGeneration()
+      resetGeneration();
     }
-  }
+  };
 
   const handleSubmit = (e: SyntheticEvent<HTMLFormElement>) => {
-    e.preventDefault()
+    e.preventDefault();
 
     if (codes.length) {
-      handleOpenChange(false)
-      return
+      handleOpenChange(false);
+      return;
     }
 
-    const formData = new FormData(e.currentTarget)
-    const password = formData.get("password") as string
+    const formData = new FormData(e.currentTarget);
+    const password = formData.get("password") as string;
 
-    generateBackupCodes(requiresPassword ? { password } : {})
-  }
+    generateBackupCodes(requiresPassword ? { password } : {});
+  };
 
   return (
     <AlertDialog open={open} onOpenChange={handleOpenChange}>
@@ -94,9 +94,7 @@ export function RegenerateBackupCodesDialog({
               <KeyRound />
             </AlertDialogMedia>
 
-            <AlertDialogTitle>
-              {twoFactorLocalization.backupCodes}
-            </AlertDialogTitle>
+            <AlertDialogTitle>{twoFactorLocalization.backupCodes}</AlertDialogTitle>
 
             <AlertDialogDescription>
               {codes.length || !requiresPassword
@@ -148,5 +146,5 @@ export function RegenerateBackupCodesDialog({
         </form>
       </AlertDialogContent>
     </AlertDialog>
-  )
+  );
 }

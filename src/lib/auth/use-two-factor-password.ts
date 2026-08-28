@@ -1,6 +1,6 @@
-import { useAuth, useAuthPlugin, useListAccounts } from "@better-auth-ui/react"
+import { useAuth, useAuthPlugin, useListAccounts } from "@better-auth-ui/react";
 
-import { twoFactorPlugin } from "./two-factor-plugin"
+import { twoFactorPlugin } from "./two-factor-plugin";
 
 /**
  * Whether two-factor management should ask for the account password.
@@ -11,13 +11,11 @@ import { twoFactorPlugin } from "./two-factor-plugin"
  * that rule instead of guessing from the option alone.
  */
 export function useTwoFactorPasswordRequirement() {
-  const { authClient } = useAuth()
-  const { allowPasswordless } = useAuthPlugin(twoFactorPlugin)
-  const { data: accounts, isPending } = useListAccounts(authClient)
+  const { authClient } = useAuth();
+  const { allowPasswordless } = useAuthPlugin(twoFactorPlugin);
+  const { data: accounts, isPending } = useListAccounts(authClient);
 
-  const hasCredentialAccount = accounts?.some(
-    (account) => account.providerId === "credential"
-  )
+  const hasCredentialAccount = accounts?.some((account) => account.providerId === "credential");
 
   return {
     isPending: allowPasswordless && isPending,
@@ -25,7 +23,6 @@ export function useTwoFactorPasswordRequirement() {
     // early would submit an empty body for a credential user and fail the
     // request; guessing "password" costs a passkey-only user nothing, because
     // the field disappears as soon as the list resolves.
-    requiresPassword:
-      !allowPasswordless || isPending || Boolean(hasCredentialAccount)
-  }
+    requiresPassword: !allowPasswordless || isPending || Boolean(hasCredentialAccount),
+  };
 }

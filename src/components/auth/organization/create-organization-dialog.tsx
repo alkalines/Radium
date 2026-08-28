@@ -1,11 +1,11 @@
-import { parseAdditionalFieldValue } from "@better-auth-ui/core"
-import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useCreateOrganization } from "@better-auth-ui/react/plugins/organization"
-import { Briefcase } from "lucide-react"
-import { type SyntheticEvent, useEffect, useRef, useState } from "react"
-import { toast } from "sonner"
-import { Button, buttonVariants } from "@/components/ui/button"
+import { parseAdditionalFieldValue } from "@better-auth-ui/core";
+import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useCreateOrganization } from "@better-auth-ui/react/plugins/organization";
+import { Briefcase } from "lucide-react";
+import { type SyntheticEvent, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
   DialogClose,
@@ -13,86 +13,79 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle
-} from "@/components/ui/dialog"
-import { Field, FieldError, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Spinner } from "@/components/ui/spinner"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { AdditionalField } from "../additional-field"
-import { SlugField, sanitizeSlug } from "./slug-field"
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { AdditionalField } from "../additional-field";
+import { SlugField, sanitizeSlug } from "./slug-field";
 
 /** Props for the `CreateOrganizationDialog` component. */
 export type CreateOrganizationDialogProps = {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+};
 
-export function CreateOrganizationDialog({
-  open,
-  onOpenChange
-}: CreateOrganizationDialogProps) {
-  const { authClient, localization } = useAuth<OrganizationAuthClient>()
+export function CreateOrganizationDialog({ open, onOpenChange }: CreateOrganizationDialogProps) {
+  const { authClient, localization } = useAuth<OrganizationAuthClient>();
   const { additionalFields, localization: organizationLocalization } =
-    useAuthPlugin(organizationPlugin)
+    useAuthPlugin(organizationPlugin);
 
-  const [name, setName] = useState("")
-  const [slug, setSlug] = useState("")
-  const [slugEdited, setSlugEdited] = useState(false)
-  const [nameError, setNameError] = useState<string>()
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const submissionLocked = useRef(false)
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [slugEdited, setSlugEdited] = useState(false);
+  const [nameError, setNameError] = useState<string>();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submissionLocked = useRef(false);
 
-  const { mutate: createOrganization, isPending: isCreating } =
-    useCreateOrganization(authClient, {
-      onSuccess: () => onOpenChange(false),
-      onSettled: () => {
-        submissionLocked.current = false
-        setIsSubmitting(false)
-      }
-    })
+  const { mutate: createOrganization, isPending: isCreating } = useCreateOrganization(authClient, {
+    onSuccess: () => onOpenChange(false),
+    onSettled: () => {
+      submissionLocked.current = false;
+      setIsSubmitting(false);
+    },
+  });
 
   const handleSubmit = async (e: SyntheticEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    if (submissionLocked.current) return
+    e.preventDefault();
+    if (submissionLocked.current) return;
 
-    submissionLocked.current = true
-    setIsSubmitting(true)
-    const formData = new FormData(e.currentTarget)
-    const additionalValues: Record<string, unknown> = {}
+    submissionLocked.current = true;
+    setIsSubmitting(true);
+    const formData = new FormData(e.currentTarget);
+    const additionalValues: Record<string, unknown> = {};
     try {
       for (const field of additionalFields) {
-        const value = parseAdditionalFieldValue(
-          field,
-          formData.get(field.name) as string | null
-        )
-        await field.validate?.(value)
-        if (value !== undefined) additionalValues[field.name] = value
+        const value = parseAdditionalFieldValue(field, formData.get(field.name) as string | null);
+        await field.validate?.(value);
+        if (value !== undefined) additionalValues[field.name] = value;
       }
     } catch (error) {
-      submissionLocked.current = false
-      setIsSubmitting(false)
-      toast.error(error instanceof Error ? error.message : String(error))
-      return
+      submissionLocked.current = false;
+      setIsSubmitting(false);
+      toast.error(error instanceof Error ? error.message : String(error));
+      return;
     }
-    createOrganization({ name, slug, ...additionalValues })
-  }
+    createOrganization({ name, slug, ...additionalValues });
+  };
 
-  const isPending = isCreating || isSubmitting
+  const isPending = isCreating || isSubmitting;
 
   useEffect(() => {
     if (!open) {
-      setSlug("")
-      setName("")
-      setSlugEdited(false)
-      setNameError(undefined)
+      setSlug("");
+      setName("");
+      setSlugEdited(false);
+      setNameError(undefined);
     }
-  }, [open])
+  }, [open]);
 
   useEffect(() => {
-    if (slugEdited) return
-    setSlug(sanitizeSlug(name))
-  }, [name, slugEdited])
+    if (slugEdited) return;
+    setSlug(sanitizeSlug(name));
+  }, [name, slugEdited]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -123,12 +116,12 @@ export function CreateOrganizationDialog({
                 placeholder={organizationLocalization.namePlaceholder}
                 value={name}
                 onChange={(e) => {
-                  setName(e.target.value)
-                  setNameError(undefined)
+                  setName(e.target.value);
+                  setNameError(undefined);
                 }}
                 onInvalid={(e) => {
-                  e.preventDefault()
-                  setNameError(localization.auth.fieldRequired)
+                  e.preventDefault();
+                  setNameError(localization.auth.fieldRequired);
                 }}
                 aria-invalid={!!nameError}
                 disabled={isPending}
@@ -141,8 +134,8 @@ export function CreateOrganizationDialog({
               id="create-organization-slug"
               value={slug}
               onChange={(value) => {
-                setSlug(value)
-                setSlugEdited(true)
+                setSlug(value);
+                setSlugEdited(true);
               }}
               disabled={isPending}
             />
@@ -176,5 +169,5 @@ export function CreateOrganizationDialog({
         </form>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

@@ -106,7 +106,9 @@ export function CredentialsDialog({
                   autoComplete="off"
                   placeholder={hasExisting ? "Replace stored value" : `Enter ${name}`}
                   value={values[name] ?? ""}
-                  onChange={(event) => setValues((prev) => ({ ...prev, [name]: event.target.value }))}
+                  onChange={(event) =>
+                    setValues((prev) => ({ ...prev, [name]: event.target.value }))
+                  }
                 />
                 {hasExisting && preview?.[name] && (
                   <FieldDescription>Current: {preview[name]}</FieldDescription>

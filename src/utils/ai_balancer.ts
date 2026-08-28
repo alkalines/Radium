@@ -9,17 +9,22 @@ export default async function AIBalancer(
   balanceId: Id<"balances">,
   Request: ChatCompletions_RequestBody_Type,
 ) {
-  const providerCandidates = await ctx.runQuery(internal.providers.resolveProviderCandidatesForModel, {
-    balance: balanceId,
-    modelSlug: Request.model,
-    providerSlug: Request.provider ?? undefined,
-  });
+  const providerCandidates = await ctx.runQuery(
+    internal.providers.resolveProviderCandidatesForModel,
+    {
+      balance: balanceId,
+      modelSlug: Request.model,
+      providerSlug: Request.provider ?? undefined,
+    },
+  );
   const provider = providerCandidates[Math.floor(Math.random() * providerCandidates.length)];
   const credentials = provider.credentials;
   const apiKey = provider.env.map((name) => credentials[name]).find(Boolean);
 
   if (!apiKey) {
-    throw new Error(`Missing API key credential for provider ${provider.slug}: ${provider.env.join(", ")}`);
+    throw new Error(
+      `Missing API key credential for provider ${provider.slug}: ${provider.env.join(", ")}`,
+    );
   }
 
   return {

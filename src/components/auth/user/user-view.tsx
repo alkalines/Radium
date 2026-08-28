@@ -1,25 +1,25 @@
-import type { UsernameAuthClient } from "@better-auth-ui/core/plugins/username"
-import { useAuth, useSession } from "@better-auth-ui/react"
-import type { User } from "better-auth"
+import type { UsernameAuthClient } from "@better-auth-ui/core/plugins/username";
+import { useAuth, useSession } from "@better-auth-ui/react";
+import type { User } from "better-auth";
 
-import { Skeleton } from "@/components/ui/skeleton"
-import { cn } from "@/lib/utils"
-import { UserAvatar } from "./user-avatar"
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
+import { UserAvatar } from "./user-avatar";
 
 export type UserViewProps = {
-  className?: string
-  isPending?: boolean
+  className?: string;
+  isPending?: boolean;
   /**
    * When true, the subtitle line (email when name/username is shown) is hidden.
    * @default false
    */
-  hideSubtitle?: boolean
+  hideSubtitle?: boolean;
   /** @remarks `User` */
   user?: Partial<User> & {
-    username?: string | null
-    displayUsername?: string | null
-  }
-}
+    username?: string | null;
+    displayUsername?: string | null;
+  };
+};
 
 /**
  * Render a compact user item with an avatar, a primary label (display username, name, or email), and an optional subtitle (email).
@@ -30,18 +30,13 @@ export type UserViewProps = {
  * @param user - Optional user object to display; when omitted the current session user is used
  * @returns A React element showing the user's avatar with their identifying information
  */
-export function UserView({
-  className,
-  isPending,
-  hideSubtitle = false,
-  user
-}: UserViewProps) {
-  const { authClient } = useAuth<UsernameAuthClient>()
+export function UserView({ className, isPending, hideSubtitle = false, user }: UserViewProps) {
+  const { authClient } = useAuth<UsernameAuthClient>();
   const { data: session, isPending: sessionPending } = useSession(authClient, {
-    enabled: !user && !isPending
-  })
+    enabled: !user && !isPending,
+  });
 
-  const resolvedUser = user ?? session?.user
+  const resolvedUser = user ?? session?.user;
 
   if ((isPending || sessionPending) && !user) {
     return (
@@ -54,7 +49,7 @@ export function UserView({
           {!hideSubtitle && <Skeleton className="h-3 w-32" />}
         </div>
       </div>
-    )
+    );
   }
 
   return (
@@ -63,18 +58,13 @@ export function UserView({
 
       <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
         <span className="truncate font-medium text-foreground">
-          {resolvedUser?.displayUsername ||
-            resolvedUser?.name ||
-            resolvedUser?.email}
+          {resolvedUser?.displayUsername || resolvedUser?.name || resolvedUser?.email}
         </span>
 
-        {!hideSubtitle &&
-          (resolvedUser?.displayUsername || resolvedUser?.name) && (
-            <span className="text-muted-foreground truncate text-xs">
-              {resolvedUser?.email}
-            </span>
-          )}
+        {!hideSubtitle && (resolvedUser?.displayUsername || resolvedUser?.name) && (
+          <span className="text-muted-foreground truncate text-xs">{resolvedUser?.email}</span>
+        )}
       </div>
     </div>
-  )
+  );
 }

@@ -1,17 +1,17 @@
-"use client"
+"use client";
 
-import type { MultiSessionAuthClient } from "@better-auth-ui/core/plugins/multi-session"
-import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react"
-import { useListDeviceSessions } from "@better-auth-ui/react/plugins/multi-session"
-import { Check, CirclePlus } from "lucide-react"
-import { UserView } from "@/components/auth/user/user-view"
+import type { MultiSessionAuthClient } from "@better-auth-ui/core/plugins/multi-session";
+import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react";
+import { useListDeviceSessions } from "@better-auth-ui/react/plugins/multi-session";
+import { Check, CirclePlus } from "lucide-react";
+import { UserView } from "@/components/auth/user/user-view";
 import {
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuSubContent
-} from "@/components/ui/dropdown-menu"
-import { multiSessionPlugin } from "@/lib/auth/multi-session-plugin"
-import { SwitchAccountSubmenuItem } from "./switch-account-submenu-item"
+  DropdownMenuSubContent,
+} from "@/components/ui/dropdown-menu";
+import { multiSessionPlugin } from "@/lib/auth/multi-session-plugin";
+import { SwitchAccountSubmenuItem } from "./switch-account-submenu-item";
 
 /**
  * Render the submenu content for switching between multiple authenticated sessions.
@@ -23,12 +23,10 @@ import { SwitchAccountSubmenuItem } from "./switch-account-submenu-item"
  * @returns The switch account submenu content as a JSX element
  */
 export function SwitchAccountSubmenuContent() {
-  const { authClient, basePaths, viewPaths, navigate } =
-    useAuth<MultiSessionAuthClient>()
-  const { localization: multiSessionLocalization } =
-    useAuthPlugin(multiSessionPlugin)
-  const { data: session } = useSession(authClient)
-  const { data: deviceSessions, isPending } = useListDeviceSessions(authClient)
+  const { authClient, basePaths, viewPaths, navigate } = useAuth<MultiSessionAuthClient>();
+  const { localization: multiSessionLocalization } = useAuthPlugin(multiSessionPlugin);
+  const { data: session } = useSession(authClient);
+  const { data: deviceSessions, isPending } = useListDeviceSessions(authClient);
 
   return (
     <DropdownMenuSubContent className="min-w-48 md:min-w-56 max-w-[48svw]">
@@ -39,27 +37,20 @@ export function SwitchAccountSubmenuContent() {
       </DropdownMenuItem>
 
       {deviceSessions
-        ?.filter(
-          (deviceSession) => deviceSession.session.id !== session?.session.id
-        )
+        ?.filter((deviceSession) => deviceSession.session.id !== session?.session.id)
         .map((deviceSession) => (
-          <SwitchAccountSubmenuItem
-            key={deviceSession.session.id}
-            deviceSession={deviceSession}
-          />
+          <SwitchAccountSubmenuItem key={deviceSession.session.id} deviceSession={deviceSession} />
         ))}
 
       <DropdownMenuSeparator />
 
       <DropdownMenuItem
-        onClick={() =>
-          navigate({ to: `${basePaths.auth}/${viewPaths.auth.signIn}` })
-        }
+        onClick={() => navigate({ to: `${basePaths.auth}/${viewPaths.auth.signIn}` })}
       >
         <CirclePlus className="text-muted-foreground" />
 
         {multiSessionLocalization.addAccount}
       </DropdownMenuItem>
     </DropdownMenuSubContent>
-  )
+  );
 }

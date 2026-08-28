@@ -1,12 +1,12 @@
-import type { ComponentProps } from "react"
+import type { ComponentProps } from "react";
 
-import { cn } from "@/lib/utils"
-import { Organizations } from "./organizations"
-import { UserInvitations } from "./user-invitations"
+import { cn } from "@/lib/utils";
+import { Organizations } from "./organizations";
+import { UserInvitations } from "./user-invitations";
 
 export type OrganizationsSettingsProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Renders the organizations settings panel.
@@ -19,12 +19,9 @@ export function OrganizationsSettings({
   ...props
 }: OrganizationsSettingsProps & ComponentProps<"div">) {
   return (
-    <div
-      className={cn("flex w-full flex-col gap-4 md:gap-6", className)}
-      {...props}
-    >
+    <div className={cn("flex w-full flex-col gap-4 md:gap-6", className)} {...props}>
       <Organizations />
       <UserInvitations />
     </div>
-  )
+  );
 }

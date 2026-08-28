@@ -151,13 +151,13 @@ sequenceDiagram
 
 ### Environment Variables
 
-| Variable                      | Required | Description                        |
-| ----------------------------- | -------- | ---------------------------------- |
-| `Openrouter_API_Key`          | Yes      | Your OpenRouter API key            |
-| `AISDK_MaxRetries`            | No       | Max retry attempts (default: 0)    |
-| `CONVEX_DEPLOYMENT`           | Yes      | Convex deployment identifier       |
-| `VITE_CONVEX_URL`             | Yes      | Convex cloud URL                   |
-| `VITE_CONVEX_SITE_URL`        | Yes      | Convex site URL for HTTP endpoints |
+| Variable               | Required | Description                        |
+| ---------------------- | -------- | ---------------------------------- |
+| `Openrouter_API_Key`   | Yes      | Your OpenRouter API key            |
+| `AISDK_MaxRetries`     | No       | Max retry attempts (default: 0)    |
+| `CONVEX_DEPLOYMENT`    | Yes      | Convex deployment identifier       |
+| `VITE_CONVEX_URL`      | Yes      | Convex cloud URL                   |
+| `VITE_CONVEX_SITE_URL` | Yes      | Convex site URL for HTTP endpoints |
 
 ---
 

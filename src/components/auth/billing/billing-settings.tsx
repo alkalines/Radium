@@ -3,9 +3,9 @@ import {
   type BillingInterval,
   type BillingPlan,
   type BillingScope,
-  followBillingAction
-} from "@better-auth-ui/core/plugins/billing"
-import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react"
+  followBillingAction,
+} from "@better-auth-ui/core/plugins/billing";
+import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react";
 import {
   useBillingCheckout,
   useBillingPlans,
@@ -13,10 +13,10 @@ import {
   useBillingState,
   useCancelBillingSubscription,
   useRestoreBillingSubscription,
-  useUpdateBillingSeats
-} from "@better-auth-ui/react/plugins/billing"
-import { Check, CreditCard, ExternalLink, RotateCcw, X } from "lucide-react"
-import { useState } from "react"
+  useUpdateBillingSeats,
+} from "@better-auth-ui/react/plugins/billing";
+import { Check, CreditCard, ExternalLink, RotateCcw, X } from "lucide-react";
+import { useState } from "react";
 
 import {
   AlertDialog,
@@ -26,98 +26,89 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogMedia,
-  AlertDialogTitle
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardFooter,
   CardHeader,
-  CardTitle
-} from "@/components/ui/card"
-import { Field, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Progress } from "@/components/ui/progress"
+  CardTitle,
+} from "@/components/ui/card";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue
-} from "@/components/ui/select"
-import { Spinner } from "@/components/ui/spinner"
-import { billingPlugin } from "@/lib/auth/billing-plugin"
-import { cn } from "@/lib/utils"
+  SelectValue,
+} from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
+import { billingPlugin } from "@/lib/auth/billing-plugin";
+import { cn } from "@/lib/utils";
 
-type SubscriptionAction = "cancel" | "restore"
+type SubscriptionAction = "cancel" | "restore";
 
 export type BillingSettingsProps = {
-  adapter: BillingAdapter
-  scope: BillingScope
-  className?: string
-}
+  adapter: BillingAdapter;
+  scope: BillingScope;
+  className?: string;
+};
 
 const formatPrice = (amount: number, currency: string) => {
   const fractionDigits =
     new Intl.NumberFormat(undefined, {
       style: "currency",
-      currency
-    }).resolvedOptions().maximumFractionDigits ?? 2
-  const divisor = 10 ** fractionDigits
+      currency,
+    }).resolvedOptions().maximumFractionDigits ?? 2;
+  const divisor = 10 ** fractionDigits;
 
   return new Intl.NumberFormat(undefined, {
     style: "currency",
     currency,
-    maximumFractionDigits: amount % divisor === 0 ? 0 : fractionDigits
-  }).format(amount / divisor)
-}
+    maximumFractionDigits: amount % divisor === 0 ? 0 : fractionDigits,
+  }).format(amount / divisor);
+};
 
 const availableIntervals = (plans: BillingPlan[]) =>
-  Array.from(
-    new Set(plans.flatMap((plan) => plan.prices.map((price) => price.interval)))
-  )
+  Array.from(new Set(plans.flatMap((plan) => plan.prices.map((price) => price.interval))));
 
 function PlanCard({
   plan,
   interval,
   currentPlanId,
   isPending,
-  onChoose
+  onChoose,
 }: {
-  plan: BillingPlan
-  interval: BillingInterval
-  currentPlanId?: string
-  isPending: boolean
-  onChoose: (plan: BillingPlan, priceId: string) => void
+  plan: BillingPlan;
+  interval: BillingInterval;
+  currentPlanId?: string;
+  isPending: boolean;
+  onChoose: (plan: BillingPlan, priceId: string) => void;
 }) {
-  const { localization } = useAuthPlugin(billingPlugin)
-  const price = plan.prices.find((entry) => entry.interval === interval)
-  if (!price) return null
-  const isCurrent = currentPlanId === plan.id
+  const { localization } = useAuthPlugin(billingPlugin);
+  const price = plan.prices.find((entry) => entry.interval === interval);
+  if (!price) return null;
+  const isCurrent = currentPlanId === plan.id;
   const suffix =
     price.interval === "month"
       ? localization.perMonth
       : price.interval === "year"
         ? localization.perYear
-        : localization.oneTime
+        : localization.oneTime;
 
   return (
-    <Card
-      className={cn(
-        "relative h-full",
-        plan.highlighted && "border-primary/50 bg-primary/5"
-      )}
-    >
+    <Card className={cn("relative h-full", plan.highlighted && "border-primary/50 bg-primary/5")}>
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-1">
             <CardTitle>{plan.name}</CardTitle>
-            {plan.description && (
-              <CardDescription>{plan.description}</CardDescription>
-            )}
+            {plan.description && <CardDescription>{plan.description}</CardDescription>}
           </div>
           {plan.highlighted && <Badge>{localization.popular}</Badge>}
         </div>
@@ -151,20 +142,20 @@ function PlanCard({
         </Button>
       </CardFooter>
     </Card>
-  )
+  );
 }
 
 function SeatsEditor({
   seats,
   isPending,
-  onSave
+  onSave,
 }: {
-  seats: number
-  isPending: boolean
-  onSave: (seats: number) => void
+  seats: number;
+  isPending: boolean;
+  onSave: (seats: number) => void;
 }) {
-  const { localization } = useAuthPlugin(billingPlugin)
-  const [value, setValue] = useState(seats)
+  const { localization } = useAuthPlugin(billingPlugin);
+  const [value, setValue] = useState(seats);
 
   return (
     <div className="flex items-end gap-2">
@@ -175,9 +166,7 @@ function SeatsEditor({
           type="number"
           min={1}
           value={value}
-          onChange={(event) =>
-            setValue(Math.max(1, event.target.valueAsNumber || 1))
-          }
+          onChange={(event) => setValue(Math.max(1, event.target.valueAsNumber || 1))}
         />
       </Field>
       <Button
@@ -190,51 +179,41 @@ function SeatsEditor({
         {localization.updateSeats}
       </Button>
     </div>
-  )
+  );
 }
 
-export function BillingSettings({
-  adapter,
-  scope,
-  className
-}: BillingSettingsProps) {
-  const { localization } = useAuthPlugin(billingPlugin)
-  const plans = useBillingPlans(adapter, scope)
-  const state = useBillingState(adapter, scope)
-  const checkout = useBillingCheckout(adapter, scope)
-  const portal = useBillingPortal(adapter, scope)
-  const cancelSubscription = useCancelBillingSubscription(adapter, scope)
-  const restoreSubscription = useRestoreBillingSubscription(adapter, scope)
-  const updateSeats = useUpdateBillingSeats(adapter, scope)
-  const [interval, setInterval] = useState<BillingInterval>("month")
-  const [action, setAction] = useState<SubscriptionAction>()
-  const subscription = state.data?.subscription
-  const intervals = availableIntervals(plans.data ?? [])
-  const resolvedInterval = intervals.includes(interval)
-    ? interval
-    : (intervals[0] ?? "month")
-  const isActionPending =
-    cancelSubscription.isPending || restoreSubscription.isPending
+export function BillingSettings({ adapter, scope, className }: BillingSettingsProps) {
+  const { localization } = useAuthPlugin(billingPlugin);
+  const plans = useBillingPlans(adapter, scope);
+  const state = useBillingState(adapter, scope);
+  const checkout = useBillingCheckout(adapter, scope);
+  const portal = useBillingPortal(adapter, scope);
+  const cancelSubscription = useCancelBillingSubscription(adapter, scope);
+  const restoreSubscription = useRestoreBillingSubscription(adapter, scope);
+  const updateSeats = useUpdateBillingSeats(adapter, scope);
+  const [interval, setInterval] = useState<BillingInterval>("month");
+  const [action, setAction] = useState<SubscriptionAction>();
+  const subscription = state.data?.subscription;
+  const intervals = availableIntervals(plans.data ?? []);
+  const resolvedInterval = intervals.includes(interval) ? interval : (intervals[0] ?? "month");
+  const isActionPending = cancelSubscription.isPending || restoreSubscription.isPending;
 
   const handleAction = () => {
-    if (!subscription || !action) return
-    const mutation =
-      action === "cancel" ? cancelSubscription : restoreSubscription
+    if (!subscription || !action) return;
+    const mutation = action === "cancel" ? cancelSubscription : restoreSubscription;
     mutation.mutate(subscription.id, {
       onSuccess: (result) => {
-        setAction(undefined)
-        followBillingAction(result)
-      }
-    })
-  }
+        setAction(undefined);
+        followBillingAction(result);
+      },
+    });
+  };
 
   return (
     <div className={cn("flex flex-col gap-6", className)}>
       <div className="flex flex-col gap-1">
         <h2 className="text-base font-semibold">{localization.billing}</h2>
-        <p className="text-sm text-muted-foreground">
-          {localization.billingDescription}
-        </p>
+        <p className="text-sm text-muted-foreground">{localization.billingDescription}</p>
       </div>
 
       <Card>
@@ -248,9 +227,7 @@ export function BillingSettings({
                   : localization.noSubscriptionDescription}
               </CardDescription>
             </div>
-            {subscription && (
-              <Badge variant="secondary">{subscription.status}</Badge>
-            )}
+            {subscription && <Badge variant="secondary">{subscription.status}</Badge>}
           </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -269,39 +246,34 @@ export function BillingSettings({
                   ).replace(
                     "{{date}}",
                     new Intl.DateTimeFormat(undefined, {
-                      dateStyle: "medium"
-                    }).format(subscription.currentPeriodEnd)
+                      dateStyle: "medium",
+                    }).format(subscription.currentPeriodEnd),
                   )}
                 </p>
               )}
-              {typeof subscription.seats === "number" &&
-                adapter.supports.seats && (
-                  <SeatsEditor
-                    key={subscription.id}
-                    seats={subscription.seats}
-                    isPending={updateSeats.isPending}
-                    onSave={(seats) =>
-                      updateSeats.mutate(
-                        { subscriptionId: subscription.id, seats },
-                        { onSuccess: followBillingAction }
-                      )
-                    }
-                  />
-                )}
+              {typeof subscription.seats === "number" && adapter.supports.seats && (
+                <SeatsEditor
+                  key={subscription.id}
+                  seats={subscription.seats}
+                  isPending={updateSeats.isPending}
+                  onSave={(seats) =>
+                    updateSeats.mutate(
+                      { subscriptionId: subscription.id, seats },
+                      { onSuccess: followBillingAction },
+                    )
+                  }
+                />
+              )}
             </>
           ) : (
-            <p className="text-sm text-muted-foreground">
-              {localization.noSubscription}
-            </p>
+            <p className="text-sm text-muted-foreground">{localization.noSubscription}</p>
           )}
         </CardContent>
         <CardFooter className="flex-wrap gap-2">
           <Button
             variant="outline"
             disabled={portal.isPending}
-            onClick={() =>
-              portal.mutate(undefined, { onSuccess: followBillingAction })
-            }
+            onClick={() => portal.mutate(undefined, { onSuccess: followBillingAction })}
           >
             {portal.isPending ? <Spinner /> : <ExternalLink />}
             {localization.manageBilling}
@@ -333,18 +305,11 @@ export function BillingSettings({
                   <span className="text-muted-foreground">
                     {usage.limit
                       ? `${usage.used} / ${usage.limit}${usage.unit ? ` ${usage.unit}` : ""}`
-                      : localization.used.replace(
-                          "{{used}}",
-                          String(usage.used)
-                        )}
+                      : localization.used.replace("{{used}}", String(usage.used))}
                   </span>
                 </div>
                 <Progress
-                  value={
-                    usage.limit
-                      ? Math.min(100, (usage.used / usage.limit) * 100)
-                      : 0
-                  }
+                  value={usage.limit ? Math.min(100, (usage.used / usage.limit) * 100) : 0}
                   aria-label={usage.label}
                 />
               </div>
@@ -353,10 +318,7 @@ export function BillingSettings({
         </Card>
       ) : null}
 
-      <section
-        className="flex flex-col gap-3"
-        aria-labelledby="billing-plans-heading"
-      >
+      <section className="flex flex-col gap-3" aria-labelledby="billing-plans-heading">
         <div className="flex items-end justify-between gap-3">
           <h3 id="billing-plans-heading" className="text-sm font-semibold">
             {localization.plans}
@@ -402,9 +364,9 @@ export function BillingSettings({
                     {
                       planId: selectedPlan.id,
                       priceId,
-                      seats: selectedPlan.seatBased ? 1 : undefined
+                      seats: selectedPlan.seatBased ? 1 : undefined,
                     },
-                    { onSuccess: followBillingAction }
+                    { onSuccess: followBillingAction },
                   )
                 }
               />
@@ -413,10 +375,7 @@ export function BillingSettings({
         )}
       </section>
 
-      <AlertDialog
-        open={Boolean(action)}
-        onOpenChange={(open) => !open && setAction(undefined)}
-      >
+      <AlertDialog open={Boolean(action)} onOpenChange={(open) => !open && setAction(undefined)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogMedia>
@@ -434,9 +393,7 @@ export function BillingSettings({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isActionPending}>
-              {localization.cancel}
-            </AlertDialogCancel>
+            <AlertDialogCancel disabled={isActionPending}>{localization.cancel}</AlertDialogCancel>
             <Button
               type="button"
               variant={action === "cancel" ? "destructive" : "default"}
@@ -450,23 +407,21 @@ export function BillingSettings({
         </AlertDialogContent>
       </AlertDialog>
     </div>
-  )
+  );
 }
 
-export function UserBillingSettings(
-  props: Omit<BillingSettingsProps, "adapter" | "scope">
-) {
-  const { authClient } = useAuth()
-  const { data: session } = useSession(authClient)
-  const { adapter } = useAuthPlugin(billingPlugin)
-  if (!session?.user.id) return null
+export function UserBillingSettings(props: Omit<BillingSettingsProps, "adapter" | "scope">) {
+  const { authClient } = useAuth();
+  const { data: session } = useSession(authClient);
+  const { adapter } = useAuthPlugin(billingPlugin);
+  if (!session?.user.id) return null;
   return (
     <BillingSettings
       {...props}
       adapter={adapter}
       scope={{ type: "user", userId: session.user.id }}
     />
-  )
+  );
 }
 
 export function OrganizationBillingSettings({
@@ -474,11 +429,11 @@ export function OrganizationBillingSettings({
   organizationSlug,
   ...props
 }: Omit<BillingSettingsProps, "adapter" | "scope"> & {
-  organizationId: string
-  organizationSlug: string
+  organizationId: string;
+  organizationSlug: string;
 }) {
-  const { adapter } = useAuthPlugin(billingPlugin)
-  if (!organizationId || !organizationSlug) return null
+  const { adapter } = useAuthPlugin(billingPlugin);
+  if (!organizationId || !organizationSlug) return null;
 
   return (
     <BillingSettings
@@ -486,5 +441,5 @@ export function OrganizationBillingSettings({
       adapter={adapter}
       scope={{ type: "organization", organizationId, organizationSlug }}
     />
-  )
+  );
 }

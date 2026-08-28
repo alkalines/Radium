@@ -1,15 +1,15 @@
 import type {
   DeviceAuthorizationAuthClient,
-  DeviceAuthorizationLocalization
-} from "@better-auth-ui/core/plugins/device-authorization"
-import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react"
+  DeviceAuthorizationLocalization,
+} from "@better-auth-ui/core/plugins/device-authorization";
+import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react";
 import {
   useApproveDevice,
   useDenyDevice,
-  useVerifyDeviceCode
-} from "@better-auth-ui/react/plugins/device-authorization"
-import { REGEXP_ONLY_DIGITS_AND_CHARS } from "input-otp"
-import { CheckIcon, CircleCheckIcon, CircleXIcon, XIcon } from "lucide-react"
+  useVerifyDeviceCode,
+} from "@better-auth-ui/react/plugins/device-authorization";
+import { REGEXP_ONLY_DIGITS_AND_CHARS } from "input-otp";
+import { CheckIcon, CircleCheckIcon, CircleXIcon, XIcon } from "lucide-react";
 import {
   type FormEvent,
   type ReactNode,
@@ -17,92 +17,87 @@ import {
   useEffect,
   useReducer,
   useRef,
-  useState
-} from "react"
+  useState,
+} from "react";
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardFooter,
   CardHeader,
-  CardTitle
-} from "@/components/ui/card"
-import {
-  Field,
-  FieldError,
-  FieldGroup,
-  FieldLabel
-} from "@/components/ui/field"
+  CardTitle,
+} from "@/components/ui/card";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import {
   InputOTP,
   InputOTPGroup,
   InputOTPSeparator,
-  InputOTPSlot
-} from "@/components/ui/input-otp"
-import { Separator } from "@/components/ui/separator"
-import { Spinner } from "@/components/ui/spinner"
-import { deviceAuthorizationPlugin } from "@/lib/auth/device-authorization-plugin"
-import { cn } from "@/lib/utils"
+  InputOTPSlot,
+} from "@/components/ui/input-otp";
+import { Separator } from "@/components/ui/separator";
+import { Spinner } from "@/components/ui/spinner";
+import { deviceAuthorizationPlugin } from "@/lib/auth/device-authorization-plugin";
+import { cn } from "@/lib/utils";
 
-type DeviceAuthorizationStep = "code" | "approval" | "approved" | "denied"
+type DeviceAuthorizationStep = "code" | "approval" | "approved" | "denied";
 
 type DeviceAuthorizationState = {
-  step: DeviceAuthorizationStep
-  codeError: string
-}
+  step: DeviceAuthorizationStep;
+  codeError: string;
+};
 
 type DeviceAuthorizationAction =
   | { type: "codeChanged" }
   | { type: "verificationFailed"; message: string }
   | { type: "verificationSucceeded"; status: string }
   | { type: "approved" }
-  | { type: "denied" }
+  | { type: "denied" };
 
 const initialDeviceAuthorizationState: DeviceAuthorizationState = {
   step: "code",
-  codeError: ""
-}
+  codeError: "",
+};
 
 function deviceAuthorizationReducer(
   state: DeviceAuthorizationState,
-  action: DeviceAuthorizationAction
+  action: DeviceAuthorizationAction,
 ): DeviceAuthorizationState {
   switch (action.type) {
     case "codeChanged":
-      return state.codeError ? { ...state, codeError: "" } : state
+      return state.codeError ? { ...state, codeError: "" } : state;
     case "verificationFailed":
-      return { step: "code", codeError: action.message }
+      return { step: "code", codeError: action.message };
     case "verificationSucceeded":
       if (action.status === "approved") {
-        return { step: "approved", codeError: "" }
+        return { step: "approved", codeError: "" };
       }
       if (action.status === "denied") {
-        return { step: "denied", codeError: "" }
+        return { step: "denied", codeError: "" };
       }
-      return { step: "approval", codeError: "" }
+      return { step: "approval", codeError: "" };
     case "approved":
-      return { step: "approved", codeError: "" }
+      return { step: "approved", codeError: "" };
     case "denied":
-      return { step: "denied", codeError: "" }
+      return { step: "denied", codeError: "" };
   }
 }
 
 function normalizeDeviceCode(value: string) {
-  return value.replace(/-/g, "").trim().toUpperCase()
+  return value.replace(/-/g, "").trim().toUpperCase();
 }
 
 function createDeviceCodeSlots(length: number) {
   return Array.from({ length }, (_, slotIndex) => ({
     id: `device-code-character-${String(slotIndex + 1)}`,
-    index: slotIndex
-  }))
+    index: slotIndex,
+  }));
 }
 
 export type DeviceAuthorizationProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Render Better Auth's browser-side device authorization ceremony.
@@ -114,81 +109,73 @@ export type DeviceAuthorizationProps = {
  * @param className - Additional CSS classes applied to the card.
  */
 export function DeviceAuthorization({ className }: DeviceAuthorizationProps) {
-  const { authClient, basePaths, navigate, redirectTo, viewPaths } = useAuth()
+  const { authClient, basePaths, navigate, redirectTo, viewPaths } = useAuth();
   const {
     localization,
     userCodeLength,
-    viewPaths: deviceAuthorizationViewPaths
-  } = useAuthPlugin(deviceAuthorizationPlugin)
-  const deviceAuthClient = authClient as DeviceAuthorizationAuthClient
-  const { data: session, isPending: isSessionPending } =
-    useSession(deviceAuthClient)
-  const [userCode, setUserCode] = useState("")
-  const [state, dispatch] = useReducer(
-    deviceAuthorizationReducer,
-    initialDeviceAuthorizationState
-  )
-  const submittedCodeRef = useRef<string | null>(null)
-  const normalizedUserCode = normalizeDeviceCode(userCode)
+    viewPaths: deviceAuthorizationViewPaths,
+  } = useAuthPlugin(deviceAuthorizationPlugin);
+  const deviceAuthClient = authClient as DeviceAuthorizationAuthClient;
+  const { data: session, isPending: isSessionPending } = useSession(deviceAuthClient);
+  const [userCode, setUserCode] = useState("");
+  const [state, dispatch] = useReducer(deviceAuthorizationReducer, initialDeviceAuthorizationState);
+  const submittedCodeRef = useRef<string | null>(null);
+  const normalizedUserCode = normalizeDeviceCode(userCode);
 
   const handleAuthorizationError = () => {
     dispatch({
       type: "verificationFailed",
-      message: localization.invalidDeviceCode
-    })
-  }
+      message: localization.invalidDeviceCode,
+    });
+  };
 
   useEffect(() => {
-    const code = new URLSearchParams(window.location.search).get("user_code")
-    if (!code) return
+    const code = new URLSearchParams(window.location.search).get("user_code");
+    if (!code) return;
 
     setUserCode(
       normalizeDeviceCode(code)
         .replace(/[^A-Z0-9]/g, "")
-        .slice(0, userCodeLength)
-    )
-  }, [userCodeLength])
+        .slice(0, userCodeLength),
+    );
+  }, [userCodeLength]);
 
-  const { mutate: verifyDeviceCode, isPending: isVerifying } =
-    useVerifyDeviceCode(deviceAuthClient, {
+  const { mutate: verifyDeviceCode, isPending: isVerifying } = useVerifyDeviceCode(
+    deviceAuthClient,
+    {
       onError: handleAuthorizationError,
       onSuccess: ({ status }) => {
-        dispatch({ type: "verificationSucceeded", status })
-      }
-    })
+        dispatch({ type: "verificationSucceeded", status });
+      },
+    },
+  );
 
-  const { mutate: approveDevice, isPending: isApproving } = useApproveDevice(
-    deviceAuthClient,
-    {
-      onError: handleAuthorizationError,
-      onSuccess: () => dispatch({ type: "approved" })
-    }
-  )
+  const { mutate: approveDevice, isPending: isApproving } = useApproveDevice(deviceAuthClient, {
+    onError: handleAuthorizationError,
+    onSuccess: () => dispatch({ type: "approved" }),
+  });
 
-  const { mutate: denyDevice, isPending: isDenying } = useDenyDevice(
-    deviceAuthClient,
-    {
-      onError: handleAuthorizationError,
-      onSuccess: () => dispatch({ type: "denied" })
-    }
-  )
+  const { mutate: denyDevice, isPending: isDenying } = useDenyDevice(deviceAuthClient, {
+    onError: handleAuthorizationError,
+    onSuccess: () => dispatch({ type: "denied" }),
+  });
 
   const handleCodeChange = (value: string) => {
     const nextCode = normalizeDeviceCode(value)
       .replace(/[^A-Z0-9]/g, "")
-      .slice(0, userCodeLength)
+      .slice(0, userCodeLength);
 
     if (nextCode !== submittedCodeRef.current) {
-      submittedCodeRef.current = null
+      submittedCodeRef.current = null;
     }
 
-    setUserCode(nextCode)
-    dispatch({ type: "codeChanged" })
-  }
+    setUserCode(nextCode);
+    dispatch({ type: "codeChanged" });
+  };
 
   const submitCode = useCallback(
     (completedCode: string) => {
-      const normalizedCode = normalizeDeviceCode(completedCode)
+      const normalizedCode = normalizeDeviceCode(completedCode);
 
       if (
         isSessionPending ||
@@ -196,21 +183,21 @@ export function DeviceAuthorization({ className }: DeviceAuthorizationProps) {
         normalizedCode.length !== userCodeLength ||
         normalizedCode === submittedCodeRef.current
       ) {
-        return
+        return;
       }
 
-      submittedCodeRef.current = normalizedCode
+      submittedCodeRef.current = normalizedCode;
 
       if (!session) {
-        const verificationPath = `${basePaths.auth}/${deviceAuthorizationViewPaths.auth.deviceAuthorization}?user_code=${encodeURIComponent(normalizedCode)}`
-        const signInPath = `${basePaths.auth}/${viewPaths.auth.signIn}?redirectTo=${encodeURIComponent(verificationPath)}`
-        navigate({ to: signInPath })
-        return
+        const verificationPath = `${basePaths.auth}/${deviceAuthorizationViewPaths.auth.deviceAuthorization}?user_code=${encodeURIComponent(normalizedCode)}`;
+        const signInPath = `${basePaths.auth}/${viewPaths.auth.signIn}?redirectTo=${encodeURIComponent(verificationPath)}`;
+        navigate({ to: signInPath });
+        return;
       }
 
       verifyDeviceCode({
-        query: { user_code: normalizedCode }
-      })
+        query: { user_code: normalizedCode },
+      });
     },
     [
       basePaths.auth,
@@ -221,28 +208,28 @@ export function DeviceAuthorization({ className }: DeviceAuthorizationProps) {
       session,
       userCodeLength,
       verifyDeviceCode,
-      viewPaths.auth.signIn
-    ]
-  )
+      viewPaths.auth.signIn,
+    ],
+  );
 
   useEffect(() => {
     if (normalizedUserCode.length === userCodeLength) {
-      submitCode(normalizedUserCode)
+      submitCode(normalizedUserCode);
     }
-  }, [normalizedUserCode, submitCode, userCodeLength])
+  }, [normalizedUserCode, submitCode, userCodeLength]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+    event.preventDefault();
 
     if (normalizedUserCode.length !== userCodeLength) {
-      handleAuthorizationError()
-      return
+      handleAuthorizationError();
+      return;
     }
 
-    submitCode(normalizedUserCode)
-  }
+    submitCode(normalizedUserCode);
+  };
 
-  const cardClassName = cn("w-full max-w-sm", className)
+  const cardClassName = cn("w-full max-w-sm", className);
 
   if (state.step === "approval" && session) {
     return (
@@ -256,7 +243,7 @@ export function DeviceAuthorization({ className }: DeviceAuthorizationProps) {
         onApprove={() => approveDevice({ userCode: normalizedUserCode })}
         onDeny={() => denyDevice({ userCode: normalizedUserCode })}
       />
-    )
+    );
   }
 
   if (state.step === "approved" || state.step === "denied") {
@@ -266,15 +253,12 @@ export function DeviceAuthorization({ className }: DeviceAuthorizationProps) {
         localization={localization}
         status={state.step}
         action={
-          <Button
-            className="w-full"
-            onClick={() => navigate({ to: redirectTo })}
-          >
+          <Button className="w-full" onClick={() => navigate({ to: redirectTo })}>
             {localization.returnToApplication}
           </Button>
         }
       />
-    )
+    );
   }
 
   return (
@@ -289,20 +273,20 @@ export function DeviceAuthorization({ className }: DeviceAuthorizationProps) {
       onCodeChange={handleCodeChange}
       onSubmit={handleSubmit}
     />
-  )
+  );
 }
 
 type DeviceCodeFormProps = {
-  className: string
-  codeError: string
-  isSessionPending: boolean
-  isVerifying: boolean
-  localization: DeviceAuthorizationLocalization
-  userCode: string
-  userCodeLength: number
-  onCodeChange: (value: string) => void
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void
-}
+  className: string;
+  codeError: string;
+  isSessionPending: boolean;
+  isVerifying: boolean;
+  localization: DeviceAuthorizationLocalization;
+  userCode: string;
+  userCodeLength: number;
+  onCodeChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+};
 
 function DeviceCodeForm({
   className,
@@ -313,32 +297,26 @@ function DeviceCodeForm({
   userCode,
   userCodeLength,
   onCodeChange,
-  onSubmit
+  onSubmit,
 }: DeviceCodeFormProps) {
-  const slots = createDeviceCodeSlots(userCodeLength)
-  const groupBreak = Math.ceil(userCodeLength / 2)
-  const firstGroup = slots.slice(0, groupBreak)
-  const secondGroup = slots.slice(groupBreak)
-  const errorId = "device-code-error"
+  const slots = createDeviceCodeSlots(userCodeLength);
+  const groupBreak = Math.ceil(userCodeLength / 2);
+  const firstGroup = slots.slice(0, groupBreak);
+  const secondGroup = slots.slice(groupBreak);
+  const errorId = "device-code-error";
 
   return (
     <Card className={className}>
       <CardHeader>
-        <CardTitle className="text-xl">
-          {localization.deviceAuthorization}
-        </CardTitle>
-        <CardDescription>
-          {localization.deviceAuthorizationDescription}
-        </CardDescription>
+        <CardTitle className="text-xl">{localization.deviceAuthorization}</CardTitle>
+        <CardDescription>{localization.deviceAuthorizationDescription}</CardDescription>
       </CardHeader>
 
       <CardContent>
         <form aria-label={localization.deviceAuthorization} onSubmit={onSubmit}>
           <FieldGroup>
             <Field data-invalid={Boolean(codeError)}>
-              <FieldLabel htmlFor="device-code">
-                {localization.deviceCode}
-              </FieldLabel>
+              <FieldLabel htmlFor="device-code">{localization.deviceCode}</FieldLabel>
 
               <InputOTP
                 id="device-code"
@@ -378,11 +356,7 @@ function DeviceCodeForm({
 
             <Button
               className="w-full"
-              disabled={
-                userCode.length !== userCodeLength ||
-                isSessionPending ||
-                isVerifying
-              }
+              disabled={userCode.length !== userCodeLength || isSessionPending || isVerifying}
               type="submit"
             >
               {isVerifying ? <Spinner data-icon="inline-start" /> : null}
@@ -392,22 +366,22 @@ function DeviceCodeForm({
         </form>
       </CardContent>
     </Card>
-  )
+  );
 }
 
 type DeviceApprovalProps = {
-  className: string
-  isApproving: boolean
-  isDenying: boolean
-  localization: DeviceAuthorizationLocalization
+  className: string;
+  isApproving: boolean;
+  isDenying: boolean;
+  localization: DeviceAuthorizationLocalization;
   user: {
-    email: string
-    name: string
-  }
-  userCode: string
-  onApprove: () => void
-  onDeny: () => void
-}
+    email: string;
+    name: string;
+  };
+  userCode: string;
+  onApprove: () => void;
+  onDeny: () => void;
+};
 
 function DeviceApproval({
   className,
@@ -417,51 +391,37 @@ function DeviceApproval({
   user,
   userCode,
   onApprove,
-  onDeny
+  onDeny,
 }: DeviceApprovalProps) {
-  const isPending = isApproving || isDenying
+  const isPending = isApproving || isDenying;
 
   return (
     <Card className={className}>
       <CardHeader>
         <CardTitle className="text-xl">{localization.approveDevice}</CardTitle>
-        <CardDescription>
-          {localization.approveDeviceDescription}
-        </CardDescription>
+        <CardDescription>{localization.approveDeviceDescription}</CardDescription>
       </CardHeader>
 
       <CardContent>
         <div className="flex flex-col gap-3 rounded-lg border bg-muted/50 p-3">
           <div className="flex flex-col gap-1">
-            <p className="text-xs text-muted-foreground">
-              {localization.deviceCode}
-            </p>
-            <p className="font-mono text-sm font-medium tracking-wider">
-              {userCode}
-            </p>
+            <p className="text-xs text-muted-foreground">{localization.deviceCode}</p>
+            <p className="font-mono text-sm font-medium tracking-wider">{userCode}</p>
           </div>
 
           <Separator />
 
           <div className="flex flex-col gap-1">
-            <p className="text-xs text-muted-foreground">
-              {localization.signedInAs}
-            </p>
+            <p className="text-xs text-muted-foreground">{localization.signedInAs}</p>
             <p className="text-sm font-medium">{user.name || user.email}</p>
-            {user.name ? (
-              <p className="text-xs text-muted-foreground">{user.email}</p>
-            ) : null}
+            {user.name ? <p className="text-xs text-muted-foreground">{user.email}</p> : null}
           </div>
         </div>
       </CardContent>
 
       <CardFooter className="grid grid-cols-2 gap-2">
         <Button disabled={isPending} variant="outline" onClick={onDeny}>
-          {isDenying ? (
-            <Spinner data-icon="inline-start" />
-          ) : (
-            <XIcon data-icon="inline-start" />
-          )}
+          {isDenying ? <Spinner data-icon="inline-start" /> : <XIcon data-icon="inline-start" />}
           {localization.deny}
         </Button>
 
@@ -475,46 +435,41 @@ function DeviceApproval({
         </Button>
       </CardFooter>
     </Card>
-  )
+  );
 }
 
 type DeviceAuthorizationResultProps = {
-  action: ReactNode
-  className: string
-  localization: DeviceAuthorizationLocalization
-  status: "approved" | "denied"
-}
+  action: ReactNode;
+  className: string;
+  localization: DeviceAuthorizationLocalization;
+  status: "approved" | "denied";
+};
 
 function DeviceAuthorizationResult({
   action,
   className,
   localization,
-  status
+  status,
 }: DeviceAuthorizationResultProps) {
-  const approved = status === "approved"
-  const Icon = approved ? CircleCheckIcon : CircleXIcon
+  const approved = status === "approved";
+  const Icon = approved ? CircleCheckIcon : CircleXIcon;
 
   return (
     <Card className={className}>
       <CardHeader className="justify-items-center text-center">
         <Icon
           aria-hidden="true"
-          className={cn(
-            "mb-1 size-10",
-            approved ? "text-primary" : "text-destructive"
-          )}
+          className={cn("mb-1 size-10", approved ? "text-primary" : "text-destructive")}
         />
         <CardTitle className="text-xl">
           {approved ? localization.deviceApproved : localization.deviceDenied}
         </CardTitle>
         <CardDescription>
-          {approved
-            ? localization.deviceApprovedDescription
-            : localization.deviceDeniedDescription}
+          {approved ? localization.deviceApprovedDescription : localization.deviceDeniedDescription}
         </CardDescription>
       </CardHeader>
 
       <CardFooter>{action}</CardFooter>
     </Card>
-  )
+  );
 }

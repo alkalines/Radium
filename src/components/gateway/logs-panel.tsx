@@ -9,7 +9,13 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -146,7 +152,8 @@ export function LogsPanel() {
                   {customRange?.from ? (
                     customRange.to ? (
                       <>
-                        {customRange.from.toLocaleDateString()} – {customRange.to.toLocaleDateString()}
+                        {customRange.from.toLocaleDateString()} –{" "}
+                        {customRange.to.toLocaleDateString()}
                       </>
                     ) : (
                       customRange.from.toLocaleDateString()
@@ -233,19 +240,15 @@ export function LogsPanel() {
   );
 }
 
-function GenerationRow({
-  generation,
-  onSelect,
-}: {
-  generation: Generation;
-  onSelect: () => void;
-}) {
+function GenerationRow({ generation, onSelect }: { generation: Generation; onSelect: () => void }) {
   const { request, response } = generation;
   const tps = tokensPerSecond(response.usage.completion_tokens, response.gen_time);
 
   return (
     <TableRow className="cursor-pointer" onClick={onSelect}>
-      <TableCell className="text-muted-foreground">{formatDate(generation._creationTime)}</TableCell>
+      <TableCell className="text-muted-foreground">
+        {formatDate(generation._creationTime)}
+      </TableCell>
       <TableCell className="font-medium">
         {request.model?.name ?? request.model?.slug ?? "Unknown"}
       </TableCell>

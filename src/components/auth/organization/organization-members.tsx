@@ -1,64 +1,48 @@
-"use client"
+"use client";
 
 import {
   hasMemberRole,
-  type OrganizationAuthClient
-} from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
+  type OrganizationAuthClient,
+} from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
 import {
   useActiveMemberRole,
   useActiveOrganization,
   useHasPermission,
-  useListOrganizationMembers
-} from "@better-auth-ui/react/plugins/organization"
-import type { Member } from "better-auth/client"
-import { ChevronUp, Filter, Search, X } from "lucide-react"
-import {
-  type ComponentProps,
-  type ReactNode,
-  useEffect,
-  useMemo,
-  useState
-} from "react"
+  useListOrganizationMembers,
+} from "@better-auth-ui/react/plugins/organization";
+import type { Member } from "better-auth/client";
+import { ChevronUp, Filter, Search, X } from "lucide-react";
+import { type ComponentProps, type ReactNode, useEffect, useMemo, useState } from "react";
 
-import { Badge } from "@/components/ui/badge"
-import { Button, buttonVariants } from "@/components/ui/button"
-import { Card } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  DropdownMenuTrigger
-} from "@/components/ui/dropdown-menu"
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput
-} from "@/components/ui/input-group"
-import {
-  Table,
-  TableBody,
-  TableHead,
-  TableHeader,
-  TableRow
-} from "@/components/ui/table"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { cn } from "@/lib/utils"
-import { InviteMemberDialog } from "./invite-member-dialog"
-import { OrganizationMemberRow } from "./organization-member-row"
-import { OrganizationMemberRowSkeleton } from "./organization-member-row-skeleton"
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Table, TableBody, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { cn } from "@/lib/utils";
+import { InviteMemberDialog } from "./invite-member-dialog";
+import { OrganizationMemberRow } from "./organization-member-row";
+import { OrganizationMemberRowSkeleton } from "./organization-member-row-skeleton";
 
-type SortDirection = "ascending" | "descending"
+type SortDirection = "ascending" | "descending";
 
 type SortDescriptor = {
-  column: string
-  direction: SortDirection
-}
+  column: string;
+  direction: SortDirection;
+};
 
 /** Props for the `OrganizationMembers` component. */
 export type OrganizationMembersProps = {
-  className?: string
+  className?: string;
   /**
    * Number of rows per page. This value must be a positive integer. Setting it
    * moves paging, role filtering, and role sorting
@@ -68,18 +52,15 @@ export type OrganizationMembersProps = {
    * Leave it unset to keep the whole list in memory and filter it in the
    * browser.
    */
-  pageSize?: number
-}
+  pageSize?: number;
+};
 
 function validatePageSize(pageSize?: number) {
-  if (
-    pageSize !== undefined &&
-    (!Number.isInteger(pageSize) || pageSize <= 0)
-  ) {
-    throw new RangeError("pageSize must be a positive integer")
+  if (pageSize !== undefined && (!Number.isInteger(pageSize) || pageSize <= 0)) {
+    throw new RangeError("pageSize must be a positive integer");
   }
 
-  return pageSize
+  return pageSize;
 }
 
 /**
@@ -90,157 +71,149 @@ export function OrganizationMembers({
   pageSize,
   ...props
 }: OrganizationMembersProps & ComponentProps<"div">) {
-  const validatedPageSize = validatePageSize(pageSize)
-  const { authClient } = useAuth<OrganizationAuthClient>()
+  const validatedPageSize = validatePageSize(pageSize);
+  const { authClient } = useAuth<OrganizationAuthClient>();
   const {
     localization: organizationLocalization,
     membershipLimit,
     roles,
     creatorRole,
-    teams
-  } = useAuthPlugin(organizationPlugin)
+    teams,
+  } = useAuthPlugin(organizationPlugin);
 
   const { data: activeOrganization, isPending: activeOrganizationPending } =
-    useActiveOrganization(authClient)
+    useActiveOrganization(authClient);
 
-  const [sortDescriptor, setSortDescriptor] = useState<SortDescriptor>()
-  const [roleFilter, setRoleFilter] = useState("all")
-  const [search, setSearch] = useState("")
-  const [page, setPage] = useState(0)
+  const [sortDescriptor, setSortDescriptor] = useState<SortDescriptor>();
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
 
-  const paged = validatedPageSize !== undefined
+  const paged = validatedPageSize !== undefined;
 
-  const { data: membersData, isPending: membersPending } =
-    useListOrganizationMembers(authClient, {
-      query: paged
-        ? {
-            limit: validatedPageSize,
-            offset: page * validatedPageSize,
-            ...(roleFilter === "all"
-              ? {}
-              : {
-                  filterField: "role",
-                  filterValue: roleFilter,
-                  // Roles are stored comma-joined, so an exact match would
-                  // drop anyone holding more than one.
-                  filterOperator: "contains" as const
-                }),
-            ...(sortDescriptor?.column === "role"
-              ? {
-                  sortBy: "role",
-                  sortDirection:
-                    sortDescriptor.direction === "descending"
-                      ? ("desc" as const)
-                      : ("asc" as const)
-                }
-              : {})
-          }
-        : undefined
-    })
+  const { data: membersData, isPending: membersPending } = useListOrganizationMembers(authClient, {
+    query: paged
+      ? {
+          limit: validatedPageSize,
+          offset: page * validatedPageSize,
+          ...(roleFilter === "all"
+            ? {}
+            : {
+                filterField: "role",
+                filterValue: roleFilter,
+                // Roles are stored comma-joined, so an exact match would
+                // drop anyone holding more than one.
+                filterOperator: "contains" as const,
+              }),
+          ...(sortDescriptor?.column === "role"
+            ? {
+                sortBy: "role",
+                sortDirection:
+                  sortDescriptor.direction === "descending" ? ("desc" as const) : ("asc" as const),
+              }
+            : {}),
+        }
+      : undefined,
+  });
 
   // The signed-in user need not be on the loaded page, so their own role comes
   // from a dedicated endpoint rather than from the member list.
-  const { data: activeMemberRole } = useActiveMemberRole(authClient)
+  const { data: activeMemberRole } = useActiveMemberRole(authClient);
   const owners = useListOrganizationMembers(authClient, {
     query: {
       organizationId: activeOrganization?.id,
       filterField: "role",
       filterValue: creatorRole,
       filterOperator: "contains",
-      limit: 1
+      limit: 1,
     },
-    enabled: Boolean(activeOrganization?.id)
-  })
+    enabled: Boolean(activeOrganization?.id),
+  });
 
   const canInvite = useHasPermission(authClient, {
-    permissions: { invitation: ["create"] }
-  })
+    permissions: { invitation: ["create"] },
+  });
   const canListMemberTeams = useHasPermission(authClient, {
     organizationId: activeOrganization?.id,
     permissions: { member: ["update"] },
-    enabled: teams && Boolean(activeOrganization?.id)
-  })
+    enabled: teams && Boolean(activeOrganization?.id),
+  });
 
   const isPending =
     activeOrganizationPending ||
     membersPending ||
     owners.isPending ||
-    (teams && canListMemberTeams.isPending)
+    (teams && canListMemberTeams.isPending);
 
   const filteredMembers = useMemo(() => {
     // The server already applied the role filter when paging, and it has no
     // parameter for name or email search, so both stay here only in the
     // unpaged mode where the whole list is present.
-    if (paged) return membersData?.members
+    if (paged) return membersData?.members;
 
     return membersData?.members.filter(
       (member) =>
         (roleFilter === "all" || hasMemberRole(member.role, roleFilter)) &&
         (member.user.name.toLowerCase().includes(search.toLowerCase()) ||
-          member.user.email.toLowerCase().includes(search.toLowerCase()))
-    )
-  }, [paged, search, membersData?.members, roleFilter])
+          member.user.email.toLowerCase().includes(search.toLowerCase())),
+    );
+  }, [paged, search, membersData?.members, roleFilter]);
 
   const sortedMembers = useMemo(() => {
-    if (paged) return filteredMembers
-    if (!sortDescriptor) return filteredMembers
-    if (!filteredMembers) return filteredMembers
+    if (paged) return filteredMembers;
+    if (!sortDescriptor) return filteredMembers;
+    if (!filteredMembers) return filteredMembers;
 
     return [...filteredMembers].sort((a, b) => {
-      const col = sortDescriptor.column as keyof Member | "user"
-      const first =
-        col === "user" ? a.user.name || a.user.email : String(a[col])
-      const second =
-        col === "user" ? b.user.name || b.user.email : String(b[col])
+      const col = sortDescriptor.column as keyof Member | "user";
+      const first = col === "user" ? a.user.name || a.user.email : String(a[col]);
+      const second = col === "user" ? b.user.name || b.user.email : String(b[col]);
 
-      let cmp = first.localeCompare(second)
+      let cmp = first.localeCompare(second);
       if (sortDescriptor.direction === "descending") {
-        cmp *= -1
+        cmp *= -1;
       }
 
-      return cmp
-    })
-  }, [paged, sortDescriptor, filteredMembers])
+      return cmp;
+    });
+  }, [paged, sortDescriptor, filteredMembers]);
 
-  const [inviteOpen, setInviteOpen] = useState(false)
+  const [inviteOpen, setInviteOpen] = useState(false);
 
-  const isOwner = hasMemberRole(activeMemberRole?.role, creatorRole)
-  const ownerCount = owners.data?.total ?? owners.data?.members.length
-  const showTeams = teams && canListMemberTeams.data?.success === true
+  const isOwner = hasMemberRole(activeMemberRole?.role, creatorRole);
+  const ownerCount = owners.data?.total ?? owners.data?.members.length;
+  const showTeams = teams && canListMemberTeams.data?.success === true;
 
-  const total = membersData?.total ?? membersData?.members.length ?? 0
+  const total = membersData?.total ?? membersData?.members.length ?? 0;
 
-  const atMembershipLimit =
-    membershipLimit !== undefined && total >= membershipLimit
+  const atMembershipLimit = membershipLimit !== undefined && total >= membershipLimit;
 
   // Any change to what the server is being asked for invalidates the cursor.
   // biome-ignore lint/correctness/useExhaustiveDependencies: resets on query change
   useEffect(() => {
-    setPage(0)
-  }, [roleFilter, sortDescriptor, activeOrganization?.id])
+    setPage(0);
+  }, [roleFilter, sortDescriptor, activeOrganization?.id]);
 
-  const pageStart = page * (validatedPageSize ?? 0)
-  const pageEnd = pageStart + (sortedMembers?.length ?? 0)
-  const hasNextPage = pageEnd < total
+  const pageStart = page * (validatedPageSize ?? 0);
+  const pageEnd = pageStart + (sortedMembers?.length ?? 0);
+  const hasNextPage = pageEnd < total;
 
   function toggleSort(column: string) {
     setSortDescriptor((current) => {
       if (current?.column !== column) {
-        return { column, direction: "ascending" }
+        return { column, direction: "ascending" };
       }
       if (current.direction === "ascending") {
-        return { column, direction: "descending" }
+        return { column, direction: "descending" };
       }
-      return undefined
-    })
+      return undefined;
+    });
   }
 
   return (
     <div className={cn("flex flex-col gap-3", className)} {...props}>
       <div className="flex items-end justify-between gap-3">
-        <h3 className="truncate text-sm font-semibold">
-          {organizationLocalization.members}
-        </h3>
+        <h3 className="truncate text-sm font-semibold">{organizationLocalization.members}</h3>
 
         {(canInvite.isPending || canInvite.data?.success) && (
           <Button
@@ -286,10 +259,7 @@ export function OrganizationMembers({
             </DropdownMenuTrigger>
 
             <DropdownMenuContent align="start">
-              <DropdownMenuRadioGroup
-                value={roleFilter}
-                onValueChange={setRoleFilter}
-              >
+              <DropdownMenuRadioGroup value={roleFilter} onValueChange={setRoleFilter}>
                 <DropdownMenuRadioItem value="all">
                   {organizationLocalization.all}
                 </DropdownMenuRadioItem>
@@ -307,9 +277,7 @@ export function OrganizationMembers({
         {roleFilter !== "all" && (
           <Badge variant="secondary" className="w-fit gap-1">
             {organizationLocalization.role}:{" "}
-            <span className="capitalize">
-              {roles?.[roleFilter] ?? roleFilter}
-            </span>
+            <span className="capitalize">{roles?.[roleFilter] ?? roleFilter}</span>
             <Button
               aria-label={organizationLocalization.clear}
               className="size-4 rounded-sm text-muted-foreground"
@@ -334,9 +302,7 @@ export function OrganizationMembers({
                 ) : (
                   <SortableTableHead
                     sortDirection={
-                      sortDescriptor?.column === "user"
-                        ? sortDescriptor.direction
-                        : undefined
+                      sortDescriptor?.column === "user" ? sortDescriptor.direction : undefined
                     }
                     onClick={() => toggleSort("user")}
                   >
@@ -346,22 +312,16 @@ export function OrganizationMembers({
 
                 <SortableTableHead
                   sortDirection={
-                    sortDescriptor?.column === "role"
-                      ? sortDescriptor.direction
-                      : undefined
+                    sortDescriptor?.column === "role" ? sortDescriptor.direction : undefined
                   }
                   onClick={() => toggleSort("role")}
                 >
                   {organizationLocalization.role}
                 </SortableTableHead>
 
-                {showTeams && (
-                  <TableHead>{organizationLocalization.teams}</TableHead>
-                )}
+                {showTeams && <TableHead>{organizationLocalization.teams}</TableHead>}
 
-                <TableHead className="text-end">
-                  {organizationLocalization.actions}
-                </TableHead>
+                <TableHead className="text-end">{organizationLocalization.actions}</TableHead>
               </TableRow>
             </TableHeader>
 
@@ -421,17 +381,17 @@ export function OrganizationMembers({
         <InviteMemberDialog open={inviteOpen} onOpenChange={setInviteOpen} />
       )}
     </div>
-  )
+  );
 }
 
 function SortableTableHead({
   children,
   sortDirection,
-  onClick
+  onClick,
 }: {
-  children: ReactNode
-  sortDirection?: SortDirection
-  onClick: () => void
+  children: ReactNode;
+  sortDirection?: SortDirection;
+  onClick: () => void;
 }) {
   return (
     <TableHead aria-sort={sortDirection ?? "none"}>
@@ -448,11 +408,11 @@ function SortableTableHead({
           <ChevronUp
             className={cn(
               "size-3 transition-transform duration-100 ease-out",
-              sortDirection === "descending" ? "rotate-180" : ""
+              sortDirection === "descending" ? "rotate-180" : "",
             )}
           />
         )}
       </Button>
     </TableHead>
-  )
+  );
 }

@@ -1,10 +1,10 @@
-import { createAuthPlugin } from "@better-auth-ui/core"
+import { createAuthPlugin } from "@better-auth-ui/core";
 import {
   deviceAuthorizationPlugin as coreDeviceAuthorizationPlugin,
-  type DeviceAuthorizationPluginOptions
-} from "@better-auth-ui/core/plugins/device-authorization"
+  type DeviceAuthorizationPluginOptions,
+} from "@better-auth-ui/core/plugins/device-authorization";
 
-import { DeviceAuthorization } from "@/components/auth/device-authorization/device-authorization"
+import { DeviceAuthorization } from "@/components/auth/device-authorization/device-authorization";
 
 export const deviceAuthorizationPlugin = createAuthPlugin(
   coreDeviceAuthorizationPlugin.id,
@@ -12,8 +12,8 @@ export const deviceAuthorizationPlugin = createAuthPlugin(
     ...coreDeviceAuthorizationPlugin(options),
     views: {
       auth: {
-        deviceAuthorization: DeviceAuthorization
-      }
-    }
-  })
-)
+        deviceAuthorization: DeviceAuthorization,
+      },
+    },
+  }),
+);

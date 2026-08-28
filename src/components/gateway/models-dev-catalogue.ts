@@ -27,7 +27,9 @@ export function useModelsDevCatalogue(enabled: boolean) {
     let active = true;
     loadCatalogue()
       .then((data) => active && setCatalogue(data))
-      .catch((err: unknown) => active && setError(err instanceof Error ? err.message : String(err)));
+      .catch(
+        (err: unknown) => active && setError(err instanceof Error ? err.message : String(err)),
+      );
     return () => {
       active = false;
     };

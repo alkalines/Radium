@@ -1,18 +1,18 @@
-import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization"
-import { useAuth } from "@better-auth-ui/react"
-import { useHasPermission } from "@better-auth-ui/react/plugins/organization"
-import type { ComponentProps } from "react"
+import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization";
+import { useAuth } from "@better-auth-ui/react";
+import { useHasPermission } from "@better-auth-ui/react/plugins/organization";
+import type { ComponentProps } from "react";
 
-import { Card, CardContent } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
-import { cn } from "@/lib/utils"
-import { DeleteOrganization } from "./delete-organization"
-import { DeleteOrganizationSkeleton } from "./delete-organization-skeleton"
-import { LeaveOrganization } from "./leave-organization"
+import { Card, CardContent } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
+import { DeleteOrganization } from "./delete-organization";
+import { DeleteOrganizationSkeleton } from "./delete-organization-skeleton";
+import { LeaveOrganization } from "./leave-organization";
 
 export type OrganizationDangerZoneProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Danger zone heading with `LeaveOrganization` and `DeleteOrganization`
@@ -26,14 +26,16 @@ export function OrganizationDangerZone({
   className,
   ...props
 }: OrganizationDangerZoneProps & ComponentProps<"div">) {
-  const { authClient, localization } = useAuth<OrganizationAuthClient>()
+  const { authClient, localization } = useAuth<OrganizationAuthClient>();
 
-  const { data: deletePermission, isPending: deletePermissionPending } =
-    useHasPermission(authClient, {
-      permissions: { organization: ["delete"] }
-    })
+  const { data: deletePermission, isPending: deletePermissionPending } = useHasPermission(
+    authClient,
+    {
+      permissions: { organization: ["delete"] },
+    },
+  );
 
-  const canDelete = !!deletePermission?.success
+  const canDelete = !!deletePermission?.success;
 
   return (
     <div className={cn("flex w-full flex-col", className)} {...props}>
@@ -61,5 +63,5 @@ export function OrganizationDangerZone({
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

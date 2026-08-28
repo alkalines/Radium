@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import {
   type DashAuditLog,
@@ -6,20 +6,20 @@ import {
   formatDashEventName,
   getDashEventDetail,
   getDashEventKey,
-  getDashEventLocation
-} from "@better-auth-ui/core/plugins/dash"
+  getDashEventLocation,
+} from "@better-auth-ui/core/plugins/dash";
 import {
   hasMemberRole,
-  type OrganizationAuthClient
-} from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
+  type OrganizationAuthClient,
+} from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
 import {
   useDashAllAuditLogs,
   useDashAuditLogs,
-  useDashUserAuditLogs
-} from "@better-auth-ui/react/plugins/dash"
-import { useActiveMemberRole } from "@better-auth-ui/react/plugins/organization"
-import { keepPreviousData } from "@tanstack/react-query"
+  useDashUserAuditLogs,
+} from "@better-auth-ui/react/plugins/dash";
+import { useActiveMemberRole } from "@better-auth-ui/react/plugins/organization";
+import { keepPreviousData } from "@tanstack/react-query";
 import {
   Activity,
   Building2,
@@ -29,12 +29,12 @@ import {
   Search,
   ShieldCheck,
   UserRound,
-  Users
-} from "lucide-react"
-import { Fragment, useDeferredValue, useMemo, useState } from "react"
+  Users,
+} from "lucide-react";
+import { Fragment, useDeferredValue, useMemo, useState } from "react";
 
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardAction,
@@ -42,73 +42,66 @@ import {
   CardDescription,
   CardFooter,
   CardHeader,
-  CardTitle
-} from "@/components/ui/card"
+  CardTitle,
+} from "@/components/ui/card";
 import {
   Empty,
   EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
-  EmptyTitle
-} from "@/components/ui/empty"
-import { Field, FieldLabel } from "@/components/ui/field"
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput
-} from "@/components/ui/input-group"
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue
-} from "@/components/ui/select"
-import { Separator } from "@/components/ui/separator"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Spinner } from "@/components/ui/spinner"
-import { dashPlugin } from "@/lib/auth/dash-plugin"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { cn } from "@/lib/utils"
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { dashPlugin } from "@/lib/auth/dash-plugin";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { cn } from "@/lib/utils";
 
-type ActivityAccess = "admin" | "admin-user" | "organization" | "user"
+type ActivityAccess = "admin" | "admin-user" | "organization" | "user";
 
 type ActivityFeedProps = {
-  access: ActivityAccess
-  organizationId?: string
-  ready?: boolean
-  className?: string
-  userId?: string
-}
+  access: ActivityAccess;
+  organizationId?: string;
+  ready?: boolean;
+  className?: string;
+  userId?: string;
+};
 
 export type AdminUserActivityProps = {
-  className?: string
-  userId: string
-}
+  className?: string;
+  userId: string;
+};
 
-export type AdminActivityProps = { className?: string }
+export type AdminActivityProps = { className?: string };
 
-export type UserActivityProps = { className?: string }
+export type UserActivityProps = { className?: string };
 
 export type OrganizationActivityProps = {
-  className?: string
-  organizationId: string
-  organizationSlug: string
-}
+  className?: string;
+  organizationId: string;
+  organizationSlug: string;
+};
 
 const generateN = (count: number) =>
-  Array.from(
-    { length: Math.max(0, Math.floor(count)) },
-    (_, index) => index + 1
-  )
+  Array.from({ length: Math.max(0, Math.floor(count)) }, (_, index) => index + 1);
 
 const formatRelativeTime = (value: string) => {
-  const date = new Date(value)
-  const seconds = Math.floor((Date.now() - date.getTime()) / 1000)
-  if (!Number.isFinite(seconds)) return value
+  const date = new Date(value);
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (!Number.isFinite(seconds)) return value;
 
-  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" })
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
   const units: [Intl.RelativeTimeFormatUnit, number][] = [
     ["year", 31_536_000],
     ["month", 2_592_000],
@@ -116,17 +109,17 @@ const formatRelativeTime = (value: string) => {
     ["day", 86_400],
     ["hour", 3_600],
     ["minute", 60],
-    ["second", 1]
-  ]
+    ["second", 1],
+  ];
 
   for (const [unit, threshold] of units) {
     if (Math.abs(seconds) >= threshold) {
-      return formatter.format(-Math.trunc(seconds / threshold), unit)
+      return formatter.format(-Math.trunc(seconds / threshold), unit);
     }
   }
 
-  return formatter.format(0, "second")
-}
+  return formatter.format(0, "second");
+};
 
 const getEventIcon = (eventType: string) => {
   if (
@@ -135,12 +128,12 @@ const getEventIcon = (eventType: string) => {
     eventType.includes("banned") ||
     eventType === "user_sign_in_failed"
   ) {
-    return ShieldCheck
+    return ShieldCheck;
   }
-  if (eventType.startsWith("organization_member")) return Users
-  if (eventType.startsWith("organization_")) return Building2
+  if (eventType.startsWith("organization_member")) return Users;
+  if (eventType.startsWith("organization_")) return Building2;
   if (eventType.includes("session") || eventType.includes("signed_")) {
-    return MonitorDot
+    return MonitorDot;
   }
   if (
     eventType.startsWith("user_") ||
@@ -148,21 +141,21 @@ const getEventIcon = (eventType: string) => {
     eventType.startsWith("email_") ||
     eventType.startsWith("account_")
   ) {
-    return UserRound
+    return UserRound;
   }
-  return Activity
-}
+  return Activity;
+};
 
 function ActivityRow({ event }: { event: DashAuditLog }) {
-  const { localization, showIpAddress } = useAuthPlugin(dashPlugin)
-  const Icon = getEventIcon(event.eventType)
+  const { localization, showIpAddress } = useAuthPlugin(dashPlugin);
+  const Icon = getEventIcon(event.eventType);
   const title =
     (localization.eventLabels as Record<string, string>)[event.eventType] ??
     formatDashEventName(event.eventType) ??
-    localization.unknownEvent
-  const detail = getDashEventDetail(event)
-  const location = getDashEventLocation(event, showIpAddress)
-  const absoluteTime = new Date(event.createdAt).toLocaleString()
+    localization.unknownEvent;
+  const detail = getDashEventDetail(event);
+  const location = getDashEventLocation(event, showIpAddress);
+  const absoluteTime = new Date(event.createdAt).toLocaleString();
 
   return (
     <li className="flex items-start gap-3 py-4 first:pt-0 last:pb-0">
@@ -187,7 +180,7 @@ function ActivityRow({ event }: { event: DashAuditLog }) {
         )}
       </div>
     </li>
-  )
+  );
 }
 
 function ActivityRowSkeleton() {
@@ -199,7 +192,7 @@ function ActivityRowSkeleton() {
         <Skeleton className="h-3 w-52 max-w-full" />
       </div>
     </li>
-  )
+  );
 }
 
 function ActivityFeed({
@@ -207,65 +200,58 @@ function ActivityFeed({
   organizationId,
   ready = true,
   className,
-  userId
+  userId,
 }: ActivityFeedProps) {
-  const { authClient } = useAuth()
-  const { localization, pageSize } = useAuthPlugin(dashPlugin)
-  const [page, setPage] = useState(0)
-  const [eventType, setEventType] = useState("all")
-  const [identifier, setIdentifier] = useState("")
-  const deferredIdentifier = useDeferredValue(identifier.trim())
+  const { authClient } = useAuth();
+  const { localization, pageSize } = useAuthPlugin(dashPlugin);
+  const [page, setPage] = useState(0);
+  const [eventType, setEventType] = useState("all");
+  const [identifier, setIdentifier] = useState("");
+  const deferredIdentifier = useDeferredValue(identifier.trim());
   const eventOptions = useMemo(
     () => Object.entries(localization.eventLabels),
-    [localization.eventLabels]
-  )
-  const offset = page * pageSize
+    [localization.eventLabels],
+  );
+  const offset = page * pageSize;
   const params = {
     eventType: eventType === "all" ? undefined : eventType,
     identifier: deferredIdentifier || undefined,
     limit: pageSize,
     offset,
-    organizationId
-  }
+    organizationId,
+  };
   const userQuery = useDashAuditLogs(authClient as DashAuthClient, {
     enabled: ready && access === "user",
     params,
-    placeholderData: keepPreviousData
-  })
+    placeholderData: keepPreviousData,
+  });
   const organizationQuery = useDashAllAuditLogs(authClient as DashAuthClient, {
     enabled: ready && (access === "admin" || access === "organization"),
     params,
-    placeholderData: keepPreviousData
-  })
-  const adminUserQuery = useDashUserAuditLogs(
-    authClient as DashAuthClient,
-    userId,
-    {
-      enabled: ready && access === "admin-user",
-      params: {
-        eventType: params.eventType,
-        identifier: params.identifier,
-        limit: pageSize,
-        offset
-      }
-    }
-  )
+    placeholderData: keepPreviousData,
+  });
+  const adminUserQuery = useDashUserAuditLogs(authClient as DashAuthClient, userId, {
+    enabled: ready && access === "admin-user",
+    params: {
+      eventType: params.eventType,
+      identifier: params.identifier,
+      limit: pageSize,
+      offset,
+    },
+  });
   const query =
     access === "admin" || access === "organization"
       ? organizationQuery
       : access === "admin-user"
         ? adminUserQuery
-        : userQuery
-  const { data, error, isFetching, isPending } = query
-  const showPending = !ready || isPending
-  const pageEnd = offset + (data?.events.length ?? 0)
-  const hasNextPage = pageEnd < (data?.total ?? 0)
+        : userQuery;
+  const { data, error, isFetching, isPending } = query;
+  const showPending = !ready || isPending;
+  const pageEnd = offset + (data?.events.length ?? 0);
+  const hasNextPage = pageEnd < (data?.total ?? 0);
 
   return (
-    <Card
-      className={cn("w-full", className)}
-      aria-busy={showPending || isFetching}
-    >
+    <Card className={cn("w-full", className)} aria-busy={showPending || isFetching}>
       <CardHeader>
         <CardTitle>{localization.activity}</CardTitle>
         <CardDescription>
@@ -291,14 +277,12 @@ function ActivityFeed({
       <CardContent className="flex flex-col gap-4">
         <div className="grid gap-2 sm:grid-cols-[12rem_minmax(14rem,1fr)]">
           <Field>
-            <FieldLabel htmlFor="dash-event-type">
-              {localization.eventType}
-            </FieldLabel>
+            <FieldLabel htmlFor="dash-event-type">{localization.eventType}</FieldLabel>
             <Select
               value={eventType}
               onValueChange={(value) => {
-                setEventType(value)
-                setPage(0)
+                setEventType(value);
+                setPage(0);
               }}
             >
               <SelectTrigger id="dash-event-type" className="w-full">
@@ -315,9 +299,7 @@ function ActivityFeed({
             </Select>
           </Field>
           <Field>
-            <FieldLabel htmlFor="dash-identifier">
-              {localization.identifier}
-            </FieldLabel>
+            <FieldLabel htmlFor="dash-identifier">{localization.identifier}</FieldLabel>
             <InputGroup>
               <InputGroupAddon>
                 <Search />
@@ -325,8 +307,8 @@ function ActivityFeed({
               <InputGroupInput
                 id="dash-identifier"
                 onChange={(event) => {
-                  setIdentifier(event.target.value)
-                  setPage(0)
+                  setIdentifier(event.target.value);
+                  setPage(0);
                 }}
                 placeholder={localization.identifierPlaceholder}
                 value={identifier}
@@ -350,16 +332,10 @@ function ActivityFeed({
                 <Activity />
               </EmptyMedia>
               <EmptyTitle>{localization.activityLoadError}</EmptyTitle>
-              <EmptyDescription>
-                {localization.activityLoadErrorDescription}
-              </EmptyDescription>
+              <EmptyDescription>{localization.activityLoadErrorDescription}</EmptyDescription>
             </EmptyHeader>
             <EmptyContent>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => query.refetch()}
-              >
+              <Button size="sm" variant="outline" onClick={() => query.refetch()}>
                 {localization.retry}
               </Button>
             </EmptyContent>
@@ -380,9 +356,7 @@ function ActivityFeed({
                 <Activity />
               </EmptyMedia>
               <EmptyTitle>{localization.noActivity}</EmptyTitle>
-              <EmptyDescription>
-                {localization.noActivityDescription}
-              </EmptyDescription>
+              <EmptyDescription>{localization.noActivityDescription}</EmptyDescription>
             </EmptyHeader>
           </Empty>
         )}
@@ -422,22 +396,22 @@ function ActivityFeed({
         </CardFooter>
       )}
     </Card>
-  )
+  );
 }
 
 /** Authentication and account activity for a user selected by an administrator. */
 export function AdminUserActivity(props: AdminUserActivityProps) {
-  return <ActivityFeed key={props.userId} access="admin-user" {...props} />
+  return <ActivityFeed key={props.userId} access="admin-user" {...props} />;
 }
 
 /** Activity across every organization the current owner or administrator can manage. */
 export function AdminActivity(props: AdminActivityProps) {
-  return <ActivityFeed access="admin" {...props} />
+  return <ActivityFeed access="admin" {...props} />;
 }
 
 /** Personal authentication and account activity. */
 export function UserActivity(props: UserActivityProps) {
-  return <ActivityFeed access="user" {...props} />
+  return <ActivityFeed access="user" {...props} />;
 }
 
 /** Activity for an explicit organization. */
@@ -446,15 +420,14 @@ export function OrganizationActivity({
   organizationSlug: _organizationSlug,
   ...props
 }: OrganizationActivityProps) {
-  const { authClient } = useAuth()
-  const { creatorRole } = useAuthPlugin(organizationPlugin)
+  const { authClient } = useAuth();
+  const { creatorRole } = useAuthPlugin(organizationPlugin);
   const { data: memberRole, isPending } = useActiveMemberRole(
     authClient as OrganizationAuthClient,
-    { query: { organizationId } }
-  )
+    { query: { organizationId } },
+  );
   const canViewOrganization =
-    hasMemberRole(memberRole?.role, creatorRole) ||
-    hasMemberRole(memberRole?.role, "admin")
+    hasMemberRole(memberRole?.role, creatorRole) || hasMemberRole(memberRole?.role, "admin");
 
   if (isPending) {
     return (
@@ -465,7 +438,7 @@ export function OrganizationActivity({
         ready={false}
         {...props}
       />
-    )
+    );
   }
 
   return (
@@ -475,5 +448,5 @@ export function OrganizationActivity({
       organizationId={organizationId}
       {...props}
     />
-  )
+  );
 }

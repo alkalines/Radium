@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import {
   createBetterAuthOAuthClientManager,
@@ -6,33 +6,20 @@ import {
   type OAuthClientInput,
   type OAuthClientManager,
   type OAuthClientOwner,
-  type OAuthProviderAuthClient
-} from "@better-auth-ui/core/plugins/oauth-provider"
-import {
-  useAuth,
-  useAuthPlugin,
-  useCopyToClipboard,
-  useSession
-} from "@better-auth-ui/react"
+  type OAuthProviderAuthClient,
+} from "@better-auth-ui/core/plugins/oauth-provider";
+import { useAuth, useAuthPlugin, useCopyToClipboard, useSession } from "@better-auth-ui/react";
 import {
   useCreateOAuthClient,
   useDeleteOAuthClient,
   useOAuthClients,
   useRotateOAuthClientSecret,
   useSetOAuthClientDisabled,
-  useUpdateOAuthClient
-} from "@better-auth-ui/react/plugins/oauth-provider"
-import {
-  Check,
-  Code2,
-  Copy,
-  Pencil,
-  Plus,
-  RotateCcwKey,
-  Trash2
-} from "lucide-react"
-import { type SyntheticEvent, useMemo, useState } from "react"
-import { toast } from "sonner"
+  useUpdateOAuthClient,
+} from "@better-auth-ui/react/plugins/oauth-provider";
+import { Check, Code2, Copy, Pencil, Plus, RotateCcwKey, Trash2 } from "lucide-react";
+import { type SyntheticEvent, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import {
   AlertDialog,
@@ -41,11 +28,11 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
-  AlertDialogTitle
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button, buttonVariants } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogClose,
@@ -53,44 +40,39 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle
-} from "@/components/ui/dialog"
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel
-} from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
-  InputGroupInput
-} from "@/components/ui/input-group"
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue
-} from "@/components/ui/select"
-import { Spinner } from "@/components/ui/spinner"
-import { Switch } from "@/components/ui/switch"
-import { Textarea } from "@/components/ui/textarea"
-import { oauthProviderPlugin } from "@/lib/auth/oauth-provider-plugin"
-import { cn } from "@/lib/utils"
+  SelectValue,
+} from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { oauthProviderPlugin } from "@/lib/auth/oauth-provider-plugin";
+import { cn } from "@/lib/utils";
 
 type ClientAction =
   | { kind: "delete"; client: ManagedOAuthClient }
-  | { kind: "rotate"; client: ManagedOAuthClient }
+  | { kind: "rotate"; client: ManagedOAuthClient };
 
 export type OAuthClientsProps = {
-  manager: OAuthClientManager
-  owner: OAuthClientOwner
-  ownerKey?: string
-  className?: string
-}
+  manager: OAuthClientManager;
+  owner: OAuthClientOwner;
+  ownerKey?: string;
+  className?: string;
+};
 
 const uniqueLines = (value: string) =>
   Array.from(
@@ -98,102 +80,88 @@ const uniqueLines = (value: string) =>
       value
         .split(/\r?\n/)
         .map((entry) => entry.trim())
-        .filter(Boolean)
-    )
-  )
+        .filter(Boolean),
+    ),
+  );
 
-export function OAuthClients({
-  manager,
-  owner,
-  ownerKey,
-  className
-}: OAuthClientsProps) {
-  const { localization } = useAuth()
-  const { localization: oauthLocalization } = useAuthPlugin(oauthProviderPlugin)
-  const clients = useOAuthClients(manager, owner, ownerKey)
-  const createClient = useCreateOAuthClient(manager, owner, ownerKey)
-  const updateClient = useUpdateOAuthClient(manager, owner, ownerKey)
-  const deleteClient = useDeleteOAuthClient(manager, owner, ownerKey)
-  const rotateSecret = useRotateOAuthClientSecret(manager, owner, ownerKey)
-  const setDisabled = useSetOAuthClientDisabled(manager, owner, ownerKey)
-  const [editorOpen, setEditorOpen] = useState(false)
-  const [editingClient, setEditingClient] = useState<ManagedOAuthClient>()
-  const [action, setAction] = useState<ClientAction>()
-  const [secret, setSecret] = useState<ManagedOAuthClient>()
+export function OAuthClients({ manager, owner, ownerKey, className }: OAuthClientsProps) {
+  const { localization } = useAuth();
+  const { localization: oauthLocalization } = useAuthPlugin(oauthProviderPlugin);
+  const clients = useOAuthClients(manager, owner, ownerKey);
+  const createClient = useCreateOAuthClient(manager, owner, ownerKey);
+  const updateClient = useUpdateOAuthClient(manager, owner, ownerKey);
+  const deleteClient = useDeleteOAuthClient(manager, owner, ownerKey);
+  const rotateSecret = useRotateOAuthClientSecret(manager, owner, ownerKey);
+  const setDisabled = useSetOAuthClientDisabled(manager, owner, ownerKey);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingClient, setEditingClient] = useState<ManagedOAuthClient>();
+  const [action, setAction] = useState<ClientAction>();
+  const [secret, setSecret] = useState<ManagedOAuthClient>();
   const { copied, copy, reset } = useCopyToClipboard({
-    onError: (error) =>
-      toast.error(error instanceof Error ? error.message : String(error))
-  })
+    onError: (error) => toast.error(error instanceof Error ? error.message : String(error)),
+  });
 
   const openCreate = () => {
-    setEditingClient(undefined)
-    setEditorOpen(true)
-  }
+    setEditingClient(undefined);
+    setEditorOpen(true);
+  };
 
   const handleEditorSubmit = (event: SyntheticEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const formData = new FormData(event.currentTarget)
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
     const input: OAuthClientInput = {
       client_name: String(formData.get("clientName") ?? "").trim(),
-      application_type:
-        formData.get("applicationType") === "native" ? "native" : "web",
+      application_type: formData.get("applicationType") === "native" ? "native" : "web",
       redirect_uris: uniqueLines(String(formData.get("redirectUris") ?? "")),
       client_uri: String(formData.get("clientUri") ?? "").trim() || undefined,
       logo_uri: String(formData.get("logoUri") ?? "").trim() || undefined,
-      scope: String(formData.get("scope") ?? "").trim() || undefined
-    }
+      scope: String(formData.get("scope") ?? "").trim() || undefined,
+    };
 
     if (editingClient) {
       updateClient.mutate(
         { clientId: editingClient.client_id, update: input },
-        { onSuccess: () => setEditorOpen(false) }
-      )
-      return
+        { onSuccess: () => setEditorOpen(false) },
+      );
+      return;
     }
 
     createClient.mutate(input, {
       onSuccess: (client) => {
-        setEditorOpen(false)
-        setSecret(client)
-      }
-    })
-  }
+        setEditorOpen(false);
+        setSecret(client);
+      },
+    });
+  };
 
   const confirmAction = () => {
-    if (!action) return
+    if (!action) return;
 
     if (action.kind === "delete") {
       deleteClient.mutate(action.client.client_id, {
-        onSuccess: () => setAction(undefined)
-      })
-      return
+        onSuccess: () => setAction(undefined),
+      });
+      return;
     }
 
     rotateSecret.mutate(action.client.client_id, {
       onSuccess: (client) => {
-        setAction(undefined)
-        setSecret(client)
-      }
-    })
-  }
+        setAction(undefined);
+        setSecret(client);
+      },
+    });
+  };
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
       <div className="flex items-end justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
-          <h2 className="truncate text-sm font-semibold">
-            {oauthLocalization.oauthClients}
-          </h2>
+          <h2 className="truncate text-sm font-semibold">{oauthLocalization.oauthClients}</h2>
           <p className="text-sm text-muted-foreground">
             {oauthLocalization.oauthClientsDescription}
           </p>
         </div>
-        <Button
-          className="shrink-0"
-          size="sm"
-          disabled={clients.isPending}
-          onClick={openCreate}
-        >
+        <Button className="shrink-0" size="sm" disabled={clients.isPending} onClick={openCreate}>
           <Plus />
           {oauthLocalization.createClient}
         </Button>
@@ -221,20 +189,15 @@ export function OAuthClients({
                       <p className="truncate text-sm font-medium">
                         {client.client_name || oauthLocalization.application}
                       </p>
-                      <Badge
-                        variant={client.disabled ? "destructive" : "secondary"}
-                      >
-                        {client.disabled
-                          ? oauthLocalization.disabled
-                          : oauthLocalization.enabled}
+                      <Badge variant={client.disabled ? "destructive" : "secondary"}>
+                        {client.disabled ? oauthLocalization.disabled : oauthLocalization.enabled}
                       </Badge>
                     </div>
                     <p className="mt-1 truncate font-mono text-xs text-muted-foreground">
                       {client.client_id}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {client.redirect_uris.length}{" "}
-                      {oauthLocalization.redirectUrls.toLowerCase()}
+                      {client.redirect_uris.length} {oauthLocalization.redirectUrls.toLowerCase()}
                     </p>
                   </div>
                 </div>
@@ -243,16 +206,14 @@ export function OAuthClients({
                   {manager.setDisabled && (
                     <Switch
                       aria-label={
-                        client.disabled
-                          ? oauthLocalization.disabled
-                          : oauthLocalization.enabled
+                        client.disabled ? oauthLocalization.disabled : oauthLocalization.enabled
                       }
                       checked={!client.disabled}
                       disabled={setDisabled.isPending}
                       onCheckedChange={(enabled) =>
                         setDisabled.mutate({
                           clientId: client.client_id,
-                          disabled: !enabled
+                          disabled: !enabled,
                         })
                       }
                     />
@@ -262,8 +223,8 @@ export function OAuthClients({
                     variant="ghost"
                     aria-label={oauthLocalization.editClient}
                     onClick={() => {
-                      setEditingClient(client)
-                      setEditorOpen(true)
+                      setEditingClient(client);
+                      setEditorOpen(true);
                     }}
                   >
                     <Pencil />
@@ -293,9 +254,7 @@ export function OAuthClients({
                 <Code2 />
               </div>
               <div className="flex max-w-sm flex-col gap-1">
-                <p className="text-sm font-medium">
-                  {oauthLocalization.noOAuthClients}
-                </p>
+                <p className="text-sm font-medium">{oauthLocalization.noOAuthClients}</p>
                 <p className="text-sm text-muted-foreground">
                   {oauthLocalization.noOAuthClientsDescription}
                 </p>
@@ -314,19 +273,13 @@ export function OAuthClients({
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 {editingClient ? <Pencil /> : <Plus />}
-                {editingClient
-                  ? oauthLocalization.editClient
-                  : oauthLocalization.createClient}
+                {editingClient ? oauthLocalization.editClient : oauthLocalization.createClient}
               </DialogTitle>
-              <DialogDescription>
-                {oauthLocalization.oauthClientsDescription}
-              </DialogDescription>
+              <DialogDescription>{oauthLocalization.oauthClientsDescription}</DialogDescription>
             </DialogHeader>
             <FieldGroup>
               <Field>
-                <FieldLabel htmlFor="oauth-client-name">
-                  {oauthLocalization.clientName}
-                </FieldLabel>
+                <FieldLabel htmlFor="oauth-client-name">{oauthLocalization.clientName}</FieldLabel>
                 <Input
                   id="oauth-client-name"
                   name="clientName"
@@ -347,12 +300,8 @@ export function OAuthClients({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="web">
-                      {oauthLocalization.webApplication}
-                    </SelectItem>
-                    <SelectItem value="native">
-                      {oauthLocalization.nativeApplication}
-                    </SelectItem>
+                    <SelectItem value="web">{oauthLocalization.webApplication}</SelectItem>
+                    <SelectItem value="native">{oauthLocalization.nativeApplication}</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>
@@ -367,9 +316,7 @@ export function OAuthClients({
                   defaultValue={editingClient?.redirect_uris.join("\n") ?? ""}
                   required
                 />
-                <FieldDescription>
-                  {oauthLocalization.redirectUrlsDescription}
-                </FieldDescription>
+                <FieldDescription>{oauthLocalization.redirectUrlsDescription}</FieldDescription>
               </Field>
               <Field>
                 <FieldLabel htmlFor="oauth-client-uri">
@@ -383,9 +330,7 @@ export function OAuthClients({
                 />
               </Field>
               <Field>
-                <FieldLabel htmlFor="oauth-logo-uri">
-                  {oauthLocalization.logoUrl}
-                </FieldLabel>
+                <FieldLabel htmlFor="oauth-logo-uri">{oauthLocalization.logoUrl}</FieldLabel>
                 <Input
                   id="oauth-logo-uri"
                   name="logoUri"
@@ -394,9 +339,7 @@ export function OAuthClients({
                 />
               </Field>
               <Field>
-                <FieldLabel htmlFor="oauth-scopes">
-                  {oauthLocalization.scopes}
-                </FieldLabel>
+                <FieldLabel htmlFor="oauth-scopes">{oauthLocalization.scopes}</FieldLabel>
                 <Input
                   id="oauth-scopes"
                   name="scope"
@@ -406,32 +349,19 @@ export function OAuthClients({
               </Field>
             </FieldGroup>
             <DialogFooter>
-              <DialogClose
-                type="button"
-                className={buttonVariants({ variant: "outline" })}
-              >
+              <DialogClose type="button" className={buttonVariants({ variant: "outline" })}>
                 {oauthLocalization.cancel}
               </DialogClose>
-              <Button
-                type="submit"
-                disabled={createClient.isPending || updateClient.isPending}
-              >
-                {(createClient.isPending || updateClient.isPending) && (
-                  <Spinner />
-                )}
-                {editingClient
-                  ? oauthLocalization.saveChanges
-                  : oauthLocalization.createClient}
+              <Button type="submit" disabled={createClient.isPending || updateClient.isPending}>
+                {(createClient.isPending || updateClient.isPending) && <Spinner />}
+                {editingClient ? oauthLocalization.saveChanges : oauthLocalization.createClient}
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      <AlertDialog
-        open={Boolean(action)}
-        onOpenChange={(open) => !open && setAction(undefined)}
-      >
+      <AlertDialog open={Boolean(action)} onOpenChange={(open) => !open && setAction(undefined)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
@@ -453,9 +383,7 @@ export function OAuthClients({
               disabled={deleteClient.isPending || rotateSecret.isPending}
               onClick={confirmAction}
             >
-              {(deleteClient.isPending || rotateSecret.isPending) && (
-                <Spinner />
-              )}
+              {(deleteClient.isPending || rotateSecret.isPending) && <Spinner />}
               {action?.kind === "delete"
                 ? oauthLocalization.deleteClient
                 : oauthLocalization.rotateSecret}
@@ -468,8 +396,8 @@ export function OAuthClients({
         open={Boolean(secret)}
         onOpenChange={(open) => {
           if (!open) {
-            setSecret(undefined)
-            reset()
+            setSecret(undefined);
+            reset();
           }
         }}
       >
@@ -479,15 +407,11 @@ export function OAuthClients({
               <Code2 />
               {secret?.client_name || oauthLocalization.clientSecret}
             </DialogTitle>
-            <DialogDescription>
-              {oauthLocalization.clientSecretWarning}
-            </DialogDescription>
+            <DialogDescription>{oauthLocalization.clientSecretWarning}</DialogDescription>
           </DialogHeader>
           <FieldGroup>
             <Field>
-              <FieldLabel htmlFor="new-oauth-client-id">
-                {oauthLocalization.clientId}
-              </FieldLabel>
+              <FieldLabel htmlFor="new-oauth-client-id">{oauthLocalization.clientId}</FieldLabel>
               <Input
                 id="new-oauth-client-id"
                 value={secret?.client_id ?? ""}
@@ -514,9 +438,7 @@ export function OAuthClients({
                         ? localization.settings.copiedToClipboard
                         : localization.settings.copyToClipboard
                     }
-                    onClick={() =>
-                      secret?.client_secret && copy(secret.client_secret)
-                    }
+                    onClick={() => secret?.client_secret && copy(secret.client_secret)}
                   >
                     {copied ? <Check /> : <Copy />}
                   </InputGroupButton>
@@ -527,8 +449,8 @@ export function OAuthClients({
           <DialogFooter>
             <Button
               onClick={() => {
-                setSecret(undefined)
-                reset()
+                setSecret(undefined);
+                reset();
               }}
             >
               {oauthLocalization.continue}
@@ -537,19 +459,17 @@ export function OAuthClients({
         </DialogContent>
       </Dialog>
     </div>
-  )
+  );
 }
 
-export function UserOAuthClients(
-  props: Omit<OAuthClientsProps, "manager" | "owner" | "ownerKey">
-) {
-  const { authClient } = useAuth<OAuthProviderAuthClient>()
-  const { clientManager } = useAuthPlugin(oauthProviderPlugin)
-  const { data: session } = useSession(authClient)
+export function UserOAuthClients(props: Omit<OAuthClientsProps, "manager" | "owner" | "ownerKey">) {
+  const { authClient } = useAuth<OAuthProviderAuthClient>();
+  const { clientManager } = useAuthPlugin(oauthProviderPlugin);
+  const { data: session } = useSession(authClient);
   const defaultManager = useMemo(
     () => createBetterAuthOAuthClientManager(authClient),
-    [authClient]
-  )
+    [authClient],
+  );
 
   return (
     <OAuthClients
@@ -558,7 +478,7 @@ export function UserOAuthClients(
       owner={{ type: "user" }}
       ownerKey={session?.user.id}
     />
-  )
+  );
 }
 
 export function OrganizationOAuthClients({
@@ -566,12 +486,12 @@ export function OrganizationOAuthClients({
   organizationSlug,
   ...props
 }: Omit<OAuthClientsProps, "manager" | "owner" | "ownerKey"> & {
-  organizationId: string
-  organizationSlug: string
+  organizationId: string;
+  organizationSlug: string;
 }) {
-  const { organizationClientManager } = useAuthPlugin(oauthProviderPlugin)
+  const { organizationClientManager } = useAuthPlugin(oauthProviderPlugin);
 
-  if (!organizationClientManager) return null
+  if (!organizationClientManager) return null;
 
   return (
     <OAuthClients
@@ -580,5 +500,5 @@ export function OrganizationOAuthClients({
       owner={{ type: "organization", organizationId, organizationSlug }}
       ownerKey={`organization:${organizationId}:${organizationSlug}`}
     />
-  )
+  );
 }

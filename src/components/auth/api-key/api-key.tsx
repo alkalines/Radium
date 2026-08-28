@@ -1,45 +1,40 @@
-"use client"
+"use client";
 
-import type { ListedApiKey } from "@better-auth-ui/core/plugins/api-key"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { Key, Pencil, X } from "lucide-react"
-import { useState } from "react"
+import type { ListedApiKey } from "@better-auth-ui/core/plugins/api-key";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { Key, Pencil, X } from "lucide-react";
+import { useState } from "react";
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/button";
 import {
   Item,
   ItemActions,
   ItemContent,
   ItemDescription,
   ItemMedia,
-  ItemTitle
-} from "@/components/ui/item"
-import { apiKeyPlugin } from "@/lib/auth/api-key-plugin"
-import { DeleteApiKeyDialog } from "./delete-api-key-dialog"
-import { EditApiKeyDialog } from "./edit-api-key-dialog"
+  ItemTitle,
+} from "@/components/ui/item";
+import { apiKeyPlugin } from "@/lib/auth/api-key-plugin";
+import { DeleteApiKeyDialog } from "./delete-api-key-dialog";
+import { EditApiKeyDialog } from "./edit-api-key-dialog";
 
 export type ApiKeyProps = {
-  apiKey: ListedApiKey
+  apiKey: ListedApiKey;
   /** Hide the row's delete button (e.g., when caller lacks `apiKey:delete`). */
-  hideDelete?: boolean
+  hideDelete?: boolean;
   /** Hide the row's edit button (e.g., when caller lacks `apiKey:update`). */
-  hideUpdate?: boolean
+  hideUpdate?: boolean;
   /** Scope the delete payload to an organization (sets `configId`). */
-  organizationId?: string
-}
+  organizationId?: string;
+};
 
-export function ApiKey({
-  apiKey,
-  hideDelete,
-  hideUpdate,
-  organizationId
-}: ApiKeyProps) {
-  const { localization } = useAuth()
-  const { localization: apiKeyLocalization } = useAuthPlugin(apiKeyPlugin)
-  const [deleteOpen, setDeleteOpen] = useState(false)
-  const [editOpen, setEditOpen] = useState(false)
+export function ApiKey({ apiKey, hideDelete, hideUpdate, organizationId }: ApiKeyProps) {
+  const { localization } = useAuth();
+  const { localization: apiKeyLocalization } = useAuthPlugin(apiKeyPlugin);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
-  const preview = `${apiKey.start}${"*".repeat(16)}`
+  const preview = `${apiKey.start}${"*".repeat(16)}`;
 
   return (
     <Item>
@@ -53,23 +48,22 @@ export function ApiKey({
           {apiKeyLocalization.created}{" "}
           {new Date(apiKey.createdAt).toLocaleString(undefined, {
             dateStyle: "medium",
-            timeStyle: "short"
+            timeStyle: "short",
           })}
         </ItemDescription>
         <ItemDescription>
           {apiKey.expiresAt
-            ? `${apiKeyLocalization.expires} ${new Date(
-                apiKey.expiresAt
-              ).toLocaleString(undefined, {
-                dateStyle: "medium",
-                timeStyle: "short"
-              })}`
+            ? `${apiKeyLocalization.expires} ${new Date(apiKey.expiresAt).toLocaleString(
+                undefined,
+                {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                },
+              )}`
             : apiKeyLocalization.neverExpires}
         </ItemDescription>
         <ItemDescription>
-          {apiKey.enabled
-            ? apiKeyLocalization.enabled
-            : apiKeyLocalization.disabled}
+          {apiKey.enabled ? apiKeyLocalization.enabled : apiKeyLocalization.disabled}
           {` · ${apiKeyLocalization.requests}: ${apiKey.requestCount}`}
           {apiKey.remaining === null
             ? ""
@@ -85,19 +79,11 @@ export function ApiKey({
       <ItemActions>
         {!hideUpdate && (
           <>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setEditOpen(true)}
-            >
+            <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
               <Pencil />
               {apiKeyLocalization.editApiKey}
             </Button>
-            <EditApiKeyDialog
-              apiKey={apiKey}
-              open={editOpen}
-              onOpenChange={setEditOpen}
-            />
+            <EditApiKeyDialog apiKey={apiKey} open={editOpen} onOpenChange={setEditOpen} />
           </>
         )}
         {!hideDelete && (
@@ -123,5 +109,5 @@ export function ApiKey({
         )}
       </ItemActions>
     </Item>
-  )
+  );
 }

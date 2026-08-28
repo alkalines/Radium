@@ -23,7 +23,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
@@ -103,8 +109,8 @@ function ManagerList({
           <div className="flex flex-col">
             <DialogTitle>{provider.name} models</DialogTitle>
             <DialogDescription>
-              {provider.models.length} model{provider.models.length === 1 ? "" : "s"} exposed through
-              the gateway.
+              {provider.models.length} model{provider.models.length === 1 ? "" : "s"} exposed
+              through the gateway.
             </DialogDescription>
           </div>
         </div>
@@ -129,7 +135,9 @@ function ManagerList({
                 <SparklesIcon />
               </EmptyMedia>
               <EmptyTitle>No models yet</EmptyTitle>
-              <EmptyDescription>Add models from models.dev or define a custom one.</EmptyDescription>
+              <EmptyDescription>
+                Add models from models.dev or define a custom one.
+              </EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (
@@ -370,13 +378,7 @@ function perTokenString(dollarsPerMillion: string): string {
   return (value / 1_000_000).toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-function AddCustomModel({
-  provider,
-  onBack,
-}: {
-  provider: Doc<"providers">;
-  onBack: () => void;
-}) {
+function AddCustomModel({ provider, onBack }: { provider: Doc<"providers">; onBack: () => void }) {
   const addModels = useMutation(api.providers.addProviderModels);
 
   const [name, setName] = useState("");

@@ -3,7 +3,12 @@ import { v } from "convex/values";
 import * as z from "zod";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
-import { internalAction, internalMutation, internalQuery, type QueryCtx } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  type QueryCtx,
+} from "./_generated/server";
 import { createInternalGatewayProvider } from "./ai_gateway";
 
 const titleSchema = z.object({
@@ -85,7 +90,10 @@ export const generateForChat = internalAction({
     if (!chat || (!args.force && chat.title) || !chat.initialUserMessage.trim()) return null;
 
     const provider = createInternalGatewayProvider(ctx, chat.balance, () =>
-      Response.json({ error: { message: "Internal gateway request failed", code: 500 } }, { status: 500 }),
+      Response.json(
+        { error: { message: "Internal gateway request failed", code: 500 } },
+        { status: 500 },
+      ),
     );
 
     try {
@@ -164,7 +172,12 @@ async function firstAvailableModel(ctx: QueryCtx, preferred?: string) {
 function sanitizeTitle(title: GeneratedChatTitle): GeneratedChatTitle {
   return {
     emoji: Array.from(title.emoji.trim())[0] ?? "💬",
-    title: title.title.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 32) || "New chat",
+    title:
+      title.title
+        .replace(/[\r\n]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 32) || "New chat",
   };
 }
 

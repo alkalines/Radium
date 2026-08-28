@@ -1,50 +1,35 @@
-"use client"
+"use client";
 
-import {
-  getAuthLinkURL,
-  isPasswordCompromisedError
-} from "@better-auth-ui/core"
-import type { EmailOtpAuthClient } from "@better-auth-ui/core/plugins/email-otp"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useResetPasswordOtp } from "@better-auth-ui/react/plugins/email-otp"
-import { Eye, EyeOff } from "lucide-react"
-import { type SyntheticEvent, useEffect, useRef, useState } from "react"
-import { toast } from "sonner"
+import { getAuthLinkURL, isPasswordCompromisedError } from "@better-auth-ui/core";
+import type { EmailOtpAuthClient } from "@better-auth-ui/core/plugins/email-otp";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useResetPasswordOtp } from "@better-auth-ui/react/plugins/email-otp";
+import { Eye, EyeOff } from "lucide-react";
+import { type SyntheticEvent, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle
-} from "@/components/ui/card"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel
-} from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
-  InputGroupInput
-} from "@/components/ui/input-group"
-import { Spinner } from "@/components/ui/spinner"
-import { emailOtpPlugin } from "@/lib/auth/email-otp-plugin"
-import { cn } from "@/lib/utils"
-import { OpenEmailButton } from "../open-email-button"
-import { OtpField } from "../otp-field"
-import { PasswordStrengthMeter } from "../password-strength-meter"
-import { useIsHydrated } from "../use-is-hydrated"
-import { RESET_PASSWORD_OTP_STORAGE_KEY } from "./forgot-password-otp"
+  InputGroupInput,
+} from "@/components/ui/input-group";
+import { Spinner } from "@/components/ui/spinner";
+import { emailOtpPlugin } from "@/lib/auth/email-otp-plugin";
+import { cn } from "@/lib/utils";
+import { OpenEmailButton } from "../open-email-button";
+import { OtpField } from "../otp-field";
+import { PasswordStrengthMeter } from "../password-strength-meter";
+import { useIsHydrated } from "../use-is-hydrated";
+import { RESET_PASSWORD_OTP_STORAGE_KEY } from "./forgot-password-otp";
 
 export type ResetPasswordOtpProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Reset a password with an emailed code.
@@ -66,32 +51,29 @@ export function ResetPasswordOtp({ className }: ResetPasswordOtpProps) {
     navigate,
     redirectTo,
     viewPaths,
-    Link
-  } = useAuth()
-  const { localization: emailOtpLocalization, otpLength } =
-    useAuthPlugin(emailOtpPlugin)
+    Link,
+  } = useAuth();
+  const { localization: emailOtpLocalization, otpLength } = useAuthPlugin(emailOtpPlugin);
 
-  const isHydrated = useIsHydrated()
-  const initialEmail =
-    (isHydrated && sessionStorage.getItem(RESET_PASSWORD_OTP_STORAGE_KEY)) || ""
-  const [email, setEmail] = useState(initialEmail)
-  const [hasStoredEmail, setHasStoredEmail] = useState(Boolean(initialEmail))
-  const [code, setCode] = useState("")
-  const [password, setPassword] = useState("")
-  const [isPasswordVisible, setIsPasswordVisible] = useState(false)
-  const formRef = useRef<HTMLFormElement>(null)
-  const submissionLockedRef = useRef(false)
+  const isHydrated = useIsHydrated();
+  const initialEmail = (isHydrated && sessionStorage.getItem(RESET_PASSWORD_OTP_STORAGE_KEY)) || "";
+  const [email, setEmail] = useState(initialEmail);
+  const [hasStoredEmail, setHasStoredEmail] = useState(Boolean(initialEmail));
+  const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const submissionLockedRef = useRef(false);
   const [fieldErrors, setFieldErrors] = useState<{
-    email?: string
-    password?: string
-  }>({})
+    email?: string;
+    password?: string;
+  }>({});
 
   useEffect(() => {
-    const storedEmail =
-      sessionStorage.getItem(RESET_PASSWORD_OTP_STORAGE_KEY) ?? ""
-    setEmail(storedEmail)
-    setHasStoredEmail(Boolean(storedEmail))
-  }, [])
+    const storedEmail = sessionStorage.getItem(RESET_PASSWORD_OTP_STORAGE_KEY) ?? "";
+    setEmail(storedEmail);
+    setHasStoredEmail(Boolean(storedEmail));
+  }, []);
 
   const { mutate: resetPasswordOtp, isPending } = useResetPasswordOtp(
     authClient as EmailOtpAuthClient,
@@ -102,80 +84,69 @@ export function ResetPasswordOtp({ className }: ResetPasswordOtpProps) {
         if (isPasswordCompromisedError(error)) {
           setFieldErrors((prev) => ({
             ...prev,
-            password: localization.auth.passwordCompromised
-          }))
+            password: localization.auth.passwordCompromised,
+          }));
         }
 
-        submissionLockedRef.current = false
-        setCode("")
+        submissionLockedRef.current = false;
+        setCode("");
       },
       onSuccess: () => {
-        sessionStorage.removeItem(RESET_PASSWORD_OTP_STORAGE_KEY)
-        toast.success(localization.auth.passwordResetSuccess)
-        navigate({ to: `${basePaths.auth}/${viewPaths.auth.signIn}` })
-      }
-    }
-  )
+        sessionStorage.removeItem(RESET_PASSWORD_OTP_STORAGE_KEY);
+        toast.success(localization.auth.passwordResetSuccess);
+        navigate({ to: `${basePaths.auth}/${viewPaths.auth.signIn}` });
+      },
+    },
+  );
 
-  const submitReset = (
-    form: HTMLFormElement,
-    submittedCode: string,
-    reportErrors: boolean
-  ) => {
-    if (isPending || submissionLockedRef.current) return
+  const submitReset = (form: HTMLFormElement, submittedCode: string, reportErrors: boolean) => {
+    if (isPending || submissionLockedRef.current) return;
 
-    const formData = new FormData(form)
-    const password = formData.get("password") as string
-    const confirmPassword = formData.get("confirmPassword") as string
-    const submittedEmail = hasStoredEmail
-      ? email
-      : (formData.get("email") as string)
+    const formData = new FormData(form);
+    const password = formData.get("password") as string;
+    const confirmPassword = formData.get("confirmPassword") as string;
+    const submittedEmail = hasStoredEmail ? email : (formData.get("email") as string);
 
     if (emailAndPassword?.confirmPassword && password !== confirmPassword) {
       if (reportErrors) {
-        toast.error(localization.auth.passwordsDoNotMatch)
+        toast.error(localization.auth.passwordsDoNotMatch);
       }
-      return
+      return;
     }
 
     if (submittedCode.length !== otpLength) {
       if (reportErrors) {
         toast.error(
-          emailOtpLocalization.codeLengthMismatch.replace(
-            "{{length}}",
-            String(otpLength)
-          )
-        )
+          emailOtpLocalization.codeLengthMismatch.replace("{{length}}", String(otpLength)),
+        );
       }
-      return
+      return;
     }
 
-    submissionLockedRef.current = true
-    resetPasswordOtp({ email: submittedEmail, otp: submittedCode, password })
-  }
+    submissionLockedRef.current = true;
+    resetPasswordOtp({ email: submittedEmail, otp: submittedCode, password });
+  };
 
   const tryAutoSubmit = (completedCode?: string) => {
-    const form = formRef.current
+    const form = formRef.current;
 
-    if (!form?.matches(":valid")) return
+    if (!form?.matches(":valid")) return;
 
-    const formData = new FormData(form)
-    const submittedCode = completedCode ?? String(formData.get("otp") ?? "")
+    const formData = new FormData(form);
+    const submittedCode = completedCode ?? String(formData.get("otp") ?? "");
 
-    submitReset(form, submittedCode, false)
-  }
+    submitReset(form, submittedCode, false);
+  };
 
   const handleSubmit = (e: SyntheticEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    submitReset(e.currentTarget, code, true)
-  }
+    e.preventDefault();
+    submitReset(e.currentTarget, code, true);
+  };
 
   return (
     <Card className={cn("w-full max-w-sm", className)}>
       <CardHeader>
-        <CardTitle className="text-xl font-semibold">
-          {localization.auth.resetPassword}
-        </CardTitle>
+        <CardTitle className="text-xl font-semibold">{localization.auth.resetPassword}</CardTitle>
 
         {hasStoredEmail && email && (
           <CardDescription>
@@ -189,9 +160,7 @@ export function ResetPasswordOtp({ className }: ResetPasswordOtpProps) {
           <FieldGroup>
             {!hasStoredEmail && (
               <Field data-invalid={!!fieldErrors.email}>
-                <FieldLabel htmlFor="email">
-                  {localization.auth.email}
-                </FieldLabel>
+                <FieldLabel htmlFor="email">{localization.auth.email}</FieldLabel>
 
                 <Input
                   id="email"
@@ -203,16 +172,16 @@ export function ResetPasswordOtp({ className }: ResetPasswordOtpProps) {
                   required
                   disabled={isPending}
                   onChange={(event) => {
-                    setEmail(event.target.value)
-                    setFieldErrors((prev) => ({ ...prev, email: undefined }))
+                    setEmail(event.target.value);
+                    setFieldErrors((prev) => ({ ...prev, email: undefined }));
                   }}
                   onInvalid={(e) => {
-                    e.preventDefault()
+                    e.preventDefault();
 
                     setFieldErrors((prev) => ({
                       ...prev,
-                      email: (e.target as HTMLInputElement).validationMessage
-                    }))
+                      email: (e.target as HTMLInputElement).validationMessage,
+                    }));
                   }}
                   aria-invalid={!!fieldErrors.email}
                 />
@@ -233,9 +202,7 @@ export function ResetPasswordOtp({ className }: ResetPasswordOtpProps) {
             />
 
             <Field data-invalid={!!fieldErrors.password}>
-              <FieldLabel htmlFor="password">
-                {localization.auth.newPassword}
-              </FieldLabel>
+              <FieldLabel htmlFor="password">{localization.auth.newPassword}</FieldLabel>
 
               <InputGroup>
                 <InputGroupInput
@@ -249,28 +216,22 @@ export function ResetPasswordOtp({ className }: ResetPasswordOtpProps) {
                   maxLength={emailAndPassword?.maxPasswordLength}
                   disabled={isPending}
                   onChange={(e) => {
-                    setPassword(e.target.value)
+                    setPassword(e.target.value);
 
-                    setFieldErrors((prev) => ({ ...prev, password: undefined }))
+                    setFieldErrors((prev) => ({ ...prev, password: undefined }));
                   }}
                   onInvalid={(e) => {
-                    e.preventDefault()
-                    const el = e.target as HTMLInputElement
-                    const min = emailAndPassword?.minPasswordLength
-                    const max = emailAndPassword?.maxPasswordLength
+                    e.preventDefault();
+                    const el = e.target as HTMLInputElement;
+                    const min = emailAndPassword?.minPasswordLength;
+                    const max = emailAndPassword?.maxPasswordLength;
                     const msg = el.validity.valueMissing
                       ? localization.auth.fieldRequired
                       : el.validity.tooShort
-                        ? localization.auth.tooShort.replace(
-                            "{{min}}",
-                            String(min)
-                          )
-                        : localization.auth.tooLong.replace(
-                            "{{max}}",
-                            String(max)
-                          )
+                        ? localization.auth.tooShort.replace("{{min}}", String(min))
+                        : localization.auth.tooLong.replace("{{max}}", String(max));
 
-                    setFieldErrors((prev) => ({ ...prev, password: msg }))
+                    setFieldErrors((prev) => ({ ...prev, password: msg }));
                   }}
                   aria-invalid={!!fieldErrors.password}
                 />
@@ -336,10 +297,7 @@ export function ResetPasswordOtp({ className }: ResetPasswordOtpProps) {
           <FieldDescription className="text-center">
             {localization.auth.rememberYourPassword}{" "}
             <Link
-              href={getAuthLinkURL(
-                `${basePaths.auth}/${viewPaths.auth.signIn}`,
-                redirectTo
-              )}
+              href={getAuthLinkURL(`${basePaths.auth}/${viewPaths.auth.signIn}`, redirectTo)}
               className="underline underline-offset-4"
             >
               {localization.auth.signIn}
@@ -348,5 +306,5 @@ export function ResetPasswordOtp({ className }: ResetPasswordOtpProps) {
         </div>
       </CardContent>
     </Card>
-  )
+  );
 }

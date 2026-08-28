@@ -1,13 +1,9 @@
-"use client"
+"use client";
 
-import {
-  useAuth,
-  useRevokeOtherSessions,
-  useRevokeSessions
-} from "@better-auth-ui/react"
-import { LogOut } from "lucide-react"
-import { useState } from "react"
-import { toast } from "sonner"
+import { useAuth, useRevokeOtherSessions, useRevokeSessions } from "@better-auth-ui/react";
+import { LogOut } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
 
 import {
   AlertDialog,
@@ -17,33 +13,33 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogMedia,
-  AlertDialogTitle
-} from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
-import { Spinner } from "@/components/ui/spinner"
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 
-type PendingAction = "other" | "all"
+type PendingAction = "other" | "all";
 
 export function SessionActions(props: { hasOtherSessions: boolean }) {
-  const { authClient, basePaths, localization, navigate, viewPaths } = useAuth()
-  const [action, setAction] = useState<PendingAction | null>(null)
+  const { authClient, basePaths, localization, navigate, viewPaths } = useAuth();
+  const [action, setAction] = useState<PendingAction | null>(null);
 
   const revokeOtherSessions = useRevokeOtherSessions(authClient, {
     onSuccess: () => {
-      toast.success(localization.settings.signOutOtherDevicesSuccess)
-      setAction(null)
-    }
-  })
+      toast.success(localization.settings.signOutOtherDevicesSuccess);
+      setAction(null);
+    },
+  });
   const revokeSessions = useRevokeSessions(authClient, {
     onSuccess: () =>
       navigate({
         to: `${basePaths.auth}/${viewPaths.auth.signIn}`,
-        replace: true
-      })
-  })
+        replace: true,
+      }),
+  });
 
-  const isPending = revokeOtherSessions.isPending || revokeSessions.isPending
-  const isEverywhere = action === "all"
+  const isPending = revokeOtherSessions.isPending || revokeSessions.isPending;
+  const isEverywhere = action === "all";
 
   return (
     <>
@@ -95,9 +91,7 @@ export function SessionActions(props: { hasOtherSessions: boolean }) {
             <Button
               disabled={isPending}
               onClick={() =>
-                isEverywhere
-                  ? revokeSessions.mutate()
-                  : revokeOtherSessions.mutate()
+                isEverywhere ? revokeSessions.mutate() : revokeOtherSessions.mutate()
               }
               type="button"
               variant={isEverywhere ? "destructive" : "default"}
@@ -111,5 +105,5 @@ export function SessionActions(props: { hasOtherSessions: boolean }) {
         </AlertDialogContent>
       </AlertDialog>
     </>
-  )
+  );
 }

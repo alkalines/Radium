@@ -1,13 +1,10 @@
-import { isSessionNotFreshError } from "@better-auth-ui/core"
-import type {
-  AddPasskeyParams,
-  PasskeyAuthClient
-} from "@better-auth-ui/core/plugins/passkey"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useAddPasskey } from "@better-auth-ui/react/plugins/passkey"
-import { Fingerprint } from "lucide-react"
-import { type SyntheticEvent, useRef } from "react"
-import { Button, buttonVariants } from "@/components/ui/button"
+import { isSessionNotFreshError } from "@better-auth-ui/core";
+import type { AddPasskeyParams, PasskeyAuthClient } from "@better-auth-ui/core/plugins/passkey";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useAddPasskey } from "@better-auth-ui/react/plugins/passkey";
+import { Fingerprint } from "lucide-react";
+import { type SyntheticEvent, useRef } from "react";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
   DialogClose,
@@ -15,58 +12,55 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle
-} from "@/components/ui/dialog"
-import { Field, FieldError, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Spinner } from "@/components/ui/spinner"
-import { passkeyPlugin } from "@/lib/auth/passkey-plugin"
-import { FreshSessionPrompt } from "../settings/security/fresh-session-prompt"
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { passkeyPlugin } from "@/lib/auth/passkey-plugin";
+import { FreshSessionPrompt } from "../settings/security/fresh-session-prompt";
 
 export type AddPasskeyDialogProps = {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+};
 
-export function AddPasskeyDialog({
-  open,
-  onOpenChange
-}: AddPasskeyDialogProps) {
-  const { authClient, localization } = useAuth<PasskeyAuthClient>()
+export function AddPasskeyDialog({ open, onOpenChange }: AddPasskeyDialogProps) {
+  const { authClient, localization } = useAuth<PasskeyAuthClient>();
   const { authenticatorAttachment, localization: passkeyLocalization } =
-    useAuthPlugin(passkeyPlugin)
+    useAuthPlugin(passkeyPlugin);
 
-  const addPasskey = useAddPasskey(authClient)
-  const pendingRequest = useRef<AddPasskeyParams<PasskeyAuthClient>>(undefined)
+  const addPasskey = useAddPasskey(authClient);
+  const pendingRequest = useRef<AddPasskeyParams<PasskeyAuthClient>>(undefined);
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
-      addPasskey.reset()
-      pendingRequest.current = undefined
+      addPasskey.reset();
+      pendingRequest.current = undefined;
     }
-    onOpenChange(nextOpen)
-  }
+    onOpenChange(nextOpen);
+  };
 
   const submitRequest = (request: AddPasskeyParams<PasskeyAuthClient>) => {
-    pendingRequest.current = request
+    pendingRequest.current = request;
     addPasskey.mutate(request, {
-      onSuccess: () => handleOpenChange(false)
-    })
-  }
+      onSuccess: () => handleOpenChange(false),
+    });
+  };
 
   const handleSubmit = (e: SyntheticEvent<HTMLFormElement>) => {
-    e.preventDefault()
+    e.preventDefault();
 
-    const formData = new FormData(e.target as HTMLFormElement)
-    const name = (formData.get("name") as string)?.trim()
+    const formData = new FormData(e.target as HTMLFormElement);
+    const name = (formData.get("name") as string)?.trim();
 
     submitRequest({
       ...(name ? { name } : {}),
-      ...(authenticatorAttachment ? { authenticatorAttachment } : {})
-    } as AddPasskeyParams<PasskeyAuthClient>)
-  }
+      ...(authenticatorAttachment ? { authenticatorAttachment } : {}),
+    } as AddPasskeyParams<PasskeyAuthClient>);
+  };
 
-  const needsFreshSession = isSessionNotFreshError(addPasskey.error)
+  const needsFreshSession = isSessionNotFreshError(addPasskey.error);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -80,8 +74,8 @@ export function AddPasskeyDialog({
             </DialogHeader>
             <FreshSessionPrompt
               onFresh={() => {
-                const request = pendingRequest.current
-                if (request) submitRequest(request)
+                const request = pendingRequest.current;
+                if (request) submitRequest(request);
               }}
             />
           </>
@@ -93,15 +87,11 @@ export function AddPasskeyDialog({
                 {passkeyLocalization.addPasskey}
               </DialogTitle>
 
-              <DialogDescription>
-                {passkeyLocalization.passkeysDescription}
-              </DialogDescription>
+              <DialogDescription>{passkeyLocalization.passkeysDescription}</DialogDescription>
             </DialogHeader>
 
             <Field data-invalid={addPasskey.isError}>
-              <FieldLabel htmlFor="passkey-name">
-                {passkeyLocalization.name}
-              </FieldLabel>
+              <FieldLabel htmlFor="passkey-name">{passkeyLocalization.name}</FieldLabel>
 
               <Input
                 id="passkey-name"
@@ -138,5 +128,5 @@ export function AddPasskeyDialog({
         )}
       </DialogContent>
     </Dialog>
-  )
+  );
 }

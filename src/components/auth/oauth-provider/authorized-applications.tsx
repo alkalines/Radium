@@ -1,22 +1,22 @@
 import {
   groupOAuthConsents,
-  type OAuthProviderAuthClient
-} from "@better-auth-ui/core/plugins/oauth-provider"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useListOAuthConsents } from "@better-auth-ui/react/plugins/oauth-provider"
-import { Fragment } from "react"
+  type OAuthProviderAuthClient,
+} from "@better-auth-ui/core/plugins/oauth-provider";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useListOAuthConsents } from "@better-auth-ui/react/plugins/oauth-provider";
+import { Fragment } from "react";
 
-import { Card, CardContent } from "@/components/ui/card"
-import { ItemGroup, ItemSeparator } from "@/components/ui/item"
-import { oauthProviderPlugin } from "@/lib/auth/oauth-provider-plugin"
-import { cn } from "@/lib/utils"
-import { AuthorizedApplication } from "./authorized-application"
-import { AuthorizedApplicationSkeleton } from "./authorized-application-skeleton"
-import { AuthorizedApplicationsEmpty } from "./authorized-applications-empty"
+import { Card, CardContent } from "@/components/ui/card";
+import { ItemGroup, ItemSeparator } from "@/components/ui/item";
+import { oauthProviderPlugin } from "@/lib/auth/oauth-provider-plugin";
+import { cn } from "@/lib/utils";
+import { AuthorizedApplication } from "./authorized-application";
+import { AuthorizedApplicationSkeleton } from "./authorized-application-skeleton";
+import { AuthorizedApplicationsEmpty } from "./authorized-applications-empty";
 
 export type AuthorizedApplicationsProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Security card listing the OAuth applications this account has authorized.
@@ -25,23 +25,17 @@ export type AuthorizedApplicationsProps = {
  * tokens. Better Auth can store more than one consent per client, so records
  * are grouped by client ID and rendered as a single application.
  */
-export function AuthorizedApplications({
-  className
-}: AuthorizedApplicationsProps) {
-  const { authClient } = useAuth()
-  const { localization } = useAuthPlugin(oauthProviderPlugin)
+export function AuthorizedApplications({ className }: AuthorizedApplicationsProps) {
+  const { authClient } = useAuth();
+  const { localization } = useAuthPlugin(oauthProviderPlugin);
 
-  const { data: consents, isPending } = useListOAuthConsents(
-    authClient as OAuthProviderAuthClient
-  )
+  const { data: consents, isPending } = useListOAuthConsents(authClient as OAuthProviderAuthClient);
 
-  const applications = groupOAuthConsents(consents)
+  const applications = groupOAuthConsents(consents);
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
-      <h2 className="truncate text-sm font-semibold">
-        {localization.connectedApplications}
-      </h2>
+      <h2 className="truncate text-sm font-semibold">{localization.connectedApplications}</h2>
 
       <Card className="p-0">
         <CardContent className="p-0">
@@ -62,5 +56,5 @@ export function AuthorizedApplications({
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

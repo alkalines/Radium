@@ -1,88 +1,80 @@
-"use client"
+"use client";
 
-import { parseAdditionalFieldValue } from "@better-auth-ui/core"
-import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
+import { parseAdditionalFieldValue } from "@better-auth-ui/core";
+import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
 import {
   useActiveOrganization,
   useHasPermission,
-  useUpdateOrganization
-} from "@better-auth-ui/react/plugins/organization"
-import { type SyntheticEvent, useEffect, useState } from "react"
-import { toast } from "sonner"
+  useUpdateOrganization,
+} from "@better-auth-ui/react/plugins/organization";
+import { type SyntheticEvent, useEffect, useState } from "react";
+import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { Field, FieldError, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Spinner } from "@/components/ui/spinner"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { cn } from "@/lib/utils"
-import { AdditionalField } from "../additional-field"
-import { ChangeOrganizationLogo } from "./change-organization-logo"
-import { SlugField } from "./slug-field"
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { cn } from "@/lib/utils";
+import { AdditionalField } from "../additional-field";
+import { ChangeOrganizationLogo } from "./change-organization-logo";
+import { SlugField } from "./slug-field";
 
 export type OrganizationProfileProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Profile card for the active organization: logo (when enabled), display name, and slug.
  */
 export function OrganizationProfile({ className }: OrganizationProfileProps) {
-  const { authClient, localization } = useAuth<OrganizationAuthClient>()
+  const { authClient, localization } = useAuth<OrganizationAuthClient>();
   const { additionalFields, localization: organizationLocalization } =
-    useAuthPlugin(organizationPlugin)
+    useAuthPlugin(organizationPlugin);
 
-  const { data: activeOrganization } = useActiveOrganization(authClient)
+  const { data: activeOrganization } = useActiveOrganization(authClient);
   const canUpdate = useHasPermission(authClient, {
-    permissions: { organization: ["update"] }
-  })
+    permissions: { organization: ["update"] },
+  });
 
-  const [slug, setSlug] = useState(activeOrganization?.slug ?? "")
+  const [slug, setSlug] = useState(activeOrganization?.slug ?? "");
 
   useEffect(() => {
-    setSlug(activeOrganization?.slug ?? "")
-  }, [activeOrganization?.slug])
+    setSlug(activeOrganization?.slug ?? "");
+  }, [activeOrganization?.slug]);
 
-  const { mutate: commitOrganizationUpdate, isPending } = useUpdateOrganization(
-    authClient,
-    {
-      onSuccess: () =>
-        toast.success(organizationLocalization.organizationUpdatedSuccess)
-    }
-  )
+  const { mutate: commitOrganizationUpdate, isPending } = useUpdateOrganization(authClient, {
+    onSuccess: () => toast.success(organizationLocalization.organizationUpdatedSuccess),
+  });
 
   async function handleSubmit(e: SyntheticEvent<HTMLFormElement>) {
-    e.preventDefault()
-    if (!activeOrganization || !canUpdate.data?.success) return
-    const formData = new FormData(e.currentTarget)
-    const name = formData.get("name") as string
-    const additionalValues: Record<string, unknown> = {}
+    e.preventDefault();
+    if (!activeOrganization || !canUpdate.data?.success) return;
+    const formData = new FormData(e.currentTarget);
+    const name = formData.get("name") as string;
+    const additionalValues: Record<string, unknown> = {};
     try {
       for (const field of additionalFields) {
-        const value = parseAdditionalFieldValue(
-          field,
-          formData.get(field.name) as string | null
-        )
-        await field.validate?.(value)
-        if (value !== undefined) additionalValues[field.name] = value
+        const value = parseAdditionalFieldValue(field, formData.get(field.name) as string | null);
+        await field.validate?.(value);
+        if (value !== undefined) additionalValues[field.name] = value;
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error))
-      return
+      toast.error(error instanceof Error ? error.message : String(error));
+      return;
     }
 
     commitOrganizationUpdate({
-      data: { name, slug, ...additionalValues }
-    })
+      data: { name, slug, ...additionalValues },
+    });
   }
 
-  const nameInputId = `${activeOrganization?.id ?? "org"}-name`
-  const slugInputId = `${activeOrganization?.id ?? "org"}-slug`
-  const formDisabled =
-    isPending || canUpdate.isPending || !canUpdate.data?.success
+  const nameInputId = `${activeOrganization?.id ?? "org"}-name`;
+  const slugInputId = `${activeOrganization?.id ?? "org"}-slug`;
+  const formDisabled = isPending || canUpdate.isPending || !canUpdate.data?.success;
 
   return (
     <div>
@@ -96,9 +88,7 @@ export function OrganizationProfile({ className }: OrganizationProfileProps) {
             <ChangeOrganizationLogo />
 
             <Field>
-              <FieldLabel htmlFor={nameInputId}>
-                {organizationLocalization.name}
-              </FieldLabel>
+              <FieldLabel htmlFor={nameInputId}>{organizationLocalization.name}</FieldLabel>
 
               {activeOrganization ? (
                 <Input
@@ -138,9 +128,9 @@ export function OrganizationProfile({ className }: OrganizationProfileProps) {
                   key={field.name}
                   field={{
                     ...field,
-                    defaultValue: (
-                      activeOrganization as Record<string, unknown>
-                    )[field.name] as never
+                    defaultValue: (activeOrganization as Record<string, unknown>)[
+                      field.name
+                    ] as never,
                   }}
                   isPending={formDisabled}
                   name={field.name}
@@ -164,5 +154,5 @@ export function OrganizationProfile({ className }: OrganizationProfileProps) {
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

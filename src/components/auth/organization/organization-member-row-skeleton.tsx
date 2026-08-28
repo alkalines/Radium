@@ -1,17 +1,13 @@
-"use client"
+"use client";
 
-import { Skeleton } from "@/components/ui/skeleton"
-import { TableCell, TableRow } from "@/components/ui/table"
-import { UserView } from "../user/user-view"
+import { Skeleton } from "@/components/ui/skeleton";
+import { TableCell, TableRow } from "@/components/ui/table";
+import { UserView } from "../user/user-view";
 
 /**
  * Placeholder row matching `OrganizationMemberRow` while members load.
  */
-export function OrganizationMemberRowSkeleton({
-  showTeams
-}: {
-  showTeams?: boolean
-}) {
+export function OrganizationMemberRowSkeleton({ showTeams }: { showTeams?: boolean }) {
   return (
     <TableRow>
       <TableCell>
@@ -32,5 +28,5 @@ export function OrganizationMemberRowSkeleton({
         <Skeleton className="size-8 rounded-md" />
       </TableCell>
     </TableRow>
-  )
+  );
 }

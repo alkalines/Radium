@@ -1,36 +1,36 @@
-import type { AdminView } from "@better-auth-ui/core"
-import { useAuth, useAuthenticate, useAuthPlugin } from "@better-auth-ui/react"
-import { ShieldAlertIcon, UsersIcon } from "lucide-react"
+import type { AdminView } from "@better-auth-ui/core";
+import { useAuth, useAuthenticate, useAuthPlugin } from "@better-auth-ui/react";
+import { ShieldAlertIcon, UsersIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button"
-import { adminPlugin } from "@/lib/auth/admin-plugin"
-import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button";
+import { adminPlugin } from "@/lib/auth/admin-plugin";
+import { cn } from "@/lib/utils";
 
-import { AdminUsers } from "./admin-users"
+import { AdminUsers } from "./admin-users";
 
 export type AdminProps = {
-  className?: string
-  hideNav?: boolean
-  path?: string
-  view?: AdminView | string
-}
+  className?: string;
+  hideNav?: boolean;
+  path?: string;
+  view?: AdminView | string;
+};
 
 /** Render a finite, static administration route and plugin-contributed tabs. */
 export function Admin({ className, hideNav, path, view }: AdminProps) {
-  const { authClient, basePaths, plugins, viewPaths } = useAuth()
-  const { localization } = useAuthPlugin(adminPlugin)
-  useAuthenticate(authClient)
+  const { authClient, basePaths, plugins, viewPaths } = useAuth();
+  const { localization } = useAuthPlugin(adminPlugin);
+  useAuthenticate(authClient);
 
   if (!view && !path) {
-    throw new Error("[Better Auth UI] Either `view` or `path` must be provided")
+    throw new Error("[Better Auth UI] Either `view` or `path` must be provided");
   }
 
-  const contributedTabs = plugins.flatMap((plugin) => plugin.adminTabs ?? [])
+  const contributedTabs = plugins.flatMap((plugin) => plugin.adminTabs ?? []);
   const currentView =
     view ??
     (viewPaths.admin.users === path ? "users" : undefined) ??
-    contributedTabs.find((tab) => tab.path === path)?.id
-  const contributedView = contributedTabs.find((tab) => tab.id === currentView)
+    contributedTabs.find((tab) => tab.path === path)?.id;
+  const contributedView = contributedTabs.find((tab) => tab.id === currentView);
 
   return (
     <div className={cn("flex w-full flex-col gap-6", className)}>
@@ -78,5 +78,5 @@ export function Admin({ className, hideNav, path, view }: AdminProps) {
         </div>
       )}
     </div>
-  )
+  );
 }

@@ -1,20 +1,20 @@
-import { createAuthPlugin } from "@better-auth-ui/core"
+import { createAuthPlugin } from "@better-auth-ui/core";
 import {
   emailOtpPlugin as coreEmailOtpPlugin,
-  type EmailOtpPluginOptions
-} from "@better-auth-ui/core/plugins/email-otp"
+  type EmailOtpPluginOptions,
+} from "@better-auth-ui/core/plugins/email-otp";
 
-import { ChangeEmailOtp } from "@/components/auth/email-otp/change-email-otp"
-import { EmailOtp } from "@/components/auth/email-otp/email-otp"
-import { EmailOtpButton } from "@/components/auth/email-otp/email-otp-button"
-import { ForgotPasswordOtp } from "@/components/auth/email-otp/forgot-password-otp"
-import { ResetPasswordOtp } from "@/components/auth/email-otp/reset-password-otp"
-import { VerifyEmailOtp } from "@/components/auth/email-otp/verify-email-otp"
+import { ChangeEmailOtp } from "@/components/auth/email-otp/change-email-otp";
+import { EmailOtp } from "@/components/auth/email-otp/email-otp";
+import { EmailOtpButton } from "@/components/auth/email-otp/email-otp-button";
+import { ForgotPasswordOtp } from "@/components/auth/email-otp/forgot-password-otp";
+import { ResetPasswordOtp } from "@/components/auth/email-otp/reset-password-otp";
+import { VerifyEmailOtp } from "@/components/auth/email-otp/verify-email-otp";
 
 export const emailOtpPlugin = createAuthPlugin(
   coreEmailOtpPlugin.id,
   (options: EmailOtpPluginOptions = {}) => {
-    const plugin = coreEmailOtpPlugin(options)
+    const plugin = coreEmailOtpPlugin(options);
 
     return {
       ...plugin,
@@ -28,19 +28,19 @@ export const emailOtpPlugin = createAuthPlugin(
           ...(plugin.emailVerification && { verifyEmail: VerifyEmailOtp }),
           ...(plugin.passwordReset && {
             forgotPassword: ForgotPasswordOtp,
-            resetPassword: ResetPasswordOtp
-          })
-        }
+            resetPassword: ResetPasswordOtp,
+          }),
+        },
       },
       // Conditional, not an override: when `emailAndPassword.enabled === false`
       // the `<Auth>` router renders this at `/auth/sign-in` instead of the
       // disabled password form.
       ...(plugin.signIn && {
-        fallbackViews: { auth: { signIn: EmailOtp } }
+        fallbackViews: { auth: { signIn: EmailOtp } },
       }),
       ...(plugin.changeEmail && {
-        cardOverrides: { account: { changeEmail: ChangeEmailOtp } }
-      })
-    }
-  }
-)
+        cardOverrides: { account: { changeEmail: ChangeEmailOtp } },
+      }),
+    };
+  },
+);

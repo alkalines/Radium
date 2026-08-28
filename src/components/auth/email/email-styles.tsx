@@ -8,7 +8,7 @@ export const defaultColors = {
     muted: "#F5F5F5",
     mutedForeground: "#737373",
     primary: "#171717",
-    primaryForeground: "#FAFAFA"
+    primaryForeground: "#FAFAFA",
   },
   dark: {
     background: "#0A0A0A",
@@ -19,9 +19,9 @@ export const defaultColors = {
     muted: "#212121",
     mutedForeground: "#A1A1A1",
     primary: "#E5E5E5",
-    primaryForeground: "#171717"
-  }
-}
+    primaryForeground: "#171717",
+  },
+};
 
 /**
  * Custom CSS class names for styling different parts of email templates.
@@ -29,19 +29,19 @@ export const defaultColors = {
  * Allows fine-grained control over the appearance of email components.
  */
 export type EmailClassNames = {
-  body?: string
-  container?: string
-  card?: string
-  logo?: string
-  title?: string
-  content?: string
-  button?: string
-  description?: string
-  separator?: string
-  link?: string
-  poweredBy?: string
-  codeBlock?: string
-}
+  body?: string;
+  container?: string;
+  card?: string;
+  logo?: string;
+  title?: string;
+  content?: string;
+  button?: string;
+  description?: string;
+  separator?: string;
+  link?: string;
+  poweredBy?: string;
+  codeBlock?: string;
+};
 
 /**
  * Custom color scheme configuration for email templates.
@@ -50,18 +50,18 @@ export type EmailClassNames = {
  * Any color not specified will fall back to the defaultColors values.
  */
 export type EmailColors = {
-  light?: Partial<typeof defaultColors.light>
-  dark?: Partial<typeof defaultColors.dark>
-}
+  light?: Partial<typeof defaultColors.light>;
+  dark?: Partial<typeof defaultColors.dark>;
+};
 
 /**
  * Props for the EmailStyles component.
  */
 interface EmailStylesProps {
   /** Custom color scheme for light and dark modes */
-  colors?: EmailColors
+  colors?: EmailColors;
   /** Whether to enable dark mode support */
-  darkMode?: boolean
+  darkMode?: boolean;
 }
 
 /**
@@ -164,7 +164,7 @@ export const EmailStyles = ({ colors, darkMode = true }: EmailStylesProps) => {
           : ""
       }
     `}</style>
-  )
-}
+  );
+};
 
-export default EmailStyles
+export default EmailStyles;

@@ -1,21 +1,21 @@
-"use client"
+"use client";
 
-import { getViewURL } from "@better-auth-ui/core"
-import { useAuth, useChangeEmail, useSession } from "@better-auth-ui/react"
-import { type SyntheticEvent, useState } from "react"
-import { toast } from "sonner"
+import { getViewURL } from "@better-auth-ui/core";
+import { useAuth, useChangeEmail, useSession } from "@better-auth-ui/react";
+import { type SyntheticEvent, useState } from "react";
+import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardFooter } from "@/components/ui/card"
-import { Field, FieldError, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Spinner } from "@/components/ui/spinner"
-import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 
 export type ChangeEmailProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Render a card containing a form to view and update the authenticated user's email.
@@ -27,36 +27,30 @@ export type ChangeEmailProps = {
  * @returns A JSX element rendering the change-email card and form
  */
 export function ChangeEmail({ className }: ChangeEmailProps) {
-  const { authClient, basePaths, baseURL, localization, viewPaths } = useAuth()
-  const { data: session } = useSession(authClient)
+  const { authClient, basePaths, baseURL, localization, viewPaths } = useAuth();
+  const { data: session } = useSession(authClient);
 
   const { mutate: changeEmail, isPending } = useChangeEmail(authClient, {
-    onSuccess: () => toast.success(localization.settings.changeEmailSuccess)
-  })
+    onSuccess: () => toast.success(localization.settings.changeEmailSuccess),
+  });
 
   const [fieldErrors, setFieldErrors] = useState<{
-    email?: string
-  }>({})
+    email?: string;
+  }>({});
 
   function handleSubmit(e: SyntheticEvent<HTMLFormElement>) {
-    e.preventDefault()
+    e.preventDefault();
 
-    const formData = new FormData(e.currentTarget)
+    const formData = new FormData(e.currentTarget);
     changeEmail({
       newEmail: formData.get("email") as string,
-      callbackURL: getViewURL(
-        baseURL,
-        basePaths.settings,
-        viewPaths.settings.account
-      )
-    })
+      callbackURL: getViewURL(baseURL, basePaths.settings, viewPaths.settings.account),
+    });
   }
 
   return (
     <div>
-      <h2 className="text-sm font-semibold mb-3">
-        {localization.settings.changeEmail}
-      </h2>
+      <h2 className="text-sm font-semibold mb-3">{localization.settings.changeEmail}</h2>
 
       <form onSubmit={handleSubmit}>
         <Card className={cn(className)}>
@@ -78,15 +72,15 @@ export function ChangeEmail({ className }: ChangeEmailProps) {
                   onChange={() => {
                     setFieldErrors((prev) => ({
                       ...prev,
-                      email: undefined
-                    }))
+                      email: undefined,
+                    }));
                   }}
                   onInvalid={(e) => {
-                    e.preventDefault()
+                    e.preventDefault();
                     setFieldErrors((prev) => ({
                       ...prev,
-                      email: (e.target as HTMLInputElement).validationMessage
-                    }))
+                      email: (e.target as HTMLInputElement).validationMessage,
+                    }));
                   }}
                   aria-invalid={!!fieldErrors.email}
                 />
@@ -110,5 +104,5 @@ export function ChangeEmail({ className }: ChangeEmailProps) {
         </Card>
       </form>
     </div>
-  )
+  );
 }

@@ -1,18 +1,15 @@
-"use client"
+"use client";
 
-import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react"
-import { ArrowLeftRight } from "lucide-react"
+import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react";
+import { ArrowLeftRight } from "lucide-react";
 
-import {
-  DropdownMenuSub,
-  DropdownMenuSubTrigger
-} from "@/components/ui/dropdown-menu"
-import { multiSessionPlugin } from "@/lib/auth/multi-session-plugin"
-import { SwitchAccountSubmenuContent } from "./switch-account-submenu-content"
+import { DropdownMenuSub, DropdownMenuSubTrigger } from "@/components/ui/dropdown-menu";
+import { multiSessionPlugin } from "@/lib/auth/multi-session-plugin";
+import { SwitchAccountSubmenuContent } from "./switch-account-submenu-content";
 
 export type SwitchAccountSubmenuProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Render a submenu trigger for switching between multiple authenticated sessions.
@@ -25,13 +22,12 @@ export type SwitchAccountSubmenuProps = {
  * @returns The switch account submenu as a JSX element
  */
 export function SwitchAccountSubmenu({ className }: SwitchAccountSubmenuProps) {
-  const { authClient } = useAuth()
-  const { data: session } = useSession(authClient)
-  const { localization: multiSessionLocalization } =
-    useAuthPlugin(multiSessionPlugin)
+  const { authClient } = useAuth();
+  const { data: session } = useSession(authClient);
+  const { localization: multiSessionLocalization } = useAuthPlugin(multiSessionPlugin);
 
   if (!session) {
-    return null
+    return null;
   }
 
   return (
@@ -44,5 +40,5 @@ export function SwitchAccountSubmenu({ className }: SwitchAccountSubmenuProps) {
 
       <SwitchAccountSubmenuContent />
     </DropdownMenuSub>
-  )
+  );
 }

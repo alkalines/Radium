@@ -1,24 +1,24 @@
-import { createAuthPlugin } from "@better-auth-ui/core"
+import { createAuthPlugin } from "@better-auth-ui/core";
 import {
   organizationPlugin as coreOrganizationPlugin,
   type OrganizationLocalization,
-  type OrganizationPluginOptions
-} from "@better-auth-ui/core/plugins/organization"
-import { Briefcase } from "lucide-react"
+  type OrganizationPluginOptions,
+} from "@better-auth-ui/core/plugins/organization";
+import { Briefcase } from "lucide-react";
 
-import { AcceptInvitation } from "@/components/auth/organization/accept-invitation"
-import { OrganizationsSettings } from "@/components/auth/organization/organizations-settings"
+import { AcceptInvitation } from "@/components/auth/organization/accept-invitation";
+import { OrganizationsSettings } from "@/components/auth/organization/organizations-settings";
 
 export const organizationPlugin = createAuthPlugin(
   coreOrganizationPlugin.id,
   (options: OrganizationPluginOptions = {}) => {
-    const core = coreOrganizationPlugin(options)
+    const core = coreOrganizationPlugin(options);
 
     return {
       ...core,
       localization: core.localization as OrganizationLocalization,
       views: {
-        auth: { acceptInvitation: AcceptInvitation }
+        auth: { acceptInvitation: AcceptInvitation },
       },
       settingsTabs: [
         {
@@ -29,9 +29,9 @@ export const organizationPlugin = createAuthPlugin(
               {core.localization.organizations}
             </>
           ),
-          component: OrganizationsSettings
-        }
-      ]
-    }
-  }
-)
+          component: OrganizationsSettings,
+        },
+      ],
+    };
+  },
+);

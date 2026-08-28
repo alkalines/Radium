@@ -78,7 +78,9 @@ function parseProviderCredentials(provider: string, value: string): Record<strin
     }
 
     return Object.fromEntries(
-      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
     );
   } catch (error) {
     throw new Error(`Stored credentials for provider ${provider} are invalid.`, { cause: error });
@@ -409,7 +411,10 @@ export const upsertCredentials = mutation({
 
     const [balance, provider] = await Promise.all([
       ctx.db.get("balances", args.balance),
-      ctx.db.query("providers").withIndex("by_slug", (q) => q.eq("slug", args.provider)).unique(),
+      ctx.db
+        .query("providers")
+        .withIndex("by_slug", (q) => q.eq("slug", args.provider))
+        .unique(),
     ]);
 
     if (!balance || balance.userId !== identity._id) throw new Error("Balance not found.");

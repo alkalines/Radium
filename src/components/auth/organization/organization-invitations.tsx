@@ -1,57 +1,53 @@
 import {
   hasMemberRole,
   type OrganizationAuthClient,
-  type OrganizationLocalization
-} from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
+  type OrganizationLocalization,
+} from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
 import {
   useHasPermission,
-  useListOrganizationInvitations
-} from "@better-auth-ui/react/plugins/organization"
-import { ChevronUp, Filter, Search, X } from "lucide-react"
-import { type ComponentProps, type ReactNode, useMemo, useState } from "react"
+  useListOrganizationInvitations,
+} from "@better-auth-ui/react/plugins/organization";
+import { ChevronUp, Filter, Search, X } from "lucide-react";
+import { type ComponentProps, type ReactNode, useMemo, useState } from "react";
 
-import { Badge } from "@/components/ui/badge"
-import { Button, buttonVariants } from "@/components/ui/button"
-import { Card } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  DropdownMenuTrigger
-} from "@/components/ui/dropdown-menu"
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput
-} from "@/components/ui/input-group"
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import {
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
-  TableRow
-} from "@/components/ui/table"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { cn } from "@/lib/utils"
-import { InviteMemberDialog } from "./invite-member-dialog"
-import { OrganizationInvitationRow } from "./organization-invitation-row"
-import { OrganizationInvitationRowSkeleton } from "./organization-invitation-row-skeleton"
-import { OrganizationInvitationsEmpty } from "./organization-invitations-empty"
+  TableRow,
+} from "@/components/ui/table";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { cn } from "@/lib/utils";
+import { InviteMemberDialog } from "./invite-member-dialog";
+import { OrganizationInvitationRow } from "./organization-invitation-row";
+import { OrganizationInvitationRowSkeleton } from "./organization-invitation-row-skeleton";
+import { OrganizationInvitationsEmpty } from "./organization-invitations-empty";
 
-type SortDirection = "ascending" | "descending"
+type SortDirection = "ascending" | "descending";
 
 type SortDescriptor = {
-  column: string
-  direction: SortDirection
-}
+  column: string;
+  direction: SortDirection;
+};
 
 /** Props for the `OrganizationInvitations` component. */
 export type OrganizationInvitationsProps = {
-  className?: string
-}
+  className?: string;
+};
 
 /**
  * Organization invitations table with invite control and per-row actions.
@@ -60,73 +56,70 @@ export function OrganizationInvitations({
   className,
   ...props
 }: OrganizationInvitationsProps & ComponentProps<"div">) {
-  const { authClient, localization } = useAuth<OrganizationAuthClient>()
-  const { localization: organizationLocalization, roles } =
-    useAuthPlugin(organizationPlugin)
+  const { authClient, localization } = useAuth<OrganizationAuthClient>();
+  const { localization: organizationLocalization, roles } = useAuthPlugin(organizationPlugin);
   const { data: invitations, isPending: invitationsPending } =
-    useListOrganizationInvitations(authClient)
+    useListOrganizationInvitations(authClient);
 
   const canInvite = useHasPermission(authClient, {
-    permissions: { invitation: ["create"] }
-  })
+    permissions: { invitation: ["create"] },
+  });
 
-  const isPending = invitationsPending
+  const isPending = invitationsPending;
 
-  const [sortDescriptor, setSortDescriptor] = useState<SortDescriptor>()
-  const [roleFilter, setRoleFilter] = useState("all")
-  const [statusFilter, setStatusFilter] = useState("all")
-  const [search, setSearch] = useState("")
+  const [sortDescriptor, setSortDescriptor] = useState<SortDescriptor>();
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [search, setSearch] = useState("");
 
   const filteredInvitations = useMemo(() => {
     return invitations?.filter(
       (invitation) =>
         (roleFilter === "all" || hasMemberRole(invitation.role, roleFilter)) &&
         (statusFilter === "all" || invitation.status === statusFilter) &&
-        invitation.email.toLowerCase().includes(search.toLowerCase())
-    )
-  }, [search, invitations, roleFilter, statusFilter])
+        invitation.email.toLowerCase().includes(search.toLowerCase()),
+    );
+  }, [search, invitations, roleFilter, statusFilter]);
 
   const sortedInvitations = useMemo(() => {
-    if (!sortDescriptor) return filteredInvitations
-    if (!filteredInvitations) return filteredInvitations
+    if (!sortDescriptor) return filteredInvitations;
+    if (!filteredInvitations) return filteredInvitations;
 
     return [...filteredInvitations].sort((a, b) => {
-      const col = sortDescriptor.column as keyof typeof a
-      let cmp = 0
+      const col = sortDescriptor.column as keyof typeof a;
+      let cmp = 0;
 
       if (col === "createdAt") {
-        cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
       } else {
-        cmp = String(a[col]).localeCompare(String(b[col]))
+        cmp = String(a[col]).localeCompare(String(b[col]));
       }
 
       if (sortDescriptor.direction === "descending") {
-        cmp *= -1
+        cmp *= -1;
       }
 
-      return cmp
-    })
-  }, [sortDescriptor, filteredInvitations])
+      return cmp;
+    });
+  }, [sortDescriptor, filteredInvitations]);
 
-  const [inviteOpen, setInviteOpen] = useState(false)
+  const [inviteOpen, setInviteOpen] = useState(false);
 
   function toggleSort(column: string) {
     setSortDescriptor((current) => {
       if (current?.column !== column) {
-        return { column, direction: "ascending" }
+        return { column, direction: "ascending" };
       }
       if (current.direction === "ascending") {
-        return { column, direction: "descending" }
+        return { column, direction: "descending" };
       }
-      return undefined
-    })
+      return undefined;
+    });
   }
 
   return (
     <div className={cn("flex flex-col gap-3", className)} {...props}>
-      <h3 className="truncate text-sm font-semibold">
-        {organizationLocalization.invitations}
-      </h3>
+      <h3 className="truncate text-sm font-semibold">{organizationLocalization.invitations}</h3>
 
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-3">
@@ -156,10 +149,7 @@ export function OrganizationInvitations({
             </DropdownMenuTrigger>
 
             <DropdownMenuContent align="start">
-              <DropdownMenuRadioGroup
-                value={roleFilter}
-                onValueChange={setRoleFilter}
-              >
+              <DropdownMenuRadioGroup value={roleFilter} onValueChange={setRoleFilter}>
                 <DropdownMenuRadioItem value="all">
                   {organizationLocalization.all}
                 </DropdownMenuRadioItem>
@@ -184,23 +174,16 @@ export function OrganizationInvitations({
             </DropdownMenuTrigger>
 
             <DropdownMenuContent align="start">
-              <DropdownMenuRadioGroup
-                value={statusFilter}
-                onValueChange={setStatusFilter}
-              >
+              <DropdownMenuRadioGroup value={statusFilter} onValueChange={setStatusFilter}>
                 <DropdownMenuRadioItem value="all">
                   {organizationLocalization.all}
                 </DropdownMenuRadioItem>
 
-                {(["pending", "accepted", "rejected", "canceled"] as const).map(
-                  (status) => (
-                    <DropdownMenuRadioItem key={status} value={status}>
-                      {organizationLocalization[
-                        status as keyof OrganizationLocalization
-                      ] ?? status}
-                    </DropdownMenuRadioItem>
-                  )
-                )}
+                {(["pending", "accepted", "rejected", "canceled"] as const).map((status) => (
+                  <DropdownMenuRadioItem key={status} value={status}>
+                    {organizationLocalization[status as keyof OrganizationLocalization] ?? status}
+                  </DropdownMenuRadioItem>
+                ))}
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -211,9 +194,7 @@ export function OrganizationInvitations({
             {roleFilter !== "all" && (
               <Badge variant="secondary" className="gap-1">
                 {organizationLocalization.role}:{" "}
-                <span className="capitalize">
-                  {roles?.[roleFilter] ?? roleFilter}
-                </span>
+                <span className="capitalize">{roles?.[roleFilter] ?? roleFilter}</span>
                 <Button
                   aria-label={organizationLocalization.clear}
                   className="size-4 rounded-sm text-muted-foreground"
@@ -230,9 +211,8 @@ export function OrganizationInvitations({
             {statusFilter !== "all" && (
               <Badge variant="secondary" className="gap-1">
                 {organizationLocalization.status}:{" "}
-                {organizationLocalization[
-                  statusFilter as keyof OrganizationLocalization
-                ] ?? statusFilter}
+                {organizationLocalization[statusFilter as keyof OrganizationLocalization] ??
+                  statusFilter}
                 <Button
                   aria-label={organizationLocalization.clear}
                   className="size-4 rounded-sm text-muted-foreground"
@@ -254,9 +234,7 @@ export function OrganizationInvitations({
               <TableRow>
                 <SortableTableHead
                   sortDirection={
-                    sortDescriptor?.column === "email"
-                      ? sortDescriptor.direction
-                      : undefined
+                    sortDescriptor?.column === "email" ? sortDescriptor.direction : undefined
                   }
                   onClick={() => toggleSort("email")}
                 >
@@ -265,9 +243,7 @@ export function OrganizationInvitations({
 
                 <SortableTableHead
                   sortDirection={
-                    sortDescriptor?.column === "createdAt"
-                      ? sortDescriptor.direction
-                      : undefined
+                    sortDescriptor?.column === "createdAt" ? sortDescriptor.direction : undefined
                   }
                   onClick={() => toggleSort("createdAt")}
                 >
@@ -276,9 +252,7 @@ export function OrganizationInvitations({
 
                 <SortableTableHead
                   sortDirection={
-                    sortDescriptor?.column === "role"
-                      ? sortDescriptor.direction
-                      : undefined
+                    sortDescriptor?.column === "role" ? sortDescriptor.direction : undefined
                   }
                   onClick={() => toggleSort("role")}
                 >
@@ -287,18 +261,14 @@ export function OrganizationInvitations({
 
                 <SortableTableHead
                   sortDirection={
-                    sortDescriptor?.column === "status"
-                      ? sortDescriptor.direction
-                      : undefined
+                    sortDescriptor?.column === "status" ? sortDescriptor.direction : undefined
                   }
                   onClick={() => toggleSort("status")}
                 >
                   {organizationLocalization.status}
                 </SortableTableHead>
 
-                <TableHead className="text-end">
-                  {organizationLocalization.actions}
-                </TableHead>
+                <TableHead className="text-end">{organizationLocalization.actions}</TableHead>
               </TableRow>
             </TableHeader>
 
@@ -311,19 +281,14 @@ export function OrganizationInvitations({
                     <OrganizationInvitationsEmpty
                       isInvitePending={canInvite.isPending}
                       onInvitePress={
-                        canInvite.data?.success
-                          ? () => setInviteOpen(true)
-                          : undefined
+                        canInvite.data?.success ? () => setInviteOpen(true) : undefined
                       }
                     />
                   </TableCell>
                 </TableRow>
               ) : (
                 sortedInvitations.map((invitation) => (
-                  <OrganizationInvitationRow
-                    key={invitation.id}
-                    invitation={invitation}
-                  />
+                  <OrganizationInvitationRow key={invitation.id} invitation={invitation} />
                 ))
               )}
             </TableBody>
@@ -335,17 +300,17 @@ export function OrganizationInvitations({
         <InviteMemberDialog open={inviteOpen} onOpenChange={setInviteOpen} />
       )}
     </div>
-  )
+  );
 }
 
 function SortableTableHead({
   children,
   sortDirection,
-  onClick
+  onClick,
 }: {
-  children: ReactNode
-  sortDirection?: SortDirection
-  onClick: () => void
+  children: ReactNode;
+  sortDirection?: SortDirection;
+  onClick: () => void;
 }) {
   return (
     <TableHead aria-sort={sortDirection ?? "none"}>
@@ -362,11 +327,11 @@ function SortableTableHead({
           <ChevronUp
             className={cn(
               "size-3 transition-transform duration-100 ease-out",
-              sortDirection === "descending" ? "rotate-180" : ""
+              sortDirection === "descending" ? "rotate-180" : "",
             )}
           />
         )}
       </Button>
     </TableHead>
-  )
+  );
 }

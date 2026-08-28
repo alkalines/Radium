@@ -1,123 +1,115 @@
-import { fileToBase64 } from "@better-auth-ui/core"
-import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
+import { fileToBase64 } from "@better-auth-ui/core";
+import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
 import {
   useActiveOrganization,
   useHasPermission,
-  useUpdateOrganization
-} from "@better-auth-ui/react/plugins/organization"
-import { Trash2, Upload } from "lucide-react"
-import { type ChangeEvent, useRef, useState } from "react"
-import { toast } from "sonner"
+  useUpdateOrganization,
+} from "@better-auth-ui/react/plugins/organization";
+import { Trash2, Upload } from "lucide-react";
+import { type ChangeEvent, useRef, useState } from "react";
+import { toast } from "sonner";
 
-import { Button, buttonVariants } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuTrigger
-} from "@/components/ui/dropdown-menu"
-import { Label } from "@/components/ui/label"
-import { Spinner } from "@/components/ui/spinner"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { cn } from "@/lib/utils"
-import { OrganizationLogo } from "./organization-logo"
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { cn } from "@/lib/utils";
+import { OrganizationLogo } from "./organization-logo";
 
 export type ChangeOrganizationLogoProps = {
-  className?: string
-}
+  className?: string;
+};
 
-export function ChangeOrganizationLogo({
-  className
-}: ChangeOrganizationLogoProps) {
-  const { authClient } = useAuth<OrganizationAuthClient>()
-  const { logo, localization: organizationLocalization } =
-    useAuthPlugin(organizationPlugin)
+export function ChangeOrganizationLogo({ className }: ChangeOrganizationLogoProps) {
+  const { authClient } = useAuth<OrganizationAuthClient>();
+  const { logo, localization: organizationLocalization } = useAuthPlugin(organizationPlugin);
 
   const { data: activeOrganization, isPending: activeOrganizationPending } =
-    useActiveOrganization(authClient)
+    useActiveOrganization(authClient);
   const canUpdate = useHasPermission(authClient, {
-    permissions: { organization: ["update"] }
-  })
+    permissions: { organization: ["update"] },
+  });
 
   const { mutate: updateOrganization, isPending: updatePending } =
-    useUpdateOrganization(authClient)
+    useUpdateOrganization(authClient);
 
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [isUploading, setIsUploading] = useState(false)
-  const [isDeleting, setIsDeleting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  const isPending = updatePending || isUploading || isDeleting
+  const isPending = updatePending || isUploading || isDeleting;
 
   async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file || !activeOrganization || !canUpdate.data?.success) return
+    const file = e.target.files?.[0];
+    if (!file || !activeOrganization || !canUpdate.data?.success) return;
 
-    e.target.value = ""
+    e.target.value = "";
 
-    setIsUploading(true)
+    setIsUploading(true);
 
     try {
-      const resized =
-        (await logo.resize?.(file, logo.size, logo.extension)) || file
+      const resized = (await logo.resize?.(file, logo.size, logo.extension)) || file;
 
-      const image =
-        (await logo.upload?.(resized)) || (await fileToBase64(resized))
+      const image = (await logo.upload?.(resized)) || (await fileToBase64(resized));
 
       updateOrganization(
         { data: { logo: image } },
         {
-          onSuccess: () =>
-            toast.success(organizationLocalization.logoChangedSuccess),
-          onSettled: () => setIsUploading(false)
-        }
-      )
+          onSuccess: () => toast.success(organizationLocalization.logoChangedSuccess),
+          onSettled: () => setIsUploading(false),
+        },
+      );
     } catch (error) {
-      setIsUploading(false)
+      setIsUploading(false);
       if (error instanceof Error) {
-        toast.error(error.message)
+        toast.error(error.message);
       }
     }
   }
 
   async function handleDelete() {
-    if (!canUpdate.data?.success) return
-    const currentLogo = activeOrganization?.logo
+    if (!canUpdate.data?.success) return;
+    const currentLogo = activeOrganization?.logo;
 
     updateOrganization(
       { data: { logo: "" } },
       {
         onSuccess: async () => {
           if (!currentLogo) {
-            toast.success(organizationLocalization.logoDeletedSuccess)
-            return
+            toast.success(organizationLocalization.logoDeletedSuccess);
+            return;
           }
 
-          setIsDeleting(true)
+          setIsDeleting(true);
           try {
-            await logo.delete?.(currentLogo)
-            toast.success(organizationLocalization.logoDeletedSuccess)
+            await logo.delete?.(currentLogo);
+            toast.success(organizationLocalization.logoDeletedSuccess);
           } catch (error) {
             if (error instanceof Error) {
-              toast.error(error.message)
+              toast.error(error.message);
             }
           } finally {
-            setIsDeleting(false)
+            setIsDeleting(false);
           }
-        }
-      }
-    )
+        },
+      },
+    );
   }
 
   if (!logo.enabled) {
-    return null
+    return null;
   }
 
   return (
     <div className={cn("flex flex-col gap-1", className)}>
-      <Label aria-disabled={!activeOrganization}>
-        {organizationLocalization.logo}
-      </Label>
+      <Label aria-disabled={!activeOrganization}>{organizationLocalization.logo}</Label>
 
       <input
         ref={fileInputRef}
@@ -154,9 +146,7 @@ export function ChangeOrganizationLogo({
         {(canUpdate.isPending || canUpdate.data?.success) && (
           <DropdownMenu>
             <DropdownMenuTrigger
-              className={cn(
-                buttonVariants({ size: "sm", variant: "secondary" })
-              )}
+              className={cn(buttonVariants({ size: "sm", variant: "secondary" }))}
               disabled={!activeOrganization || isPending || canUpdate.isPending}
             >
               {isPending && <Spinner />}
@@ -185,5 +175,5 @@ export function ChangeOrganizationLogo({
         )}
       </div>
     </div>
-  )
+  );
 }

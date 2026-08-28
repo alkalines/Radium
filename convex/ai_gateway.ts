@@ -1,6 +1,9 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { GenericActionCtx } from "convex/server";
-import { ChatCompletions_RequestBody, type ChatCompletions_RequestBody_Type } from "@/utils/types/openai/types";
+import {
+  ChatCompletions_RequestBody,
+  type ChatCompletions_RequestBody_Type,
+} from "@/utils/types/openai/types";
 import type { Id } from "./_generated/dataModel";
 import { Internal_Chat_Completion } from "./http/chat_completion";
 

@@ -24,7 +24,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
@@ -42,9 +48,7 @@ export function ToolsPanel() {
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
   // Exa keys are still stored per balance; everything else here is per user.
   const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
-  const { data: servers } = useQuery(
-    convexQuery(api.mcp.listServers, signedIn ? {} : "skip"),
-  );
+  const { data: servers } = useQuery(convexQuery(api.mcp.listServers, signedIn ? {} : "skip"));
   const { data: defaults } = useQuery(
     convexQuery(api.chatroom.getToolDefaults, signedIn ? {} : "skip"),
   );
@@ -243,10 +247,7 @@ export function ToolsPanel() {
           if (!open) setEditTarget(null);
         }}
       />
-      <DeleteServerDialog
-        target={deleting}
-        onOpenChange={(open) => !open && setDeleting(null)}
-      />
+      <DeleteServerDialog target={deleting} onOpenChange={(open) => !open && setDeleting(null)} />
     </div>
   );
 }

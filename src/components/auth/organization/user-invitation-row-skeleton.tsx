@@ -1,7 +1,7 @@
-"use client"
+"use client";
 
-import { Item, ItemContent, ItemMedia } from "@/components/ui/item"
-import { Skeleton } from "@/components/ui/skeleton"
+import { Item, ItemContent, ItemMedia } from "@/components/ui/item";
+import { Skeleton } from "@/components/ui/skeleton";
 
 /**
  * Placeholder row matching `UserInvitationRow` while invitations load.
@@ -17,5 +17,5 @@ export function UserInvitationRowSkeleton() {
         <Skeleton className="h-3 w-28 rounded-md" />
       </ItemContent>
     </Item>
-  )
+  );
 }

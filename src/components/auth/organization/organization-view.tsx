@@ -1,29 +1,26 @@
-import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react"
+import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react";
 import {
   useActiveOrganization,
-  useListOrganizationMembers
-} from "@better-auth-ui/react/plugins/organization"
-import type { Organization } from "better-auth/client"
-import type { ComponentProps } from "react"
+  useListOrganizationMembers,
+} from "@better-auth-ui/react/plugins/organization";
+import type { Organization } from "better-auth/client";
+import type { ComponentProps } from "react";
 
-import { Badge } from "@/components/ui/badge"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { cn } from "@/lib/utils"
-import {
-  OrganizationLogo,
-  type OrganizationLogoSize
-} from "./organization-logo"
-import { OrganizationViewSkeleton } from "./organization-view-skeleton"
+import { Badge } from "@/components/ui/badge";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { cn } from "@/lib/utils";
+import { OrganizationLogo, type OrganizationLogoSize } from "./organization-logo";
+import { OrganizationViewSkeleton } from "./organization-view-skeleton";
 
 export type OrganizationViewProps = {
-  className?: string
-  isPending?: boolean
-  size?: OrganizationLogoSize
-  hideRole?: boolean
-  hideSlug?: boolean
-  organization?: Partial<Organization>
-}
+  className?: string;
+  isPending?: boolean;
+  size?: OrganizationLogoSize;
+  hideRole?: boolean;
+  hideSlug?: boolean;
+  organization?: Partial<Organization>;
+};
 
 /**
  * Compact organization row: logo, primary name, secondary slug — analogous to `UserView`.
@@ -37,29 +34,28 @@ export function OrganizationView({
   organization,
   ...props
 }: OrganizationViewProps & ComponentProps<"div">) {
-  const { authClient } = useAuth<OrganizationAuthClient>()
-  const { roles, slugPrefix } = useAuthPlugin(organizationPlugin)
+  const { authClient } = useAuth<OrganizationAuthClient>();
+  const { roles, slugPrefix } = useAuthPlugin(organizationPlugin);
 
-  const { data: session } = useSession(authClient)
+  const { data: session } = useSession(authClient);
 
-  const { data: activeOrganization, isPending: activeOrganizationPending } =
-    useActiveOrganization(authClient, {
-      enabled: !organization && !isPending
-    })
+  const { data: activeOrganization, isPending: activeOrganizationPending } = useActiveOrganization(
+    authClient,
+    {
+      enabled: !organization && !isPending,
+    },
+  );
 
-  const resolvedOrganization = organization ?? activeOrganization
+  const resolvedOrganization = organization ?? activeOrganization;
 
-  const { data: membersList, isPending: membersPending } =
-    useListOrganizationMembers(authClient, {
-      query: {
-        organizationId: resolvedOrganization?.id
-      },
-      enabled: !!resolvedOrganization?.id && !hideRole
-    })
+  const { data: membersList, isPending: membersPending } = useListOrganizationMembers(authClient, {
+    query: {
+      organizationId: resolvedOrganization?.id,
+    },
+    enabled: !!resolvedOrganization?.id && !hideRole,
+  });
 
-  const membership = membersList?.members?.find(
-    (member) => member.userId === session?.user.id
-  )
+  const membership = membersList?.members?.find((member) => member.userId === session?.user.id);
 
   if (
     isPending ||
@@ -67,20 +63,12 @@ export function OrganizationView({
     (!hideRole && !!resolvedOrganization?.id && membersPending)
   ) {
     return (
-      <OrganizationViewSkeleton
-        className={className}
-        hideSlug={hideSlug}
-        size={size}
-        {...props}
-      />
-    )
+      <OrganizationViewSkeleton className={className} hideSlug={hideSlug} size={size} {...props} />
+    );
   }
 
   return (
-    <div
-      className={cn("flex min-w-0 items-center gap-2", className)}
-      {...props}
-    >
+    <div className={cn("flex min-w-0 items-center gap-2", className)} {...props}>
       <OrganizationLogo
         organization={resolvedOrganization}
         className={size === "sm" ? "size-5" : undefined}
@@ -108,5 +96,5 @@ export function OrganizationView({
         )}
       </div>
     </div>
-  )
+  );
 }

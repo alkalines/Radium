@@ -1,12 +1,12 @@
-"use client"
+"use client";
 
-import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useDeleteOrganization } from "@better-auth-ui/react/plugins/organization"
-import type { Organization } from "better-auth/client"
-import { TriangleAlert } from "lucide-react"
-import type { SyntheticEvent } from "react"
-import { toast } from "sonner"
+import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useDeleteOrganization } from "@better-auth-ui/react/plugins/organization";
+import type { Organization } from "better-auth/client";
+import { TriangleAlert } from "lucide-react";
+import type { SyntheticEvent } from "react";
+import { toast } from "sonner";
 
 import {
   AlertDialog,
@@ -16,50 +16,44 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogMedia,
-  AlertDialogTitle
-} from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { Spinner } from "@/components/ui/spinner"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { OrganizationView } from "./organization-view"
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Spinner } from "@/components/ui/spinner";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { OrganizationView } from "./organization-view";
 
 export type DeleteOrganizationDialogProps = {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  organization: Organization
-}
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  organization: Organization;
+};
 
 export function DeleteOrganizationDialog({
   open,
   onOpenChange,
-  organization
+  organization,
 }: DeleteOrganizationDialogProps) {
-  const { authClient, basePaths, localization, navigate } =
-    useAuth<OrganizationAuthClient>()
-  const {
-    localization: organizationLocalization,
-    viewPaths: organizationPluginViewPaths
-  } = useAuthPlugin(organizationPlugin)
+  const { authClient, basePaths, localization, navigate } = useAuth<OrganizationAuthClient>();
+  const { localization: organizationLocalization, viewPaths: organizationPluginViewPaths } =
+    useAuthPlugin(organizationPlugin);
 
-  const { mutate: deleteOrganization, isPending } = useDeleteOrganization(
-    authClient,
-    {
-      onSuccess: () => {
-        onOpenChange(false)
-        toast.success(organizationLocalization.organizationDeleted)
+  const { mutate: deleteOrganization, isPending } = useDeleteOrganization(authClient, {
+    onSuccess: () => {
+      onOpenChange(false);
+      toast.success(organizationLocalization.organizationDeleted);
 
-        navigate({
-          to: `${basePaths.settings}/${organizationPluginViewPaths.settings.organizations}`,
-          replace: true
-        })
-      }
-    }
-  )
+      navigate({
+        to: `${basePaths.settings}/${organizationPluginViewPaths.settings.organizations}`,
+        replace: true,
+      });
+    },
+  });
 
   function handleSubmit(e: SyntheticEvent<HTMLFormElement>) {
-    e.preventDefault()
-    deleteOrganization({ organizationId: organization.id })
+    e.preventDefault();
+    deleteOrganization({ organizationId: organization.id });
   }
 
   return (
@@ -71,9 +65,7 @@ export function DeleteOrganizationDialog({
               <TriangleAlert />
             </AlertDialogMedia>
 
-            <AlertDialogTitle>
-              {organizationLocalization.deleteOrganization}
-            </AlertDialogTitle>
+            <AlertDialogTitle>{organizationLocalization.deleteOrganization}</AlertDialogTitle>
 
             <AlertDialogDescription>
               {organizationLocalization.deleteOrganizationDescription}
@@ -100,5 +92,5 @@ export function DeleteOrganizationDialog({
         </form>
       </AlertDialogContent>
     </AlertDialog>
-  )
+  );
 }

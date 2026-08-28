@@ -1,19 +1,19 @@
-"use client"
+"use client";
 
 import type {
   SiweAuthClient,
   SiweWalletAccount,
-  SiweWalletManager
-} from "@better-auth-ui/core/plugins/siwe"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
+  SiweWalletManager,
+} from "@better-auth-ui/core/plugins/siwe";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
 import {
   useLinkSiweWallet,
   useSetPrimarySiweWallet,
   useSiweWallets,
-  useUnlinkSiweWallet
-} from "@better-auth-ui/react/plugins/siwe"
-import { Wallet, X } from "lucide-react"
-import { useState } from "react"
+  useUnlinkSiweWallet,
+} from "@better-auth-ui/react/plugins/siwe";
+import { Wallet, X } from "lucide-react";
+import { useState } from "react";
 
 import {
   AlertDialog,
@@ -23,31 +23,31 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogMedia,
-  AlertDialogTitle
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Spinner } from "@/components/ui/spinner"
-import { siwePlugin } from "@/lib/auth/siwe-plugin"
-import { cn } from "@/lib/utils"
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { siwePlugin } from "@/lib/auth/siwe-plugin";
+import { cn } from "@/lib/utils";
 
 const shortAddress = (address: string) =>
-  address.length > 14 ? `${address.slice(0, 8)}…${address.slice(-6)}` : address
+  address.length > 14 ? `${address.slice(0, 8)}…${address.slice(-6)}` : address;
 
 const requireWalletManager = (manager?: SiweWalletManager) => {
-  if (!manager) throw new Error("SIWE wallet management is not configured.")
-  return manager
-}
+  if (!manager) throw new Error("SIWE wallet management is not configured.");
+  return manager;
+};
 
 function WalletRow({ wallet }: { wallet: SiweWalletAccount }) {
-  const { authClient, localization } = useAuth<SiweAuthClient>()
-  const plugin = useAuthPlugin(siwePlugin)
-  const manager = requireWalletManager(plugin.walletManager)
-  const [removeOpen, setRemoveOpen] = useState(false)
-  const setPrimary = useSetPrimarySiweWallet(authClient, manager)
-  const unlink = useUnlinkSiweWallet(authClient, manager)
+  const { authClient, localization } = useAuth<SiweAuthClient>();
+  const plugin = useAuthPlugin(siwePlugin);
+  const manager = requireWalletManager(plugin.walletManager);
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const setPrimary = useSetPrimarySiweWallet(authClient, manager);
+  const unlink = useUnlinkSiweWallet(authClient, manager);
 
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-lg p-3">
@@ -56,21 +56,13 @@ function WalletRow({ wallet }: { wallet: SiweWalletAccount }) {
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-2">
-          <span
-            className="truncate font-mono text-sm font-medium"
-            title={wallet.address}
-          >
+          <span className="truncate font-mono text-sm font-medium" title={wallet.address}>
             {shortAddress(wallet.address)}
           </span>
-          {wallet.isPrimary && (
-            <Badge variant="secondary">{plugin.localization.primary}</Badge>
-          )}
+          {wallet.isPrimary && <Badge variant="secondary">{plugin.localization.primary}</Badge>}
         </div>
         <span className="text-xs text-muted-foreground">
-          {plugin.localization.chain.replace(
-            "{{chainId}}",
-            String(wallet.chainId)
-          )}
+          {plugin.localization.chain.replace("{{chainId}}", String(wallet.chainId))}
         </span>
       </div>
       {!wallet.isPrimary && (
@@ -100,16 +92,12 @@ function WalletRow({ wallet }: { wallet: SiweWalletAccount }) {
             <AlertDialogMedia>
               <Wallet />
             </AlertDialogMedia>
-            <AlertDialogTitle>
-              {plugin.localization.removeWalletTitle}
-            </AlertDialogTitle>
+            <AlertDialogTitle>{plugin.localization.removeWalletTitle}</AlertDialogTitle>
             <AlertDialogDescription>
               {plugin.localization.removeWalletWarning}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <code className="break-all rounded-lg bg-muted p-3 text-xs">
-            {wallet.address}
-          </code>
+          <code className="break-all rounded-lg bg-muted p-3 text-xs">{wallet.address}</code>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={unlink.isPending}>
               {localization.settings.cancel}
@@ -120,7 +108,7 @@ function WalletRow({ wallet }: { wallet: SiweWalletAccount }) {
               disabled={unlink.isPending}
               onClick={() =>
                 unlink.mutate(wallet.id, {
-                  onSuccess: () => setRemoveOpen(false)
+                  onSuccess: () => setRemoveOpen(false),
                 })
               }
             >
@@ -131,35 +119,26 @@ function WalletRow({ wallet }: { wallet: SiweWalletAccount }) {
         </AlertDialogContent>
       </AlertDialog>
     </div>
-  )
+  );
 }
 
-export type WalletAccountsProps = { className?: string }
+export type WalletAccountsProps = { className?: string };
 
 export function WalletAccounts({ className }: WalletAccountsProps) {
-  const { authClient } = useAuth<SiweAuthClient>()
-  const plugin = useAuthPlugin(siwePlugin)
-  const manager = requireWalletManager(plugin.walletManager)
-  const wallets = useSiweWallets(authClient, manager)
-  const link = useLinkSiweWallet(authClient, manager, plugin.connector)
+  const { authClient } = useAuth<SiweAuthClient>();
+  const plugin = useAuthPlugin(siwePlugin);
+  const manager = requireWalletManager(plugin.walletManager);
+  const wallets = useSiweWallets(authClient, manager);
+  const link = useLinkSiweWallet(authClient, manager, plugin.connector);
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
       <div className="flex items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">
-            {plugin.localization.wallets}
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            {plugin.localization.walletsDescription}
-          </p>
+          <h2 className="text-sm font-semibold">{plugin.localization.wallets}</h2>
+          <p className="text-xs text-muted-foreground">{plugin.localization.walletsDescription}</p>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          disabled={link.isPending}
-          onClick={() => link.mutate()}
-        >
+        <Button type="button" size="sm" disabled={link.isPending} onClick={() => link.mutate()}>
           {link.isPending && <Spinner />}
           {plugin.localization.connectWallet}
         </Button>
@@ -175,9 +154,7 @@ export function WalletAccounts({ className }: WalletAccountsProps) {
               </div>
             </div>
           ) : wallets.data?.length ? (
-            wallets.data.map((wallet) => (
-              <WalletRow key={wallet.id} wallet={wallet} />
-            ))
+            wallets.data.map((wallet) => <WalletRow key={wallet.id} wallet={wallet} />)
           ) : (
             <div className="flex items-center gap-3 p-4 text-muted-foreground">
               <Wallet className="size-5" />
@@ -187,5 +164,5 @@ export function WalletAccounts({ className }: WalletAccountsProps) {
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

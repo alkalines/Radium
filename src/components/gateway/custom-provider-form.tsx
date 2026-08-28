@@ -181,9 +181,7 @@ export function CustomProviderForm({
                 value={apiBase}
                 onChange={(event) => setApiBase(event.target.value)}
               />
-              <FieldDescription>
-                Required for OpenAI-compatible providers.
-              </FieldDescription>
+              <FieldDescription>Required for OpenAI-compatible providers.</FieldDescription>
             </Field>
           )}
 

@@ -6,7 +6,11 @@ import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 
 import { convexQuery } from "@convex-dev/react-query";
 
-import { GatewaySettings, gatewaySections, type GatewaySection } from "@/components/gateway/gateway-settings";
+import {
+  GatewaySettings,
+  gatewaySections,
+  type GatewaySection,
+} from "@/components/gateway/gateway-settings";
 import { api } from "../../../convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";

@@ -1,28 +1,23 @@
-import { createAuthPlugin } from "@better-auth-ui/core"
+import { createAuthPlugin } from "@better-auth-ui/core";
 import {
   type BillingPluginOptions,
-  billingPlugin as coreBillingPlugin
-} from "@better-auth-ui/core/plugins/billing"
-import { CreditCard } from "lucide-react"
-import { createElement } from "react"
+  billingPlugin as coreBillingPlugin,
+} from "@better-auth-ui/core/plugins/billing";
+import { CreditCard } from "lucide-react";
+import { createElement } from "react";
 
 import {
   OrganizationBillingSettings,
-  UserBillingSettings
-} from "@/components/auth/billing/billing-settings"
+  UserBillingSettings,
+} from "@/components/auth/billing/billing-settings";
 
 const billingLabel = (label: string) =>
-  createElement(
-    "span",
-    { className: "flex items-center gap-1" },
-    createElement(CreditCard),
-    label
-  )
+  createElement("span", { className: "flex items-center gap-1" }, createElement(CreditCard), label);
 
 export const billingPlugin = createAuthPlugin(
   coreBillingPlugin.id,
   (options: BillingPluginOptions) => {
-    const core = coreBillingPlugin(options)
+    const core = coreBillingPlugin(options);
     return {
       ...core,
       ...(core.user
@@ -31,9 +26,9 @@ export const billingPlugin = createAuthPlugin(
               {
                 view: "billing" as const,
                 label: billingLabel(core.localization.billing),
-                component: UserBillingSettings
-              }
-            ]
+                component: UserBillingSettings,
+              },
+            ],
           }
         : {}),
       ...(core.organization
@@ -43,11 +38,11 @@ export const billingPlugin = createAuthPlugin(
                 id: "billing",
                 path: core.viewPaths.settings.billing,
                 label: billingLabel(core.localization.billing),
-                component: OrganizationBillingSettings
-              }
-            ]
+                component: OrganizationBillingSettings,
+              },
+            ],
           }
-        : {})
-    }
-  }
-)
+        : {}),
+    };
+  },
+);

@@ -1,5 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { CreditCardIcon, KeyRoundIcon, KeySquareIcon, RouteIcon, ScrollTextIcon } from "lucide-react";
+import {
+  CreditCardIcon,
+  KeyRoundIcon,
+  KeySquareIcon,
+  RouteIcon,
+  ScrollTextIcon,
+} from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ProvidersPanel } from "./providers-panel";
@@ -31,11 +37,7 @@ export function GatewaySettings({
       <TabsList aria-label="Gateway settings" className={hideNav ? "hidden" : undefined}>
         {gatewaySections.map((entry) => (
           <TabsTrigger key={entry.value} value={entry.value} asChild>
-            <Link
-              to="/gateway/$section"
-              params={{ section: entry.value }}
-              className="gap-1.5"
-            >
+            <Link to="/gateway/$section" params={{ section: entry.value }} className="gap-1.5">
               <entry.icon className="text-muted-foreground" />
               {entry.label}
             </Link>

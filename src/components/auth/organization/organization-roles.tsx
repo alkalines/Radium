@@ -1,102 +1,92 @@
 import {
   type AdditionalFields,
   fieldsWithModelValues,
-  parseAdditionalFieldValues
-} from "@better-auth-ui/core"
-import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
+  parseAdditionalFieldValues,
+} from "@better-auth-ui/core";
+import type { OrganizationAuthClient } from "@better-auth-ui/core/plugins/organization";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
 import {
   useCreateRole,
   useDeleteRole,
   useHasPermission,
   useListOrganizationMembers,
   useListRoles,
-  useUpdateRole
-} from "@better-auth-ui/react/plugins/organization"
-import { Pencil, Plus, Trash2 } from "lucide-react"
-import { type FormEvent, useEffect, useState } from "react"
-import { toast } from "sonner"
+  useUpdateRole,
+} from "@better-auth-ui/react/plugins/organization";
+import { Pencil, Plus, Trash2 } from "lucide-react";
+import { type FormEvent, useEffect, useState } from "react";
+import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle
-} from "@/components/ui/dialog"
-import { Field, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Spinner } from "@/components/ui/spinner"
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
-  TableRow
-} from "@/components/ui/table"
-import { organizationPlugin } from "@/lib/auth/organization-plugin"
-import { AdditionalField } from "../additional-field"
+  TableRow,
+} from "@/components/ui/table";
+import { organizationPlugin } from "@/lib/auth/organization-plugin";
+import { AdditionalField } from "../additional-field";
 
 type Role = {
-  id: string
-  role: string
-  permission: Record<string, string[]>
-  [key: string]: unknown
-}
+  id: string;
+  role: string;
+  permission: Record<string, string[]>;
+  [key: string]: unknown;
+};
 
-export function OrganizationRoles({
-  organizationId
-}: {
-  organizationId: string
-}) {
-  const { authClient } = useAuth<OrganizationAuthClient>()
-  const { dynamicAccessControl, localization, modelFields } =
-    useAuthPlugin(organizationPlugin)
+export function OrganizationRoles({ organizationId }: { organizationId: string }) {
+  const { authClient } = useAuth<OrganizationAuthClient>();
+  const { dynamicAccessControl, localization, modelFields } = useAuthPlugin(organizationPlugin);
   const canRead = useHasPermission(authClient, {
     organizationId,
-    permissions: { ac: ["read"] }
-  })
+    permissions: { ac: ["read"] },
+  });
   const roles = useListRoles(authClient, {
     query: { organizationId },
-    enabled: !!organizationId && canRead.data?.success === true
-  })
+    enabled: !!organizationId && canRead.data?.success === true,
+  });
   const canCreate = useHasPermission(authClient, {
     organizationId,
-    permissions: { ac: ["create"] }
-  })
+    permissions: { ac: ["create"] },
+  });
   const canUpdate = useHasPermission(authClient, {
     organizationId,
-    permissions: { ac: ["update"] }
-  })
+    permissions: { ac: ["update"] },
+  });
   const canDelete = useHasPermission(authClient, {
     organizationId,
-    permissions: { ac: ["delete"] }
-  })
+    permissions: { ac: ["delete"] },
+  });
   const deleteRole = useDeleteRole(authClient, organizationId, {
     onSuccess: () => toast.success(localization.roleDeleted),
-    onError: (error) => toast.error(error.message)
-  })
-  const [editingRole, setEditingRole] = useState<Role | null>()
+    onError: (error) => toast.error(error.message),
+  });
+  const [editingRole, setEditingRole] = useState<Role | null>();
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-end justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold">{localization.roles}</h2>
-          <p className="text-sm text-muted-foreground">
-            {localization.rolesDescription}
-          </p>
+          <p className="text-sm text-muted-foreground">{localization.rolesDescription}</p>
         </div>
         {(canCreate.isPending || canCreate.data?.success) && (
-          <Button
-            disabled={canCreate.isPending}
-            onClick={() => setEditingRole(null)}
-          >
+          <Button disabled={canCreate.isPending} onClick={() => setEditingRole(null)}>
             <Plus />
             {localization.createRole}
           </Button>
@@ -113,9 +103,7 @@ export function OrganizationRoles({
                 <TableRow>
                   <TableHead>{localization.roleName}</TableHead>
                   <TableHead>{localization.permissions}</TableHead>
-                  <TableHead className="text-right">
-                    {localization.actions}
-                  </TableHead>
+                  <TableHead className="text-right">{localization.actions}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -129,12 +117,11 @@ export function OrganizationRoles({
                     canUpdatePending={canUpdate.isPending}
                     deleting={deleteRole.isPending}
                     onDelete={() => {
-                      if (!window.confirm(localization.deleteRoleDescription))
-                        return
+                      if (!window.confirm(localization.deleteRoleDescription)) return;
                       deleteRole.mutate({
                         roleId: role.id,
-                        organizationId
-                      })
+                        organizationId,
+                      });
                     }}
                     onEdit={() => setEditingRole(role)}
                     organizationId={organizationId}
@@ -149,9 +136,7 @@ export function OrganizationRoles({
         <Card>
           <CardContent className="flex flex-col gap-1">
             <p className="text-sm font-medium">{localization.noRoles}</p>
-            <p className="text-sm text-muted-foreground">
-              {localization.noRolesDescription}
-            </p>
+            <p className="text-sm text-muted-foreground">{localization.noRolesDescription}</p>
           </CardContent>
         </Card>
       )}
@@ -165,7 +150,7 @@ export function OrganizationRoles({
         onOpenChange={(open) => !open && setEditingRole(undefined)}
       />
     </div>
-  )
+  );
 }
 
 function OrganizationRoleRow({
@@ -178,62 +163,48 @@ function OrganizationRoleRow({
   onDelete,
   onEdit,
   organizationId,
-  role
+  role,
 }: {
-  authClient: OrganizationAuthClient
-  canDelete: boolean
-  canDeletePending: boolean
-  canUpdate: boolean
-  canUpdatePending: boolean
-  deleting: boolean
-  onDelete: () => void
-  onEdit: () => void
-  organizationId: string
-  role: Role
+  authClient: OrganizationAuthClient;
+  canDelete: boolean;
+  canDeletePending: boolean;
+  canUpdate: boolean;
+  canUpdatePending: boolean;
+  deleting: boolean;
+  onDelete: () => void;
+  onEdit: () => void;
+  organizationId: string;
+  role: Role;
 }) {
-  const { localization } = useAuthPlugin(organizationPlugin)
+  const { localization } = useAuthPlugin(organizationPlugin);
   const assignments = useListOrganizationMembers(authClient, {
     query: {
       organizationId,
       filterField: "role",
       filterOperator: "contains",
       filterValue: role.role,
-      limit: 1
+      limit: 1,
     },
-    enabled: Boolean(organizationId && canDelete)
-  })
-  const assignedCount =
-    assignments.data?.total ?? assignments.data?.members.length ?? 0
-  const assignmentUnknown = canDelete && !assignments.data
+    enabled: Boolean(organizationId && canDelete),
+  });
+  const assignedCount = assignments.data?.total ?? assignments.data?.members.length ?? 0;
+  const assignmentUnknown = canDelete && !assignments.data;
 
   return (
     <TableRow>
       <TableCell className="font-medium">{role.role}</TableCell>
       <TableCell>
-        {Object.values(role.permission).reduce(
-          (total, actions) => total + actions.length,
-          0
-        )}
+        {Object.values(role.permission).reduce((total, actions) => total + actions.length, 0)}
       </TableCell>
       <TableCell>
         <div className="flex justify-end gap-1">
           {canUpdatePending && (
-            <Button
-              aria-label={localization.editRole}
-              disabled
-              size="icon"
-              variant="ghost"
-            >
+            <Button aria-label={localization.editRole} disabled size="icon" variant="ghost">
               <Pencil />
             </Button>
           )}
           {canUpdate && (
-            <Button
-              size="icon"
-              variant="ghost"
-              onClick={onEdit}
-              aria-label={localization.editRole}
-            >
+            <Button size="icon" variant="ghost" onClick={onEdit} aria-label={localization.editRole}>
               <Pencil />
             </Button>
           )}
@@ -245,10 +216,7 @@ function OrganizationRoleRow({
               disabled={assignmentUnknown || assignedCount > 0 || deleting}
               title={
                 assignedCount > 0
-                  ? localization.roleInUse.replace(
-                      "{{count}}",
-                      String(assignedCount)
-                    )
+                  ? localization.roleInUse.replace("{{count}}", String(assignedCount))
                   : localization.deleteRole
               }
               onClick={onDelete}
@@ -271,7 +239,7 @@ function OrganizationRoleRow({
         </div>
       </TableCell>
     </TableRow>
-  )
+  );
 }
 
 function RoleDialog({
@@ -280,111 +248,104 @@ function RoleDialog({
   organizationId,
   registry,
   role,
-  roleFields
+  roleFields,
 }: {
-  onOpenChange: (open: boolean) => void
-  open: boolean
-  organizationId: string
-  registry: Record<string, { label?: string; actions: Record<string, string> }>
-  role?: Role
-  roleFields: AdditionalFields
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  organizationId: string;
+  registry: Record<string, { label?: string; actions: Record<string, string> }>;
+  role?: Role;
+  roleFields: AdditionalFields;
 }) {
-  const { authClient, localization: authLocalization } =
-    useAuth<OrganizationAuthClient>()
-  const { localization } = useAuthPlugin(organizationPlugin)
-  const [name, setName] = useState("")
-  const [permission, setPermission] = useState<Record<string, string[]>>({})
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const { authClient, localization: authLocalization } = useAuth<OrganizationAuthClient>();
+  const { localization } = useAuthPlugin(organizationPlugin);
+  const [name, setName] = useState("");
+  const [permission, setPermission] = useState<Record<string, string[]>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const createRole = useCreateRole(authClient, organizationId, {
     onSuccess: () => {
-      toast.success(localization.roleCreated)
-      onOpenChange(false)
-    }
-  })
+      toast.success(localization.roleCreated);
+      onOpenChange(false);
+    },
+  });
   const updateRole = useUpdateRole(authClient, organizationId, {
     onSuccess: () => {
-      toast.success(localization.roleUpdated)
-      onOpenChange(false)
-    }
-  })
+      toast.success(localization.roleUpdated);
+      onOpenChange(false);
+    },
+  });
 
   useEffect(() => {
-    if (!open) return
-    setName(role?.role ?? "")
-    setPermission(role?.permission ?? {})
-  }, [open, role])
+    if (!open) return;
+    setName(role?.role ?? "");
+    setPermission(role?.permission ?? {});
+  }, [open, role]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const roleName = name.trim()
-    if (!roleName) return
+    event.preventDefault();
+    const roleName = name.trim();
+    if (!roleName) return;
 
-    setIsSubmitting(true)
+    setIsSubmitting(true);
     try {
       if (Object.values(permission).some((actions) => actions.length > 0)) {
         const access = await authClient.organization.hasPermission({
           organizationId,
           permissions: permission as Parameters<
             OrganizationAuthClient["organization"]["hasPermission"]
-          >[0]["permissions"]
-        })
+          >[0]["permissions"],
+        });
 
         if (access.error || !access.data?.success) {
-          toast.error(localization.permissionsLimitedDescription)
-          setIsSubmitting(false)
-          return
+          toast.error(localization.permissionsLimitedDescription);
+          setIsSubmitting(false);
+          return;
         }
       }
 
       const additionalFields = await parseAdditionalFieldValues(
         roleFields,
-        new FormData(event.currentTarget)
-      )
+        new FormData(event.currentTarget),
+      );
       if (role) {
         updateRole.mutate(
           {
             organizationId,
             roleId: role.id,
-            data: { ...additionalFields, roleName, permission }
+            data: { ...additionalFields, roleName, permission },
           },
-          { onSettled: () => setIsSubmitting(false) }
-        )
+          { onSettled: () => setIsSubmitting(false) },
+        );
       } else {
         createRole.mutate(
           {
             organizationId,
             role: roleName,
             permission,
-            additionalFields
+            additionalFields,
           },
-          { onSettled: () => setIsSubmitting(false) }
-        )
+          { onSettled: () => setIsSubmitting(false) },
+        );
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error))
-      setIsSubmitting(false)
+      toast.error(error instanceof Error ? error.message : String(error));
+      setIsSubmitting(false);
     }
   }
 
-  const pending = createRole.isPending || updateRole.isPending || isSubmitting
+  const pending = createRole.isPending || updateRole.isPending || isSubmitting;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
         <form className="flex flex-col gap-6" onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle>
-              {role ? localization.editRole : localization.createRole}
-            </DialogTitle>
-            <DialogDescription>
-              {localization.rolesDescription}
-            </DialogDescription>
+            <DialogTitle>{role ? localization.editRole : localization.createRole}</DialogTitle>
+            <DialogDescription>{localization.rolesDescription}</DialogDescription>
           </DialogHeader>
 
           <Field>
-            <FieldLabel htmlFor="organization-role-name">
-              {localization.roleName}
-            </FieldLabel>
+            <FieldLabel htmlFor="organization-role-name">{localization.roleName}</FieldLabel>
             <Input
               id="organization-role-name"
               value={name}
@@ -406,14 +367,10 @@ function RoleDialog({
           ))}
 
           <fieldset className="flex flex-col gap-4">
-            <legend className="text-sm font-medium">
-              {localization.permissions}
-            </legend>
+            <legend className="text-sm font-medium">{localization.permissions}</legend>
             {Object.entries(registry).map(([resource, definition]) => (
               <div className="flex flex-col gap-2" key={resource}>
-                <p className="text-sm font-medium">
-                  {definition.label ?? resource}
-                </p>
+                <p className="text-sm font-medium">{definition.label ?? resource}</p>
                 <div className="grid gap-3 sm:grid-cols-2">
                   {Object.entries(definition.actions).map(([action, label]) => (
                     <RolePermissionCheckbox
@@ -426,9 +383,7 @@ function RoleDialog({
                           ...current,
                           [resource]: selected
                             ? [...(current[resource] ?? []), action]
-                            : (current[resource] ?? []).filter(
-                                (entry) => entry !== action
-                              )
+                            : (current[resource] ?? []).filter((entry) => entry !== action),
                         }))
                       }
                       organizationId={organizationId}
@@ -458,7 +413,7 @@ function RoleDialog({
         </form>
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
 function RolePermissionCheckbox({
@@ -468,26 +423,25 @@ function RolePermissionCheckbox({
   onCheckedChange,
   organizationId,
   pending,
-  resource
+  resource,
 }: {
-  action: string
-  checked: boolean
-  label: string
-  onCheckedChange: (checked: boolean) => void
-  organizationId: string
-  pending: boolean
-  resource: string
+  action: string;
+  checked: boolean;
+  label: string;
+  onCheckedChange: (checked: boolean) => void;
+  organizationId: string;
+  pending: boolean;
+  resource: string;
 }) {
-  const { authClient } = useAuth<OrganizationAuthClient>()
+  const { authClient } = useAuth<OrganizationAuthClient>();
   const canAssign = useHasPermission(authClient, {
     organizationId,
     permissions: { [resource]: [action] } as Parameters<
       OrganizationAuthClient["organization"]["hasPermission"]
-    >[0]["permissions"]
-  })
-  const id = `role-permission-${resource}-${action}`
-  const disabled =
-    pending || canAssign.isPending || (!checked && !canAssign.data?.success)
+    >[0]["permissions"],
+  });
+  const id = `role-permission-${resource}-${action}`;
+  const disabled = pending || canAssign.isPending || (!checked && !canAssign.data?.success);
 
   return (
     <label
@@ -503,5 +457,5 @@ function RolePermissionCheckbox({
       />
       {label}
     </label>
-  )
+  );
 }

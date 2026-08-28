@@ -1,33 +1,33 @@
-"use client"
+"use client";
 
 import type {
   ListDeviceSession,
-  MultiSessionAuthClient
-} from "@better-auth-ui/core/plugins/multi-session"
-import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react"
+  MultiSessionAuthClient,
+} from "@better-auth-ui/core/plugins/multi-session";
+import { useAuth, useAuthPlugin, useSession } from "@better-auth-ui/react";
 import {
   useRevokeMultiSession,
-  useSetActiveSession
-} from "@better-auth-ui/react/plugins/multi-session"
-import { ArrowLeftRight, LogOut, MoreHorizontal } from "lucide-react"
-import { toast } from "sonner"
-import { UserView } from "@/components/auth/user/user-view"
-import { Button, buttonVariants } from "@/components/ui/button"
+  useSetActiveSession,
+} from "@better-auth-ui/react/plugins/multi-session";
+import { ArrowLeftRight, LogOut, MoreHorizontal } from "lucide-react";
+import { toast } from "sonner";
+import { UserView } from "@/components/auth/user/user-view";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuTrigger
-} from "@/components/ui/dropdown-menu"
-import { Item, ItemActions } from "@/components/ui/item"
-import { Spinner } from "@/components/ui/spinner"
-import { multiSessionPlugin } from "@/lib/auth/multi-session-plugin"
-import { cn } from "@/lib/utils"
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Item, ItemActions } from "@/components/ui/item";
+import { Spinner } from "@/components/ui/spinner";
+import { multiSessionPlugin } from "@/lib/auth/multi-session-plugin";
+import { cn } from "@/lib/utils";
 
 export type ManageAccountProps = {
-  deviceSession?: ListDeviceSession | null
-  isPending?: boolean
-}
+  deviceSession?: ListDeviceSession | null;
+  isPending?: boolean;
+};
 
 /**
  * Render a single account row with user info and switch/revoke controls.
@@ -39,44 +39,32 @@ export type ManageAccountProps = {
  * @param isPending - Whether the device session is pending
  * @returns A JSX element containing the account row
  */
-export function ManageAccount({
-  deviceSession,
-  isPending
-}: ManageAccountProps) {
-  const { authClient, localization } = useAuth<MultiSessionAuthClient>()
-  const { localization: multiSessionLocalization } =
-    useAuthPlugin(multiSessionPlugin)
-  const { data: session } = useSession(authClient)
+export function ManageAccount({ deviceSession, isPending }: ManageAccountProps) {
+  const { authClient, localization } = useAuth<MultiSessionAuthClient>();
+  const { localization: multiSessionLocalization } = useAuthPlugin(multiSessionPlugin);
+  const { data: session } = useSession(authClient);
 
-  const { mutate: setActiveSession, isPending: isSwitching } =
-    useSetActiveSession(authClient, {
-      onSuccess: () => window.scrollTo({ top: 0 })
-    })
+  const { mutate: setActiveSession, isPending: isSwitching } = useSetActiveSession(authClient, {
+    onSuccess: () => window.scrollTo({ top: 0 }),
+  });
 
-  const { mutate: revokeSession, isPending: isRevoking } =
-    useRevokeMultiSession(authClient, {
-      onSuccess: () => toast.success(localization.settings.revokeSessionSuccess)
-    })
+  const { mutate: revokeSession, isPending: isRevoking } = useRevokeMultiSession(authClient, {
+    onSuccess: () => toast.success(localization.settings.revokeSessionSuccess),
+  });
 
-  const isActive = deviceSession?.session.userId === session?.session.userId
-  const isBusy = isSwitching || isRevoking
+  const isActive = deviceSession?.session.userId === session?.session.userId;
+  const isBusy = isSwitching || isRevoking;
 
   return (
     <Item>
-      <UserView
-        className="flex-1"
-        user={deviceSession?.user}
-        isPending={isPending}
-      />
+      <UserView className="flex-1" user={deviceSession?.user} isPending={isPending} />
       <ItemActions>
         {deviceSession && isActive && (
           <Button
             className="shrink-0"
             variant="outline"
             size="sm"
-            onClick={() =>
-              revokeSession({ sessionToken: deviceSession.session.token })
-            }
+            onClick={() => revokeSession({ sessionToken: deviceSession.session.token })}
             disabled={isBusy}
           >
             {isRevoking ? <Spinner /> : <LogOut />}
@@ -87,10 +75,7 @@ export function ManageAccount({
         {deviceSession && !isActive && (
           <DropdownMenu>
             <DropdownMenuTrigger
-              className={cn(
-                buttonVariants({ variant: "ghost", size: "icon-sm" }),
-                "shrink-0"
-              )}
+              className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "shrink-0")}
               disabled={isBusy}
             >
               <MoreHorizontal />
@@ -100,7 +85,7 @@ export function ManageAccount({
               <DropdownMenuItem
                 onClick={() =>
                   setActiveSession({
-                    sessionToken: deviceSession.session.token
+                    sessionToken: deviceSession.session.token,
                   })
                 }
               >
@@ -111,7 +96,7 @@ export function ManageAccount({
               <DropdownMenuItem
                 onClick={() =>
                   revokeSession({
-                    sessionToken: deviceSession.session.token
+                    sessionToken: deviceSession.session.token,
                   })
                 }
               >
@@ -123,5 +108,5 @@ export function ManageAccount({
         )}
       </ItemActions>
     </Item>
-  )
+  );
 }

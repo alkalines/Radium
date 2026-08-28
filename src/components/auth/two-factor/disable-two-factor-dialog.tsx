@@ -1,9 +1,9 @@
-import type { TwoFactorAuthClient } from "@better-auth-ui/core/plugins/two-factor"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
-import { useDisableTwoFactor } from "@better-auth-ui/react/plugins/two-factor"
-import { ShieldAlert } from "lucide-react"
-import type { SyntheticEvent } from "react"
-import { toast } from "sonner"
+import type { TwoFactorAuthClient } from "@better-auth-ui/core/plugins/two-factor";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
+import { useDisableTwoFactor } from "@better-auth-ui/react/plugins/two-factor";
+import { ShieldAlert } from "lucide-react";
+import type { SyntheticEvent } from "react";
+import { toast } from "sonner";
 
 import {
   AlertDialog,
@@ -13,19 +13,19 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogMedia,
-  AlertDialogTitle
-} from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
-import { Field, FieldError, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Spinner } from "@/components/ui/spinner"
-import { twoFactorPlugin } from "@/lib/auth/two-factor-plugin"
-import { useTwoFactorPasswordRequirement } from "@/lib/auth/use-two-factor-password"
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { twoFactorPlugin } from "@/lib/auth/two-factor-plugin";
+import { useTwoFactorPasswordRequirement } from "@/lib/auth/use-two-factor-password";
 
 export type DisableTwoFactorDialogProps = {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+};
 
 /**
  * Confirm turning two-factor off.
@@ -33,33 +33,32 @@ export type DisableTwoFactorDialogProps = {
  * @param open - Whether the dialog is open.
  * @param onOpenChange - Called when the dialog requests an open state change.
  */
-export function DisableTwoFactorDialog({
-  open,
-  onOpenChange
-}: DisableTwoFactorDialogProps) {
-  const { authClient, localization } = useAuth()
-  const { localization: twoFactorLocalization } = useAuthPlugin(twoFactorPlugin)
+export function DisableTwoFactorDialog({ open, onOpenChange }: DisableTwoFactorDialogProps) {
+  const { authClient, localization } = useAuth();
+  const { localization: twoFactorLocalization } = useAuthPlugin(twoFactorPlugin);
   const { isPending: isResolvingPasswordRequirement, requiresPassword } =
-    useTwoFactorPasswordRequirement()
+    useTwoFactorPasswordRequirement();
 
-  const { mutate: disableTwoFactor, isPending: isDisabling } =
-    useDisableTwoFactor(authClient as TwoFactorAuthClient, {
+  const { mutate: disableTwoFactor, isPending: isDisabling } = useDisableTwoFactor(
+    authClient as TwoFactorAuthClient,
+    {
       onSuccess: () => {
-        toast.success(twoFactorLocalization.twoFactorDisabled)
-        onOpenChange(false)
-      }
-    })
+        toast.success(twoFactorLocalization.twoFactorDisabled);
+        onOpenChange(false);
+      },
+    },
+  );
 
-  const isPending = isDisabling || isResolvingPasswordRequirement
+  const isPending = isDisabling || isResolvingPasswordRequirement;
 
   const handleSubmit = (e: SyntheticEvent<HTMLFormElement>) => {
-    e.preventDefault()
+    e.preventDefault();
 
-    const formData = new FormData(e.currentTarget)
-    const password = formData.get("password") as string
+    const formData = new FormData(e.currentTarget);
+    const password = formData.get("password") as string;
 
-    disableTwoFactor(requiresPassword ? { password } : {})
-  }
+    disableTwoFactor(requiresPassword ? { password } : {});
+  };
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -70,9 +69,7 @@ export function DisableTwoFactorDialog({
               <ShieldAlert />
             </AlertDialogMedia>
 
-            <AlertDialogTitle>
-              {twoFactorLocalization.disableTwoFactor}
-            </AlertDialogTitle>
+            <AlertDialogTitle>{twoFactorLocalization.disableTwoFactor}</AlertDialogTitle>
 
             <AlertDialogDescription>
               {requiresPassword
@@ -116,5 +113,5 @@ export function DisableTwoFactorDialog({
         </form>
       </AlertDialogContent>
     </AlertDialog>
-  )
+  );
 }

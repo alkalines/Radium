@@ -1,5 +1,5 @@
-import { Item, ItemContent, ItemMedia } from "@/components/ui/item"
-import { Skeleton } from "@/components/ui/skeleton"
+import { Item, ItemContent, ItemMedia } from "@/components/ui/item";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export function ApiKeySkeleton() {
   return (
@@ -13,5 +13,5 @@ export function ApiKeySkeleton() {
         <Skeleton className="h-3 w-32" />
       </ItemContent>
     </Item>
-  )
+  );
 }

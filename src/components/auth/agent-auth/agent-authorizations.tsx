@@ -1,17 +1,17 @@
-"use client"
+"use client";
 
 import type {
   AgentAuthClient,
   AgentAuthorization,
-  AgentCapabilityGrant
-} from "@better-auth-ui/core/plugins/agent-auth"
-import { useAuth, useAuthPlugin } from "@better-auth-ui/react"
+  AgentCapabilityGrant,
+} from "@better-auth-ui/core/plugins/agent-auth";
+import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
 import {
   useAgentAuthorizations,
-  useRevokeAgentCapability
-} from "@better-auth-ui/react/plugins/agent-auth"
-import { BotIcon, ShieldAlertIcon, XIcon } from "lucide-react"
-import { useState } from "react"
+  useRevokeAgentCapability,
+} from "@better-auth-ui/react/plugins/agent-auth";
+import { BotIcon, ShieldAlertIcon, XIcon } from "lucide-react";
+import { useState } from "react";
 
 import {
   AlertDialog,
@@ -21,38 +21,36 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogMedia,
-  AlertDialogTitle
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Spinner } from "@/components/ui/spinner"
-import { agentAuthPlugin } from "@/lib/auth/agent-auth-plugin"
-import { cn } from "@/lib/utils"
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { agentAuthPlugin } from "@/lib/auth/agent-auth-plugin";
+import { cn } from "@/lib/utils";
 
 type RevokeTarget = {
-  agent: AgentAuthorization
-  grant: AgentCapabilityGrant
-}
+  agent: AgentAuthorization;
+  grant: AgentCapabilityGrant;
+};
 
-export type AgentAuthorizationsProps = { className?: string }
+export type AgentAuthorizationsProps = { className?: string };
 
 /** List user-owned agents and revoke individual active capability grants. */
 export function AgentAuthorizations({ className }: AgentAuthorizationsProps) {
-  const { authClient, localization } = useAuth<AgentAuthClient>()
-  const plugin = useAuthPlugin(agentAuthPlugin)
-  const agents = useAgentAuthorizations(authClient, plugin.adapter)
-  const revoke = useRevokeAgentCapability(authClient, plugin.adapter)
-  const [target, setTarget] = useState<RevokeTarget>()
+  const { authClient, localization } = useAuth<AgentAuthClient>();
+  const plugin = useAuthPlugin(agentAuthPlugin);
+  const agents = useAgentAuthorizations(authClient, plugin.adapter);
+  const revoke = useRevokeAgentCapability(authClient, plugin.adapter);
+  const [target, setTarget] = useState<RevokeTarget>();
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
       <div className="flex flex-col gap-1">
         <h2 className="text-sm font-semibold">{plugin.localization.agents}</h2>
-        <p className="text-xs text-muted-foreground">
-          {plugin.localization.agentsDescription}
-        </p>
+        <p className="text-xs text-muted-foreground">{plugin.localization.agentsDescription}</p>
       </div>
       <Card className="p-0">
         <CardContent className="flex flex-col gap-5 p-4">
@@ -69,9 +67,7 @@ export function AgentAuthorizations({ className }: AgentAuthorizationsProps) {
                     <BotIcon className="size-4" />
                   </div>
                   <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-sm font-semibold">
-                      {agent.name}
-                    </span>
+                    <span className="truncate text-sm font-semibold">{agent.name}</span>
                     <span className="truncate text-xs text-muted-foreground">
                       {agent.hostName ?? agent.hostId}
                     </span>
@@ -84,23 +80,16 @@ export function AgentAuthorizations({ className }: AgentAuthorizationsProps) {
                 </div>
                 <div className="flex flex-col gap-2 pl-13">
                   {agent.grants.map((grant) => (
-                    <div
-                      key={grant.capability}
-                      className="flex items-center gap-2"
-                    >
+                    <div key={grant.capability} className="flex items-center gap-2">
                       <div className="flex min-w-0 flex-1 flex-col">
-                        <span className="truncate text-sm">
-                          {grant.capability}
-                        </span>
+                        <span className="truncate text-sm">{grant.capability}</span>
                         {grant.description && (
                           <span className="truncate text-xs text-muted-foreground">
                             {grant.description}
                           </span>
                         )}
                       </div>
-                      <Badge variant="secondary">
-                        {plugin.localization[grant.status]}
-                      </Badge>
+                      <Badge variant="secondary">{plugin.localization[grant.status]}</Badge>
                       {grant.status === "active" && (
                         <Button
                           type="button"
@@ -129,7 +118,7 @@ export function AgentAuthorizations({ className }: AgentAuthorizationsProps) {
       <AlertDialog
         open={Boolean(target)}
         onOpenChange={(open) => {
-          if (!open) setTarget(undefined)
+          if (!open) setTarget(undefined);
         }}
       >
         <AlertDialogContent>
@@ -137,16 +126,10 @@ export function AgentAuthorizations({ className }: AgentAuthorizationsProps) {
             <AlertDialogMedia>
               <ShieldAlertIcon />
             </AlertDialogMedia>
-            <AlertDialogTitle>
-              {plugin.localization.revokeTitle}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {plugin.localization.revokeDescription}
-            </AlertDialogDescription>
+            <AlertDialogTitle>{plugin.localization.revokeTitle}</AlertDialogTitle>
+            <AlertDialogDescription>{plugin.localization.revokeDescription}</AlertDialogDescription>
           </AlertDialogHeader>
-          <code className="rounded-lg bg-muted p-3 text-xs">
-            {target?.grant.capability}
-          </code>
+          <code className="rounded-lg bg-muted p-3 text-xs">{target?.grant.capability}</code>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={revoke.isPending}>
               {localization.settings.cancel}
@@ -156,14 +139,14 @@ export function AgentAuthorizations({ className }: AgentAuthorizationsProps) {
               variant="destructive"
               disabled={revoke.isPending}
               onClick={() => {
-                if (!target) return
+                if (!target) return;
                 revoke.mutate(
                   {
                     agentId: target.agent.id,
-                    capability: target.grant.capability
+                    capability: target.grant.capability,
                   },
-                  { onSuccess: () => setTarget(undefined) }
-                )
+                  { onSuccess: () => setTarget(undefined) },
+                );
               }}
             >
               {revoke.isPending && <Spinner />}
@@ -173,5 +156,5 @@ export function AgentAuthorizations({ className }: AgentAuthorizationsProps) {
         </AlertDialogContent>
       </AlertDialog>
     </div>
-  )
+  );
 }
