@@ -34,15 +34,36 @@ export function Providers({
           navigate={navigate}
           plugins={[
             themePlugin({ useTheme }),
-            /* @todo
-              usernamePlugin(),
-              apiKeyPlugin({ organization: true }),
-              multiSessionPlugin(),
-              deleteUserPlugin(),
-              organizationPlugin({
-                slug: slug ?? null
-              })
-              */
+            // usernamePlugin({
+            //   usernamePrefix: "@",
+            //   localization: { usernamePlaceholder: "username" },
+            // }),
+            // magicLinkPlugin(),
+            // emailOtpPlugin({
+            //   emailVerification: true,
+            //   passwordReset: true,
+            //   changeEmail: true,
+            // }),
+            // twoFactorPlugin(),
+            // passkeyPlugin(),
+            // apiKeyPlugin({
+            //   organization: true,
+            //   configurations: [
+            //     { id: "default", label: "Personal", organization: false },
+            //     {
+            //       id: "organization",
+            //       label: "Organization",
+            //       organization: true,
+            //     },
+            //   ],
+            // }),
+            // multiSessionPlugin(),
+            // deleteUserPlugin(),
+            // organizationPlugin({
+            //   slugPrefix: "@",
+            //   slug: slug ?? null,
+            //   teams: true,
+            // }),
           ]}
           Link={Link}
         >

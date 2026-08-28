@@ -1,5 +1,5 @@
 import { viewPaths } from "@better-auth-ui/core";
-import { magicLinkPlugin } from "@better-auth-ui/core/plugins";
+import { magicLinkPlugin } from "@/lib/auth/magic-link-plugin";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 
 import { Auth } from "@/components/auth/auth";

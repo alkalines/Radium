@@ -1,8 +1,8 @@
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
-import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
-import { ensureSession as ensureSessionServer } from "@better-auth-ui/react/server";
+import { ensureSession as ensureSessionClient } from "@better-auth-ui/core";
+import { ensureSessionServer } from "@better-auth-ui/core/server";
 import { createFileRoute, Outlet, redirect, useRouterState } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
