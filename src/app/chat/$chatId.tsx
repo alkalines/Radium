@@ -719,7 +719,6 @@ function ChatToolPart({
   const approval = "approval" in part ? part.approval : undefined;
   const toolInput = getToolInput(part);
   const toolName = part.type.replace(/^tool-/, "");
-  // @ts-expect-error state only available in AI SDK v6
   const isApprovalRequested = part.state === "approval-requested";
   const shouldAutoClose =
     part.state === "approval-responded" ||

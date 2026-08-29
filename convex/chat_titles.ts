@@ -37,7 +37,7 @@ export async function generateChatTitle({
   try {
     const result = await generateText({
       model,
-      system: TITLE_SYSTEM_PROMPT,
+      instructions: TITLE_SYSTEM_PROMPT,
       prompt: initialUserMessage,
       output: Output.object({
         schema: titleSchema,

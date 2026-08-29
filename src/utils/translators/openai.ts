@@ -1,4 +1,11 @@
-import { jsonSchema, type ModelMessage, streamText, tool, UIMessageChunk } from "ai";
+import {
+  jsonSchema,
+  type ModelMessage,
+  streamText,
+  tool,
+  toUIMessageStream,
+  type UIMessageChunk,
+} from "ai";
 import z from "zod";
 import { completionUsage } from "../../../convex/key";
 import AIBalancer from "../ai_balancer";
@@ -18,7 +25,7 @@ function toolsParsing(reqData: ChatCompletions_RequestBody_Type) {
     if (rawTool.type === "function") {
       const toolInfo = rawTool.function;
 
-      object[toolInfo.name] = tool<unknown>({
+      object[toolInfo.name] = tool({
         description: toolInfo.description,
         inputSchema: jsonSchema(toolInfo.parameters ?? { type: "object", properties: {} }),
         /**
@@ -38,7 +45,7 @@ function toolsParsing(reqData: ChatCompletions_RequestBody_Type) {
           ? z.object({ input: z.string() })
           : z.object({ input: z.string() });
 
-      object[toolInfo.name] = tool<{ input: string }>({
+      object[toolInfo.name] = tool({
         description: toolInfo.description,
         inputSchema,
       });
@@ -221,6 +228,9 @@ function getAISDKStream(
       user: reqData.prompt_cache_key || reqData.user,
     }),
     messages: modelMessages,
+    // OpenAI-compatible clients intentionally control their own system and
+    // developer messages through this authenticated API endpoint.
+    allowSystemInMessages: true,
     abortSignal: abort.signal,
     maxOutputTokens: reqData.max_completion_tokens ?? undefined,
     tools: toolsParsing(reqData) as any,
@@ -271,11 +281,11 @@ export async function StreamCompletion(
         usage: {
           completion_tokens: r.outputTokens || 0,
           completion_tokens_details: {
-            reasoning_tokens: r.reasoningTokens ?? null,
+            reasoning_tokens: r.outputTokenDetails.reasoningTokens ?? null,
           },
           prompt_tokens: r.inputTokens || 0,
           prompt_tokens_details: {
-            cached_tokens: r.cachedInputTokens ?? null,
+            cached_tokens: r.inputTokenDetails.cacheReadTokens ?? null,
             // @todo: written_cache_tokens
           },
         },
@@ -287,7 +297,7 @@ export async function StreamCompletion(
   };
 
   // Transform to OpenAI Stream
-  const aisdk_response = result.toUIMessageStream();
+  const aisdk_response = toUIMessageStream({ stream: result.stream });
   const chunkLoadStream = convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
   const createdDateUnix = Math.floor(requestStartedAt / 1000);
   let genID: string;
@@ -550,10 +560,10 @@ export async function StreamCompletion(
                 completion_tokens: (await result.usage).outputTokens || 0,
                 total_tokens: (await result.usage).totalTokens || 0,
                 completion_tokens_details: {
-                  reasoning_tokens: (await result.usage).reasoningTokens,
+                  reasoning_tokens: (await result.usage).outputTokenDetails.reasoningTokens,
                 },
                 prompt_tokens_details: {
-                  cached_tokens: (await result.usage).cachedInputTokens,
+                  cached_tokens: (await result.usage).inputTokenDetails.cacheReadTokens,
                 },
               },
             });
@@ -605,11 +615,11 @@ export async function NonStreamingCompletion(
         usage: {
           completion_tokens: r.outputTokens || 0,
           completion_tokens_details: {
-            reasoning_tokens: r.reasoningTokens ?? null,
+            reasoning_tokens: r.outputTokenDetails.reasoningTokens ?? null,
           },
           prompt_tokens: r.inputTokens || 0,
           prompt_tokens_details: {
-            cached_tokens: r.cachedInputTokens ?? null,
+            cached_tokens: r.inputTokenDetails.cacheReadTokens ?? null,
             // @todo: written_cache_tokens
           },
         },
@@ -620,7 +630,7 @@ export async function NonStreamingCompletion(
     } catch (e) {}
   };
 
-  const aisdk_response = result.toUIMessageStream();
+  const aisdk_response = toUIMessageStream({ stream: result.stream });
   const chunkLoadStream = convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
 
   const createdDateUnix = Math.floor(requestStartedAt / 1000);
@@ -683,7 +693,7 @@ export async function NonStreamingCompletion(
         break;
       case "finish": {
         let finishReason = "stop";
-        let generationUsage = await result.usage;
+        const generationUsage = await result.usage;
         if (
           (reqData.max_tokens || reqData.max_completion_tokens) === generationUsage.outputTokens
         ) {
@@ -696,11 +706,11 @@ export async function NonStreamingCompletion(
         openAIResponse.usage = {
           completion_tokens: generationUsage.outputTokens || 0,
           completion_tokens_details: {
-            reasoning_tokens: generationUsage.reasoningTokens,
+            reasoning_tokens: generationUsage.outputTokenDetails.reasoningTokens,
           },
           prompt_tokens: generationUsage.inputTokens || 0,
           prompt_tokens_details: {
-            cached_tokens: generationUsage.cachedInputTokens,
+            cached_tokens: generationUsage.inputTokenDetails.cacheReadTokens,
           },
           total_tokens: generationUsage.totalTokens || 0,
         };

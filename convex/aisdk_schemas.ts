@@ -41,7 +41,7 @@ const FileUIPartPartSchema = v.object({
 });
 
 const StepStartUIPartSchema = v.object({
-  type: v.literal("file"),
+  type: v.literal("step-start"),
 });
 
 const DataUIPartSchema = v.any(); // To complex to keep up to date
