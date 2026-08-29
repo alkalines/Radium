@@ -253,11 +253,17 @@ export async function StreamCompletion(
   genCallback: genCallbackType,
 ): Promise<ReadableStream<ChatCompletions_Streaming_Chunk_Type | string>> {
   const abort = new AbortController();
+  const requestStartedAt = Date.now();
   const result = await getAISDKStream(reqData, provider, abort);
 
   // Usage Callback
-  let genTime: string;
-  let ttft: string;
+  let firstTokenAt: number | undefined;
+  let lastTokenAt: number | undefined;
+  const markOutput = () => {
+    const now = Date.now();
+    firstTokenAt ??= now;
+    lastTokenAt = now;
+  };
   const endOfCompletion = async () => {
     const r = await result.usage;
     try {
@@ -273,8 +279,9 @@ export async function StreamCompletion(
             // @todo: written_cache_tokens
           },
         },
-        genTime: parseFloat(genTime),
-        ttft: parseFloat(ttft),
+        genTime:
+          firstTokenAt !== undefined && lastTokenAt !== undefined ? lastTokenAt - firstTokenAt : 0,
+        ttft: firstTokenAt !== undefined ? firstTokenAt - requestStartedAt : 0,
       });
     } catch (e) {}
   };
@@ -282,8 +289,7 @@ export async function StreamCompletion(
   // Transform to OpenAI Stream
   const aisdk_response = result.toUIMessageStream();
   const chunkLoadStream = convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
-  const genTimeFirst = Date.now() / 1000;
-  const createdDateUnix = Math.floor(genTimeFirst);
+  const createdDateUnix = Math.floor(requestStartedAt / 1000);
   let genID: string;
   let finishReasons = {
     toolCalls: false,
@@ -294,11 +300,11 @@ export async function StreamCompletion(
     async start(controller) {
       const controllerOutput = (text: string) => controller.enqueue(text);
       const openaiOutput = (response: ChatCompletions_Streaming_Chunk_Type) => {
-        if (!ttft) ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         controllerOutput(JSON.stringify(response));
       };
 
       const emittedToolCalls = new Set<string>();
+      const timedToolCalls = new Set<string>();
       for await (const chunk of chunkLoadStream) {
         // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
         switch (chunk.type) {
@@ -325,6 +331,7 @@ export async function StreamCompletion(
           case "reasoning-delta":
             if (!genID) genID = chunk.id;
             if (chunk.delta === "[REDACTED]") break;
+            if (chunk.delta) markOutput();
             if (!reqData.reasoning?.exclude) {
               openaiOutput({
                 id: genID || "not-available",
@@ -403,6 +410,10 @@ export async function StreamCompletion(
             });
             break;
           case "tool-input-delta":
+            if (chunk.inputTextDelta) {
+              markOutput();
+              timedToolCalls.add(chunk.toolCallId);
+            }
             openaiOutput({
               id: genID || "not-available",
               created: createdDateUnix,
@@ -432,6 +443,7 @@ export async function StreamCompletion(
             break;
           case "tool-input-available":
             finishReasons.toolCalls = true;
+            if (!timedToolCalls.has(chunk.toolCallId)) markOutput();
             if (!emittedToolCalls.has(chunk.toolCallId)) {
               emittedToolCalls.add(chunk.toolCallId);
               openaiOutput({
@@ -487,6 +499,7 @@ export async function StreamCompletion(
             break;
           case "text-delta":
             if (!genID) genID = chunk.id;
+            if (chunk.delta) markOutput();
             openaiOutput({
               id: genID || "not-available",
               created: createdDateUnix,
@@ -548,7 +561,6 @@ export async function StreamCompletion(
           }
         }
       }
-      genTime = (Date.now() / 1000 - genTimeFirst).toFixed(3);
       await endOfCompletion();
 
       // End of the stream
@@ -557,7 +569,6 @@ export async function StreamCompletion(
     },
     async cancel(reason?) {
       abort.abort(reason);
-      genTime = (Date.now() / 1000 - genTimeFirst).toFixed(3);
       await endOfCompletion();
     },
   });
@@ -575,11 +586,17 @@ export async function NonStreamingCompletion(
   genCallback: genCallbackType,
 ): Promise<ChatCompletions_NotStreaming_ResponseBody_Type> {
   const abort = new AbortController();
+  const requestStartedAt = Date.now();
   const result = await getAISDKStream(reqData, provider, abort);
 
   // Usage Callback
-  let genTime: string;
-  let ttft: string = "";
+  let firstTokenAt: number | undefined;
+  let lastTokenAt: number | undefined;
+  const markOutput = () => {
+    const now = Date.now();
+    firstTokenAt ??= now;
+    lastTokenAt = now;
+  };
   const endOfCompletion = async () => {
     const r = await result.usage;
 
@@ -596,8 +613,9 @@ export async function NonStreamingCompletion(
             // @todo: written_cache_tokens
           },
         },
-        genTime: parseFloat(genTime),
-        ttft: parseFloat(ttft),
+        genTime:
+          firstTokenAt !== undefined && lastTokenAt !== undefined ? lastTokenAt - firstTokenAt : 0,
+        ttft: firstTokenAt !== undefined ? firstTokenAt - requestStartedAt : 0,
       });
     } catch (e) {}
   };
@@ -605,8 +623,7 @@ export async function NonStreamingCompletion(
   const aisdk_response = result.toUIMessageStream();
   const chunkLoadStream = convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
 
-  const genTimeFirst = Date.now() / 1000;
-  const createdDateUnix = Math.floor(genTimeFirst);
+  const createdDateUnix = Math.floor(requestStartedAt / 1000);
 
   let openAIResponse: ChatCompletions_NotStreaming_ResponseBody_Type = {
     created: createdDateUnix,
@@ -635,9 +652,9 @@ export async function NonStreamingCompletion(
         if (!reqData.reasoning?.exclude) openAIResponse.choices[0].message.reasoning = "";
         break;
       case "reasoning-delta":
-        if (ttft === "") ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         if (openAIResponse.id === "") openAIResponse.id = chunk.id;
         if (chunk.delta === "[REDACTED]") break;
+        if (chunk.delta) markOutput();
 
         if (!reqData.reasoning?.exclude) openAIResponse.choices[0].message.reasoning += chunk.delta;
         break;
@@ -646,16 +663,15 @@ export async function NonStreamingCompletion(
         openAIResponse.choices[0].message.content = "";
         break;
       case "text-delta":
-        if (ttft === "") ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
+        if (chunk.delta) markOutput();
         if (openAIResponse.id === "") openAIResponse.id = chunk.id;
         openAIResponse.choices[0].message.content += chunk.delta;
         break;
       case "tool-input-start":
-        if (ttft === "") ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
         openAIResponse.choices[0].message.tool_calls = [];
         break;
       case "tool-input-available":
-        if (ttft === "") ttft = (Date.now() / 1000 - genTimeFirst).toFixed(3);
+        markOutput();
         openAIResponse.choices[0].message.tool_calls![0] = {
           type: "function", // @todo dynamicTools
           id: chunk.toolCallId,
@@ -692,7 +708,6 @@ export async function NonStreamingCompletion(
       }
     }
   }
-  genTime = (Date.now() / 1000 - genTimeFirst).toFixed(3);
   await endOfCompletion();
 
   return openAIResponse!;
