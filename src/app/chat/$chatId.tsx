@@ -134,9 +134,10 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const submittedApprovalContinuations = useRef(new Set<string>());
   const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
-  const { data: defaultModel } = useQuery(
+  const defaultModelQuery = useQuery(
     convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
   );
+  const defaultModel = defaultModelQuery.data;
   const queuedModel = typeof chat === "string" ? undefined : chat?.messages_queue?.model;
   const queuedProvider = typeof chat === "string" ? undefined : chat?.messages_queue?.provider;
   // The model already used in this chat (last assistant turn), read from the
@@ -149,9 +150,26 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     typeof chat === "string" || !chat
       ? undefined
       : getLastMessageProvider(chat.messages as UIMessage[]);
+  const isModelLoading =
+    models === undefined ||
+    Boolean(
+      models.length > 0 &&
+      !model &&
+      (chat === undefined ||
+        (!chatModel &&
+          !queuedModel &&
+          (userInfo === undefined || (signedIn && defaultModelQuery.isPending)))),
+    );
+  const availableDefaultModel = models?.some((item) => item.slug === defaultModel)
+    ? defaultModel
+    : undefined;
   // Resolution order: explicit choice, this chat's model, queued model, the
   // user's saved default, then the first available model.
-  const selectedModel = model ?? chatModel ?? queuedModel ?? defaultModel ?? models?.[0]?.slug;
+  const selectedModel =
+    model ??
+    chatModel ??
+    queuedModel ??
+    (isModelLoading ? undefined : (availableDefaultModel ?? models?.[0]?.slug));
   const selectedModelData = models?.find((item) => item.slug === selectedModel);
   const preferredProvider = provider ?? chatProvider ?? queuedProvider;
   const selectedProvider = selectedModelData?.providers.some(
@@ -443,6 +461,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         <ChatStartingTransition prompt={handoffPrompt}>
           <ChatPromptInput
             disabled
+            isModelLoading={isModelLoading}
             models={models}
             onModelChange={handleModelChange}
             onProviderChange={setProvider}
@@ -468,6 +487,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       <ChatStartingTransition prompt={handoffPrompt}>
         <ChatPromptInput
           disabled
+          isModelLoading={isModelLoading}
           models={models}
           onModelChange={handleModelChange}
           onProviderChange={setProvider}
@@ -568,6 +588,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
 
           <ChatPromptInput
             disabled={status !== "ready" || !selectedModel}
+            isModelLoading={isModelLoading}
             models={models}
             onModelChange={handleModelChange}
             onProviderChange={setProvider}

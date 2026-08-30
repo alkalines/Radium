@@ -15,6 +15,7 @@ import {
   rememberChatHandoff,
 } from "@/components/chat/chat-loading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "../../convex/_generated/api";
 import { auth } from "@/lib/auth";
@@ -134,6 +135,7 @@ function ChatRouteComponent() {
 
 function ChatHomePage() {
   const navigate = Route.useNavigate();
+  const { isMobile, setOpen, setOpenMobile } = useSidebar();
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const { data: models } = useQuery(convexQuery(api.models.availableModels, {}));
   const createChat = useMutation(api.aisdk.CreateChat);
@@ -149,12 +151,24 @@ function ChatHomePage() {
   const welcomeText = getRandomWelcomeText(userName, welcomeIndex);
   const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
-  const { data: defaultModel } = useQuery(
+  const defaultModelQuery = useQuery(
     convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
   );
+  const defaultModel = defaultModelQuery.data;
+  const isModelLoading =
+    models === undefined ||
+    Boolean(
+      models.length > 0 &&
+      !model &&
+      (userInfo === undefined || (signedIn && defaultModelQuery.isPending)),
+    );
+  const availableDefaultModel = models?.some((item) => item.slug === defaultModel)
+    ? defaultModel
+    : undefined;
   // The composer's effective model: explicit choice, then the user's saved
   // default, then the first available model as a last resort.
-  const selectedModel = model ?? defaultModel ?? models?.[0]?.slug;
+  const selectedModel =
+    model ?? (isModelLoading ? undefined : (availableDefaultModel ?? models?.[0]?.slug));
   const canSubmit = Boolean(balance && selectedModel && !isSubmitting);
   const selectedModelData = models?.find((item) => item.slug === selectedModel);
   const selectedProvider = selectedModelData?.providers.some((item) => item.id === provider)
@@ -190,6 +204,7 @@ function ChatHomePage() {
 
         <ChatPromptInput
           disabled={!canSubmit}
+          isModelLoading={isModelLoading}
           models={models}
           onModelChange={handleModelChange}
           onProviderChange={setProvider}
@@ -209,6 +224,11 @@ function ChatHomePage() {
 
             setError(null);
             setIsSubmitting(true);
+            if (isMobile) {
+              setOpenMobile(false);
+            } else {
+              setOpen(false);
+            }
 
             try {
               const chatId = await createChat({

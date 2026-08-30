@@ -71,6 +71,7 @@ type ChatModel = {
 
 type ChatPromptInputProps = {
   disabled?: boolean;
+  isModelLoading: boolean;
   models: ChatModel[] | undefined;
   onModelChange: (model: string) => void;
   onProviderChange: (provider: string) => void;
@@ -90,6 +91,7 @@ type ChatPromptInputProps = {
 
 export function ChatPromptInput({
   disabled,
+  isModelLoading,
   models,
   onModelChange,
   onProviderChange,
@@ -175,15 +177,16 @@ export function ChatPromptInput({
               <ModelSelectorTrigger asChild>
                 <PromptInputButton
                   className="max-w-[11rem] gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground sm:max-w-[15rem]"
-                  disabled={!models?.length}
+                  disabled={isModelLoading || !models?.length}
                   size="xs"
                 >
-                  {models === undefined ? (
+                  {isModelLoading ? (
                     <Skeleton className="h-3.5 w-28 sm:w-40" />
                   ) : (
                     <>
                       <ModelSelectorName className="min-w-0">
-                        {selectedModelData?.name ?? "Select model"}
+                        {selectedModelData?.name ??
+                          (models?.length ? "Select model" : "No models available")}
                       </ModelSelectorName>
                       {supportsReasoning ? (
                         <span className="shrink-0 text-muted-foreground/80">
