@@ -16,7 +16,11 @@ export function ProviderLogo({
   className?: string;
 }) {
   const [failed, setFailed] = useState(false);
-  const src = `https://models.dev/logos/${variant === "labs" ? "labs/" : ""}${slug}.svg`;
+  const logoSlug =
+    variant === "provider" && ["openai-codex", "chatgpt-subscription"].includes(slug)
+      ? "openai"
+      : slug;
+  const src = `https://models.dev/logos/${variant === "labs" ? "labs/" : ""}${logoSlug}.svg`;
 
   // Reset the error state when the slug changes so a new logo gets a fresh try.
   useEffect(() => setFailed(false), [slug]);

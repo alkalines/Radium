@@ -16,6 +16,7 @@ export function createInternalGatewayProvider(
   ctx: GenericActionCtx<any>,
   balanceId: Id<"balances">,
   onError: ErrorResponse,
+  providerSlug?: string,
 ) {
   return createOpenAICompatible({
     name: "Radium Gateway",
@@ -28,6 +29,7 @@ export function createInternalGatewayProvider(
     fetch: async (_input, init): Promise<Response> => {
       try {
         const requestBody = getGatewayRequestBody(init?.body);
+        if (providerSlug) requestBody.provider = providerSlug;
         return await Internal_Chat_Completion(ctx, requestBody, balanceId);
       } catch (error) {
         console.error(error);

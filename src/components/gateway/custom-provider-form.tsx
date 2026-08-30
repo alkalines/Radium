@@ -20,7 +20,7 @@ import type { AIProviderNpmPackage } from "@/utils/types/ai_provider";
 import { api } from "../../../convex/_generated/api";
 
 /** Sensible default credential env var for each SDK package. */
-const DEFAULT_ENV: Record<AIProviderNpmPackage, string> = {
+const DEFAULT_ENV: Partial<Record<AIProviderNpmPackage, string>> = {
   "@ai-sdk/openai": "OPENAI_API_KEY",
   "@ai-sdk/anthropic": "ANTHROPIC_API_KEY",
   "@openrouter/ai-sdk-provider": "OPENROUTER_API_KEY",
@@ -56,7 +56,7 @@ export function CustomProviderForm({
   const [slugEdited, setSlugEdited] = useState(false);
   const [npm, setNpm] = useState<AIProviderNpmPackage>("@ai-sdk/openai-compatible");
   const [apiBase, setApiBase] = useState("");
-  const [env, setEnv] = useState(DEFAULT_ENV["@ai-sdk/openai-compatible"]);
+  const [env, setEnv] = useState(DEFAULT_ENV["@ai-sdk/openai-compatible"] ?? "API_KEY");
   const [submitting, setSubmitting] = useState(false);
 
   const effectiveSlug = slugEdited ? slug : slugify(name);
@@ -82,7 +82,7 @@ export function CustomProviderForm({
     setNpm(next);
     // Only overwrite env if the user hasn't customised it away from a default.
     if ((Object.values(DEFAULT_ENV) as string[]).includes(env.trim())) {
-      setEnv(DEFAULT_ENV[next]);
+      setEnv(DEFAULT_ENV[next] ?? "");
     }
   }
 
@@ -163,11 +163,13 @@ export function CustomProviderForm({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {SUPPORTED_NPM.map((pkg) => (
-                  <SelectItem key={pkg} value={pkg}>
-                    {pkg}
-                  </SelectItem>
-                ))}
+                {SUPPORTED_NPM.filter((pkg) => pkg !== "@opencoredev/loginwithchatgpt-ai").map(
+                  (pkg) => (
+                    <SelectItem key={pkg} value={pkg}>
+                      {pkg}
+                    </SelectItem>
+                  ),
+                )}
               </SelectContent>
             </Select>
           </Field>

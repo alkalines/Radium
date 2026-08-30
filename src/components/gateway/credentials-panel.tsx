@@ -39,7 +39,8 @@ export function CredentialsPanel() {
       <div className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold tracking-tight">Credentials</h2>
         <p className="text-sm text-muted-foreground">
-          Bring your own keys (BYOK). Stored encrypted and used only for your own requests.
+          Connect API keys or subscription plans. Secrets stay encrypted and are used only for your
+          requests.
         </p>
       </div>
 
@@ -77,7 +78,11 @@ export function CredentialsPanel() {
                 <div className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate font-medium">{provider.name}</span>
                   <span className="truncate text-xs text-muted-foreground">
-                    {provider.env.length > 0 ? provider.env.join(", ") : "No credentials required"}
+                    {provider.credential_type === "oauth"
+                      ? "OAuth device connection"
+                      : provider.env.length > 0
+                        ? provider.env.join(", ")
+                        : "No credentials required"}
                   </span>
                 </div>
                 {preview ? (
@@ -85,17 +90,25 @@ export function CredentialsPanel() {
                     <KeyRoundIcon className="size-3" /> Connected
                   </Badge>
                 ) : (
-                  <Badge variant="outline">No key</Badge>
+                  <Badge variant="outline">
+                    {provider.credential_type === "oauth" ? "Not connected" : "No key"}
+                  </Badge>
                 )}
                 <Button
                   variant="outline"
                   size="sm"
                   disabled={!balanceId || provider.env.length === 0}
                   onClick={() =>
-                    setTarget({ slug: provider.slug, name: provider.name, env: provider.env })
+                    setTarget({
+                      slug: provider.slug,
+                      name: provider.name,
+                      env: provider.env,
+                      credential_type: provider.credential_type,
+                      oauth_flow: provider.oauth_flow,
+                    })
                   }
                 >
-                  {preview ? "Manage" : "Add"}
+                  {preview ? "Manage" : provider.credential_type === "oauth" ? "Connect" : "Add"}
                 </Button>
               </div>
             );

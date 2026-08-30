@@ -78,11 +78,24 @@ export const availableModels = query({
       models.map(async (model) => ({
         ...model,
         author: await ctx.db.get("authors", model.author),
-        providers: providers.flatMap((provider) => {
-          const providerModel = provider.models.find((candidate) => candidate.model === model.slug);
+        providers: providers
+          .filter((provider) => provider.enabled)
+          .flatMap((provider) => {
+            const providerModel = provider.models.find(
+              (candidate) => candidate.model === model.slug,
+            );
 
-          return providerModel ? [{ ...providerModel, id: provider.slug }] : [];
-        }),
+            return providerModel
+              ? [
+                  {
+                    ...providerModel,
+                    id: provider.slug,
+                    name: provider.name,
+                    logo: provider.catalogue_provider ?? provider.slug,
+                  },
+                ]
+              : [];
+          }),
       })),
     );
   },

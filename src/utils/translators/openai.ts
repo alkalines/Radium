@@ -246,6 +246,7 @@ function getAISDKStream(
 }
 
 export type genCallbackType = (genCompletion: {
+  genId?: string;
   usage: completionUsage;
   genTime: number;
   ttft: number;
@@ -278,6 +279,7 @@ export async function StreamCompletion(
     const r = await result.usage;
     try {
       await genCallback({
+        genId: genID,
         usage: {
           completion_tokens: r.outputTokens || 0,
           completion_tokens_details: {
@@ -612,6 +614,7 @@ export async function NonStreamingCompletion(
 
     try {
       await genCallback({
+        genId: openAIResponse.id || undefined,
         usage: {
           completion_tokens: r.outputTokens || 0,
           completion_tokens_details: {

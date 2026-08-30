@@ -22,6 +22,7 @@ type ResponseHeaders = Record<string, string>;
 type AISDKChatRequestBody = {
   messages: UIMessage[];
   model: string;
+  provider?: string;
   reasoningEffort?: string;
   reasoningBudget?: number;
   id?: Id<"aisdk_chats">;
@@ -78,12 +79,16 @@ export async function handleAISDKChat(
       status: 401,
     });
 
-  const provider = createInternalGatewayProvider(ctx, chatInfo.balance, () =>
-    jsonResponse(
-      { error: { message: "Internal gateway request failed", code: 500 } },
-      responseHeaders,
-      { status: 500 },
-    ),
+  const provider = createInternalGatewayProvider(
+    ctx,
+    chatInfo.balance,
+    () =>
+      jsonResponse(
+        { error: { message: "Internal gateway request failed", code: 500 } },
+        responseHeaders,
+        { status: 500 },
+      ),
+    body.provider,
   );
 
   await ctx.runMutation(internal.aisdk.EditChat, {
@@ -143,11 +148,13 @@ export async function handleAISDKChat(
         if (part.type === "finish") {
           return {
             model: body.model,
+            ...(body.provider ? { provider: body.provider } : {}),
             usage: part.totalUsage,
           };
         }
         return {
           model: body.model,
+          ...(body.provider ? { provider: body.provider } : {}),
         };
       },
       onEnd: async ({ messages }) => {

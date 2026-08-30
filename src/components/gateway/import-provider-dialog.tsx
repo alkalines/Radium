@@ -49,8 +49,14 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { formatPerMillion, formatTokens, useModelsDevCatalogue } from "./models-dev-catalogue";
 import { CustomProviderForm } from "./custom-provider-form";
 import { ProviderLogo } from "./provider-logo";
+import { OPENAI_CODEX_SLUG } from "@/utils/provider_slugs";
 
-type SupportedProvider = ModelsDevProvider & { npm: AIProviderNpmPackage };
+type SupportedProvider = ModelsDevProvider & {
+  npm: AIProviderNpmPackage;
+  catalogue_provider?: string;
+  credential_type?: "api_key" | "oauth";
+  oauth_flow?: string;
+};
 
 export function ImportProviderDialog({
   open,
@@ -132,11 +138,31 @@ function BrowseProviders({
   const providers = useMemo(() => {
     if (!catalogue) return [];
     const query = search.trim().toLowerCase();
-    return Object.values(catalogue)
+    const openAI = catalogue.openai;
+    const subscriptionProvider: SupportedProvider[] = openAI
+      ? [
+          {
+            ...openAI,
+            id: OPENAI_CODEX_SLUG,
+            name: "ChatGPT Subscription",
+            npm: "@opencoredev/loginwithchatgpt-ai",
+            env: ["sessionCookie"],
+            api: undefined,
+            doc: "https://github.com/opencoredev/login-with-chatgpt",
+            catalogue_provider: "openai",
+            credential_type: "oauth",
+            oauth_flow: "chatgpt-device",
+          },
+        ]
+      : [];
+
+    return [...subscriptionProvider, ...Object.values(catalogue)]
       .filter((provider) =>
         query ? `${provider.name} ${provider.id}`.toLowerCase().includes(query) : true,
       )
       .sort((a, b) => {
+        if (a.id === OPENAI_CODEX_SLUG) return -1;
+        if (b.id === OPENAI_CODEX_SLUG) return 1;
         const supported = Number(isSupportedNpm(b.npm)) - Number(isSupportedNpm(a.npm));
         return supported !== 0 ? supported : a.name.localeCompare(b.name);
       });
@@ -244,7 +270,18 @@ function ConfigureProvider({
 
   const mapped = useMemo<MappedModel[]>(
     () =>
-      Object.values(provider.models ?? {}).map((model) => mapModelsDevModel(provider.id, model)),
+      Object.values(provider.models ?? {}).map((model) => {
+        const mapped = mapModelsDevModel(provider.catalogue_provider ?? provider.id, model);
+        return provider.credential_type === "oauth"
+          ? {
+              ...mapped,
+              provider: {
+                ...mapped.provider,
+                pricing: { input: "0", output: "0" },
+              },
+            }
+          : mapped;
+      }),
     [provider],
   );
 
@@ -296,6 +333,9 @@ function ConfigureProvider({
           name: provider.name,
           npm: provider.npm,
           env: provider.env ?? [],
+          catalogue_provider: provider.catalogue_provider,
+          credential_type: provider.credential_type,
+          oauth_flow: provider.oauth_flow,
           doc: provider.doc,
           api: provider.api,
           enabled: true,
@@ -312,7 +352,12 @@ function ConfigureProvider({
         })),
       });
 
-      if (addKeyNow && balanceId && (provider.env?.length ?? 0) > 0) {
+      if (
+        provider.credential_type !== "oauth" &&
+        addKeyNow &&
+        balanceId &&
+        (provider.env?.length ?? 0) > 0
+      ) {
         await upsertCredentials({
           balance: balanceId,
           provider: provider.id,
@@ -447,7 +492,15 @@ function ConfigureProvider({
             </Field>
           )}
 
-          {envVars.length > 0 && (
+          {provider.credential_type === "oauth" ? (
+            <Field>
+              <FieldLabel>Subscription authentication</FieldLabel>
+              <p className="text-sm text-muted-foreground">
+                Import the provider first, then connect your ChatGPT plan from Credentials using
+                OpenAI's device-code flow.
+              </p>
+            </Field>
+          ) : envVars.length > 0 ? (
             <>
               <Separator />
               <Field orientation="horizontal">
@@ -479,7 +532,7 @@ function ConfigureProvider({
                   </Field>
                 ))}
             </>
-          )}
+          ) : null}
         </FieldGroup>
       </div>
 

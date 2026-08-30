@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ProviderLogo } from "@/components/gateway/provider-logo";
 
 export type ReasoningEffort = string;
 
@@ -65,13 +66,14 @@ type ChatModel = {
   name: string;
   reasoning: boolean;
   slug: string;
-  providers: Array<{ id: string }>;
+  providers: Array<{ id: string; logo: string; name: string }>;
 };
 
 type ChatPromptInputProps = {
   disabled?: boolean;
   models: ChatModel[] | undefined;
   onModelChange: (model: string) => void;
+  onProviderChange: (provider: string) => void;
   onReasoningBudgetChange: (budget: number | undefined) => void;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   onStop?: () => void;
@@ -80,6 +82,7 @@ type ChatPromptInputProps = {
   reasoningBudget: number | undefined;
   reasoningEffort: ReasoningEffort;
   selectedModel: string | undefined;
+  selectedProvider: string | undefined;
   status: ChatStatus;
   /** Optional "Tools" submenu rendered inside the `+` action menu. */
   toolsMenu?: ReactNode;
@@ -89,6 +92,7 @@ export function ChatPromptInput({
   disabled,
   models,
   onModelChange,
+  onProviderChange,
   onReasoningBudgetChange,
   onReasoningEffortChange,
   onStop,
@@ -97,6 +101,7 @@ export function ChatPromptInput({
   reasoningBudget,
   reasoningEffort,
   selectedModel,
+  selectedProvider,
   status,
   toolsMenu,
 }: ChatPromptInputProps) {
@@ -104,11 +109,15 @@ export function ChatPromptInput({
   const selectedModelData = models?.find((model) => model.slug === selectedModel);
 
   const handleModelSelect = useCallback(
-    (model: string) => {
-      onModelChange(model);
+    (model: ChatModel) => {
+      onModelChange(model.slug);
+      if (!model.providers.some((provider) => provider.id === selectedProvider)) {
+        const firstProvider = model.providers[0]?.id;
+        if (firstProvider) onProviderChange(firstProvider);
+      }
       setModelSelectorOpen(false);
     },
-    [onModelChange],
+    [onModelChange, onProviderChange, selectedProvider],
   );
 
   const isBusy = status === "submitted" || status === "streaming";
@@ -203,7 +212,12 @@ export function ChatPromptInput({
                     ))}
                   </ModelSelectorGroup>
                 </ModelSelectorList>
-                <div className="flex justify-end border-t p-2">
+                <div className="flex items-center justify-between gap-2 border-t p-2">
+                  <ProviderDropdown
+                    onProviderChange={onProviderChange}
+                    providers={selectedModelData?.providers ?? []}
+                    selectedProvider={selectedProvider}
+                  />
                   <ReasoningDropdown
                     onReasoningBudgetChange={onReasoningBudgetChange}
                     onReasoningEffortChange={onReasoningEffortChange}
@@ -236,9 +250,51 @@ export function ChatPromptInput({
 
 type ModelItemProps = {
   model: ChatModel;
-  onSelect: (model: string) => void;
+  onSelect: (model: ChatModel) => void;
   selectedModel: string | undefined;
 };
+
+type ProviderOption = ChatModel["providers"][number];
+
+function ProviderDropdown({
+  providers,
+  selectedProvider,
+  onProviderChange,
+}: {
+  providers: ProviderOption[];
+  selectedProvider: string | undefined;
+  onProviderChange: (provider: string) => void;
+}) {
+  const selected = providers.find((provider) => provider.id === selectedProvider) ?? providers[0];
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label="Inference provider"
+          className="flex h-8 min-w-0 items-center gap-1.5 rounded-xl border bg-background px-2 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={providers.length === 0}
+          type="button"
+        >
+          {selected ? <ProviderLogo className="size-4" slug={selected.logo} /> : null}
+          <span className="max-w-36 truncate">{selected?.name ?? "No provider"}</span>
+          <ChevronDownIcon className="size-3 opacity-70" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-64">
+        <DropdownMenuLabel>Inference provider</DropdownMenuLabel>
+        <DropdownMenuRadioGroup onValueChange={onProviderChange} value={selected?.id}>
+          {providers.map((provider) => (
+            <DropdownMenuRadioItem key={provider.id} value={provider.id}>
+              <ProviderLogo className="size-4" slug={provider.logo} />
+              {provider.name}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 type ReasoningDropdownProps = {
   onReasoningBudgetChange: (budget: number | undefined) => void;
@@ -314,7 +370,7 @@ function ReasoningDropdown({
 }
 
 function ModelItem({ model, onSelect, selectedModel }: ModelItemProps) {
-  const handleSelect = useCallback(() => onSelect(model.slug), [model.slug, onSelect]);
+  const handleSelect = useCallback(() => onSelect(model), [model, onSelect]);
   const providerIds = model.providers.map((provider) => provider.id);
   const selected = selectedModel === model.slug;
   const modelDisplayName = getModelDisplayName(model);
@@ -343,8 +399,8 @@ function ModelItem({ model, onSelect, selectedModel }: ModelItemProps) {
       ) : null}
       <ModelSelectorName>{modelDisplayName}</ModelSelectorName>
       <ModelSelectorLogoGroup aria-label="Available providers" title="Available providers">
-        {providerIds.map((provider) => (
-          <ModelSelectorLogo key={provider} provider={provider} title={provider} />
+        {model.providers.map((provider) => (
+          <ModelSelectorLogo key={provider.id} provider={provider.logo} title={provider.name} />
         ))}
       </ModelSelectorLogoGroup>
     </ModelSelectorItem>

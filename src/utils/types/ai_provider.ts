@@ -7,13 +7,15 @@ export type AIProviderNpmPackage =
   | "@openrouter/ai-sdk-provider"
   | "@ai-sdk/openai"
   | "@ai-sdk/openai-compatible"
-  | "@ai-sdk/anthropic";
+  | "@ai-sdk/anthropic"
+  | "@opencoredev/loginwithchatgpt-ai";
 
 export type AIProviderSDK_Config = {
   apiKey: string;
   name?: string;
   baseURL?: string;
   credentials: Record<string, string>;
+  fetch?: typeof fetch;
 };
 
 // Copied from @openrouter/ai-sdk-provider OpenRouterChatSettings

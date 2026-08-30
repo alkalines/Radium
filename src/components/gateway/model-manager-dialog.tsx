@@ -197,12 +197,18 @@ function AddFromCatalogue({
   );
 
   const available = useMemo<MappedModel[]>(() => {
-    const entry = catalogue?.[provider.slug];
+    const catalogueProvider = provider.catalogue_provider ?? provider.slug;
+    const entry = catalogue?.[catalogueProvider];
     if (!entry) return [];
     return Object.values(entry.models ?? {})
-      .map((model) => mapModelsDevModel(provider.slug, model))
+      .map((model) => {
+        const mapped = mapModelsDevModel(catalogueProvider, model);
+        return provider.credential_type === "oauth"
+          ? { ...mapped, provider: { ...mapped.provider, pricing: { input: "0", output: "0" } } }
+          : mapped;
+      })
       .filter((model) => !existing.has(model.provider.model));
-  }, [catalogue, provider.slug, existing]);
+  }, [catalogue, provider.catalogue_provider, provider.credential_type, provider.slug, existing]);
 
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [search, setSearch] = useState("");
@@ -295,7 +301,7 @@ function AddFromCatalogue({
               </EmptyMedia>
               <EmptyTitle>Nothing to add</EmptyTitle>
               <EmptyDescription>
-                {catalogue[provider.slug]
+                {catalogue[provider.catalogue_provider ?? provider.slug]
                   ? "Every catalogue model for this provider is already added."
                   : "This provider isn’t on models.dev. Add a custom model instead."}
               </EmptyDescription>

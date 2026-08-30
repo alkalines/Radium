@@ -2,6 +2,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { createChatGPTProxyProvider } from "@opencoredev/loginwithchatgpt-ai";
 import type {
   AIProviderConfig,
   AIProviderSDK_Config,
@@ -58,6 +59,25 @@ const Providers = {
           baseURL: config.baseURL,
           headers: appHeaders,
         }).chat(model as any);
+    },
+  },
+  "@opencoredev/loginwithchatgpt-ai": {
+    connector: (config: AIProviderSDK_Config) => {
+      if (!config.fetch) throw new Error("ChatGPT Subscription requires a session proxy.");
+
+      return (model: string, settings?: AIProviderSDK_ModelSettings) => {
+        const requestedEffort = settings?.reasoning?.effort;
+        const effort = requestedEffort === "minimal" ? "low" : requestedEffort;
+        const supportedEffort = ["none", "low", "medium", "high", "xhigh"].includes(effort ?? "");
+
+        return createChatGPTProxyProvider({
+          basePath: "https://radium.internal/api/chatgpt-subscription",
+          fetch: config.fetch,
+          headers: supportedEffort
+            ? { "x-login-with-chatgpt-reasoning-effort": effort! }
+            : undefined,
+        })(model);
+      };
     },
   },
 } satisfies Record<AIProviderNpmPackage, Pick<AIProviderConfig, "connector">>;

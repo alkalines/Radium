@@ -75,6 +75,7 @@ export const queuedMessageSchema = v.object({
   text: v.string(),
   files: v.array(FileUIPartSchema),
   model: v.string(), // Slug, not the ID
+  provider: v.optional(v.string()),
   reasoningEffort: v.optional(v.string()),
   reasoningBudget: v.optional(v.number()),
   // @todo: Better tool selector
