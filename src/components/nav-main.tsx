@@ -12,11 +12,7 @@ type NavMainItem = {
   isActive?: boolean;
 };
 
-export function NavMain({
-  items,
-}: {
-  items: NavMainItem[];
-}) {
+export function NavMain({ items }: { items: NavMainItem[] }) {
   return (
     <SidebarMenu>
       {items.map((item) => (

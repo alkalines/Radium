@@ -4,6 +4,7 @@ import { authComponent, createAuth } from "./auth";
 import { HTTP_Request_Chat_Completion } from "./http/chat_completion";
 import { handleAISDKChat } from "./http/aisdk.chat";
 import { HTTP_Request_OpenAI_Models } from "./http/models";
+import { chatGPTSubscriptionOptions, handleChatGPTSubscription } from "./chatgpt_subscription";
 
 const http = httpRouter();
 
@@ -27,6 +28,20 @@ http.route({
   method: "POST",
   path: "/api/openai/v1/chat/completions",
   handler: HTTP_Request_Chat_Completion,
+});
+
+for (const method of ["GET", "POST"] as const) {
+  http.route({
+    method,
+    pathPrefix: "/api/chatgpt-subscription/",
+    handler: httpAction(handleChatGPTSubscription),
+  });
+}
+
+http.route({
+  method: "OPTIONS",
+  pathPrefix: "/api/chatgpt-subscription/",
+  handler: httpAction(async (_ctx, request) => chatGPTSubscriptionOptions(request)),
 });
 
 http.route({

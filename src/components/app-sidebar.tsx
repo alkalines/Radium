@@ -317,9 +317,7 @@ function ChatMenu({
             <DropdownMenuItem
               disabled={disabled}
               onSelect={() =>
-                runMenuAction("pin", () =>
-                  setPinned({ chatId: chat.id, pinned: !chat.pinnedAt }),
-                )
+                runMenuAction("pin", () => setPinned({ chatId: chat.id, pinned: !chat.pinnedAt }))
               }
             >
               {chat.pinnedAt ? <PinOffIcon /> : <PinIcon />}

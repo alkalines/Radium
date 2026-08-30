@@ -41,7 +41,7 @@ const FileUIPartPartSchema = v.object({
 });
 
 const StepStartUIPartSchema = v.object({
-  type: v.literal("file"),
+  type: v.literal("step-start"),
 });
 
 const DataUIPartSchema = v.any(); // To complex to keep up to date
@@ -75,6 +75,7 @@ export const queuedMessageSchema = v.object({
   text: v.string(),
   files: v.array(FileUIPartSchema),
   model: v.string(), // Slug, not the ID
+  provider: v.optional(v.string()),
   reasoningEffort: v.optional(v.string()),
   reasoningBudget: v.optional(v.number()),
   // @todo: Better tool selector

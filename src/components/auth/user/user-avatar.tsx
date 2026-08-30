@@ -1,6 +1,5 @@
-"use client";
-
-import { type UsernameAuthClient, useAuth, useSession } from "@better-auth-ui/react";
+import type { UsernameAuthClient } from "@better-auth-ui/core/plugins/username";
+import { useAuth, useSession } from "@better-auth-ui/react";
 import type { User } from "better-auth";
 import { User2 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -29,11 +28,10 @@ export type UserAvatarProps = {
  * @returns The avatar element to render (JSX)
  */
 export function UserAvatar({ className, user, isPending, fallback }: UserAvatarProps) {
-  const { authClient } = useAuth();
-  const { data: session, isPending: sessionPending } = useSession(
-    authClient as UsernameAuthClient,
-    { enabled: !user && !isPending },
-  );
+  const { authClient } = useAuth<UsernameAuthClient>();
+  const { data: session, isPending: sessionPending } = useSession(authClient, {
+    enabled: !user && !isPending,
+  });
 
   if ((isPending || sessionPending) && !user) {
     return <Skeleton className={cn("size-8 rounded-full", className)} />;
@@ -52,10 +50,7 @@ export function UserAvatar({ className, user, isPending, fallback }: UserAvatarP
         alt={resolvedUser?.displayUsername || resolvedUser?.name || resolvedUser?.email}
       />
 
-      <AvatarFallback
-        className="text-muted-foreground!"
-        delayMs={resolvedUser?.image ? 600 : undefined}
-      >
+      <AvatarFallback className="text-muted-foreground!">
         {fallback || initials || <User2 className="size-4" />}
       </AvatarFallback>
     </Avatar>

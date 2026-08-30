@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { toast } from "sonner";
+import { LoginWithChatGPT } from "@opencoredev/loginwithchatgpt-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -17,11 +18,14 @@ import { Spinner } from "@/components/ui/spinner";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { ProviderLogo } from "./provider-logo";
+import { authClient } from "@/lib/auth-client";
 
 export type CredentialsTarget = {
   slug: string;
   name: string;
   env: string[];
+  credential_type?: "api_key" | "oauth";
+  oauth_flow?: string;
 };
 
 export function CredentialsDialog({
@@ -45,6 +49,20 @@ export function CredentialsDialog({
   useEffect(() => setValues({}), [target?.slug]);
 
   const complete = target?.env.every((name) => values[name]?.trim()) ?? false;
+  const oauthFetch = useCallback(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(
+        typeof input === "string" || input instanceof URL ? input : input.url,
+        window.location.origin,
+      );
+      if (balanceId) url.searchParams.set("balance", balanceId);
+      const { data } = await authClient.convex.token({ fetchOptions: { throw: false } });
+      const headers = new Headers(init?.headers);
+      if (data?.token) headers.set("Authorization", `Bearer ${data.token}`);
+      return fetch(url, { ...init, headers, credentials: "include" });
+    },
+    [balanceId],
+  );
 
   async function save() {
     if (!target || !balanceId) return;
@@ -87,7 +105,9 @@ export function CredentialsDialog({
             {target?.name} credentials
           </DialogTitle>
           <DialogDescription>
-            Keys are encrypted at rest and only used for your own (BYOK) requests.
+            {target?.credential_type === "oauth"
+              ? "Connect your plan with OpenAI's device-code flow. Tokens stay encrypted on the server."
+              : "Keys are encrypted at rest and only used for your own (BYOK) requests."}
           </DialogDescription>
         </DialogHeader>
 
@@ -95,6 +115,15 @@ export function CredentialsDialog({
           <p className="text-sm text-muted-foreground">
             You need an active balance before you can store credentials.
           </p>
+        ) : target?.credential_type === "oauth" && target.oauth_flow === "chatgpt-device" ? (
+          <div className="flex min-h-24 items-center justify-center py-2">
+            <LoginWithChatGPT
+              basePath="/api/chatgpt-subscription"
+              consent={{ appName: "Radium" }}
+              fetch={oauthFetch}
+              label={hasExisting ? "Reconnect ChatGPT" : "Connect ChatGPT"}
+            />
+          </div>
         ) : (
           <FieldGroup>
             {target?.env.map((name) => (
@@ -106,7 +135,9 @@ export function CredentialsDialog({
                   autoComplete="off"
                   placeholder={hasExisting ? "Replace stored value" : `Enter ${name}`}
                   value={values[name] ?? ""}
-                  onChange={(event) => setValues((prev) => ({ ...prev, [name]: event.target.value }))}
+                  onChange={(event) =>
+                    setValues((prev) => ({ ...prev, [name]: event.target.value }))
+                  }
                 />
                 {hasExisting && preview?.[name] && (
                   <FieldDescription>Current: {preview[name]}</FieldDescription>
@@ -116,19 +147,21 @@ export function CredentialsDialog({
           </FieldGroup>
         )}
 
-        <DialogFooter className="sm:justify-between">
-          {hasExisting ? (
-            <Button variant="ghost" onClick={remove} disabled={submitting || !balanceId}>
-              Remove
+        {target?.credential_type !== "oauth" ? (
+          <DialogFooter className="sm:justify-between">
+            {hasExisting ? (
+              <Button variant="ghost" onClick={remove} disabled={submitting || !balanceId}>
+                Remove
+              </Button>
+            ) : (
+              <span />
+            )}
+            <Button onClick={save} disabled={submitting || !balanceId || !complete}>
+              {submitting && <Spinner data-icon="inline-start" />}
+              Save
             </Button>
-          ) : (
-            <span />
-          )}
-          <Button onClick={save} disabled={submitting || !balanceId || !complete}>
-            {submitting && <Spinner data-icon="inline-start" />}
-            Save
-          </Button>
-        </DialogFooter>
+          </DialogFooter>
+        ) : null}
       </DialogContent>
     </Dialog>
   );

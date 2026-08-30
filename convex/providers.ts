@@ -1,7 +1,13 @@
 import { v } from "convex/values";
 import { credentialPreview } from "@/utils/credential_preview";
 import type { Id } from "./_generated/dataModel";
-import { internalQuery, mutation, query, type MutationCtx } from "./_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
 import { authComponent } from "./auth";
 import { balanceSecretName, providerSecretNamespace, secrets } from "./secrets";
 
@@ -10,6 +16,7 @@ const providerNpmValidator = v.union(
   v.literal("@ai-sdk/openai"),
   v.literal("@ai-sdk/openai-compatible"),
   v.literal("@ai-sdk/anthropic"),
+  v.literal("@opencoredev/loginwithchatgpt-ai"),
 );
 
 const providerModelValidator = v.object({
@@ -78,7 +85,9 @@ function parseProviderCredentials(provider: string, value: string): Record<strin
     }
 
     return Object.fromEntries(
-      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
     );
   } catch (error) {
     throw new Error(`Stored credentials for provider ${provider} are invalid.`, { cause: error });
@@ -214,6 +223,9 @@ export const importProvider = mutation({
       name: v.string(),
       npm: providerNpmValidator,
       env: v.array(v.string()),
+      catalogue_provider: v.optional(v.string()),
+      credential_type: v.optional(v.union(v.literal("api_key"), v.literal("oauth"))),
+      oauth_flow: v.optional(v.string()),
       doc: v.optional(v.string()),
       api: v.optional(v.string()),
       enabled: v.optional(v.boolean()),
@@ -239,6 +251,9 @@ export const importProvider = mutation({
       name: args.provider.name,
       npm: args.provider.npm,
       env: args.provider.env,
+      catalogue_provider: args.provider.catalogue_provider,
+      credential_type: args.provider.credential_type,
+      oauth_flow: args.provider.oauth_flow,
       doc: args.provider.doc,
       api: args.provider.api,
       enabled: args.provider.enabled ?? true,
@@ -409,7 +424,10 @@ export const upsertCredentials = mutation({
 
     const [balance, provider] = await Promise.all([
       ctx.db.get("balances", args.balance),
-      ctx.db.query("providers").withIndex("by_slug", (q) => q.eq("slug", args.provider)).unique(),
+      ctx.db
+        .query("providers")
+        .withIndex("by_slug", (q) => q.eq("slug", args.provider))
+        .unique(),
     ]);
 
     if (!balance || balance.userId !== identity._id) throw new Error("Balance not found.");
@@ -458,6 +476,59 @@ export const deleteCredentials = mutation({
       name: balanceSecretName(args.balance),
     });
     return true;
+  },
+});
+
+/** Associates an opaque OAuth session with a balance after the device flow completes. */
+export const bindOAuthCredential = internalMutation({
+  args: {
+    balance: v.id("balances"),
+    provider: v.string(),
+    userId: v.string(),
+    credentials: v.record(v.string(), v.string()),
+    preview: v.record(v.string(), v.string()),
+  },
+  handler: async (ctx, args) => {
+    const [balance, provider] = await Promise.all([
+      ctx.db.get("balances", args.balance),
+      ctx.db
+        .query("providers")
+        .withIndex("by_slug", (q) => q.eq("slug", args.provider))
+        .unique(),
+    ]);
+    if (!balance || balance.userId !== args.userId) throw new Error("Balance not found.");
+    if (!provider || provider.credential_type !== "oauth") {
+      throw new Error(`OAuth provider ${args.provider} is not configured.`);
+    }
+
+    await secrets.put(ctx, {
+      namespace: providerSecretNamespace(args.provider),
+      name: balanceSecretName(args.balance),
+      value: JSON.stringify(args.credentials),
+      metadata: {
+        kind: "provider",
+        provider: args.provider,
+        balance: args.balance,
+        preview: args.preview,
+      },
+    });
+  },
+});
+
+/** Removes an OAuth balance binding when its upstream session is disconnected. */
+export const unbindOAuthCredential = internalMutation({
+  args: {
+    balance: v.id("balances"),
+    provider: v.string(),
+    userId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const balance = await ctx.db.get("balances", args.balance);
+    if (!balance || balance.userId !== args.userId) throw new Error("Balance not found.");
+    await secrets.remove(ctx, {
+      namespace: providerSecretNamespace(args.provider),
+      name: balanceSecretName(args.balance),
+    });
   },
 });
 

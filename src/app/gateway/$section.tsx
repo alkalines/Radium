@@ -1,12 +1,16 @@
 import { createFileRoute, notFound, redirect } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
-import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
-import { ensureSession as ensureSessionServer } from "@better-auth-ui/react/server";
+import { ensureSession as ensureSessionClient } from "@better-auth-ui/core";
+import { ensureSessionServer } from "@better-auth-ui/core/server";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 
 import { convexQuery } from "@convex-dev/react-query";
 
-import { GatewaySettings, gatewaySections, type GatewaySection } from "@/components/gateway/gateway-settings";
+import {
+  GatewaySettings,
+  gatewaySections,
+  type GatewaySection,
+} from "@/components/gateway/gateway-settings";
 import { api } from "../../../convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";

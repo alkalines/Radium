@@ -23,6 +23,7 @@ export const SUPPORTED_NPM: readonly AIProviderNpmPackage[] = [
   "@ai-sdk/openai",
   "@ai-sdk/openai-compatible",
   "@ai-sdk/anthropic",
+  "@opencoredev/loginwithchatgpt-ai",
 ];
 
 export function isSupportedNpm(npm: string | undefined): npm is AIProviderNpmPackage {

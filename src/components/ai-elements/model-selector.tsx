@@ -154,10 +154,7 @@ export const ModelSelectorLogo = ({ provider, className, ...props }: ModelSelect
 export type ModelSelectorLogoGroupProps = ComponentProps<"div">;
 
 export const ModelSelectorLogoGroup = ({ className, ...props }: ModelSelectorLogoGroupProps) => (
-  <div
-    className={cn("-space-x-1.5 flex shrink-0 items-center", className)}
-    {...props}
-  />
+  <div className={cn("-space-x-1.5 flex shrink-0 items-center", className)} {...props} />
 );
 
 export type ModelSelectorNameProps = ComponentProps<"span">;

@@ -1,11 +1,15 @@
 "use client";
 
+import { isSessionNotFreshError } from "@better-auth-ui/core";
 import { useAuth, useListSessions, useSession } from "@better-auth-ui/react";
+import { Fragment } from "react";
 import { Card, CardContent } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
+import { Item, ItemContent, ItemGroup, ItemMedia, ItemSeparator } from "@/components/ui/item";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { ActiveSession } from "./active-session";
+import { FreshSessionPrompt } from "./fresh-session-prompt";
+import { SessionActions } from "./session-actions";
 
 export type ActiveSessionsProps = {
   className?: string;
@@ -23,7 +27,8 @@ export function ActiveSessions({ className }: ActiveSessionsProps) {
   const { authClient, localization } = useAuth();
   const { data: session } = useSession(authClient);
 
-  const { data: sessions, isPending } = useListSessions(authClient);
+  const sessionsQuery = useListSessions(authClient);
+  const { data: sessions, error, isPending } = sessionsQuery;
 
   const activeSessions = [...(sessions ?? [])].sort((activeSession) =>
     activeSession.id === session?.session.id ? -1 : 1,
@@ -33,20 +38,30 @@ export function ActiveSessions({ className }: ActiveSessionsProps) {
     <div>
       <h2 className="text-sm font-semibold mb-3">{localization.settings.activeSessions}</h2>
 
-      <Card className={cn("p-0", className)}>
+      <Card className={cn("gap-0 p-0", className)}>
         <CardContent className="p-0">
-          {isPending ? (
+          {isSessionNotFreshError(error) ? (
+            <FreshSessionPrompt onFresh={() => sessionsQuery.refetch()} />
+          ) : isPending ? (
             <SessionRowSkeleton />
           ) : (
-            activeSessions?.map((activeSession, index) => (
-              <div key={activeSession.id}>
-                {index > 0 && <Separator />}
-
-                <ActiveSession activeSession={activeSession} />
-              </div>
-            ))
+            <ItemGroup className="gap-0!">
+              {activeSessions?.map((activeSession, index) => (
+                <Fragment key={activeSession.id}>
+                  {index > 0 && <ItemSeparator className="my-0!" />}
+                  <ActiveSession activeSession={activeSession} />
+                </Fragment>
+              ))}
+            </ItemGroup>
           )}
         </CardContent>
+        {!isPending && !error && (
+          <SessionActions
+            hasOtherSessions={activeSessions.some(
+              (activeSession) => activeSession.id !== session?.session.id,
+            )}
+          />
+        )}
       </Card>
     </div>
   );
@@ -54,15 +69,14 @@ export function ActiveSessions({ className }: ActiveSessionsProps) {
 
 function SessionRowSkeleton() {
   return (
-    <Card className="bg-transparent border-0 ring-0 shadow-none">
-      <CardContent className="flex items-center gap-3">
+    <Item>
+      <ItemMedia>
         <Skeleton className="size-10 rounded-md" />
-
-        <div className="flex flex-col gap-1">
-          <Skeleton className="h-4 w-20" />
-          <Skeleton className="h-3 w-32" />
-        </div>
-      </CardContent>
-    </Card>
+      </ItemMedia>
+      <ItemContent>
+        <Skeleton className="h-4 w-20" />
+        <Skeleton className="h-3 w-32" />
+      </ItemContent>
+    </Item>
   );
 }

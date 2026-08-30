@@ -22,8 +22,8 @@ export function CreditsPanel() {
       <div className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold tracking-tight">Credits</h2>
         <p className="text-sm text-muted-foreground">
-          Track gateway credit balance and recent spend. See the Generation Logs tab for
-          per-request detail.
+          Track gateway credit balance and recent spend. See the Generation Logs tab for per-request
+          detail.
         </p>
       </div>
 
@@ -42,7 +42,11 @@ export function CreditsPanel() {
         </div>
       ) : balanceId && credits ? (
         <div className="grid gap-3 sm:grid-cols-3">
-          <SummaryCard title="Balance" value={formatCredits(credits.credits)} description="Available credits" />
+          <SummaryCard
+            title="Balance"
+            value={formatCredits(credits.credits)}
+            description="Available credits"
+          />
           <SummaryCard
             title="Recent spend"
             value={formatCredits(credits.spentRecent)}

@@ -38,9 +38,7 @@ export const getGenerations = query({
             byok: completion.request.byok,
             streamed: completion.request.streamed,
             canceled: completion.request.canceled,
-            model: model
-              ? { id: model._id, name: model.name, slug: model.slug }
-              : null,
+            model: model ? { id: model._id, name: model.name, slug: model.slug } : null,
           },
           response: completion.response,
           // @todo Surface the full request payload — system message, tools,

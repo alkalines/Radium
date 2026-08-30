@@ -40,9 +40,7 @@ export function ChatToolsMenu({
   balance: Id<"balances"> | undefined;
   chatId?: Id<"aisdk_chats">;
 }) {
-  const { data: servers } = useQuery(
-    convexQuery(api.mcp.listServers, balance ? {} : "skip"),
-  );
+  const { data: servers } = useQuery(convexQuery(api.mcp.listServers, balance ? {} : "skip"));
   const { data: chatTools } = useQuery(
     convexQuery(api.chatroom.getChatTools, chatId ? { chatId } : "skip"),
   );

@@ -4,7 +4,7 @@ import {
   Transcription,
   TranscriptionSegment,
 } from "@/components/ai-elements/transcription";
-import type { Experimental_TranscriptionResult as TranscriptionResult } from "ai";
+import type { TranscriptionResult } from "ai";
 import { useCallback, useRef, useState } from "react";
 
 const segments: TranscriptionResult["segments"] = [

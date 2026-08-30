@@ -9,8 +9,8 @@ import { useChat } from "@ai-sdk/react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
-import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
-import { ensureSession as ensureSessionServer } from "@better-auth-ui/react/server";
+import { ensureSession as ensureSessionClient } from "@better-auth-ui/core";
+import { ensureSessionServer } from "@better-auth-ui/core/server";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
@@ -74,8 +74,9 @@ export const Route = createFileRoute("/chat/$chatId")({
   staticData: {
     pageTitle: "Chat",
   },
-  validateSearch: (search: Record<string, unknown>): { model?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { model?: string; provider?: string } => ({
     model: typeof search.model === "string" ? search.model : undefined,
+    provider: typeof search.provider === "string" ? search.provider : undefined,
   }),
   async beforeLoad({ context: { queryClient }, location }) {
     const ensureSession = createIsomorphicFn()
@@ -122,6 +123,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const forkChat = useMutation(api.aisdk.ForkChat);
   const [model, setModel] = useState<string | undefined>(search.model);
+  const [provider, setProvider] = useState<string | undefined>(search.provider);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [reasoningBudget, setReasoningBudget] = useState<number>();
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
@@ -136,16 +138,27 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
   );
   const queuedModel = typeof chat === "string" ? undefined : chat?.messages_queue?.model;
+  const queuedProvider = typeof chat === "string" ? undefined : chat?.messages_queue?.provider;
   // The model already used in this chat (last assistant turn), read from the
   // persisted doc so the picker reflects it before the live session hydrates.
   const chatModel =
     typeof chat === "string" || !chat
       ? undefined
       : getLastMessageModel(chat.messages as UIMessage[]);
+  const chatProvider =
+    typeof chat === "string" || !chat
+      ? undefined
+      : getLastMessageProvider(chat.messages as UIMessage[]);
   // Resolution order: explicit choice, this chat's model, queued model, the
   // user's saved default, then the first available model.
   const selectedModel = model ?? chatModel ?? queuedModel ?? defaultModel ?? models?.[0]?.slug;
   const selectedModelData = models?.find((item) => item.slug === selectedModel);
+  const preferredProvider = provider ?? chatProvider ?? queuedProvider;
+  const selectedProvider = selectedModelData?.providers.some(
+    (item) => item.id === preferredProvider,
+  )
+    ? preferredProvider
+    : selectedModelData?.providers[0]?.id;
   const handleModelChange = useCallback((nextModel: string) => {
     setModel(nextModel);
   }, []);
@@ -156,6 +169,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         body: {
           chatId: convexChatId,
           model: selectedModel,
+          provider: selectedProvider,
           reasoningEffort: selectedModelData?.reasoning ? reasoningEffort : undefined,
           reasoningBudget:
             selectedModelData?.features?.reasoning_budget && reasoningBudget
@@ -165,6 +179,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         headers: getConvexAuthHeaders,
         prepareSendMessagesRequest({ api: requestApi, body, credentials, headers, id, messages }) {
           const requestModel = body?.model ?? getLastMessageModel(messages);
+          const requestProvider = body?.provider ?? getLastMessageProvider(messages);
 
           return {
             api: requestApi,
@@ -174,6 +189,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
               id,
               messages,
               model: requestModel,
+              provider: requestProvider,
             },
             credentials,
             headers,
@@ -186,6 +202,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       reasoningBudget,
       reasoningEffort,
       selectedModel,
+      selectedProvider,
       selectedModelData?.features?.reasoning_budget,
       selectedModelData?.reasoning,
     ],
@@ -200,19 +217,19 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     status,
     stop,
   } = useChat({
-      id: chatId,
-      sendAutomaticallyWhen: ({ messages: nextMessages }) => {
-        const continuationKey = getApprovalContinuationKey(nextMessages);
+    id: chatId,
+    sendAutomaticallyWhen: ({ messages: nextMessages }) => {
+      const continuationKey = getApprovalContinuationKey(nextMessages);
 
-        if (!continuationKey || submittedApprovalContinuations.current.has(continuationKey)) {
-          return false;
-        }
+      if (!continuationKey || submittedApprovalContinuations.current.has(continuationKey)) {
+        return false;
+      }
 
-        submittedApprovalContinuations.current.add(continuationKey);
-        return true;
-      },
-      transport,
-    });
+      submittedApprovalContinuations.current.add(continuationKey);
+      return true;
+    },
+    transport,
+  });
 
   useEffect(() => {
     if (handoffPrompt === null) {
@@ -262,6 +279,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         body: {
           chatId: convexChatId,
           model: chat.messages_queue.model,
+          provider: chat.messages_queue.provider,
           reasoningBudget: chat.messages_queue.reasoningBudget,
           reasoningEffort: chat.messages_queue.reasoningEffort,
         },
@@ -278,7 +296,9 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       })),
     [models],
   );
-  const maxTokens = selectedModelData?.providers?.[0]?.context;
+  const maxTokens = selectedModelData?.providers.find(
+    (item) => item.id === selectedProvider,
+  )?.context;
   const latestUsage = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index--) {
       const usage = getUsageMetadata(messages[index]?.metadata);
@@ -296,12 +316,13 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       return {
         chatId: convexChatId,
         model: modelSlug,
+        provider: selectedProvider,
         reasoningEffort: modelData?.reasoning ? reasoningEffort : undefined,
         reasoningBudget:
           modelData?.features?.reasoning_budget && reasoningBudget ? reasoningBudget : undefined,
       };
     },
-    [convexChatId, models, reasoningBudget, reasoningEffort],
+    [convexChatId, models, reasoningBudget, reasoningEffort, selectedProvider],
   );
 
   const handleCopy = useCallback((message: UIMessage) => {
@@ -360,6 +381,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
           text: getMessageText(message),
           files: getMessageFiles(message),
           model: forkModel,
+          ...(selectedProvider ? { provider: selectedProvider } : {}),
           ...(modelData?.reasoning ? { reasoningEffort } : {}),
           ...(modelData?.features?.reasoning_budget && reasoningBudget ? { reasoningBudget } : {}),
           webSearch: false,
@@ -371,10 +393,19 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       await navigate({
         to: "/chat/$chatId",
         params: { chatId: newChatId },
-        search: { model: forkModel },
+        search: { model: forkModel, provider: selectedProvider },
       });
     },
-    [balance, forkChat, messages, models, navigate, reasoningBudget, reasoningEffort],
+    [
+      balance,
+      forkChat,
+      messages,
+      models,
+      navigate,
+      reasoningBudget,
+      reasoningEffort,
+      selectedProvider,
+    ],
   );
 
   /**
@@ -400,10 +431,10 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       await navigate({
         to: "/chat/$chatId",
         params: { chatId: newChatId },
-        search: { model: forkModel },
+        search: { model: forkModel, provider: selectedProvider },
       });
     },
-    [balance, forkChat, messages, navigate],
+    [balance, forkChat, messages, navigate, selectedProvider],
   );
 
   if (chat === undefined) {
@@ -414,12 +445,15 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
             disabled
             models={models}
             onModelChange={handleModelChange}
+            onProviderChange={setProvider}
             onReasoningBudgetChange={setReasoningBudget}
             onReasoningEffortChange={setReasoningEffort}
+            onSubmit={() => {}}
             placeholder="Continue the conversation..."
             reasoningBudget={reasoningBudget}
             reasoningEffort={reasoningEffort}
             selectedModel={selectedModel}
+            selectedProvider={selectedProvider}
             status="submitted"
           />
         </ChatStartingTransition>
@@ -436,12 +470,15 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
           disabled
           models={models}
           onModelChange={handleModelChange}
+          onProviderChange={setProvider}
           onReasoningBudgetChange={setReasoningBudget}
           onReasoningEffortChange={setReasoningEffort}
+          onSubmit={() => {}}
           placeholder="Continue the conversation..."
           reasoningBudget={reasoningBudget}
           reasoningEffort={reasoningEffort}
           selectedModel={selectedModel}
+          selectedProvider={selectedProvider}
           status="submitted"
         />
       </ChatStartingTransition>
@@ -533,6 +570,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
             disabled={status !== "ready" || !selectedModel}
             models={models}
             onModelChange={handleModelChange}
+            onProviderChange={setProvider}
             onReasoningBudgetChange={setReasoningBudget}
             onReasoningEffortChange={setReasoningEffort}
             onStop={() => void stop()}
@@ -549,6 +587,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
                   body: {
                     chatId: convexChatId,
                     model: selectedModel,
+                    provider: selectedProvider,
                     reasoningEffort: selectedModelData?.reasoning ? reasoningEffort : undefined,
                     reasoningBudget:
                       selectedModelData?.features?.reasoning_budget && reasoningBudget
@@ -562,6 +601,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
             reasoningBudget={reasoningBudget}
             reasoningEffort={reasoningEffort}
             selectedModel={selectedModel}
+            selectedProvider={selectedProvider}
             status={status}
             toolsMenu={<ChatToolsMenu balance={balance?._id} chatId={convexChatId} />}
           />
@@ -620,10 +660,7 @@ function ChatMessage({
 
             if (part.type === "reasoning") {
               return (
-                <Reasoning
-                  isStreaming={part.state === "streaming"}
-                  key={`${message.id}-${index}`}
-                >
+                <Reasoning isStreaming={part.state === "streaming"} key={`${message.id}-${index}`}>
                   <ReasoningTrigger />
                   <ReasoningContent>{part.text}</ReasoningContent>
                 </Reasoning>
@@ -722,7 +759,6 @@ function ChatToolPart({
   const approval = "approval" in part ? part.approval : undefined;
   const toolInput = getToolInput(part);
   const toolName = part.type.replace(/^tool-/, "");
-  // @ts-expect-error state only available in AI SDK v6
   const isApprovalRequested = part.state === "approval-requested";
   const shouldAutoClose =
     part.state === "approval-responded" ||
@@ -871,6 +907,21 @@ function getLastMessageModel(messages: UIMessage[]) {
     }
   }
 
+  return undefined;
+}
+
+function getLastMessageProvider(messages: UIMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const metadata = messages[index]?.metadata;
+    if (
+      typeof metadata === "object" &&
+      metadata !== null &&
+      "provider" in metadata &&
+      typeof metadata.provider === "string"
+    ) {
+      return metadata.provider;
+    }
+  }
   return undefined;
 }
 

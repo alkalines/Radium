@@ -7,10 +7,7 @@ export const EXA_SECRET_NAME = "exa" as const;
 
 export const MCP_SECRET_NAME = "bearer" as const;
 
-export type SecretNamespace =
-  | `provider:${string}`
-  | `balance:${string}:tools`
-  | `mcp:${string}`;
+export type SecretNamespace = `provider:${string}` | `balance:${string}:tools` | `mcp:${string}`;
 
 export type SecretMetadata = {
   kind: "provider" | "exa" | "mcp";

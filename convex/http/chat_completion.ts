@@ -121,11 +121,11 @@ const CreateCompletion = async (
           prompt_cache_key: reqData.prompt_cache_key || reqData.user,
         },
         response: {
-          gen_id: originalGenID!,
+          gen_id: genCompletion.genId || originalGenID || genID,
           finish_reason: finishedReason || "stop",
           gen_time: genCompletion.genTime,
           ttft: genCompletion.ttft,
-          provider_gen_id: originalGenID!,
+          provider_gen_id: genCompletion.genId || originalGenID || genID,
           usage: {
             completion_tokens: genCompletion.usage.completion_tokens,
             prompt_tokens: genCompletion.usage.prompt_tokens,
@@ -164,9 +164,9 @@ const CreateCompletion = async (
         controllerOutput("[DONE]");
         controller.close();
       },
-      cancel(reason?) {
+      async cancel(reason?) {
         streamCanceled = true;
-        (providerGen as ReadableStream<any>).cancel(reason);
+        await (providerGen as ReadableStream<any>).cancel(reason);
       },
     });
 
@@ -200,11 +200,11 @@ const CreateCompletion = async (
           prompt_cache_key: reqData.prompt_cache_key || reqData.user,
         },
         response: {
-          gen_id: originalGenID!,
+          gen_id: genCompletion.genId || originalGenID || genID,
           finish_reason: finishedReason || "stop",
           gen_time: genCompletion.genTime,
           ttft: genCompletion.ttft,
-          provider_gen_id: originalGenID!,
+          provider_gen_id: genCompletion.genId || originalGenID || genID,
           usage: {
             completion_tokens: genCompletion.usage.completion_tokens,
             prompt_tokens: genCompletion.usage.prompt_tokens,

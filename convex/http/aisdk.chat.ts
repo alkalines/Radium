@@ -1,6 +1,14 @@
 import { createMCPClient } from "@ai-sdk/mcp";
 import { webSearch } from "@exalabs/ai-sdk";
-import { convertToModelMessages, stepCountIs, streamText, type ToolSet, type UIMessage } from "ai";
+import {
+  convertToModelMessages,
+  createUIMessageStreamResponse,
+  isStepCount,
+  streamText,
+  toUIMessageStream,
+  type ToolSet,
+  type UIMessage,
+} from "ai";
 import { toExaCountry } from "../../src/utils/chatroom/user-location";
 import type { Id } from "../_generated/dataModel";
 import { authComponent, createAuth } from "../auth";
@@ -14,6 +22,7 @@ type ResponseHeaders = Record<string, string>;
 type AISDKChatRequestBody = {
   messages: UIMessage[];
   model: string;
+  provider?: string;
   reasoningEffort?: string;
   reasoningBudget?: number;
   id?: Id<"aisdk_chats">;
@@ -70,12 +79,16 @@ export async function handleAISDKChat(
       status: 401,
     });
 
-  const provider = createInternalGatewayProvider(ctx, chatInfo.balance, () =>
-    jsonResponse(
-      { error: { message: "Internal gateway request failed", code: 500 } },
-      responseHeaders,
-      { status: 500 },
-    ),
+  const provider = createInternalGatewayProvider(
+    ctx,
+    chatInfo.balance,
+    () =>
+      jsonResponse(
+        { error: { message: "Internal gateway request failed", code: 500 } },
+        responseHeaders,
+        { status: 500 },
+      ),
+    body.provider,
   );
 
   await ctx.runMutation(internal.aisdk.EditChat, {
@@ -94,7 +107,7 @@ export async function handleAISDKChat(
     tools,
     // Allow follow-up turns so the model can act on executable tool results
     // (Exa web search, MCP tools) instead of stopping at the first tool call.
-    stopWhen: stepCountIs(5),
+    stopWhen: isStepCount(5),
     onError: () => void closeTools(),
     providerOptions:
       body.reasoningEffort || body.reasoningBudget
@@ -116,53 +129,58 @@ export async function handleAISDKChat(
   // Track reasoning start time to calculate duration
   let reasoningStartTime: number | null = null;
 
-  return result.toUIMessageStreamResponse({
+  return createUIMessageStreamResponse({
     headers: responseHeaders,
-    originalMessages: body.messages,
-    sendSources: true,
-    sendReasoning: true,
-    messageMetadata({ part }) {
-      // Track when reasoning starts
-      if (part.type === "reasoning-start") {
-        if (reasoningStartTime === null) {
-          reasoningStartTime = Date.now();
+    stream: toUIMessageStream({
+      stream: result.stream,
+      originalMessages: body.messages,
+      sendSources: true,
+      sendReasoning: true,
+      messageMetadata({ part }) {
+        // Track when reasoning starts
+        if (part.type === "reasoning-start") {
+          if (reasoningStartTime === null) {
+            reasoningStartTime = Date.now();
+          }
         }
-      }
-      // Attach cumulative token usage once the response finishes so the client
-      // can render context-window usage and cost for the message.
-      if (part.type === "finish") {
+        // Attach cumulative token usage once the response finishes so the client
+        // can render context-window usage and cost for the message.
+        if (part.type === "finish") {
+          return {
+            model: body.model,
+            ...(body.provider ? { provider: body.provider } : {}),
+            usage: part.totalUsage,
+          };
+        }
         return {
           model: body.model,
-          usage: part.totalUsage,
+          ...(body.provider ? { provider: body.provider } : {}),
         };
-      }
-      return {
-        model: body.model,
-      };
-    },
-    onFinish: async ({ messages }) => {
-      // Calculate reasoning duration and add it to reasoning parts
-      const messagesWithDuration = messages.map((message) => ({
-        ...message,
-        parts: message.parts.map((part) => {
-          if (part.type === "reasoning" && reasoningStartTime !== null) {
-            const durationMs = Date.now() - reasoningStartTime;
-            const durationSeconds = Math.ceil(durationMs / 1000);
-            return {
-              ...part,
-              duration: durationSeconds,
-            };
-          }
-          return part;
-        }),
-      }));
-      await ctx.runMutation(internal.aisdk.EditChat, {
-        chatId,
-        messages: messagesWithDuration,
-        activeStream: false,
-      });
-      await closeTools();
-    },
+      },
+      onEnd: async ({ messages }) => {
+        // Calculate reasoning duration and add it to reasoning parts
+        const messagesWithDuration = messages.map((message) => ({
+          ...message,
+          parts: message.parts.map((part) => {
+            if (part.type === "reasoning" && reasoningStartTime !== null) {
+              const durationMs = Date.now() - reasoningStartTime;
+              const durationSeconds = Math.ceil(durationMs / 1000);
+              return {
+                ...part,
+                duration: durationSeconds,
+              };
+            }
+            return part;
+          }),
+        }));
+        await ctx.runMutation(internal.aisdk.EditChat, {
+          chatId,
+          messages: messagesWithDuration,
+          activeStream: false,
+        });
+        await closeTools();
+      },
+    }),
   });
 }
 

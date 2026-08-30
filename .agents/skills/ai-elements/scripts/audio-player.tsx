@@ -13,7 +13,7 @@ import {
   AudioPlayerTimeRange,
   AudioPlayerVolumeRange,
 } from "@/components/ai-elements/audio-player";
-import type { Experimental_SpeechResult as SpeechResult } from "ai";
+import type { SpeechResult } from "ai";
 import { useEffect, useState } from "react";
 
 const Example = () => {

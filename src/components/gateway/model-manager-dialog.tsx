@@ -23,7 +23,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
@@ -103,8 +109,8 @@ function ManagerList({
           <div className="flex flex-col">
             <DialogTitle>{provider.name} models</DialogTitle>
             <DialogDescription>
-              {provider.models.length} model{provider.models.length === 1 ? "" : "s"} exposed through
-              the gateway.
+              {provider.models.length} model{provider.models.length === 1 ? "" : "s"} exposed
+              through the gateway.
             </DialogDescription>
           </div>
         </div>
@@ -129,7 +135,9 @@ function ManagerList({
                 <SparklesIcon />
               </EmptyMedia>
               <EmptyTitle>No models yet</EmptyTitle>
-              <EmptyDescription>Add models from models.dev or define a custom one.</EmptyDescription>
+              <EmptyDescription>
+                Add models from models.dev or define a custom one.
+              </EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (
@@ -189,12 +197,18 @@ function AddFromCatalogue({
   );
 
   const available = useMemo<MappedModel[]>(() => {
-    const entry = catalogue?.[provider.slug];
+    const catalogueProvider = provider.catalogue_provider ?? provider.slug;
+    const entry = catalogue?.[catalogueProvider];
     if (!entry) return [];
     return Object.values(entry.models ?? {})
-      .map((model) => mapModelsDevModel(provider.slug, model))
+      .map((model) => {
+        const mapped = mapModelsDevModel(catalogueProvider, model);
+        return provider.credential_type === "oauth"
+          ? { ...mapped, provider: { ...mapped.provider, pricing: { input: "0", output: "0" } } }
+          : mapped;
+      })
       .filter((model) => !existing.has(model.provider.model));
-  }, [catalogue, provider.slug, existing]);
+  }, [catalogue, provider.catalogue_provider, provider.credential_type, provider.slug, existing]);
 
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [search, setSearch] = useState("");
@@ -287,7 +301,7 @@ function AddFromCatalogue({
               </EmptyMedia>
               <EmptyTitle>Nothing to add</EmptyTitle>
               <EmptyDescription>
-                {catalogue[provider.slug]
+                {catalogue[provider.catalogue_provider ?? provider.slug]
                   ? "Every catalogue model for this provider is already added."
                   : "This provider isn’t on models.dev. Add a custom model instead."}
               </EmptyDescription>
@@ -370,13 +384,7 @@ function perTokenString(dollarsPerMillion: string): string {
   return (value / 1_000_000).toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-function AddCustomModel({
-  provider,
-  onBack,
-}: {
-  provider: Doc<"providers">;
-  onBack: () => void;
-}) {
+function AddCustomModel({ provider, onBack }: { provider: Doc<"providers">; onBack: () => void }) {
   const addModels = useMutation(api.providers.addProviderModels);
 
   const [name, setName] = useState("");

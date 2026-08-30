@@ -1,8 +1,8 @@
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
-import { ensureSession as ensureSessionClient } from "@better-auth-ui/react";
-import { ensureSession as ensureSessionServer } from "@better-auth-ui/react/server";
+import { ensureSession as ensureSessionClient } from "@better-auth-ui/core";
+import { ensureSessionServer } from "@better-auth-ui/core/server";
 import { createFileRoute, Outlet, redirect, useRouterState } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
@@ -140,6 +140,7 @@ function ChatHomePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState<string>();
+  const [provider, setProvider] = useState<string>();
   const [reasoningBudget, setReasoningBudget] = useState<number>();
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [welcomeIndex] = useState(() => Math.floor(Math.random() * welcomeTextCount));
@@ -156,6 +157,9 @@ function ChatHomePage() {
   const selectedModel = model ?? defaultModel ?? models?.[0]?.slug;
   const canSubmit = Boolean(balance && selectedModel && !isSubmitting);
   const selectedModelData = models?.find((item) => item.slug === selectedModel);
+  const selectedProvider = selectedModelData?.providers.some((item) => item.id === provider)
+    ? provider
+    : selectedModelData?.providers[0]?.id;
   const handleModelChange = useCallback((nextModel: string) => {
     setModel(nextModel);
   }, []);
@@ -188,6 +192,7 @@ function ChatHomePage() {
           disabled={!canSubmit}
           models={models}
           onModelChange={handleModelChange}
+          onProviderChange={setProvider}
           onReasoningBudgetChange={setReasoningBudget}
           onReasoningEffortChange={setReasoningEffort}
           onSubmit={async ({ text, files }) => {
@@ -212,6 +217,7 @@ function ChatHomePage() {
                   text: trimmedText,
                   files,
                   model: selectedModel,
+                  ...(selectedProvider ? { provider: selectedProvider } : {}),
                   ...(selectedModelData?.reasoning ? { reasoningEffort } : {}),
                   ...(selectedModelData?.features?.reasoning_budget && reasoningBudget
                     ? { reasoningBudget }
@@ -244,6 +250,7 @@ function ChatHomePage() {
           reasoningBudget={reasoningBudget}
           reasoningEffort={reasoningEffort}
           selectedModel={selectedModel}
+          selectedProvider={selectedProvider}
           status={isSubmitting ? "submitted" : "ready"}
           toolsMenu={<ChatToolsMenu balance={balance?._id} />}
         />

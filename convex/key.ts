@@ -150,9 +150,7 @@ export const billKey = internalMutation({
         .unique(),
     ]);
     if (!modelInfo) throw new Error(`Unknown model: ${args.request.model_slug}`);
-    const modelFromProvider = providerInfo?.models.find(
-      (q) => q.model === args.request.model_slug,
-    );
+    const modelFromProvider = providerInfo?.models.find((q) => q.model === args.request.model_slug);
     if (!modelFromProvider) {
       throw new Error(
         `Model ${args.request.model_slug} is not available on provider ${args.request.provider}.`,

@@ -79,8 +79,7 @@ export function PreferencesPanel() {
         <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold tracking-tight">Default model</h2>
           <p className="text-sm text-muted-foreground">
-            The model new chats start with. When unset, the composer uses the first available
-            model.
+            The model new chats start with. When unset, the composer uses the first available model.
           </p>
         </div>
 
