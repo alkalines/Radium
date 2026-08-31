@@ -32,6 +32,7 @@ import {
   ConversationContent,
   ConversationEmptyState,
   ConversationScrollButton,
+  ConversationScrollTo,
 } from "@/components/ai-elements/conversation";
 import {
   Context,
@@ -587,6 +588,11 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
             ))
           )}
         </ConversationContent>
+        <ConversationScrollTo
+          enabled={alignLatestUserMessage.current}
+          targetRef={latestUserMessageElement}
+          trigger={latestUserMessageId}
+        />
         <ConversationScrollButton onClick={() => (alignLatestUserMessage.current = false)} />
       </Conversation>
 

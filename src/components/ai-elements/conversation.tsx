@@ -3,8 +3,8 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ArrowDownIcon } from "lucide-react";
-import type { ComponentProps } from "react";
-import { useCallback } from "react";
+import type { ComponentProps, RefObject } from "react";
+import { useCallback, useLayoutEffect } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
@@ -59,6 +59,37 @@ export const ConversationEmptyState = ({
 );
 
 export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
+
+export type ConversationScrollToProps = {
+  enabled: boolean;
+  targetRef: RefObject<HTMLElement | null>;
+  trigger: string | undefined;
+};
+
+/** Scrolls a newly mounted conversation item to the top of the viewport. */
+export const ConversationScrollTo = ({
+  enabled,
+  targetRef,
+  trigger,
+}: ConversationScrollToProps) => {
+  const { scrollRef, stopScroll } = useStickToBottomContext();
+
+  useLayoutEffect(() => {
+    const scrollElement = scrollRef.current;
+    const targetElement = targetRef.current;
+    if (!enabled || !trigger || !scrollElement || !targetElement) return;
+
+    stopScroll();
+    const scrollBounds = scrollElement.getBoundingClientRect();
+    const targetBounds = targetElement.getBoundingClientRect();
+    scrollElement.scrollTo({
+      behavior: "smooth",
+      top: Math.max(0, scrollElement.scrollTop + targetBounds.top - scrollBounds.top),
+    });
+  }, [enabled, scrollRef, stopScroll, targetRef, trigger]);
+
+  return null;
+};
 
 export const ConversationScrollButton = ({
   className,
