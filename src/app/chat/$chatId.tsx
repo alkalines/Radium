@@ -571,7 +571,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   }
 
   return (
-    <main className="flex min-h-[calc(100svh-var(--header-height))] flex-col">
+    <main className="flex h-[calc(100svh-var(--header-height))] min-h-0 flex-col overflow-hidden md:h-[calc(100svh-var(--header-height)-1rem)]">
       {latestUsage && maxTokens ? (
         <aside className="fixed top-[calc(var(--header-height)+1rem)] right-4 z-10 hidden lg:block">
           <ChatContextIndicator maxTokens={maxTokens} modelId={selectedModel} usage={latestUsage} />
@@ -628,7 +628,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         <ConversationScrollButton onClick={() => setAlignLatestUserMessage(false)} />
       </Conversation>
 
-      <div className="sticky bottom-0 border-t bg-background/95 p-4 backdrop-blur">
+      <div className="shrink-0 border-t bg-background/95 p-4 backdrop-blur">
         <div
           className="mx-auto flex w-full max-w-3xl flex-col gap-3"
           style={{ viewTransitionName: chatComposerViewTransitionName }}
