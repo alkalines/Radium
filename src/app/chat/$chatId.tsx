@@ -144,7 +144,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const [handoffSettled, setHandoffSettled] = useState(() => handoffPrompt === null);
   const loadedInitialMessages = useRef(false);
   const sentQueuedMessage = useRef(false);
-  const alignLatestUserMessage = useRef(false);
+  const [alignLatestUserMessage, setAlignLatestUserMessage] = useState(false);
   const latestUserMessageElement = useRef<HTMLDivElement | null>(null);
   const submittedApprovalContinuations = useRef(new Set<string>());
   const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
@@ -269,12 +269,15 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const latestUserMessageId = [...messages]
     .reverse()
     .find((message) => message.role === "user")?.id;
-  const targetScrollTop = useCallback((defaultTargetScrollTop: number) => {
-    if (!alignLatestUserMessage.current || !latestUserMessageElement.current) {
-      return defaultTargetScrollTop;
-    }
-    return latestUserMessageElement.current.offsetTop;
-  }, []);
+  const targetScrollTop = useCallback(
+    (defaultTargetScrollTop: number) => {
+      if (!alignLatestUserMessage || !latestUserMessageElement.current) {
+        return defaultTargetScrollTop;
+      }
+      return latestUserMessageElement.current.offsetTop;
+    },
+    [alignLatestUserMessage],
+  );
 
   useEffect(() => {
     if (handoffPrompt === null) {
@@ -315,7 +318,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     }
 
     sentQueuedMessage.current = true;
-    alignLatestUserMessage.current = true;
+    setAlignLatestUserMessage(true);
     void sendMessage(
       {
         text: chat.messages_queue.text,
@@ -400,7 +403,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       const files = getMessageFiles(message);
       setEditingId(null);
       setMessages(messages.slice(0, index));
-      alignLatestUserMessage.current = true;
+      setAlignLatestUserMessage(true);
       void sendMessage({ text: nextText, files }, { body: buildSendBody(selectedModel) });
     },
     [buildSendBody, messages, selectedModel, sendMessage, setMessages],
@@ -587,13 +590,19 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
               />
             ))
           )}
+          {alignLatestUserMessage && latestUserMessageId ? (
+            <div
+              aria-hidden="true"
+              className="min-h-[calc(100svh-var(--header-height))] shrink-0"
+            />
+          ) : null}
         </ConversationContent>
         <ConversationScrollTo
-          enabled={alignLatestUserMessage.current}
+          enabled={alignLatestUserMessage}
           targetRef={latestUserMessageElement}
           trigger={latestUserMessageId}
         />
-        <ConversationScrollButton onClick={() => (alignLatestUserMessage.current = false)} />
+        <ConversationScrollButton onClick={() => setAlignLatestUserMessage(false)} />
       </Conversation>
 
       <div className="sticky bottom-0 border-t bg-background/95 p-4 backdrop-blur">
@@ -634,7 +643,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
                 return;
               }
 
-              alignLatestUserMessage.current = true;
+              setAlignLatestUserMessage(true);
               void sendMessage(
                 { text: trimmedText, files },
                 {
