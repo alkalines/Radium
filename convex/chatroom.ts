@@ -194,6 +194,37 @@ export const setTitleModelDefault = mutation({
   },
 });
 
+/** Read whether reasoning and tool activity use the combined Chain of Thought UI. */
+export const getChainOfThoughtEnabled = query({
+  args: {},
+  handler: async (ctx): Promise<boolean> => {
+    const userId = await requireUserId(ctx);
+    const row = await settingsForUser(ctx, userId);
+    return row?.enableChainOfThought ?? true;
+  },
+});
+
+/** Set whether reasoning and tool activity use the combined Chain of Thought UI. */
+export const setChainOfThoughtEnabled = mutation({
+  args: { enabled: v.boolean() },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const existing = await settingsForUser(ctx, userId);
+    if (existing) {
+      await ctx.db.patch("chatroom_settings", existing._id, {
+        enableChainOfThought: args.enabled,
+      });
+      return existing._id;
+    }
+    return await ctx.db.insert("chatroom_settings", {
+      userId,
+      enableChainOfThought: args.enabled,
+      builtinToolSets: [],
+      mcpServers: [],
+    });
+  },
+});
+
 /**
  * The effective tool selection for a chat: its own override when present,
  * otherwise the user's defaults. `source` tells the UI whether toggling will

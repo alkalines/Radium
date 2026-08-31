@@ -79,6 +79,8 @@ export async function handleAISDKChat(
       status: 401,
     });
 
+  const previousPerformance = getLastAssistantPerformance(body.messages);
+  const generations: Array<{ completionTokens: number; generationTimeMs: number }> = [];
   const provider = createInternalGatewayProvider(
     ctx,
     chatInfo.balance,
@@ -89,6 +91,11 @@ export async function handleAISDKChat(
         { status: 500 },
       ),
     body.provider,
+    (generation) =>
+      generations.push({
+        completionTokens: generation.usage.completion_tokens,
+        generationTimeMs: generation.genTime,
+      }),
   );
 
   await ctx.runMutation(internal.aisdk.EditChat, {
@@ -146,10 +153,12 @@ export async function handleAISDKChat(
         // Attach cumulative token usage once the response finishes so the client
         // can render context-window usage and cost for the message.
         if (part.type === "finish") {
+          const performance = aggregatePerformance(generations, previousPerformance);
           return {
             model: body.model,
             ...(body.provider ? { provider: body.provider } : {}),
             usage: part.totalUsage,
+            ...(performance ? { performance } : {}),
           };
         }
         return {
@@ -182,6 +191,57 @@ export async function handleAISDKChat(
       },
     }),
   });
+}
+
+type MessagePerformance = {
+  averageTps: number;
+  generationTimeMs: number;
+  requestCount: number;
+};
+
+function getLastAssistantPerformance(messages: UIMessage[]): MessagePerformance | undefined {
+  const message = messages.at(-1);
+  if (message?.role !== "assistant" || typeof message.metadata !== "object" || !message.metadata) {
+    return undefined;
+  }
+  const performance = "performance" in message.metadata ? message.metadata.performance : undefined;
+  if (
+    typeof performance !== "object" ||
+    !performance ||
+    !("averageTps" in performance) ||
+    !("generationTimeMs" in performance) ||
+    !("requestCount" in performance) ||
+    typeof performance.averageTps !== "number" ||
+    typeof performance.generationTimeMs !== "number" ||
+    typeof performance.requestCount !== "number"
+  ) {
+    return undefined;
+  }
+  return performance as MessagePerformance;
+}
+
+function aggregatePerformance(
+  generations: Array<{ completionTokens: number; generationTimeMs: number }>,
+  previous: MessagePerformance | undefined,
+): MessagePerformance | undefined {
+  const requestCount = generations.length + (previous?.requestCount ?? 0);
+  if (requestCount === 0) return previous;
+
+  const tpsTotal = generations.reduce(
+    (total, generation) =>
+      total +
+      (generation.generationTimeMs > 0
+        ? generation.completionTokens / (generation.generationTimeMs / 1000)
+        : 0),
+    (previous?.averageTps ?? 0) * (previous?.requestCount ?? 0),
+  );
+  return {
+    averageTps: tpsTotal / requestCount,
+    generationTimeMs:
+      generations.reduce((total, generation) => total + generation.generationTimeMs, 0) +
+      (previous?.generationTimeMs ?? 0),
+    requestCount,
+  };
 }
 
 /**

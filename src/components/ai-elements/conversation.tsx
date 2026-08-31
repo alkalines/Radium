@@ -3,8 +3,8 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ArrowDownIcon } from "lucide-react";
-import type { ComponentProps } from "react";
-import { useCallback } from "react";
+import type { ComponentProps, RefObject } from "react";
+import { useCallback, useLayoutEffect } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
@@ -60,15 +60,46 @@ export const ConversationEmptyState = ({
 
 export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
 
+export type ConversationScrollToProps = {
+  enabled: boolean;
+  targetRef: RefObject<HTMLElement | null>;
+  trigger: string | undefined;
+};
+
+/** Starts the conversation's resize-follow animation for a newly mounted item. */
+export const ConversationScrollTo = ({
+  enabled,
+  targetRef,
+  trigger,
+}: ConversationScrollToProps) => {
+  const { scrollRef, scrollToBottom } = useStickToBottomContext();
+
+  useLayoutEffect(() => {
+    const scrollElement = scrollRef.current;
+    const targetElement = targetRef.current;
+    if (!enabled || !trigger || !scrollElement || !targetElement) return;
+
+    void scrollToBottom({ animation: "smooth" });
+  }, [enabled, scrollRef, scrollToBottom, targetRef, trigger]);
+
+  return null;
+};
+
 export const ConversationScrollButton = ({
   className,
+  onClick,
   ...props
 }: ConversationScrollButtonProps) => {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext();
 
-  const handleScrollToBottom = useCallback(() => {
-    scrollToBottom();
-  }, [scrollToBottom]);
+  const handleScrollToBottom = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      onClick?.(event);
+      if (event.defaultPrevented) return;
+      scrollToBottom();
+    },
+    [onClick, scrollToBottom],
+  );
 
   return (
     !isAtBottom && (

@@ -1,5 +1,7 @@
 import {
   DefaultChatTransport,
+  getToolName,
+  isToolUIPart,
   type FileUIPart,
   type LanguageModelUsage,
   type ToolUIPart,
@@ -15,12 +17,22 @@ import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BrainIcon, SearchIcon, WrenchIcon } from "lucide-react";
 
+import {
+  ChainOfThought,
+  ChainOfThoughtContent,
+  ChainOfThoughtHeader,
+  ChainOfThoughtSearchResult,
+  ChainOfThoughtSearchResults,
+  ChainOfThoughtStep,
+} from "@/components/ai-elements/chain-of-thought";
 import {
   Conversation,
   ConversationContent,
   ConversationEmptyState,
   ConversationScrollButton,
+  ConversationScrollTo,
 } from "@/components/ai-elements/conversation";
 import {
   Context,
@@ -104,6 +116,7 @@ export const Route = createFileRoute("/chat/$chatId")({
     );
     void queryClient.prefetchQuery(convexQuery(api.models.availableModels, {}));
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+    void queryClient.prefetchQuery(convexQuery(api.chatroom.getChainOfThoughtEnabled, {}));
   },
   component: ChatConversationPage,
 });
@@ -131,11 +144,19 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const [handoffSettled, setHandoffSettled] = useState(() => handoffPrompt === null);
   const loadedInitialMessages = useRef(false);
   const sentQueuedMessage = useRef(false);
+  const [alignLatestUserMessage, setAlignLatestUserMessage] = useState(false);
+  const alignmentWasActive = useRef(false);
+  const latestUserMessageElement = useRef<HTMLDivElement | null>(null);
+  const alignmentSpacerElement = useRef<HTMLDivElement | null>(null);
   const submittedApprovalContinuations = useRef(new Set<string>());
   const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
-  const { data: defaultModel } = useQuery(
+  const defaultModelQuery = useQuery(
     convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
+  );
+  const defaultModel = defaultModelQuery.data;
+  const { data: chainOfThoughtEnabled = true } = useQuery(
+    convexQuery(api.chatroom.getChainOfThoughtEnabled, signedIn ? {} : "skip"),
   );
   const queuedModel = typeof chat === "string" ? undefined : chat?.messages_queue?.model;
   const queuedProvider = typeof chat === "string" ? undefined : chat?.messages_queue?.provider;
@@ -149,9 +170,26 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     typeof chat === "string" || !chat
       ? undefined
       : getLastMessageProvider(chat.messages as UIMessage[]);
+  const isModelLoading =
+    models === undefined ||
+    Boolean(
+      models.length > 0 &&
+      !model &&
+      (chat === undefined ||
+        (!chatModel &&
+          !queuedModel &&
+          (userInfo === undefined || (signedIn && defaultModelQuery.isPending)))),
+    );
+  const availableDefaultModel = models?.some((item) => item.slug === defaultModel)
+    ? defaultModel
+    : undefined;
   // Resolution order: explicit choice, this chat's model, queued model, the
   // user's saved default, then the first available model.
-  const selectedModel = model ?? chatModel ?? queuedModel ?? defaultModel ?? models?.[0]?.slug;
+  const selectedModel =
+    model ??
+    chatModel ??
+    queuedModel ??
+    (isModelLoading ? undefined : (availableDefaultModel ?? models?.[0]?.slug));
   const selectedModelData = models?.find((item) => item.slug === selectedModel);
   const preferredProvider = provider ?? chatProvider ?? queuedProvider;
   const selectedProvider = selectedModelData?.providers.some(
@@ -230,6 +268,26 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     },
     transport,
   });
+  const latestUserMessageId = [...messages]
+    .reverse()
+    .find((message) => message.role === "user")?.id;
+  const targetScrollTop = useCallback(
+    (defaultTargetScrollTop: number, { scrollElement }: { scrollElement: HTMLElement }) => {
+      const targetElement = latestUserMessageElement.current;
+      const spacerElement = alignmentSpacerElement.current;
+      if (!targetElement || !spacerElement) {
+        return defaultTargetScrollTop;
+      }
+
+      const scrollBounds = scrollElement.getBoundingClientRect();
+      const targetBounds = targetElement.getBoundingClientRect();
+      const messageScrollTop = scrollElement.scrollTop + targetBounds.top - scrollBounds.top;
+      const contentScrollTop = defaultTargetScrollTop - spacerElement.offsetHeight;
+
+      return Math.max(messageScrollTop, contentScrollTop);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (handoffPrompt === null) {
@@ -248,6 +306,18 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       clearChatHandoff(chatId);
     }
   }, [chat, chatId]);
+
+  useEffect(() => {
+    if (alignLatestUserMessage && (status === "submitted" || status === "streaming")) {
+      alignmentWasActive.current = true;
+      return;
+    }
+
+    if (alignmentWasActive.current) {
+      alignmentWasActive.current = false;
+      setAlignLatestUserMessage(false);
+    }
+  }, [alignLatestUserMessage, status]);
 
   useEffect(() => {
     if (loadedInitialMessages.current || !chat || typeof chat === "string") {
@@ -270,6 +340,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     }
 
     sentQueuedMessage.current = true;
+    setAlignLatestUserMessage(true);
     void sendMessage(
       {
         text: chat.messages_queue.text,
@@ -354,6 +425,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       const files = getMessageFiles(message);
       setEditingId(null);
       setMessages(messages.slice(0, index));
+      setAlignLatestUserMessage(true);
       void sendMessage({ text: nextText, files }, { body: buildSendBody(selectedModel) });
     },
     [buildSendBody, messages, selectedModel, sendMessage, setMessages],
@@ -443,6 +515,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         <ChatStartingTransition prompt={handoffPrompt}>
           <ChatPromptInput
             disabled
+            isModelLoading={isModelLoading}
             models={models}
             onModelChange={handleModelChange}
             onProviderChange={setProvider}
@@ -468,6 +541,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       <ChatStartingTransition prompt={handoffPrompt}>
         <ChatPromptInput
           disabled
+          isModelLoading={isModelLoading}
           models={models}
           onModelChange={handleModelChange}
           onProviderChange={setProvider}
@@ -497,8 +571,13 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   }
 
   return (
-    <main className="flex min-h-[calc(100svh-var(--header-height))] flex-col">
-      <Conversation className="min-h-0">
+    <main className="flex h-[calc(100svh-var(--header-height))] min-h-0 flex-col overflow-hidden md:h-[calc(100svh-var(--header-height)-1rem)]">
+      {latestUsage && maxTokens ? (
+        <aside className="fixed top-[calc(var(--header-height)+1rem)] right-4 z-10 hidden lg:block">
+          <ChatContextIndicator maxTokens={maxTokens} modelId={selectedModel} usage={latestUsage} />
+        </aside>
+      ) : null}
+      <Conversation className="min-h-0" targetScrollTop={targetScrollTop}>
         <ConversationContent className="mx-auto w-full max-w-4xl px-4 py-8">
           {messages.length === 0 ? (
             <ConversationEmptyState description="Send a prompt to begin." title="No messages yet" />
@@ -509,7 +588,15 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
                 isStreaming={status === "streaming" && messageIndex === messages.length - 1}
                 key={message.id}
                 message={message}
+                messageRef={
+                  message.id === latestUserMessageId
+                    ? (element) => {
+                        latestUserMessageElement.current = element;
+                      }
+                    : undefined
+                }
                 models={forkPickerModels}
+                showChainOfThought={chainOfThoughtEnabled}
                 onApprovalResponse={addToolApprovalResponse}
                 onCopy={() => handleCopy(message)}
                 onEditCancel={() => setEditingId(null)}
@@ -525,11 +612,23 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
               />
             ))
           )}
+          {alignLatestUserMessage && latestUserMessageId ? (
+            <div
+              aria-hidden="true"
+              className="h-[calc(100svh-var(--header-height))] shrink-0"
+              ref={alignmentSpacerElement}
+            />
+          ) : null}
         </ConversationContent>
-        <ConversationScrollButton />
+        <ConversationScrollTo
+          enabled={alignLatestUserMessage}
+          targetRef={latestUserMessageElement}
+          trigger={latestUserMessageId}
+        />
+        <ConversationScrollButton onClick={() => setAlignLatestUserMessage(false)} />
       </Conversation>
 
-      <div className="sticky bottom-0 border-t bg-background/95 p-4 backdrop-blur">
+      <div className="shrink-0 border-t bg-background/95 p-4 backdrop-blur">
         <div
           className="mx-auto flex w-full max-w-3xl flex-col gap-3"
           style={{ viewTransitionName: chatComposerViewTransitionName }}
@@ -542,32 +641,18 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
           ) : null}
 
           {latestUsage && maxTokens ? (
-            <div className="flex items-center justify-end">
-              <Context
+            <div className="flex items-center justify-end lg:hidden">
+              <ChatContextIndicator
                 maxTokens={maxTokens}
                 modelId={selectedModel}
                 usage={latestUsage}
-                usedTokens={latestUsage.totalTokens ?? 0}
-              >
-                <ContextTrigger className="h-7 gap-1.5 px-2" size="sm" />
-                <ContextContent>
-                  <ContextContentHeader />
-                  <ContextContentBody>
-                    <div className="space-y-2">
-                      <ContextInputUsage />
-                      <ContextOutputUsage />
-                      <ContextReasoningUsage />
-                      <ContextCacheUsage />
-                    </div>
-                  </ContextContentBody>
-                  <ContextContentFooter />
-                </ContextContent>
-              </Context>
+              />
             </div>
           ) : null}
 
           <ChatPromptInput
             disabled={status !== "ready" || !selectedModel}
+            isModelLoading={isModelLoading}
             models={models}
             onModelChange={handleModelChange}
             onProviderChange={setProvider}
@@ -581,6 +666,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
                 return;
               }
 
+              setAlignLatestUserMessage(true);
               void sendMessage(
                 { text: trimmedText, files },
                 {
@@ -611,9 +697,44 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   );
 }
 
+function ChatContextIndicator({
+  maxTokens,
+  modelId,
+  usage,
+}: {
+  maxTokens: number;
+  modelId: string | undefined;
+  usage: LanguageModelUsage;
+}) {
+  return (
+    <Context
+      maxTokens={maxTokens}
+      modelId={modelId}
+      usage={usage}
+      usedTokens={usage.totalTokens ?? 0}
+    >
+      <ContextTrigger className="h-7 gap-1.5 bg-background/90 px-2 shadow-sm" size="sm" />
+      <ContextContent>
+        <ContextContentHeader />
+        <ContextContentBody>
+          <div className="flex flex-col gap-2">
+            <ContextInputUsage />
+            <ContextOutputUsage />
+            <ContextReasoningUsage />
+            <ContextCacheUsage />
+          </div>
+        </ContextContentBody>
+        <ContextContentFooter />
+      </ContextContent>
+    </Context>
+  );
+}
+
 type ChatMessageProps = {
   message: UIMessage;
+  messageRef?: (element: HTMLDivElement | null) => void;
   models: ForkPickerModel[] | undefined;
+  showChainOfThought: boolean;
   status: ReturnType<typeof useChat>["status"];
   isStreaming: boolean;
   isEditing: boolean;
@@ -628,7 +749,9 @@ type ChatMessageProps = {
 
 function ChatMessage({
   message,
+  messageRef,
   models,
+  showChainOfThought,
   status,
   isStreaming,
   isEditing,
@@ -642,9 +765,10 @@ function ChatMessage({
 }: ChatMessageProps) {
   const actionsDisabled = status === "submitted" || status === "streaming";
   const showActions = !isStreaming && !isEditing && message.role !== "system";
+  const performance = getPerformanceMetadata(message.metadata);
 
   return (
-    <Message from={message.role}>
+    <Message from={message.role} ref={messageRef}>
       <MessageContent>
         {isEditing ? (
           <MessageEditor
@@ -653,35 +777,12 @@ function ChatMessage({
             onSubmit={onEditSubmit}
           />
         ) : (
-          message.parts.map((part, index) => {
-            if (part.type === "text") {
-              return <MessageResponse key={`${message.id}-${index}`}>{part.text}</MessageResponse>;
-            }
-
-            if (part.type === "reasoning") {
-              return (
-                <Reasoning isStreaming={part.state === "streaming"} key={`${message.id}-${index}`}>
-                  <ReasoningTrigger />
-                  <ReasoningContent>{part.text}</ReasoningContent>
-                </Reasoning>
-              );
-            }
-
-            if (isToolPart(part)) {
-              return (
-                <ChatToolPart
-                  hasLaterAssistantContent={message.parts
-                    .slice(index + 1)
-                    .some(hasRenderableAssistantContent)}
-                  key={`${message.id}-${index}`}
-                  onApprovalResponse={onApprovalResponse}
-                  part={part}
-                />
-              );
-            }
-
-            return null;
-          })
+          <ChatMessageParts
+            isStreaming={isStreaming}
+            message={message}
+            onApprovalResponse={onApprovalResponse}
+            showChainOfThought={showChainOfThought}
+          />
         )}
       </MessageContent>
 
@@ -693,11 +794,143 @@ function ChatMessage({
           onEdit={onEditStart}
           onFork={onFork}
           onRetry={onRetry}
+          performance={message.role === "assistant" ? performance : undefined}
           role={message.role}
         />
       ) : null}
     </Message>
   );
+}
+
+type IndexedMessagePart = {
+  index: number;
+  part: UIMessage["parts"][number];
+};
+
+function ChatMessageParts({
+  isStreaming,
+  message,
+  onApprovalResponse,
+  showChainOfThought,
+}: {
+  isStreaming: boolean;
+  message: UIMessage;
+  onApprovalResponse: (response: ToolApprovalResponse) => void;
+  showChainOfThought: boolean;
+}) {
+  if (!showChainOfThought) {
+    return message.parts.map((part, index) =>
+      renderMessagePart(message, part, index, onApprovalResponse),
+    );
+  }
+
+  const blocks: Array<
+    { type: "part"; item: IndexedMessagePart } | { type: "thought"; items: IndexedMessagePart[] }
+  > = [];
+  for (const [index, part] of message.parts.entries()) {
+    if (part.type === "step-start") continue;
+    if (part.type === "reasoning" || isToolPart(part)) {
+      const previous = blocks.at(-1);
+      if (previous?.type === "thought") {
+        previous.items.push({ index, part });
+      } else {
+        blocks.push({ type: "thought", items: [{ index, part }] });
+      }
+    } else {
+      blocks.push({ type: "part", item: { index, part } });
+    }
+  }
+
+  return blocks.map((block) => {
+    if (block.type === "part") {
+      return renderMessagePart(message, block.item.part, block.item.index, onApprovalResponse);
+    }
+
+    return (
+      <ChainOfThought
+        defaultOpen={
+          isStreaming ||
+          block.items.some(({ part }) => isToolPart(part) && part.state === "approval-requested")
+        }
+        key={`${message.id}-thought-${block.items[0].index}`}
+      >
+        <ChainOfThoughtHeader>
+          {isStreaming ? "Thinking..." : "Chain of Thought"}
+        </ChainOfThoughtHeader>
+        <ChainOfThoughtContent>
+          {block.items.map(({ index, part }) => {
+            if (part.type === "reasoning") {
+              return (
+                <ChainOfThoughtStep
+                  icon={BrainIcon}
+                  key={`${message.id}-${index}`}
+                  label="Reasoning"
+                  status={part.state === "streaming" ? "active" : "complete"}
+                >
+                  <MessageResponse className="text-muted-foreground text-xs">
+                    {part.text}
+                  </MessageResponse>
+                </ChainOfThoughtStep>
+              );
+            }
+
+            if (!isToolPart(part)) return null;
+            const webSearch = isWebSearchTool(part);
+            return (
+              <ChainOfThoughtStep
+                description={webSearch ? getWebSearchQuery(part.input) : undefined}
+                icon={webSearch ? SearchIcon : WrenchIcon}
+                key={`${message.id}-${index}`}
+                label={getToolStepLabel(part)}
+                status={isActiveToolState(part.state) ? "active" : "complete"}
+              >
+                <ChatToolPart
+                  compact
+                  hasLaterAssistantContent={message.parts
+                    .slice(index + 1)
+                    .some(hasRenderableAssistantContent)}
+                  onApprovalResponse={onApprovalResponse}
+                  part={part}
+                />
+              </ChainOfThoughtStep>
+            );
+          })}
+        </ChainOfThoughtContent>
+      </ChainOfThought>
+    );
+  });
+}
+
+function renderMessagePart(
+  message: UIMessage,
+  part: UIMessage["parts"][number],
+  index: number,
+  onApprovalResponse: (response: ToolApprovalResponse) => void,
+) {
+  if (part.type === "text") {
+    return <MessageResponse key={`${message.id}-${index}`}>{part.text}</MessageResponse>;
+  }
+  if (part.type === "reasoning") {
+    return (
+      <Reasoning isStreaming={part.state === "streaming"} key={`${message.id}-${index}`}>
+        <ReasoningTrigger />
+        <ReasoningContent>{part.text}</ReasoningContent>
+      </Reasoning>
+    );
+  }
+  if (isToolPart(part)) {
+    return (
+      <ChatToolPart
+        hasLaterAssistantContent={message.parts
+          .slice(index + 1)
+          .some(hasRenderableAssistantContent)}
+        key={`${message.id}-${index}`}
+        onApprovalResponse={onApprovalResponse}
+        part={part}
+      />
+    );
+  }
+  return null;
 }
 
 type MessageEditorProps = {
@@ -748,17 +981,19 @@ function MessageEditor({ defaultValue, onCancel, onSubmit }: MessageEditorProps)
 type ToolApprovalResponse = Parameters<ReturnType<typeof useChat>["addToolApprovalResponse"]>[0];
 
 function ChatToolPart({
+  compact = false,
   hasLaterAssistantContent,
   onApprovalResponse,
   part,
 }: {
+  compact?: boolean;
   hasLaterAssistantContent: boolean;
   onApprovalResponse: (response: ToolApprovalResponse) => void;
   part: ToolUIPart;
 }) {
   const approval = "approval" in part ? part.approval : undefined;
   const toolInput = getToolInput(part);
-  const toolName = part.type.replace(/^tool-/, "");
+  const toolName = getToolName(part);
   const isApprovalRequested = part.state === "approval-requested";
   const shouldAutoClose =
     part.state === "approval-responded" ||
@@ -779,6 +1014,44 @@ function ChatToolPart({
     }
   }, [isApprovalRequested, shouldAutoClose]);
 
+  const content = (
+    <>
+      {!isWebSearchTool(part) ? (
+        <ToolInput input={toolInput} key={JSON.stringify(toolInput)} />
+      ) : null}
+      {approval && isApprovalRequested ? (
+        <Confirmation
+          approval={approval}
+          className="border-0 bg-transparent px-4 pt-0 pb-4 shadow-none"
+          state={part.state}
+        >
+          <ConfirmationActions className="w-full justify-end pt-1">
+            <ConfirmationAction
+              onClick={() => onApprovalResponse({ approved: false, id: approval.id })}
+              variant="outline"
+            >
+              Deny
+            </ConfirmationAction>
+            <ConfirmationAction
+              onClick={() => onApprovalResponse({ approved: true, id: approval.id })}
+            >
+              Approve
+            </ConfirmationAction>
+          </ConfirmationActions>
+        </Confirmation>
+      ) : null}
+      {isWebSearchTool(part) && part.state === "output-available" ? (
+        <WebSearchResults output={part.output} />
+      ) : (
+        <ToolOutput errorText={part.errorText} output={part.output} />
+      )}
+    </>
+  );
+
+  if (compact) {
+    return <div className="overflow-hidden rounded-lg border bg-muted/20">{content}</div>;
+  }
+
   return (
     <Tool
       className="w-[min(calc(100vw-2rem),42rem)] max-w-full"
@@ -786,37 +1059,84 @@ function ChatToolPart({
       open={isOpen}
     >
       <ToolHeader state={part.state} title={toolName} type={part.type} />
-      <ToolContent>
-        <ToolInput input={toolInput} key={JSON.stringify(toolInput)} />
-        {approval && isApprovalRequested ? (
-          <Confirmation
-            approval={approval}
-            className="border-0 bg-transparent px-4 pt-0 pb-4 shadow-none"
-            state={part.state}
-          >
-            <ConfirmationActions className="w-full justify-end pt-1">
-              <ConfirmationAction
-                onClick={() => onApprovalResponse({ approved: false, id: approval.id })}
-                variant="outline"
-              >
-                Deny
-              </ConfirmationAction>
-              <ConfirmationAction
-                onClick={() => onApprovalResponse({ approved: true, id: approval.id })}
-              >
-                Approve
-              </ConfirmationAction>
-            </ConfirmationActions>
-          </Confirmation>
-        ) : null}
-        <ToolOutput errorText={part.errorText} output={part.output} />
-      </ToolContent>
+      <ToolContent>{content}</ToolContent>
     </Tool>
   );
 }
 
+function WebSearchResults({ output }: { output: unknown }) {
+  const results = getWebSearchResults(output);
+  if (results.length === 0) {
+    return <ToolOutput errorText={undefined} output={output} />;
+  }
+
+  return (
+    <ChainOfThoughtSearchResults className="p-3">
+      {results.slice(0, 8).map((result) => (
+        <ChainOfThoughtSearchResult asChild key={result.url}>
+          <a href={result.url} rel="noreferrer" target="_blank" title={result.title}>
+            {result.favicon ? (
+              <img alt="" className="size-3 rounded-sm" src={result.favicon} />
+            ) : null}
+            <span className="max-w-48 truncate">{result.title}</span>
+          </a>
+        </ChainOfThoughtSearchResult>
+      ))}
+    </ChainOfThoughtSearchResults>
+  );
+}
+
+function getWebSearchResults(output: unknown) {
+  if (typeof output !== "object" || !output || !("results" in output)) return [];
+  if (!Array.isArray(output.results)) return [];
+
+  return output.results.flatMap((result) => {
+    if (typeof result !== "object" || !result) return [];
+    const url = "url" in result && typeof result.url === "string" ? result.url : undefined;
+    if (!url) return [];
+    return [
+      {
+        url,
+        title:
+          "title" in result && typeof result.title === "string" && result.title
+            ? result.title
+            : url,
+        favicon:
+          "favicon" in result && typeof result.favicon === "string" ? result.favicon : undefined,
+      },
+    ];
+  });
+}
+
 function isToolPart(part: UIMessage["parts"][number]): part is ToolUIPart {
-  return part.type.startsWith("tool-");
+  return isToolUIPart(part);
+}
+
+function isWebSearchTool(part: ToolUIPart) {
+  return getToolName(part).replaceAll(/[_-]/g, "").toLowerCase() === "websearch";
+}
+
+function isActiveToolState(state: ToolUIPart["state"]) {
+  return (
+    state === "input-streaming" || state === "input-available" || state === "approval-requested"
+  );
+}
+
+function getToolStepLabel(part: ToolUIPart) {
+  if (isWebSearchTool(part)) {
+    return isActiveToolState(part.state) ? "Searching the web" : "Searched the web";
+  }
+  const name = getToolName(part).replaceAll(/[_-]/g, " ");
+  return `${isActiveToolState(part.state) ? "Using" : "Used"} ${name}`;
+}
+
+function getWebSearchQuery(input: unknown) {
+  if (typeof input !== "object" || !input) return undefined;
+  if ("query" in input && typeof input.query === "string") return input.query;
+  if ("queries" in input && Array.isArray(input.queries)) {
+    return input.queries.filter((query): query is string => typeof query === "string").join(", ");
+  }
+  return undefined;
 }
 
 function hasRenderableAssistantContent(part: UIMessage["parts"][number]) {
@@ -896,6 +1216,30 @@ function getUsageMetadata(metadata: UIMessage["metadata"]): LanguageModelUsage |
   }
 
   return undefined;
+}
+
+function getPerformanceMetadata(metadata: UIMessage["metadata"]) {
+  if (typeof metadata !== "object" || !metadata || !("performance" in metadata)) {
+    return undefined;
+  }
+  const performance = metadata.performance;
+  if (
+    typeof performance !== "object" ||
+    !performance ||
+    !("averageTps" in performance) ||
+    !("generationTimeMs" in performance) ||
+    !("requestCount" in performance) ||
+    typeof performance.averageTps !== "number" ||
+    typeof performance.generationTimeMs !== "number" ||
+    typeof performance.requestCount !== "number"
+  ) {
+    return undefined;
+  }
+  return performance as {
+    averageTps: number;
+    generationTimeMs: number;
+    requestCount: number;
+  };
 }
 
 function getLastMessageModel(messages: UIMessage[]) {

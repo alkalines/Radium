@@ -6,6 +6,7 @@ import {
 } from "@/utils/types/openai/types";
 import type { Id } from "./_generated/dataModel";
 import { Internal_Chat_Completion } from "./http/chat_completion";
+import type { genCallbackType } from "@/utils/translators/openai";
 
 type ErrorResponse = (error: unknown) => Response;
 
@@ -17,6 +18,7 @@ export function createInternalGatewayProvider(
   balanceId: Id<"balances">,
   onError: ErrorResponse,
   providerSlug?: string,
+  onGeneration?: (generation: Parameters<genCallbackType>[0]) => void,
 ) {
   return createOpenAICompatible({
     name: "Radium Gateway",
@@ -30,7 +32,7 @@ export function createInternalGatewayProvider(
       try {
         const requestBody = getGatewayRequestBody(init?.body);
         if (providerSlug) requestBody.provider = providerSlug;
-        return await Internal_Chat_Completion(ctx, requestBody, balanceId);
+        return await Internal_Chat_Completion(ctx, requestBody, balanceId, onGeneration);
       } catch (error) {
         console.error(error);
         return onError(error);
