@@ -22,8 +22,7 @@ export function CreditsPanel() {
       <div className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold tracking-tight">Credits</h2>
         <p className="text-sm text-muted-foreground">
-          Track gateway credit balance and recent spend. See the Generation Logs tab for per-request
-          detail.
+          Track gateway credit balance and recent spend. See Logs for per-request detail.
         </p>
       </div>
 

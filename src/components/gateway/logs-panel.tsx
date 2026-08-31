@@ -20,6 +20,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -114,10 +115,10 @@ export function LogsPanel() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold tracking-tight">Generation Logs</h2>
+        <h2 className="text-lg font-semibold tracking-tight">Logs</h2>
         <p className="text-sm text-muted-foreground">
-          Every completion billed to this balance. Select a row to inspect model IDs, throughput,
-          and latency.
+          Every gateway request billed to this balance. Select a row to inspect identifiers, tokens,
+          throughput, and latency.
         </p>
       </div>
 
@@ -136,11 +137,13 @@ export function LogsPanel() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {Object.entries(RANGE_PRESETS).map(([value, { label }]) => (
-                <SelectItem key={value} value={value}>
-                  {label}
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                {Object.entries(RANGE_PRESETS).map(([value, { label }]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
 
@@ -177,7 +180,7 @@ export function LogsPanel() {
 
           {filtered && (
             <span className="ml-auto text-xs text-muted-foreground">
-              {filtered.length} generation{filtered.length === 1 ? "" : "s"}
+              {filtered.length} request{filtered.length === 1 ? "" : "s"}
             </span>
           )}
         </div>
@@ -196,20 +199,21 @@ export function LogsPanel() {
               <EmptyMedia variant="icon">
                 <ScrollTextIcon />
               </EmptyMedia>
-              <EmptyTitle>No generations</EmptyTitle>
+              <EmptyTitle>No requests</EmptyTitle>
               <EmptyDescription>
                 {generations && generations.length > 0
                   ? "No generations match the selected date range."
-                  : "Completions billed to this balance will appear here."}
+                  : "Gateway requests billed to this balance will appear here."}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (
-          <div className="rounded-lg border">
+          <div className="overflow-x-auto rounded-lg border">
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Date</TableHead>
+                  <TableHead>Request</TableHead>
                   <TableHead>Model</TableHead>
                   <TableHead>Provider</TableHead>
                   <TableHead className="text-right">Input</TableHead>
@@ -249,6 +253,9 @@ function GenerationRow({ generation, onSelect }: { generation: Generation; onSel
       <TableCell className="text-muted-foreground">
         {formatDate(generation._creationTime)}
       </TableCell>
+      <TableCell className="max-w-28 truncate font-mono text-xs text-muted-foreground">
+        {response.genId}
+      </TableCell>
       <TableCell className="font-medium">
         {request.model?.name ?? request.model?.slug ?? "Unknown"}
       </TableCell>
@@ -271,7 +278,7 @@ function GenerationRow({ generation, onSelect }: { generation: Generation; onSel
       <TableCell className="text-right tabular-nums">{tps.toFixed(1)} tok/s</TableCell>
       <TableCell className="text-muted-foreground">{response.finish_reason}</TableCell>
       <TableCell className="text-muted-foreground">
-        {generation.apiKey?.name ?? generation.apiKey?.preview ?? "—"}
+        {generation.apiKey?.name ?? generation.apiKey?.preview ?? "Radium Chatroom"}
       </TableCell>
     </TableRow>
   );
@@ -317,7 +324,7 @@ function GenerationDetail({ generation }: { generation: Generation }) {
         <DetailSection title="Identifiers">
           <DetailRow label="Model ID" value={request.model?.id ?? "—"} mono copyable />
           <DetailRow label="Canonical ID" value={request.model?.slug ?? "—"} mono copyable />
-          <DetailRow label="Generation ID" value={response.genId} mono copyable />
+          <DetailRow label="Request ID" value={response.genId} mono copyable />
           <DetailRow label="Provider gen ID" value={response.providerGenId} mono copyable />
         </DetailSection>
 
@@ -355,7 +362,7 @@ function GenerationDetail({ generation }: { generation: Generation }) {
           <DetailRow label="Canceled" value={request.canceled ? "Yes" : "No"} />
           <DetailRow
             label="API key"
-            value={generation.apiKey?.name ?? generation.apiKey?.preview ?? "—"}
+            value={generation.apiKey?.name ?? generation.apiKey?.preview ?? "Radium Chatroom"}
           />
         </DetailSection>
       </div>
