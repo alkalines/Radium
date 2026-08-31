@@ -99,16 +99,18 @@ export function SettingsSidebarSections({ pathname }: { pathname: string }) {
           <SidebarGroupLabel>Gateway</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {gatewaySections.map((entry) => (
-                <SidebarMenuItem key={entry.value}>
-                  <SidebarMenuButton asChild isActive={pathname === `/gateway/${entry.value}`}>
-                    <Link to="/gateway/$section" params={{ section: entry.value }}>
-                      <entry.icon />
-                      <span>{entry.label}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
+              {gatewaySections
+                .filter((entry) => !entry.hidden)
+                .map((entry) => (
+                  <SidebarMenuItem key={entry.value}>
+                    <SidebarMenuButton asChild isActive={pathname === `/gateway/${entry.value}`}>
+                      <Link to="/gateway/$section" params={{ section: entry.value }}>
+                        <entry.icon />
+                        <span>{entry.label}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
