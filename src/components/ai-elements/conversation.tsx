@@ -66,27 +66,21 @@ export type ConversationScrollToProps = {
   trigger: string | undefined;
 };
 
-/** Scrolls a newly mounted conversation item to the top of the viewport. */
+/** Starts the conversation's resize-follow animation for a newly mounted item. */
 export const ConversationScrollTo = ({
   enabled,
   targetRef,
   trigger,
 }: ConversationScrollToProps) => {
-  const { scrollRef, stopScroll } = useStickToBottomContext();
+  const { scrollRef, scrollToBottom } = useStickToBottomContext();
 
   useLayoutEffect(() => {
     const scrollElement = scrollRef.current;
     const targetElement = targetRef.current;
     if (!enabled || !trigger || !scrollElement || !targetElement) return;
 
-    stopScroll();
-    const scrollBounds = scrollElement.getBoundingClientRect();
-    const targetBounds = targetElement.getBoundingClientRect();
-    scrollElement.scrollTo({
-      behavior: "smooth",
-      top: Math.max(0, scrollElement.scrollTop + targetBounds.top - scrollBounds.top),
-    });
-  }, [enabled, scrollRef, stopScroll, targetRef, trigger]);
+    void scrollToBottom({ animation: "smooth" });
+  }, [enabled, scrollRef, scrollToBottom, targetRef, trigger]);
 
   return null;
 };

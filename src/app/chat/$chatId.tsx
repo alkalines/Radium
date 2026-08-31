@@ -145,7 +145,9 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const loadedInitialMessages = useRef(false);
   const sentQueuedMessage = useRef(false);
   const [alignLatestUserMessage, setAlignLatestUserMessage] = useState(false);
+  const alignmentWasActive = useRef(false);
   const latestUserMessageElement = useRef<HTMLDivElement | null>(null);
+  const alignmentSpacerElement = useRef<HTMLDivElement | null>(null);
   const submittedApprovalContinuations = useRef(new Set<string>());
   const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
@@ -270,13 +272,21 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     .reverse()
     .find((message) => message.role === "user")?.id;
   const targetScrollTop = useCallback(
-    (defaultTargetScrollTop: number) => {
-      if (!alignLatestUserMessage || !latestUserMessageElement.current) {
+    (defaultTargetScrollTop: number, { scrollElement }: { scrollElement: HTMLElement }) => {
+      const targetElement = latestUserMessageElement.current;
+      const spacerElement = alignmentSpacerElement.current;
+      if (!targetElement || !spacerElement) {
         return defaultTargetScrollTop;
       }
-      return latestUserMessageElement.current.offsetTop;
+
+      const scrollBounds = scrollElement.getBoundingClientRect();
+      const targetBounds = targetElement.getBoundingClientRect();
+      const messageScrollTop = scrollElement.scrollTop + targetBounds.top - scrollBounds.top;
+      const contentScrollTop = defaultTargetScrollTop - spacerElement.offsetHeight;
+
+      return Math.max(messageScrollTop, contentScrollTop);
     },
-    [alignLatestUserMessage],
+    [],
   );
 
   useEffect(() => {
@@ -296,6 +306,18 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       clearChatHandoff(chatId);
     }
   }, [chat, chatId]);
+
+  useEffect(() => {
+    if (alignLatestUserMessage && (status === "submitted" || status === "streaming")) {
+      alignmentWasActive.current = true;
+      return;
+    }
+
+    if (alignmentWasActive.current) {
+      alignmentWasActive.current = false;
+      setAlignLatestUserMessage(false);
+    }
+  }, [alignLatestUserMessage, status]);
 
   useEffect(() => {
     if (loadedInitialMessages.current || !chat || typeof chat === "string") {
@@ -593,7 +615,8 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
           {alignLatestUserMessage && latestUserMessageId ? (
             <div
               aria-hidden="true"
-              className="min-h-[calc(100svh-var(--header-height))] shrink-0"
+              className="h-[calc(100svh-var(--header-height))] shrink-0"
+              ref={alignmentSpacerElement}
             />
           ) : null}
         </ConversationContent>
