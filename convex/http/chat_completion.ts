@@ -7,7 +7,11 @@ import {
 } from "@/utils/types/openai/types";
 import AIBalancer from "@/utils/ai_balancer";
 import * as z from "zod";
-import { NonStreamingCompletion, StreamCompletion } from "@/utils/translators/openai";
+import {
+  NonStreamingCompletion,
+  StreamCompletion,
+  type genCallbackType,
+} from "@/utils/translators/openai";
 import { convertStreamToAsyncIterator } from "@/utils/tools/chunkReader";
 import { completionUsage } from "../key";
 import { GenericActionCtx } from "convex/server";
@@ -76,6 +80,7 @@ export const Internal_Chat_Completion = async (
   ctx: GenericActionCtx<any>,
   reqData: ChatCompletions_RequestBody_Type,
   balanceId: Id<"balances">,
+  onGeneration?: (generation: Parameters<genCallbackType>[0]) => void,
 ) => {
   const provider = await AIBalancer(ctx, balanceId, reqData);
   // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
@@ -83,6 +88,7 @@ export const Internal_Chat_Completion = async (
     ctx,
     balanceId,
     byok: true,
+    onGeneration,
   });
 };
 
@@ -94,6 +100,7 @@ const CreateCompletion = async (
     balanceId: Id<"balances">;
     keyId?: Id<"keys">;
     byok: boolean;
+    onGeneration?: (generation: Parameters<genCallbackType>[0]) => void;
   },
 ): Promise<Response> => {
   const genID = `gen-${crypto.randomUUID()}`;
@@ -105,6 +112,7 @@ const CreateCompletion = async (
 
     const providerGen = await StreamCompletion(reqData, provider, async (genCompletion) => {
       // End of the stream
+      info.onGeneration?.(genCompletion);
       await info.ctx.runMutation(internal.key.billKey, {
         bill: {
           balance: info.balanceId,
@@ -184,6 +192,7 @@ const CreateCompletion = async (
     let finishedReason: string;
     let generation = await NonStreamingCompletion(reqData, provider, async (genCompletion) => {
       // End of the stream
+      info.onGeneration?.(genCompletion);
       await info.ctx.runMutation(internal.key.billKey, {
         bill: {
           balance: info.balanceId,

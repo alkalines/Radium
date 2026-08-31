@@ -49,6 +49,7 @@ export const Route = createFileRoute("/chatroom/$section")({
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
     if (section === "preferences") {
       void queryClient.prefetchQuery(convexQuery(api.models.availableModels, {}));
+      void queryClient.prefetchQuery(convexQuery(api.chatroom.getChainOfThoughtEnabled, {}));
     }
   },
   component: ChatroomPage,

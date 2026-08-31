@@ -226,6 +226,7 @@ export default defineSchema({
     userId: v.string(), // Better Auth ID
     defaultModel: v.optional(v.string()),
     titleModel: v.optional(v.string()),
+    enableChainOfThought: v.optional(v.boolean()),
     builtinToolSets: v.array(v.string()),
     mcpServers: v.array(v.id("mcp_servers")),
   }).index("by_userId", ["userId"]),

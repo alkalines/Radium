@@ -18,6 +18,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { api } from "../../../convex/_generated/api";
 
 /**
@@ -35,19 +36,24 @@ export function PreferencesPanel() {
   const { data: titleModel } = useQuery(
     convexQuery(api.chatroom.getTitleModelDefault, signedIn ? {} : "skip"),
   );
+  const { data: chainOfThoughtEnabled } = useQuery(
+    convexQuery(api.chatroom.getChainOfThoughtEnabled, signedIn ? {} : "skip"),
+  );
   const setModelDefault = useMutation(api.chatroom.setModelDefault);
   const setTitleModelDefault = useMutation(api.chatroom.setTitleModelDefault);
+  const setChainOfThoughtEnabled = useMutation(api.chatroom.setChainOfThoughtEnabled);
 
   const [open, setOpen] = useState(false);
   const [titleOpen, setTitleOpen] = useState(false);
   const selected = models?.find((model) => model.slug === defaultModel);
   const selectedTitleModel = models?.find((model) => model.slug === titleModel);
-  const titleModels = models?.filter(
-    (model) =>
-      model.type === "chat" &&
-      model.architecture.input_modalities.includes("text") &&
-      model.architecture.output_modalities.includes("text"),
-  );
+  const titleModels =
+    models?.filter(
+      (model) =>
+        model.type === "chat" &&
+        model.architecture.input_modalities.includes("text") &&
+        model.architecture.output_modalities.includes("text"),
+    ) ?? [];
 
   const persist = useCallback(
     async (model: string | undefined) => {
@@ -71,6 +77,20 @@ export function PreferencesPanel() {
       }
     },
     [signedIn, setTitleModelDefault],
+  );
+
+  const persistChainOfThought = useCallback(
+    async (enabled: boolean) => {
+      if (!signedIn) return;
+      try {
+        await setChainOfThoughtEnabled({ enabled });
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to update Chain of Thought setting.",
+        );
+      }
+    },
+    [signedIn, setChainOfThoughtEnabled],
   );
 
   return (
@@ -237,6 +257,25 @@ export function PreferencesPanel() {
               </Button>
             ) : null}
           </div>
+        )}
+      </section>
+
+      <section className="flex max-w-xl items-center justify-between gap-6">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-lg font-semibold tracking-tight">Enable Chain of Thought</h2>
+          <p className="text-sm text-muted-foreground">
+            Combine model reasoning, tool activity, and web search results into a single timeline.
+          </p>
+        </div>
+        {userInfo === undefined || chainOfThoughtEnabled === undefined ? (
+          <Skeleton className="h-5 w-8 shrink-0" />
+        ) : (
+          <Switch
+            aria-label="Enable Chain of Thought"
+            checked={chainOfThoughtEnabled}
+            disabled={!signedIn}
+            onCheckedChange={(checked) => void persistChainOfThought(checked)}
+          />
         )}
       </section>
     </div>

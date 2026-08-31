@@ -38,6 +38,11 @@ type ChatMessageActionsProps = {
   onEdit?: () => void;
   /** Forks the conversation at this message using the chosen model. */
   onFork: (model: string) => void;
+  performance?: {
+    averageTps: number;
+    generationTimeMs: number;
+    requestCount: number;
+  };
 };
 
 /**
@@ -54,6 +59,7 @@ export function ChatMessageActions({
   onRetry,
   onEdit,
   onFork,
+  performance,
 }: ChatMessageActionsProps) {
   const [copied, setCopied] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
@@ -91,29 +97,37 @@ export function ChatMessageActions({
 
   return (
     <>
-      <MessageActions
-        className={cn(
-          "opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100",
-          isUser && "justify-end",
-        )}
-      >
-        {isUser ? (
-          <>
-            {forkButton}
-            <MessageAction disabled={disabled} onClick={onEdit} tooltip="Edit">
-              <PencilIcon className="size-3.5" />
-            </MessageAction>
-            {copyButton}
-          </>
-        ) : (
-          <>
-            <MessageAction disabled={disabled} onClick={onRetry} tooltip="Retry">
-              <RefreshCcwIcon className="size-3.5" />
-            </MessageAction>
-            {copyButton}
-            {forkButton}
-          </>
-        )}
+      <MessageActions className={cn(isUser && "justify-end")}>
+        {performance ? (
+          <div className="mr-1 flex items-center gap-2 text-xs text-muted-foreground tabular-nums">
+            <span title={`Average across ${performance.requestCount} API requests`}>
+              {formatTps(performance.averageTps)} TPS
+            </span>
+            <span aria-hidden="true">·</span>
+            <span title="Total generation time">
+              {formatDuration(performance.generationTimeMs)}
+            </span>
+          </div>
+        ) : null}
+        <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          {isUser ? (
+            <>
+              {forkButton}
+              <MessageAction disabled={disabled} onClick={onEdit} tooltip="Edit">
+                <PencilIcon className="size-3.5" />
+              </MessageAction>
+              {copyButton}
+            </>
+          ) : (
+            <>
+              <MessageAction disabled={disabled} onClick={onRetry} tooltip="Retry">
+                <RefreshCcwIcon className="size-3.5" />
+              </MessageAction>
+              {copyButton}
+              {forkButton}
+            </>
+          )}
+        </div>
       </MessageActions>
 
       <ForkModelDialog
@@ -124,6 +138,15 @@ export function ChatMessageActions({
       />
     </>
   );
+}
+
+function formatTps(value: number) {
+  return value >= 100 ? Math.round(value).toString() : value.toFixed(1);
+}
+
+function formatDuration(milliseconds: number) {
+  if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)} s`;
 }
 
 type ForkModelDialogProps = {
