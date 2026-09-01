@@ -18,8 +18,13 @@ import { GenericActionCtx } from "convex/server";
 import { Id } from "../_generated/dataModel";
 import {
   createTelemetryIntegrations,
+  type CompletionTelemetryContext,
   type TelemetryRequestContext,
 } from "../telemetry_integration";
+
+export type GatewayGeneration = Parameters<genCallbackType>[0] & {
+  completionId: Id<"chat_completions">;
+};
 
 export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise<Response> => {
   try {
@@ -76,10 +81,7 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
       abortSignal: req.signal,
       telemetry: telemetrySettings.enabled
         ? {
-            balance: checkKey.balance!._id,
-            key: checkKey._id,
-            userId: checkKey.balance!.userId,
-            requestId: crypto.randomUUID(),
+            correlationId: crypto.randomUUID(),
             settings: telemetrySettings,
           }
         : undefined,
@@ -97,7 +99,7 @@ export const Internal_Chat_Completion = async (
   ctx: GenericActionCtx<any>,
   reqData: ChatCompletions_RequestBody_Type,
   balanceId: Id<"balances">,
-  onGeneration?: (generation: Parameters<genCallbackType>[0]) => void,
+  onGeneration?: (generation: GatewayGeneration) => void | Promise<void>,
   telemetry?: TelemetryRequestContext,
   abortSignal?: AbortSignal | null,
 ) => {
@@ -121,12 +123,13 @@ const CreateCompletion = async (
     balanceId: Id<"balances">;
     keyId?: Id<"keys">;
     byok: boolean;
-    onGeneration?: (generation: Parameters<genCallbackType>[0]) => void;
+    onGeneration?: (generation: GatewayGeneration) => void | Promise<void>;
     telemetry?: TelemetryRequestContext;
     abortSignal?: AbortSignal | null;
   },
 ): Promise<Response> => {
   const genID = `gen-${crypto.randomUUID()}`;
+  let collectedStep: CompletionTelemetryContext | undefined;
   const telemetry = info.telemetry
     ? {
         isEnabled: true,
@@ -137,10 +140,22 @@ const CreateCompletion = async (
           ctx: info.ctx,
           ...info.telemetry,
           source: "gateway" as const,
-          functionId: "radium.gateway",
+          onStepCollected: (step) => {
+            collectedStep = step;
+          },
         }),
       }
     : { isEnabled: false };
+  const attachTelemetry = async (completionId: Id<"chat_completions">) => {
+    if (!collectedStep) return;
+    await info.ctx.runMutation(internal.telemetry.attachCompletionStep, {
+      completionId,
+      telemetry: {
+        ...collectedStep,
+        chatId: info.telemetry?.chatId,
+      },
+    });
+  };
 
   if (reqData.stream) {
     let originalGenID: string;
@@ -152,8 +167,7 @@ const CreateCompletion = async (
       provider,
       async (genCompletion) => {
         // End of the stream
-        info.onGeneration?.(genCompletion);
-        await info.ctx.runMutation(internal.key.billKey, {
+        const completionId = await info.ctx.runMutation(internal.key.billKey, {
           bill: {
             balance: info.balanceId,
             key: info.keyId,
@@ -191,6 +205,8 @@ const CreateCompletion = async (
             },
           },
         });
+        await info.onGeneration?.({ ...genCompletion, completionId });
+        await attachTelemetry(completionId);
       },
       telemetry,
       info.abortSignal,
@@ -239,8 +255,7 @@ const CreateCompletion = async (
       provider,
       async (genCompletion) => {
         // End of the stream
-        info.onGeneration?.(genCompletion);
-        await info.ctx.runMutation(internal.key.billKey, {
+        const completionId = await info.ctx.runMutation(internal.key.billKey, {
           bill: {
             balance: info.balanceId,
             key: info.keyId,
@@ -278,6 +293,8 @@ const CreateCompletion = async (
             },
           },
         });
+        await info.onGeneration?.({ ...genCompletion, completionId });
+        await attachTelemetry(completionId);
       },
       telemetry,
       info.abortSignal,

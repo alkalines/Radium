@@ -6,8 +6,8 @@ import {
 } from "@/utils/types/openai/types";
 import type { Id } from "./_generated/dataModel";
 import { Internal_Chat_Completion } from "./http/chat_completion";
-import type { genCallbackType } from "@/utils/translators/openai";
 import type { TelemetryRequestContext } from "./telemetry_integration";
+import type { GatewayGeneration } from "./http/chat_completion";
 
 type ErrorResponse = (error: unknown) => Response;
 
@@ -19,7 +19,7 @@ export function createInternalGatewayProvider(
   balanceId: Id<"balances">,
   onError: ErrorResponse,
   providerSlug?: string,
-  onGeneration?: (generation: Parameters<genCallbackType>[0]) => void,
+  onGeneration?: (generation: GatewayGeneration) => void | Promise<void>,
   telemetry?: TelemetryRequestContext,
 ) {
   return createOpenAICompatible({

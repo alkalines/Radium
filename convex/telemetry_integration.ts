@@ -4,22 +4,17 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 import type {
-  GenerateTextAbortEvent,
-  GenerateTextEndEvent,
   GenerateTextStartEvent,
   GenerateTextStepEndEvent,
   GenerateTextStepStartEvent,
   InferTelemetryEvent,
-  LanguageModelCallEndEvent,
-  LanguageModelCallStartEvent,
-  LanguageModelUsage,
   Telemetry,
   ToolExecutionEndEvent,
   ToolExecutionStartEvent,
 } from "ai";
-import type { Id } from "./_generated/dataModel";
-import { internal } from "./_generated/api";
 import type { GenericActionCtx } from "convex/server";
+import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 
 export type TelemetrySettings = {
   enabled: boolean;
@@ -28,150 +23,99 @@ export type TelemetrySettings = {
 };
 
 export type TelemetryRequestContext = {
-  balance: Id<"balances">;
-  key?: Id<"keys">;
-  chatId?: Id<"aisdk_chats">;
-  userId: string;
-  requestId: string;
+  correlationId: string;
   settings: TelemetrySettings;
+  chatId?: Id<"aisdk_chats">;
 };
 
 type CollectorOptions = TelemetryRequestContext & {
   ctx: GenericActionCtx<any>;
   source: "chatroom" | "gateway";
-  functionId: string;
+  getCompletionIds?: () => Id<"chat_completions">[];
+  onStepCollected?: (step: CompletionTelemetryContext) => void;
 };
 
-type Usage = {
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-  reasoningTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-};
-
-type PendingSpan = {
-  kind: "step" | "model" | "tool";
+type PendingTool = {
   name: string;
   status: "ok" | "error";
   startedAt: number;
   endedAt: number;
   durationMs: number;
-  provider?: string;
-  model?: string;
-  stepNumber?: number;
-  toolName?: string;
   toolCallId?: string;
-  finishReason?: string;
-  usage?: Usage;
   error?: string;
   inputJson?: string;
   outputJson?: string;
 };
 
-type TelemetryStartEvent = Parameters<NonNullable<Telemetry["onStart"]>>[0];
-type TelemetryEndEvent = Parameters<NonNullable<Telemetry["onEnd"]>>[0];
+export type CompletionTelemetryContext = {
+  stepNumber: number;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  inputJson?: string;
+  outputJson?: string;
+  tools: PendingTool[];
+};
 
-const MAX_PAYLOAD_LENGTH = 32_000;
-const MAX_SPANS = 100;
-/** Build the local collector and, when configured, an OTLP integration for one request. */
+type TelemetryStartEvent = Parameters<NonNullable<Telemetry["onStart"]>>[0];
+const MAX_PAYLOAD_LENGTH = 8_000;
+const MAX_STORED_PAYLOAD_CHARS = 120_000;
+
+/** Build AI SDK chat context collection and optional external OTLP export. */
 export function createTelemetryIntegrations(options: CollectorOptions): Telemetry[] {
   const integrations: Telemetry[] = [new ConvexTelemetry(options)];
-  const external = externalTelemetry(options.requestId, options.source);
+  const external = externalTelemetry(options.correlationId, options.source);
   if (external) integrations.push(...external);
   return integrations;
 }
 
 class ConvexTelemetry implements Telemetry {
-  private readonly startedAt = Date.now();
   private readonly stepStarts = new Map<number, number>();
-  private readonly toolStarts = new Map<string, number>();
-  private readonly spans: PendingSpan[] = [];
-  private modelStartedAt: number | undefined;
-  private traceId: Promise<Id<"telemetry_traces">> | undefined;
+  private readonly toolStarts = new Map<string, { startedAt: number; stepNumber: number }>();
+  private readonly toolInputs = new Map<string, string | undefined>();
+  private readonly toolsByStep = new Map<number, PendingTool[]>();
+  private readonly steps: CompletionTelemetryContext[] = [];
+  private currentStep = 0;
+  private rootInput: string | undefined;
   private finalized = false;
-  private toolCallCount = 0;
 
   constructor(private readonly options: CollectorOptions) {}
 
   onStart(event: TelemetryStartEvent) {
-    if (event.operationId !== "ai.streamText") return;
+    if (event.operationId !== "ai.streamText" || !this.options.settings.recordInputs) return;
     const textEvent = event as InferTelemetryEvent<GenerateTextStartEvent>;
-    this.traceId = this.options.ctx.runMutation(internal.telemetry.startTrace, {
-      balance: this.options.balance,
-      key: this.options.key,
-      userId: this.options.userId,
-      chatId: this.options.chatId,
-      source: this.options.source,
-      requestId: this.options.requestId,
-      callId: textEvent.callId,
-      operationId: textEvent.operationId,
-      functionId: textEvent.functionId ?? this.options.functionId,
-      provider: textEvent.provider,
-      model: textEvent.modelId,
-      startedAt: this.startedAt,
-      recordsInputs: this.options.settings.recordInputs,
-      recordsOutputs: this.options.settings.recordOutputs,
-      inputJson: this.options.settings.recordInputs
-        ? safeJson({ instructions: textEvent.instructions, messages: textEvent.messages })
-        : undefined,
+    this.rootInput = safeJson({
+      instructions: textEvent.instructions,
+      messages: textEvent.messages,
     });
-    return this.traceId.then(() => undefined);
   }
 
   onStepStart(event: InferTelemetryEvent<GenerateTextStepStartEvent>) {
+    this.currentStep = event.stepNumber;
     this.stepStarts.set(event.stepNumber, Date.now());
   }
 
   onStepEnd(event: InferTelemetryEvent<GenerateTextStepEndEvent>) {
     const endedAt = Date.now();
     const startedAt = this.stepStarts.get(event.stepNumber) ?? endedAt;
-    this.insertSpan({
-      kind: "step",
-      name: `Step ${event.stepNumber + 1}`,
-      status: "ok",
-      startedAt,
-      endedAt,
-      provider: event.model.provider,
-      model: event.model.modelId,
+    const step = {
       stepNumber: event.stepNumber,
-      finishReason: event.finishReason,
-      usage: mapUsage(event.usage),
-      outputJson: this.options.settings.recordOutputs ? safeJson(event.content) : undefined,
-    });
-  }
-
-  onLanguageModelCallStart(event: InferTelemetryEvent<LanguageModelCallStartEvent>) {
-    this.modelStartedAt = Date.now();
-    if (this.options.settings.recordInputs) {
-      this.modelInput = safeJson({ instructions: event.instructions, messages: event.messages });
-    }
-  }
-
-  onLanguageModelCallEnd(event: InferTelemetryEvent<LanguageModelCallEndEvent>) {
-    const endedAt = Date.now();
-    const startedAt = this.modelStartedAt ?? endedAt - event.performance.responseTimeMs;
-    this.insertSpan({
-      kind: "model",
-      name: `${event.provider} ${event.modelId}`,
-      status: "ok",
       startedAt,
       endedAt,
-      provider: event.provider,
-      model: event.modelId,
-      finishReason: event.finishReason,
-      usage: mapUsage(event.usage),
-      inputJson: this.modelInput,
+      durationMs: Math.max(0, endedAt - startedAt),
+      inputJson: event.stepNumber === 0 ? this.rootInput : undefined,
       outputJson: this.options.settings.recordOutputs ? safeJson(event.content) : undefined,
-    });
-    this.modelStartedAt = undefined;
-    this.modelInput = undefined;
+      tools: this.toolsByStep.get(event.stepNumber) ?? [],
+    };
+    this.steps.push(step);
+    this.options.onStepCollected?.(fitStepPayloads(step));
   }
 
   onToolExecutionStart(event: InferTelemetryEvent<ToolExecutionStartEvent>) {
-    this.toolCallCount++;
-    this.toolStarts.set(event.toolCall.toolCallId, Date.now());
+    this.toolStarts.set(event.toolCall.toolCallId, {
+      startedAt: Date.now(),
+      stepNumber: this.currentStep,
+    });
     if (this.options.settings.recordInputs) {
       this.toolInputs.set(event.toolCall.toolCallId, safeJson(event.toolCall.input));
     }
@@ -179,15 +123,17 @@ class ConvexTelemetry implements Telemetry {
 
   onToolExecutionEnd(event: InferTelemetryEvent<ToolExecutionEndEvent>) {
     const endedAt = Date.now();
-    const startedAt = this.toolStarts.get(event.toolCall.toolCallId) ?? endedAt;
+    const start = this.toolStarts.get(event.toolCall.toolCallId);
+    const startedAt = start?.startedAt ?? endedAt;
+    const stepNumber = start?.stepNumber ?? this.currentStep;
     const failed = event.toolOutput.type === "tool-error";
-    this.insertSpan({
-      kind: "tool",
+    const tools = this.toolsByStep.get(stepNumber) ?? [];
+    tools.push({
       name: event.toolCall.toolName,
       status: failed ? "error" : "ok",
       startedAt,
       endedAt,
-      toolName: event.toolCall.toolName,
+      durationMs: Math.max(0, endedAt - startedAt),
       toolCallId: event.toolCall.toolCallId,
       error:
         failed && this.options.settings.recordOutputs
@@ -199,77 +145,65 @@ class ConvexTelemetry implements Telemetry {
           ? safeJson(event.toolOutput.output)
           : undefined,
     });
+    this.toolsByStep.set(stepNumber, tools);
     this.toolStarts.delete(event.toolCall.toolCallId);
     this.toolInputs.delete(event.toolCall.toolCallId);
   }
 
-  async onEnd(event: TelemetryEndEvent) {
-    const textEvent = event as InferTelemetryEvent<GenerateTextEndEvent>;
-    await this.finish({
-      status: "ok",
-      finishReason: textEvent.finishReason,
-      usage: mapUsage(textEvent.usage),
-      stepCount: textEvent.steps.length,
-      outputJson: this.options.settings.recordOutputs
-        ? safeJson({ content: textEvent.content, responseMessages: textEvent.responseMessages })
-        : undefined,
-    });
+  async onEnd() {
+    await this.finish();
   }
 
-  async onAbort(event: InferTelemetryEvent<GenerateTextAbortEvent>) {
-    await this.finish({
-      status: "aborted",
-      stepCount: event.steps.length,
-      error:
-        this.options.settings.recordOutputs && event.reason !== undefined
-          ? errorMessage(event.reason)
-          : undefined,
-    });
+  async onAbort() {
+    await this.finish();
   }
 
-  async onError(error: unknown) {
-    await this.finish({
-      status: "error",
-      error: this.options.settings.recordOutputs ? errorMessage(error) : undefined,
-    });
+  async onError() {
+    await this.finish();
   }
 
-  private modelInput: string | undefined;
-  private readonly toolInputs = new Map<string, string | undefined>();
-
-  private insertSpan(span: Omit<PendingSpan, "durationMs">) {
-    this.spans.push({
-      ...span,
-      durationMs: Math.max(0, span.endedAt - span.startedAt),
-    });
-  }
-
-  private async finish(fields: {
-    status: "ok" | "error" | "aborted";
-    finishReason?: string;
-    usage?: Usage;
-    stepCount?: number;
-    error?: string;
-    outputJson?: string;
-  }) {
-    if (this.finalized || !this.traceId) return;
+  private async finish() {
+    if (this.finalized || !this.options.chatId || !this.options.getCompletionIds) return;
     this.finalized = true;
-    const endedAt = Date.now();
-    await this.options.ctx.runMutation(internal.telemetry.finishTrace, {
-      traceId: await this.traceId,
-      spans: this.spans.slice(0, MAX_SPANS),
-      ...fields,
-      toolCallCount: this.toolCallCount,
-      endedAt,
-      durationMs: endedAt - this.startedAt,
+    const completionIds = this.options.getCompletionIds();
+    const contexts = completionIds.flatMap((completionId, index) => {
+      const step = this.steps[index];
+      return step
+        ? [
+            {
+              completionId,
+              telemetry: { chatId: this.options.chatId, ...fitStepPayloads(step) },
+            },
+          ]
+        : [];
+    });
+    if (contexts.length === 0) return;
+    await this.options.ctx.runMutation(internal.telemetry.attachChatSteps, {
+      chatId: this.options.chatId,
+      contexts,
     });
   }
+}
+
+function fitStepPayloads(step: CompletionTelemetryContext): CompletionTelemetryContext {
+  let payloadChars = (step.inputJson?.length ?? 0) + (step.outputJson?.length ?? 0);
+  return {
+    ...step,
+    tools: step.tools.map((tool) => {
+      const size = (tool.inputJson?.length ?? 0) + (tool.outputJson?.length ?? 0);
+      if (payloadChars + size > MAX_STORED_PAYLOAD_CHARS) {
+        return { ...tool, inputJson: undefined, outputJson: undefined };
+      }
+      payloadChars += size;
+      return tool;
+    }),
+  };
 }
 
 let externalProvider: BasicTracerProvider | undefined;
 
 function externalTelemetry(
-  requestId: string,
+  correlationId: string,
   source: CollectorOptions["source"],
 ): Telemetry[] | undefined {
   if (!process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT && !process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
@@ -293,7 +227,7 @@ function externalTelemetry(
   return [
     new OpenTelemetry({
       tracer: externalProvider.getTracer("radium-gateway"),
-      enrichSpan: () => ({ "radium.request.id": requestId, "radium.source": source }),
+      enrichSpan: () => ({ "radium.correlation.id": correlationId, "radium.source": source }),
     }),
     {
       onEnd: () => externalProvider?.forceFlush(),
@@ -301,21 +235,6 @@ function externalTelemetry(
       onError: () => externalProvider?.forceFlush(),
     },
   ];
-}
-
-function mapUsage(usage: LanguageModelUsage): Usage {
-  return compact({
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    totalTokens: usage.totalTokens,
-    reasoningTokens: usage.outputTokenDetails.reasoningTokens,
-    cacheReadTokens: usage.inputTokenDetails.cacheReadTokens,
-    cacheWriteTokens: usage.inputTokenDetails.cacheWriteTokens,
-  });
-}
-
-function compact<T extends Record<string, unknown>>(value: T): T {
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T;
 }
 
 function safeJson(value: unknown): string | undefined {

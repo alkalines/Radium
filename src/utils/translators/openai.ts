@@ -253,7 +253,7 @@ export type genCallbackType = (genCompletion: {
   usage: completionUsage;
   genTime: number;
   ttft: number;
-}) => undefined | Promise<undefined>;
+}) => void | Promise<void>;
 
 /**
  * Transform an OpenAI-Compatible request into a OpenAI-Compatible streamed response using the AISDK as an middleware

@@ -82,8 +82,9 @@ export async function handleAISDKChat(
 
   const previousPerformance = getLastAssistantPerformance(body.messages);
   const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForUser, { userId });
-  const requestId = crypto.randomUUID();
+  const correlationId = crypto.randomUUID();
   const generations: Array<{ completionTokens: number; generationTimeMs: number }> = [];
+  const completionIds: Id<"chat_completions">[] = [];
   const provider = createInternalGatewayProvider(
     ctx,
     chatInfo.balance,
@@ -94,18 +95,22 @@ export async function handleAISDKChat(
         { status: 500 },
       ),
     body.provider,
-    (generation) =>
+    async (generation) => {
+      completionIds.push(generation.completionId);
       generations.push({
         completionTokens: generation.usage.completion_tokens,
         generationTimeMs: generation.genTime,
-      }),
+      });
+      await ctx.runMutation(internal.aisdk.LinkCompletion, {
+        chatId,
+        completionId: generation.completionId,
+      });
+    },
     telemetrySettings.enabled
       ? {
-          balance: chatInfo.balance,
-          chatId,
-          userId,
-          requestId,
+          correlationId,
           settings: telemetrySettings,
+          chatId,
         }
       : undefined,
   );
@@ -135,13 +140,11 @@ export async function handleAISDKChat(
           recordOutputs: telemetrySettings.recordOutputs,
           integrations: createTelemetryIntegrations({
             ctx,
-            balance: chatInfo.balance,
             chatId,
-            userId,
-            requestId,
+            correlationId,
             settings: telemetrySettings,
             source: "chatroom",
-            functionId: "radium.chat",
+            getCompletionIds: () => completionIds,
           }),
         }
       : { isEnabled: false },

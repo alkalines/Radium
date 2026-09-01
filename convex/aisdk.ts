@@ -87,6 +87,31 @@ export const EditChat = internalMutation({
   },
 });
 
+export const LinkCompletion = internalMutation({
+  args: {
+    chatId: v.id("aisdk_chats"),
+    completionId: v.id("chat_completions"),
+  },
+  handler: async (ctx, args) => {
+    const [chat, completion] = await Promise.all([
+      ctx.db.get("aisdk_chats", args.chatId),
+      ctx.db.get("chat_completions", args.completionId),
+    ]);
+    if (
+      !chat ||
+      !completion ||
+      chat.balance !== completion.bill.balance ||
+      chat.userId !== completion.bill.userId ||
+      chat.chat_completions.includes(completion._id)
+    ) {
+      return;
+    }
+    await ctx.db.patch("aisdk_chats", chat._id, {
+      chat_completions: [...chat.chat_completions, completion._id],
+    });
+  },
+});
+
 export const GetChat = query({
   args: {
     chatId: v.id("aisdk_chats"),
