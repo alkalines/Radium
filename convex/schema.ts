@@ -2,6 +2,13 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { completionPricingSchema, completionUsageSchema } from "./key";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
+import {
+  telemetrySettingsSchema,
+  telemetrySourceSchema,
+  telemetrySpanKindSchema,
+  telemetryStatusSchema,
+  telemetryUsageSchema,
+} from "./telemetry_schemas";
 
 export default defineSchema({
   balances: defineTable({
@@ -227,6 +234,7 @@ export default defineSchema({
     defaultModel: v.optional(v.string()),
     titleModel: v.optional(v.string()),
     enableChainOfThought: v.optional(v.boolean()),
+    telemetry: v.optional(telemetrySettingsSchema),
     builtinToolSets: v.array(v.string()),
     mcpServers: v.array(v.id("mcp_servers")),
   }).index("by_userId", ["userId"]),
@@ -254,4 +262,56 @@ export default defineSchema({
   })
     .index("by_userId", ["userId"])
     .index("by_userId_and_lastInteractionAt", ["userId", "lastInteractionAt"]),
+  telemetry_traces: defineTable({
+    balance: v.id("balances"),
+    key: v.optional(v.id("keys")),
+    userId: v.string(),
+    chatId: v.optional(v.id("aisdk_chats")),
+    source: telemetrySourceSchema,
+    requestId: v.string(),
+    callId: v.string(),
+    operationId: v.string(),
+    functionId: v.string(),
+    provider: v.string(),
+    model: v.string(),
+    status: telemetryStatusSchema,
+    startedAt: v.number(),
+    endedAt: v.optional(v.number()),
+    durationMs: v.optional(v.number()),
+    finishReason: v.optional(v.string()),
+    usage: v.optional(telemetryUsageSchema),
+    stepCount: v.optional(v.number()),
+    toolCallCount: v.optional(v.number()),
+    error: v.optional(v.string()),
+    recordsInputs: v.boolean(),
+    recordsOutputs: v.boolean(),
+  })
+    .index("by_balance_and_startedAt", ["balance", "startedAt"])
+    .index("by_chat_and_startedAt", ["chatId", "startedAt"]),
+  telemetry_spans: defineTable({
+    trace: v.id("telemetry_traces"),
+    balance: v.id("balances"),
+    kind: telemetrySpanKindSchema,
+    name: v.string(),
+    status: telemetryStatusSchema,
+    startedAt: v.number(),
+    endedAt: v.number(),
+    durationMs: v.number(),
+    provider: v.optional(v.string()),
+    model: v.optional(v.string()),
+    stepNumber: v.optional(v.number()),
+    toolName: v.optional(v.string()),
+    toolCallId: v.optional(v.string()),
+    finishReason: v.optional(v.string()),
+    usage: v.optional(telemetryUsageSchema),
+    error: v.optional(v.string()),
+  })
+    .index("by_trace_and_startedAt", ["trace", "startedAt"])
+    .index("by_balance_and_startedAt", ["balance", "startedAt"]),
+  telemetry_payloads: defineTable({
+    trace: v.id("telemetry_traces"),
+    span: v.optional(v.id("telemetry_spans")),
+    inputJson: v.optional(v.string()),
+    outputJson: v.optional(v.string()),
+  }).index("by_trace", ["trace"]),
 });

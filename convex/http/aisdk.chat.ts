@@ -16,6 +16,7 @@ import { internal } from "../_generated/api";
 import type { ActionCtx } from "../_generated/server";
 import { MCP_SECRET_NAME, mcpSecretNamespace, secrets } from "../secrets";
 import { createInternalGatewayProvider } from "../ai_gateway";
+import { createTelemetryIntegrations } from "../telemetry_integration";
 
 type ResponseHeaders = Record<string, string>;
 
@@ -80,6 +81,8 @@ export async function handleAISDKChat(
     });
 
   const previousPerformance = getLastAssistantPerformance(body.messages);
+  const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForUser, { userId });
+  const requestId = crypto.randomUUID();
   const generations: Array<{ completionTokens: number; generationTimeMs: number }> = [];
   const provider = createInternalGatewayProvider(
     ctx,
@@ -96,6 +99,15 @@ export async function handleAISDKChat(
         completionTokens: generation.usage.completion_tokens,
         generationTimeMs: generation.genTime,
       }),
+    telemetrySettings.enabled
+      ? {
+          balance: chatInfo.balance,
+          chatId,
+          userId,
+          requestId,
+          settings: telemetrySettings,
+        }
+      : undefined,
   );
 
   await ctx.runMutation(internal.aisdk.EditChat, {
@@ -115,6 +127,24 @@ export async function handleAISDKChat(
     // Allow follow-up turns so the model can act on executable tool results
     // (Exa web search, MCP tools) instead of stopping at the first tool call.
     stopWhen: isStepCount(5),
+    telemetry: telemetrySettings.enabled
+      ? {
+          isEnabled: true,
+          functionId: "radium.chat",
+          recordInputs: telemetrySettings.recordInputs,
+          recordOutputs: telemetrySettings.recordOutputs,
+          integrations: createTelemetryIntegrations({
+            ctx,
+            balance: chatInfo.balance,
+            chatId,
+            userId,
+            requestId,
+            settings: telemetrySettings,
+            source: "chatroom",
+            functionId: "radium.chat",
+          }),
+        }
+      : { isEnabled: false },
     onError: () => void closeTools(),
     providerOptions:
       body.reasoningEffort || body.reasoningBudget

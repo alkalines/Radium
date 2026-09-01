@@ -2,6 +2,7 @@ import {
   jsonSchema,
   type ModelMessage,
   streamText,
+  type TelemetryOptions,
   tool,
   toUIMessageStream,
   type UIMessageChunk,
@@ -197,7 +198,8 @@ function parseToolInput(input: string) {
 function getAISDKStream(
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>,
-  abort: AbortController,
+  abortSignal: AbortSignal,
+  telemetry?: TelemetryOptions,
 ): ReturnType<typeof streamText> {
   const parsedToolChoice = toolChoiceParse(reqData);
   const modelMessages = openAIToModelMessages(reqData.messages);
@@ -231,7 +233,7 @@ function getAISDKStream(
     // OpenAI-compatible clients intentionally control their own system and
     // developer messages through this authenticated API endpoint.
     allowSystemInMessages: true,
-    abortSignal: abort.signal,
+    abortSignal,
     maxOutputTokens: reqData.max_completion_tokens ?? undefined,
     tools: toolsParsing(reqData) as any,
     toolChoice: parsedToolChoice,
@@ -242,6 +244,7 @@ function getAISDKStream(
     presencePenalty: reqData.presence_penalty ?? undefined,
     frequencyPenalty: reqData.frequency_penalty ?? undefined,
     seed: reqData.seed,
+    telemetry,
   });
 }
 
@@ -262,10 +265,17 @@ export async function StreamCompletion(
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>,
   genCallback: genCallbackType,
+  telemetry?: TelemetryOptions,
+  requestSignal?: AbortSignal | null,
 ): Promise<ReadableStream<ChatCompletions_Streaming_Chunk_Type | string>> {
   const abort = new AbortController();
   const requestStartedAt = Date.now();
-  const result = await getAISDKStream(reqData, provider, abort);
+  const result = await getAISDKStream(
+    reqData,
+    provider,
+    requestSignal ? AbortSignal.any([abort.signal, requestSignal]) : abort.signal,
+    telemetry,
+  );
 
   // Usage Callback
   let firstTokenAt: number | undefined;
@@ -596,10 +606,17 @@ export async function NonStreamingCompletion(
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>,
   genCallback: genCallbackType,
+  telemetry?: TelemetryOptions,
+  requestSignal?: AbortSignal | null,
 ): Promise<ChatCompletions_NotStreaming_ResponseBody_Type> {
   const abort = new AbortController();
   const requestStartedAt = Date.now();
-  const result = await getAISDKStream(reqData, provider, abort);
+  const result = await getAISDKStream(
+    reqData,
+    provider,
+    requestSignal ? AbortSignal.any([abort.signal, requestSignal]) : abort.signal,
+    telemetry,
+  );
 
   // Usage Callback
   let firstTokenAt: number | undefined;

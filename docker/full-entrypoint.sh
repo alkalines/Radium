@@ -36,6 +36,15 @@ for name in SECRET_STORE_KEYS SITE_URL Openrouter_API_Key AISDK_MaxRetries; do
   fi
 done
 
+for name in OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS OTEL_EXPORTER_OTLP_TRACES_HEADERS OTEL_SERVICE_NAME; do
+  value="${!name:-}"
+  if [ -n "$value" ]; then
+    bunx convex env set "$name" "$value"
+  else
+    bunx convex env remove "$name" >/dev/null 2>&1 || true
+  fi
+done
+
 bunx convex deploy --typecheck disable --codegen disable --message "Container startup deploy"
 
 bun .output/server/index.mjs &

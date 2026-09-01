@@ -16,6 +16,10 @@ import { convertStreamToAsyncIterator } from "@/utils/tools/chunkReader";
 import { completionUsage } from "../key";
 import { GenericActionCtx } from "convex/server";
 import { Id } from "../_generated/dataModel";
+import {
+  createTelemetryIntegrations,
+  type TelemetryRequestContext,
+} from "../telemetry_integration";
 
 export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise<Response> => {
   try {
@@ -60,12 +64,25 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
       );
 
     const provider = await AIBalancer(ctx, checkKey.balance!._id, reqData);
+    const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForUser, {
+      userId: checkKey.balance!.userId,
+    });
     // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
     return CreateCompletion(reqData, provider, {
       ctx,
       balanceId: checkKey.balance!._id,
       keyId: checkKey._id,
       byok: true,
+      abortSignal: req.signal,
+      telemetry: telemetrySettings.enabled
+        ? {
+            balance: checkKey.balance!._id,
+            key: checkKey._id,
+            userId: checkKey.balance!.userId,
+            requestId: crypto.randomUUID(),
+            settings: telemetrySettings,
+          }
+        : undefined,
     });
   } catch (e: any) {
     if (e instanceof z.ZodError) {
@@ -81,6 +98,8 @@ export const Internal_Chat_Completion = async (
   reqData: ChatCompletions_RequestBody_Type,
   balanceId: Id<"balances">,
   onGeneration?: (generation: Parameters<genCallbackType>[0]) => void,
+  telemetry?: TelemetryRequestContext,
+  abortSignal?: AbortSignal | null,
 ) => {
   const provider = await AIBalancer(ctx, balanceId, reqData);
   // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
@@ -89,6 +108,8 @@ export const Internal_Chat_Completion = async (
     balanceId,
     byok: true,
     onGeneration,
+    telemetry,
+    abortSignal,
   });
 };
 
@@ -101,56 +122,79 @@ const CreateCompletion = async (
     keyId?: Id<"keys">;
     byok: boolean;
     onGeneration?: (generation: Parameters<genCallbackType>[0]) => void;
+    telemetry?: TelemetryRequestContext;
+    abortSignal?: AbortSignal | null;
   },
 ): Promise<Response> => {
   const genID = `gen-${crypto.randomUUID()}`;
+  const telemetry = info.telemetry
+    ? {
+        isEnabled: true,
+        functionId: "radium.gateway",
+        recordInputs: info.telemetry.settings.recordInputs,
+        recordOutputs: info.telemetry.settings.recordOutputs,
+        integrations: createTelemetryIntegrations({
+          ctx: info.ctx,
+          ...info.telemetry,
+          source: "gateway" as const,
+          functionId: "radium.gateway",
+        }),
+      }
+    : { isEnabled: false };
 
   if (reqData.stream) {
     let originalGenID: string;
     let finishedReason: string;
     let streamCanceled = false;
 
-    const providerGen = await StreamCompletion(reqData, provider, async (genCompletion) => {
-      // End of the stream
-      info.onGeneration?.(genCompletion);
-      await info.ctx.runMutation(internal.key.billKey, {
-        bill: {
-          balance: info.balanceId,
-          key: info.keyId,
-        },
-        request: {
-          api: "chat_completions",
-          //app
-          byok: info.byok,
-          canceled: streamCanceled,
-          model_slug: reqData.model,
-          provider: provider.info.slug,
-          stream: reqData.stream ?? false,
-          prompt_cache_key: reqData.prompt_cache_key || reqData.user,
-        },
-        response: {
-          gen_id: genCompletion.genId || originalGenID || genID,
-          finish_reason: finishedReason || "stop",
-          gen_time: genCompletion.genTime,
-          ttft: genCompletion.ttft,
-          provider_gen_id: genCompletion.genId || originalGenID || genID,
-          usage: {
-            completion_tokens: genCompletion.usage.completion_tokens,
-            prompt_tokens: genCompletion.usage.prompt_tokens,
-            completion_tokens_details: {
-              reasoning_tokens:
-                genCompletion.usage.completion_tokens_details.reasoning_tokens ?? undefined,
-            },
-            prompt_tokens_details: {
-              cached_tokens: genCompletion.usage.prompt_tokens_details.cached_tokens ?? undefined,
-              written_cache_tokens:
-                genCompletion.usage.prompt_tokens_details.written_cache_tokens ?? undefined,
-            },
-            total_tokens: genCompletion.usage.completion_tokens + genCompletion.usage.prompt_tokens,
+    const providerGen = await StreamCompletion(
+      reqData,
+      provider,
+      async (genCompletion) => {
+        // End of the stream
+        info.onGeneration?.(genCompletion);
+        await info.ctx.runMutation(internal.key.billKey, {
+          bill: {
+            balance: info.balanceId,
+            key: info.keyId,
           },
-        },
-      });
-    });
+          request: {
+            api: "chat_completions",
+            //app
+            byok: info.byok,
+            canceled: streamCanceled,
+            model_slug: reqData.model,
+            provider: provider.info.slug,
+            stream: reqData.stream ?? false,
+            prompt_cache_key: reqData.prompt_cache_key || reqData.user,
+          },
+          response: {
+            gen_id: genCompletion.genId || originalGenID || genID,
+            finish_reason: finishedReason || "stop",
+            gen_time: genCompletion.genTime,
+            ttft: genCompletion.ttft,
+            provider_gen_id: genCompletion.genId || originalGenID || genID,
+            usage: {
+              completion_tokens: genCompletion.usage.completion_tokens,
+              prompt_tokens: genCompletion.usage.prompt_tokens,
+              completion_tokens_details: {
+                reasoning_tokens:
+                  genCompletion.usage.completion_tokens_details.reasoning_tokens ?? undefined,
+              },
+              prompt_tokens_details: {
+                cached_tokens: genCompletion.usage.prompt_tokens_details.cached_tokens ?? undefined,
+                written_cache_tokens:
+                  genCompletion.usage.prompt_tokens_details.written_cache_tokens ?? undefined,
+              },
+              total_tokens:
+                genCompletion.usage.completion_tokens + genCompletion.usage.prompt_tokens,
+            },
+          },
+        });
+      },
+      telemetry,
+      info.abortSignal,
+    );
 
     const customReadable = new ReadableStream({
       async start(controller) {
@@ -190,47 +234,54 @@ const CreateCompletion = async (
   } else {
     let originalGenID;
     let finishedReason: string;
-    let generation = await NonStreamingCompletion(reqData, provider, async (genCompletion) => {
-      // End of the stream
-      info.onGeneration?.(genCompletion);
-      await info.ctx.runMutation(internal.key.billKey, {
-        bill: {
-          balance: info.balanceId,
-          key: info.keyId,
-        },
-        request: {
-          api: "chat_completions",
-          //app
-          byok: info.byok,
-          canceled: false, //streamCanceled
-          model_slug: reqData.model,
-          provider: provider.info.slug,
-          stream: reqData.stream ?? false,
-          prompt_cache_key: reqData.prompt_cache_key || reqData.user,
-        },
-        response: {
-          gen_id: genCompletion.genId || originalGenID || genID,
-          finish_reason: finishedReason || "stop",
-          gen_time: genCompletion.genTime,
-          ttft: genCompletion.ttft,
-          provider_gen_id: genCompletion.genId || originalGenID || genID,
-          usage: {
-            completion_tokens: genCompletion.usage.completion_tokens,
-            prompt_tokens: genCompletion.usage.prompt_tokens,
-            completion_tokens_details: {
-              reasoning_tokens:
-                genCompletion.usage.completion_tokens_details.reasoning_tokens ?? undefined,
-            },
-            prompt_tokens_details: {
-              cached_tokens: genCompletion.usage.prompt_tokens_details.cached_tokens ?? undefined,
-              written_cache_tokens:
-                genCompletion.usage.prompt_tokens_details.written_cache_tokens ?? undefined,
-            },
-            total_tokens: genCompletion.usage.completion_tokens + genCompletion.usage.prompt_tokens,
+    let generation = await NonStreamingCompletion(
+      reqData,
+      provider,
+      async (genCompletion) => {
+        // End of the stream
+        info.onGeneration?.(genCompletion);
+        await info.ctx.runMutation(internal.key.billKey, {
+          bill: {
+            balance: info.balanceId,
+            key: info.keyId,
           },
-        },
-      });
-    });
+          request: {
+            api: "chat_completions",
+            //app
+            byok: info.byok,
+            canceled: false, //streamCanceled
+            model_slug: reqData.model,
+            provider: provider.info.slug,
+            stream: reqData.stream ?? false,
+            prompt_cache_key: reqData.prompt_cache_key || reqData.user,
+          },
+          response: {
+            gen_id: genCompletion.genId || originalGenID || genID,
+            finish_reason: finishedReason || "stop",
+            gen_time: genCompletion.genTime,
+            ttft: genCompletion.ttft,
+            provider_gen_id: genCompletion.genId || originalGenID || genID,
+            usage: {
+              completion_tokens: genCompletion.usage.completion_tokens,
+              prompt_tokens: genCompletion.usage.prompt_tokens,
+              completion_tokens_details: {
+                reasoning_tokens:
+                  genCompletion.usage.completion_tokens_details.reasoning_tokens ?? undefined,
+              },
+              prompt_tokens_details: {
+                cached_tokens: genCompletion.usage.prompt_tokens_details.cached_tokens ?? undefined,
+                written_cache_tokens:
+                  genCompletion.usage.prompt_tokens_details.written_cache_tokens ?? undefined,
+              },
+              total_tokens:
+                genCompletion.usage.completion_tokens + genCompletion.usage.prompt_tokens,
+            },
+          },
+        });
+      },
+      telemetry,
+      info.abortSignal,
+    );
     generation.id = genID;
     generation.provider = provider.info.slug;
     finishedReason = generation.choices[0].finish_reason || "stop";
