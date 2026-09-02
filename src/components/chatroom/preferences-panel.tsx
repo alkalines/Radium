@@ -39,9 +39,13 @@ export function PreferencesPanel() {
   const { data: chainOfThoughtEnabled } = useQuery(
     convexQuery(api.chatroom.getChainOfThoughtEnabled, signedIn ? {} : "skip"),
   );
+  const { data: telemetrySettings } = useQuery(
+    convexQuery(api.telemetry.getSettings, signedIn ? {} : "skip"),
+  );
   const setModelDefault = useMutation(api.chatroom.setModelDefault);
   const setTitleModelDefault = useMutation(api.chatroom.setTitleModelDefault);
   const setChainOfThoughtEnabled = useMutation(api.chatroom.setChainOfThoughtEnabled);
+  const setTelemetrySettings = useMutation(api.telemetry.setSettings);
 
   const [open, setOpen] = useState(false);
   const [titleOpen, setTitleOpen] = useState(false);
@@ -91,6 +95,20 @@ export function PreferencesPanel() {
       }
     },
     [signedIn, setChainOfThoughtEnabled],
+  );
+
+  const persistTelemetry = useCallback(
+    async (settings: { enabled: boolean; recordInputs: boolean; recordOutputs: boolean }) => {
+      if (!signedIn) return;
+      try {
+        await setTelemetrySettings(settings);
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to update telemetry settings.",
+        );
+      }
+    },
+    [setTelemetrySettings, signedIn],
   );
 
   return (
@@ -278,6 +296,91 @@ export function PreferencesPanel() {
           />
         )}
       </section>
+
+      <section id="telemetry" className="flex scroll-mt-20 flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-lg font-semibold tracking-tight">Telemetry</h2>
+          <p className="text-sm text-muted-foreground">
+            Collect execution timing and tool activity for generation logs. Payload recording is
+            optional and may contain sensitive content.
+          </p>
+        </div>
+
+        {userInfo === undefined || (signedIn && telemetrySettings === undefined) ? (
+          <Skeleton className="h-32 w-full max-w-xl" />
+        ) : (
+          <div className="flex w-full max-w-xl flex-col gap-4 rounded-xl border p-4">
+            <TelemetrySetting
+              label="Enable telemetry"
+              description="Record generation timing and tool execution metadata."
+              checked={telemetrySettings?.enabled ?? false}
+              disabled={!signedIn}
+              onCheckedChange={(enabled) =>
+                void persistTelemetry({
+                  enabled,
+                  recordInputs: telemetrySettings?.recordInputs ?? false,
+                  recordOutputs: telemetrySettings?.recordOutputs ?? false,
+                })
+              }
+            />
+            <TelemetrySetting
+              label="Record inputs"
+              description="Store model and tool inputs with generation telemetry."
+              checked={telemetrySettings?.recordInputs ?? false}
+              disabled={!signedIn || !telemetrySettings?.enabled}
+              onCheckedChange={(recordInputs) =>
+                void persistTelemetry({
+                  enabled: true,
+                  recordInputs,
+                  recordOutputs: telemetrySettings?.recordOutputs ?? false,
+                })
+              }
+            />
+            <TelemetrySetting
+              label="Record outputs"
+              description="Store model and tool outputs with generation telemetry."
+              checked={telemetrySettings?.recordOutputs ?? false}
+              disabled={!signedIn || !telemetrySettings?.enabled}
+              onCheckedChange={(recordOutputs) =>
+                void persistTelemetry({
+                  enabled: true,
+                  recordInputs: telemetrySettings?.recordInputs ?? false,
+                  recordOutputs,
+                })
+              }
+            />
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function TelemetrySetting({
+  label,
+  description,
+  checked,
+  disabled,
+  onCheckedChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  disabled: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-6">
+      <div className="flex flex-col gap-1">
+        <span className="text-sm font-medium">{label}</span>
+        <span className="text-xs text-muted-foreground">{description}</span>
+      </div>
+      <Switch
+        aria-label={label}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={onCheckedChange}
+      />
     </div>
   );
 }

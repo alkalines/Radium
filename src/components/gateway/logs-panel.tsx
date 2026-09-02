@@ -1,7 +1,8 @@
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import type { FunctionReturnType } from "convex/server";
-import { CalendarIcon, CheckIcon, CopyIcon, ScrollTextIcon } from "lucide-react";
+import { CalendarIcon, ScrollTextIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { DateRange } from "react-day-picker";
 
@@ -25,13 +26,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -41,7 +35,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { cn } from "@/lib/utils";
 import { api } from "../../../convex/_generated/api";
 import { ProviderLogo } from "./provider-logo";
 
@@ -58,11 +51,6 @@ function formatDate(timestamp: number): string {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-/** Format a millisecond duration as `s`/`ms` depending on magnitude. */
-function formatDuration(ms: number): string {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`;
 }
 
 /** Tokens generated per second, derived from completion tokens and generation time. */
@@ -89,7 +77,6 @@ export function LogsPanel() {
 
   const [preset, setPreset] = useState<RangePreset>("all");
   const [customRange, setCustomRange] = useState<DateRange | undefined>();
-  const [selected, setSelected] = useState<Generation | null>(null);
 
   const filtered = useMemo(() => {
     if (!generations) return generations;
@@ -222,34 +209,43 @@ export function LogsPanel() {
                   <TableHead>Usage Type</TableHead>
                   <TableHead className="text-right">Speed</TableHead>
                   <TableHead>Finish Reason</TableHead>
+                  <TableHead>Telemetry</TableHead>
                   <TableHead>API Key</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filtered.map((generation) => (
-                  <GenerationRow
-                    key={generation._id}
-                    generation={generation}
-                    onSelect={() => setSelected(generation)}
-                  />
+                  <GenerationRow key={generation._id} generation={generation} />
                 ))}
               </TableBody>
             </Table>
           </div>
         )
       ) : null}
-
-      <GenerationSheet generation={selected} onOpenChange={(open) => !open && setSelected(null)} />
     </div>
   );
 }
 
-function GenerationRow({ generation, onSelect }: { generation: Generation; onSelect: () => void }) {
+function GenerationRow({ generation }: { generation: Generation }) {
+  const navigate = useNavigate();
   const { request, response } = generation;
   const tps = tokensPerSecond(response.usage.completion_tokens, response.gen_time);
+  const openGeneration = () =>
+    navigate({ to: "/gateway/logs/$id", params: { id: generation._id } });
 
   return (
-    <TableRow className="cursor-pointer" onClick={onSelect}>
+    <TableRow
+      className="cursor-pointer"
+      role="link"
+      tabIndex={0}
+      onClick={() => void openGeneration()}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          void openGeneration();
+        }
+      }}
+    >
       <TableCell className="text-muted-foreground">
         {formatDate(generation._creationTime)}
       </TableCell>
@@ -277,145 +273,14 @@ function GenerationRow({ generation, onSelect }: { generation: Generation; onSel
       </TableCell>
       <TableCell className="text-right tabular-nums">{tps.toFixed(1)} tok/s</TableCell>
       <TableCell className="text-muted-foreground">{response.finish_reason}</TableCell>
+      <TableCell>
+        <Badge variant={generation.hasTelemetry ? "outline" : "secondary"}>
+          {generation.hasTelemetry ? "Recorded" : "Off"}
+        </Badge>
+      </TableCell>
       <TableCell className="text-muted-foreground">
         {generation.apiKey?.name ?? generation.apiKey?.preview ?? "Radium Chatroom"}
       </TableCell>
     </TableRow>
-  );
-}
-
-function GenerationSheet({
-  generation,
-  onOpenChange,
-}: {
-  generation: Generation | null;
-  onOpenChange: (open: boolean) => void;
-}) {
-  return (
-    <Sheet open={generation !== null} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full gap-0 sm:max-w-md">
-        {generation && <GenerationDetail generation={generation} />}
-      </SheetContent>
-    </Sheet>
-  );
-}
-
-function GenerationDetail({ generation }: { generation: Generation }) {
-  const { request, response } = generation;
-  const tps = tokensPerSecond(response.usage.completion_tokens, response.gen_time);
-
-  return (
-    <>
-      <SheetHeader className="gap-2 border-b">
-        <div className="flex items-center gap-2">
-          <ProviderLogo slug={request.provider} className="size-7" />
-          <div className="flex min-w-0 flex-col">
-            <SheetTitle className="truncate">
-              {request.model?.name ?? request.model?.slug ?? "Unknown model"}
-            </SheetTitle>
-            <SheetDescription>
-              {request.provider} · {formatDate(generation._creationTime)}
-            </SheetDescription>
-          </div>
-        </div>
-      </SheetHeader>
-
-      <div className="flex flex-col gap-6 overflow-y-auto p-6">
-        <DetailSection title="Identifiers">
-          <DetailRow label="Model ID" value={request.model?.id ?? "—"} mono copyable />
-          <DetailRow label="Canonical ID" value={request.model?.slug ?? "—"} mono copyable />
-          <DetailRow label="Request ID" value={response.genId} mono copyable />
-          <DetailRow label="Provider gen ID" value={response.providerGenId} mono copyable />
-        </DetailSection>
-
-        <DetailSection title="Performance">
-          <DetailRow label="TTFT" value={formatDuration(response.ttft)} />
-          <DetailRow label="TPS" value={`${tps.toFixed(1)} tok/s`} />
-          <DetailRow label="Provider Latency" value={formatDuration(response.gen_time)} />
-          {response.moderation_latency !== undefined && (
-            <DetailRow label="Moderation" value={formatDuration(response.moderation_latency)} />
-          )}
-        </DetailSection>
-
-        <DetailSection title="Tokens & Cost">
-          <DetailRow label="Input tokens" value={String(response.usage.prompt_tokens)} />
-          <DetailRow label="Output tokens" value={String(response.usage.completion_tokens)} />
-          {response.usage.completion_tokens_details.reasoning_tokens != null && (
-            <DetailRow
-              label="Reasoning tokens"
-              value={String(response.usage.completion_tokens_details.reasoning_tokens)}
-            />
-          )}
-          {response.usage.prompt_tokens_details.cached_tokens != null && (
-            <DetailRow
-              label="Cached tokens"
-              value={String(response.usage.prompt_tokens_details.cached_tokens)}
-            />
-          )}
-          <DetailRow label="Cost" value={formatCredits(response.pricing.cost)} mono />
-        </DetailSection>
-
-        <DetailSection title="Request">
-          <DetailRow label="Usage type" value={request.byok ? "BYOK" : "Credits"} />
-          <DetailRow label="Finish reason" value={response.finish_reason} />
-          <DetailRow label="Streamed" value={request.streamed ? "Yes" : "No"} />
-          <DetailRow label="Canceled" value={request.canceled ? "Yes" : "No"} />
-          <DetailRow
-            label="API key"
-            value={generation.apiKey?.name ?? generation.apiKey?.preview ?? "Radium Chatroom"}
-          />
-        </DetailSection>
-      </div>
-    </>
-  );
-}
-
-function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
-      </span>
-      <dl className="flex flex-col gap-1">{children}</dl>
-    </div>
-  );
-}
-
-function DetailRow({
-  label,
-  value,
-  mono,
-  copyable,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  copyable?: boolean;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className={cn("flex min-w-0 items-center gap-1 text-sm", mono && "font-mono text-xs")}>
-        <span className="truncate">{value}</span>
-        {copyable && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-5 shrink-0 text-muted-foreground"
-            onClick={() => {
-              void navigator.clipboard.writeText(value);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1200);
-            }}
-            aria-label={`Copy ${label}`}
-          >
-            {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
-          </Button>
-        )}
-      </dd>
-    </div>
   );
 }

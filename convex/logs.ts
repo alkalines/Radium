@@ -42,6 +42,7 @@ export const getGenerations = query({
             model: model ? { id: model._id, name: model.name, slug: model.slug } : null,
           },
           response: completion.response,
+          hasTelemetry: completion.telemetry !== undefined,
           // @todo Surface the full request payload — system message, tools,
           // tool calls, and user/assistant messages — once `chat_completions`
           // persists it. This will be opt-in since transcripts can be large and
@@ -49,6 +50,41 @@ export const getGenerations = query({
         };
       }),
     );
+  },
+});
+
+/** Return every persisted detail for one owned gateway generation. */
+export const getGeneration = query({
+  args: { generationId: v.id("chat_completions") },
+  handler: async (ctx, args) => {
+    const completion = await ctx.db.get("chat_completions", args.generationId);
+    if (!completion) return null;
+
+    await requireOwnedBalance(ctx, completion.bill.balance);
+
+    const [model, key, app] = await Promise.all([
+      ctx.db.get("models", completion.request.model),
+      completion.bill.key ? ctx.db.get("keys", completion.bill.key) : null,
+      completion.request.app ? ctx.db.get("ai_apps", completion.request.app) : null,
+    ]);
+
+    return {
+      _id: completion._id,
+      _creationTime: completion._creationTime,
+      apiKey: key ? { id: key._id, name: key.name, preview: key.preview } : null,
+      app: app ? { id: app._id, title: app.title, url: app.url, icon: app.icon } : null,
+      request: {
+        provider: completion.request.provider,
+        byok: completion.request.byok,
+        streamed: completion.request.streamed,
+        canceled: completion.request.canceled,
+        model: model
+          ? { id: model._id, name: model.name, slug: model.slug, type: model.type }
+          : null,
+      },
+      response: completion.response,
+      telemetry: completion.telemetry,
+    };
   },
 });
 

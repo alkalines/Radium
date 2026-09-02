@@ -31,7 +31,8 @@ export default defineSchema({
     bill: v.object({
       balance: v.id("balances"),
       key: v.optional(v.id("keys")),
-      userId: v.string(),
+      // Legacy completions predate this denormalized owner field. New writes always set it.
+      userId: v.optional(v.string()),
     }),
     request: v.object({
       provider: v.string(),
