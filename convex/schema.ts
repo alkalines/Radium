@@ -265,6 +265,7 @@ export default defineSchema({
   telemetry_traces: defineTable({
     balance: v.id("balances"),
     key: v.optional(v.id("keys")),
+    chatCompletionId: v.optional(v.id("chat_completions")),
     userId: v.string(),
     chatId: v.optional(v.id("aisdk_chats")),
     source: telemetrySourceSchema,
@@ -287,6 +288,7 @@ export default defineSchema({
     recordsOutputs: v.boolean(),
   })
     .index("by_balance_and_startedAt", ["balance", "startedAt"])
+    .index("by_balance_and_requestId", ["balance", "requestId"])
     .index("by_chat_and_startedAt", ["chatId", "startedAt"]),
   telemetry_spans: defineTable({
     trace: v.id("telemetry_traces"),

@@ -167,6 +167,7 @@ const CreateCompletion = async (
             provider: provider.info.slug,
             stream: reqData.stream ?? false,
             prompt_cache_key: reqData.prompt_cache_key || reqData.user,
+            telemetry_request_id: info.telemetry?.requestId,
           },
           response: {
             gen_id: genCompletion.genId || originalGenID || genID,
@@ -254,6 +255,7 @@ const CreateCompletion = async (
             provider: provider.info.slug,
             stream: reqData.stream ?? false,
             prompt_cache_key: reqData.prompt_cache_key || reqData.user,
+            telemetry_request_id: info.telemetry?.requestId,
           },
           response: {
             gen_id: genCompletion.genId || originalGenID || genID,

@@ -15,6 +15,19 @@ const defaultSettings = {
   recordOutputs: false,
 };
 
+function preferChatroomTraces<Trace extends { requestId: string; source: "chatroom" | "gateway" }>(
+  traces: Trace[],
+): Trace[] {
+  const byRequest = new Map<string, Trace>();
+  for (const trace of traces) {
+    const current = byRequest.get(trace.requestId);
+    if (!current || (trace.source === "chatroom" && current.source !== "chatroom")) {
+      byRequest.set(trace.requestId, trace);
+    }
+  }
+  return [...byRequest.values()];
+}
+
 const traceFields = {
   status: v.optional(telemetryStatusSchema),
   endedAt: v.optional(v.number()),
@@ -87,7 +100,7 @@ export const setSettings = mutation({
   },
 });
 
-/** List recent AI SDK traces for a balance. Payload bodies are only returned by getTrace. */
+/** List recent requests, preferring the parent chatroom trace over its nested gateway trace. */
 export const listTraces = query({
   args: {
     balance: v.id("balances"),
@@ -104,14 +117,14 @@ export const listTraces = query({
             q.eq("balance", args.balance).gte("startedAt", args.since!),
           )
           .order("desc")
-          .take(limit)
+          .take(limit * 2)
       : await ctx.db
           .query("telemetry_traces")
           .withIndex("by_balance_and_startedAt", (q) => q.eq("balance", args.balance))
           .order("desc")
-          .take(limit);
+          .take(limit * 2);
 
-    return traces;
+    return preferChatroomTraces(traces).slice(0, limit);
   },
 });
 
@@ -133,21 +146,30 @@ export const getTrace = query({
     const truncated = spans.length > 100 || payloads.length > 101;
     const windowedSpans = spans.slice(0, 100);
     const windowedPayloads = payloads.slice(0, 101);
-    const rootPayload = windowedPayloads.find((payload) => payload.span === undefined);
     const payloadsBySpan = new Map(
       windowedPayloads.filter((payload) => payload.span).map((payload) => [payload.span!, payload]),
     );
+    const completion = trace.chatCompletionId
+      ? await ctx.db.get("chat_completions", trace.chatCompletionId)
+      : null;
+    const completionModel = completion
+      ? await ctx.db.get("models", completion.request.model)
+      : null;
     return {
-      trace: {
-        ...trace,
-        inputJson: rootPayload?.inputJson,
-        outputJson: rootPayload?.outputJson,
-      },
+      trace,
       spans: windowedSpans.map((span) => ({
         ...span,
         inputJson: payloadsBySpan.get(span._id)?.inputJson,
         outputJson: payloadsBySpan.get(span._id)?.outputJson,
       })),
+      completion: completion
+        ? {
+            ...completion,
+            model: completionModel
+              ? { _id: completionModel._id, name: completionModel.name, slug: completionModel.slug }
+              : null,
+          }
+        : null,
       truncated,
     };
   },
@@ -166,14 +188,7 @@ export const getSummary = query({
       )
       .order("desc")
       .take(limit + 1);
-    const byRequest = new Map<string, (typeof traces)[number]>();
-    for (const trace of traces.slice(0, limit)) {
-      const current = byRequest.get(trace.requestId);
-      if (!current || (trace.source === "chatroom" && current.source !== "chatroom")) {
-        byRequest.set(trace.requestId, trace);
-      }
-    }
-    const windowed = [...byRequest.values()];
+    const windowed = preferChatroomTraces(traces.slice(0, limit));
     const summary = {
       traces: windowed.length,
       successful: 0,
