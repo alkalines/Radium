@@ -146,6 +146,7 @@ export const getTrace = query({
     const truncated = spans.length > 100 || payloads.length > 101;
     const windowedSpans = spans.slice(0, 100);
     const windowedPayloads = payloads.slice(0, 101);
+    const rootPayload = windowedPayloads.find((payload) => payload.span === undefined);
     const payloadsBySpan = new Map(
       windowedPayloads.filter((payload) => payload.span).map((payload) => [payload.span!, payload]),
     );
@@ -162,6 +163,8 @@ export const getTrace = query({
         inputJson: payloadsBySpan.get(span._id)?.inputJson,
         outputJson: payloadsBySpan.get(span._id)?.outputJson,
       })),
+      inputJson: rootPayload?.inputJson,
+      outputJson: rootPayload?.outputJson,
       completion: completion
         ? {
             ...completion,

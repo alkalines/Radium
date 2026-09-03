@@ -331,10 +331,74 @@ function safeJson(value: unknown): string | undefined {
       return item;
     });
     if (json === undefined) return undefined;
-    return json.length > MAX_PAYLOAD_LENGTH ? `${json.slice(0, MAX_PAYLOAD_LENGTH)}...` : json;
+    return json.length > MAX_PAYLOAD_LENGTH ? truncateJson(json) : json;
   } catch {
     return "[Unserializable]";
   }
+}
+
+function truncateJson(json: string): string {
+  const prefix = json.slice(0, MAX_PAYLOAD_LENGTH - 256);
+  const commaPositions: number[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < prefix.length; index++) {
+    const character = prefix[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+    } else if (character === '"') inString = true;
+    else if (character === ",") commaPositions.push(index);
+  }
+
+  for (const candidate of [
+    prefix,
+    ...commaPositions.reverse().map((index) => prefix.slice(0, index)),
+  ]) {
+    const repaired = closeJsonPrefix(candidate);
+    if (!repaired) continue;
+    try {
+      JSON.parse(repaired);
+      return repaired;
+    } catch {
+      // Try the previous complete field or array item.
+    }
+  }
+  return JSON.stringify({ truncated: true });
+}
+
+function closeJsonPrefix(value: string): string | undefined {
+  const stack: Array<"}" | "]"> = [];
+  let inString = false;
+  let escaped = false;
+
+  for (const character of value) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === "{") stack.push("}");
+    else if (character === "[") stack.push("]");
+    else if (character === "}" || character === "]") {
+      if (stack.at(-1) !== character) return undefined;
+      stack.pop();
+    }
+  }
+
+  let repaired = value.trimEnd();
+  if (inString) {
+    repaired = repaired.replace(/\\u[\da-fA-F]{0,3}$/, "");
+    if (repaired.endsWith("\\")) repaired = repaired.slice(0, -1);
+    repaired += '…"';
+  } else if (repaired.endsWith(":")) repaired += "null";
+  else if (repaired.endsWith(",")) repaired = repaired.slice(0, -1);
+
+  return repaired + stack.reverse().join("");
 }
 
 function errorMessage(error: unknown): string {

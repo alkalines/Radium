@@ -5,19 +5,23 @@ import type { FunctionReturnType } from "convex/server";
 import type { Id } from "../../../convex/_generated/dataModel";
 import {
   ArrowLeftIcon,
+  ArrowRightIcon,
   BotIcon,
-  BracesIcon,
   BrainCircuitIcon,
   ChevronDownIcon,
-  CircleDollarSignIcon,
-  Clock3Icon,
+  CircleAlertIcon,
+  CircleCheckIcon,
   CopyIcon,
   DatabaseIcon,
-  GaugeIcon,
-  GitBranchIcon,
-  HashIcon,
-  MessageSquareCodeIcon,
-  TerminalSquareIcon,
+  FileIcon,
+  FlagIcon,
+  HistoryIcon,
+  LinkIcon,
+  MessageSquareIcon,
+  RouteIcon,
+  ShieldIcon,
+  TextIcon,
+  UserRoundIcon,
   WrenchIcon,
 } from "lucide-react";
 import { useState } from "react";
@@ -26,23 +30,20 @@ import { CodeBlock, CodeBlockCopyButton } from "@/components/ai-elements/code-bl
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { api } from "../../../convex/_generated/api";
 import { ProviderLogo } from "./provider-logo";
-import { StatusBadge } from "./telemetry-panel";
-import {
-  formatTelemetryDate,
-  formatTelemetryDuration,
-  formatTokenCount,
-  prettyTelemetryJson,
-} from "./telemetry-utils";
+import { formatTelemetryDate, formatTelemetryDuration, formatTokenCount } from "./telemetry-utils";
 
 type TraceResult = Exclude<FunctionReturnType<typeof api.telemetry.getTrace>, null>;
 type Span = TraceResult["spans"][number];
+type Step = {
+  model?: Span;
+  summary?: Span;
+  tools: Span[];
+};
 
 export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }) {
   const { data, error } = useQuery(convexQuery(api.telemetry.getTrace, { traceId }));
@@ -50,6 +51,7 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
   if (error) {
     return (
       <Alert variant="destructive">
+        <CircleAlertIcon />
         <AlertTitle>Could not load trace</AlertTitle>
         <AlertDescription>{error.message}</AlertDescription>
       </Alert>
@@ -69,68 +71,46 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
     );
   }
 
-  const { trace, completion } = data;
-  const usage = trace.usage;
+  const { trace } = data;
+  const steps = buildSteps(data.spans);
+  const displaySteps = steps.length ? steps : [{ tools: [] }];
+  const title = getRunTitle(data.inputJson, steps[0]?.model?.inputJson) ?? trace.functionId;
 
   return (
-    <div className="flex flex-col gap-5">
-      <div className="flex items-center justify-between gap-3">
-        <Button variant="ghost" size="sm" asChild>
-          <Link to="/gateway/telemetry">
-            <ArrowLeftIcon data-icon="inline-start" />
-            All traces
-          </Link>
-        </Button>
-        <span className="hidden font-mono text-[11px] text-muted-foreground sm:block">
-          {trace._id}
-        </span>
-      </div>
+    <div className="flex flex-col gap-3">
+      <Button variant="ghost" size="sm" className="mr-auto -ml-2" asChild>
+        <Link to="/gateway/telemetry">
+          <ArrowLeftIcon data-icon="inline-start" />
+          All traces
+        </Link>
+      </Button>
 
-      <header className="flex flex-col gap-4 rounded-xl border bg-card p-4 shadow-sm md:p-5">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start">
-          <div className="flex size-11 shrink-0 items-center justify-center rounded-lg border bg-muted">
-            <ProviderLogo slug={trace.provider} className="size-6" />
+      <header className="flex flex-col gap-3 px-0.5 pb-2">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="truncate font-sans text-sm font-medium">{title}</h1>
+            <RunStatus status={trace.status} />
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate font-mono text-lg font-semibold">{trace.functionId}</h1>
-              <StatusBadge status={trace.status} />
-              <Badge variant="outline">{trace.source}</Badge>
-            </div>
-            <p className="mt-1 font-mono text-xs text-muted-foreground">
-              {trace.provider}/{trace.model} / {trace.operationId}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-4 font-mono text-xs text-muted-foreground">
-            <span>{formatTelemetryDuration(trace.durationMs)}</span>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted-foreground lg:justify-end">
             <span>
-              {formatTokenCount(usage?.inputTokens ?? 0)} -&gt;{" "}
-              {formatTokenCount(usage?.outputTokens ?? 0)}
+              {displaySteps.length} {displaySteps.length === 1 ? "step" : "steps"}
+            </span>
+            <span aria-hidden>·</span>
+            <span>{formatTelemetryDuration(trace.durationMs)}</span>
+            <span aria-hidden>·</span>
+            <span>
+              input: {formatTokenCount(trace.usage?.inputTokens ?? 0)} → output:{" "}
+              {formatTokenCount(trace.usage?.outputTokens ?? 0)}
+            </span>
+            <span aria-hidden>·</span>
+            <time dateTime={new Date(trace.startedAt).toISOString()}>
+              {formatTelemetryDate(trace.startedAt)}
+            </time>
+            <span aria-hidden>·</span>
+            <span className="flex items-center gap-1.5">
+              <RouteIcon className="size-3" /> Timeline
             </span>
           </div>
-        </div>
-
-        <div className="grid gap-px overflow-hidden rounded-lg border bg-border sm:grid-cols-2 lg:grid-cols-4">
-          <TraceMetric
-            icon={Clock3Icon}
-            label="Duration"
-            value={formatTelemetryDuration(trace.durationMs)}
-          />
-          <TraceMetric
-            icon={GaugeIcon}
-            label="Total tokens"
-            value={formatTokenCount(usage?.totalTokens ?? 0)}
-          />
-          <TraceMetric
-            icon={GitBranchIcon}
-            label="Reasoning"
-            value={String(trace.stepCount ?? 0)}
-          />
-          <TraceMetric
-            icon={WrenchIcon}
-            label="Tool calls"
-            value={String(trace.toolCallCount ?? 0)}
-          />
         </div>
       </header>
 
@@ -143,475 +123,995 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
         </Alert>
       )}
 
-      {trace.error && (
-        <Alert variant="destructive">
-          <AlertTitle>Request error</AlertTitle>
-          <AlertDescription className="font-mono text-xs">{trace.error}</AlertDescription>
-        </Alert>
-      )}
-
-      <section className="flex flex-col gap-2">
-        <div className="flex items-end justify-between gap-3 px-1">
-          <div>
-            <h2 className="font-mono text-sm font-semibold uppercase tracking-wider">
-              Execution timeline
-            </h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Reasoning, model calls, and tool executions in start order.
-            </p>
-          </div>
-          <Badge variant="secondary">{data.spans.length} spans</Badge>
-        </div>
-        {data.spans.length ? (
-          <div className="flex flex-col gap-2">
-            {data.spans.map((span, index) => (
-              <SpanRow key={span._id} span={span} index={index} />
-            ))}
-          </div>
-        ) : (
-          <div className="rounded-xl border px-4 py-10 text-center text-sm text-muted-foreground">
-            No child spans were recorded.
-          </div>
-        )}
+      <section aria-label="Execution steps" className="flex flex-col gap-2.5">
+        {displaySteps.map((step, index) => (
+          <StepCard
+            key={step.model?._id ?? `trace-${index}`}
+            step={step}
+            index={index}
+            rootInput={index === 0 ? data.inputJson : undefined}
+            rootOutput={index === displaySteps.length - 1 ? data.outputJson : undefined}
+            trace={trace}
+          />
+        ))}
       </section>
 
-      <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-        <CompletionCard completion={completion} traceCompletionId={trace.chatCompletionId} />
-        <Card size="sm">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 font-mono text-sm uppercase tracking-wider">
-              <DatabaseIcon className="size-4" /> Trace metadata
-            </CardTitle>
-            <CardDescription>Convex and AI SDK correlation identifiers.</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            <Identifier label="Trace ID" value={trace._id} />
-            <Identifier label="Request ID" value={trace.requestId} />
-            <Identifier label="Call ID" value={trace.callId} />
-            <Identifier label="Operation ID" value={trace.operationId} />
-            <Identifier label="Function ID" value={trace.functionId} />
-            {trace.chatId && <Identifier label="Chat ID" value={trace.chatId} />}
-            {trace.key && <Identifier label="API key ID" value={trace.key} />}
-            <Separator />
-            <MetadataRow label="Started" value={formatTelemetryDate(trace.startedAt)} />
-            {trace.endedAt && (
-              <MetadataRow label="Ended" value={formatTelemetryDate(trace.endedAt)} />
-            )}
-            <MetadataRow label="Finish reason" value={trace.finishReason ?? "-"} />
-            <MetadataRow
-              label="Reasoning tokens"
-              value={formatTokenCount(usage?.reasoningTokens ?? 0)}
-            />
-            <MetadataRow label="Cache read" value={formatTokenCount(usage?.cacheReadTokens ?? 0)} />
-            <MetadataRow
-              label="Cache write"
-              value={formatTokenCount(usage?.cacheWriteTokens ?? 0)}
-            />
-          </CardContent>
-        </Card>
-      </div>
+      <RunDetails data={data} />
     </div>
   );
 }
 
-function SpanRow({ span, index }: { span: Span; index: number }) {
-  const [open, setOpen] = useState(index === 0);
-  const Icon =
-    span.kind === "tool" ? WrenchIcon : span.kind === "model" ? BotIcon : BrainCircuitIcon;
-  const hasDetails = Boolean(span.inputJson || span.outputJson || span.error);
-  const style =
-    span.kind === "step"
-      ? {
-          border: "border-l-chart-1",
-          icon: "text-chart-1",
-          badge: "border-chart-1/30 bg-chart-1/10 text-chart-1",
-        }
-      : span.kind === "model"
-        ? {
-            border: "border-l-chart-2",
-            icon: "text-chart-2",
-            badge: "border-chart-2/30 bg-chart-2/10 text-chart-2",
-          }
-        : {
-            border: "border-l-chart-3",
-            icon: "text-chart-3",
-            badge: "border-chart-3/30 bg-chart-3/10 text-chart-3",
-          };
-  const kindLabel = span.kind === "step" ? "reasoning" : span.kind;
-  const name = span.kind === "step" ? "Reasoning" : span.name;
+function StepCard({
+  step,
+  index,
+  rootInput,
+  rootOutput,
+  trace,
+}: {
+  step: Step;
+  index: number;
+  rootInput?: string;
+  rootOutput?: string;
+  trace: TraceResult["trace"];
+}) {
+  const [open, setOpen] = useState(false);
+  const input = step.model?.inputJson ?? rootInput;
+  const output = step.model?.outputJson ?? rootOutput;
+  const error = step.model?.error ?? (!step.model ? trace.error : undefined);
+  const duration = step.summary?.durationMs ?? step.model?.durationMs ?? trace.durationMs;
+  const usage = step.model?.usage ?? step.summary?.usage ?? (!step.model ? trace.usage : undefined);
+  const model = step.model?.model ?? step.summary?.model ?? trace.model;
+  const provider = step.model?.provider ?? step.summary?.provider ?? trace.provider;
+  const outputLabel = error ? "Error" : summarizeOutput(output, step.tools);
 
   return (
     <Collapsible
       open={open}
       onOpenChange={setOpen}
-      className={cn("overflow-hidden rounded-xl border border-l-4 bg-card", style.border)}
+      className={cn(
+        "overflow-hidden rounded-xl border bg-card shadow-xs",
+        error && "border-destructive/35",
+      )}
     >
-      <CollapsibleTrigger
-        className="flex w-full items-center gap-3 px-4 py-3 text-left disabled:cursor-default"
-        disabled={!hasDetails}
-      >
-        <span className="w-5 shrink-0 font-mono text-xs text-muted-foreground">
-          {String(index + 1).padStart(2, "0")}
+      <CollapsibleTrigger className="group flex w-full items-center gap-2.5 px-3 py-3 text-left sm:px-4">
+        <span className="w-4 shrink-0 font-mono text-[11px] text-muted-foreground">
+          {index + 1}
         </span>
-        <Icon className={cn("size-4 shrink-0", style.icon)} />
-        <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium">{name}</span>
-        <Badge variant="outline" className={style.badge}>
-          {kindLabel}
-        </Badge>
-        <StatusBadge status={span.status} />
-        <span className="hidden font-mono text-xs text-muted-foreground sm:block">
-          {formatTelemetryDuration(span.durationMs)}
+        <InputSummary value={input} />
+        <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground/60" />
+        <span
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-medium",
+            error && "text-destructive",
+          )}
+        >
+          {error ? (
+            <CircleAlertIcon className="size-3.5 shrink-0" />
+          ) : outputLabel === "Response" ? (
+            <MessageSquareIcon className="size-3.5 shrink-0" />
+          ) : (
+            <WrenchIcon className="size-3.5 shrink-0" />
+          )}
+          <span className="truncate">{outputLabel}</span>
         </span>
-        <span className="hidden font-mono text-xs text-muted-foreground md:block">
-          {formatTokenCount(span.usage?.totalTokens ?? 0)} tok
+        <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground md:block">
+          {formatTelemetryDuration(duration)}
         </span>
-        {hasDetails && (
-          <ChevronDownIcon
-            className={cn(
-              "size-4 text-muted-foreground transition-transform",
-              open && "rotate-180",
-            )}
-          />
-        )}
+        <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground lg:block">
+          {formatTokenCount(usage?.inputTokens ?? 0)} → {formatTokenCount(usage?.outputTokens ?? 0)}
+        </span>
+        <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
       </CollapsibleTrigger>
+
       <CollapsibleContent className="collapsible-content border-t">
-        {span.kind === "step" ? (
-          <PayloadPanel label="Reasoning output" value={span.error ?? span.outputJson} />
-        ) : (
-          <div className="grid lg:grid-cols-2 lg:divide-x">
-            <PayloadPanel
-              label={span.kind === "tool" ? "Arguments" : "Input"}
-              value={span.inputJson}
-            />
-            <PayloadPanel
-              label={span.error ? "Error" : "Output"}
-              value={span.error ?? span.outputJson}
-            />
-          </div>
-        )}
-        <div className="flex flex-wrap gap-x-5 gap-y-2 border-t bg-muted/30 px-4 py-2 font-mono text-[11px] text-muted-foreground">
-          {span.provider && <span>provider={span.provider}</span>}
-          {span.model && <span>model={span.model}</span>}
-          {span.toolCallId && <span>tool_call_id={span.toolCallId}</span>}
-          {span.finishReason && <span>finish_reason={span.finishReason}</span>}
-          <span>started={new Date(span.startedAt).toISOString()}</span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-muted/25 px-3 py-2 font-mono text-[10px] text-muted-foreground sm:px-4">
+          <Badge variant="secondary" className="h-4 rounded-sm px-1.5 text-[9px]">
+            {trace.source}
+          </Badge>
+          <span className="flex items-center gap-1.5">
+            <ProviderLogo slug={provider} className="size-3" />
+            {provider}/{model}
+          </span>
+          {step.tools.length > 0 && (
+            <span className="flex items-center gap-1">
+              <WrenchIcon className="size-3" /> {step.tools.length} tool{" "}
+              {step.tools.length === 1 ? "execution" : "executions"}
+            </span>
+          )}
+          {(step.model?.finishReason ?? step.summary?.finishReason ?? trace.finishReason) && (
+            <span>
+              finish: {step.model?.finishReason ?? step.summary?.finishReason ?? trace.finishReason}
+            </span>
+          )}
+          <span className="ml-auto hidden sm:inline">{formatTelemetryDuration(duration)}</span>
+        </div>
+
+        <div className="grid min-h-44 lg:grid-cols-2 lg:divide-x">
+          <StepPanel label="Input">
+            <PromptView value={input} />
+          </StepPanel>
+          <StepPanel label="Output">
+            {error ? (
+              <ErrorOutput message={error} />
+            ) : (
+              <OutputView value={output} tools={step.tools} />
+            )}
+          </StepPanel>
         </div>
       </CollapsibleContent>
     </Collapsible>
   );
 }
 
-function PayloadPanel({ label, value }: { label: string; value?: string }) {
-  const [showRaw, setShowRaw] = useState(false);
-  const code = value ? prettyTelemetryJson(value) : undefined;
-  const parsed = value ? parsePayload(value) : undefined;
+function StepPanel({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex min-h-40 min-w-0 flex-col gap-3 p-4">
-      <div className="flex items-center gap-2">
-        <div className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          <TerminalSquareIcon className="size-3.5" /> {label}
-        </div>
-        {code && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-7 font-mono text-[11px]"
-            onClick={() => setShowRaw((current) => !current)}
-          >
-            <BracesIcon data-icon="inline-start" />
-            {showRaw ? "Hide raw" : "View raw"}
-          </Button>
-        )}
-      </div>
-      {showRaw && code ? (
-        <CodeBlock
-          code={code}
-          language="json"
-          showLineNumbers
-          className="min-h-36 flex-1 border-0 bg-muted/40"
-        >
-          <CodeBlockCopyButton aria-label={`Copy ${label.toLowerCase()}`} />
-        </CodeBlock>
-      ) : parsed !== undefined ? (
-        <PayloadPreview value={parsed} />
-      ) : (
-        <div className="flex min-h-28 flex-1 items-center justify-center rounded-md border border-dashed bg-muted/20 px-4 text-center text-xs text-muted-foreground">
-          No {label.toLowerCase()} payload was recorded.
-        </div>
-      )}
+    <div className="flex min-w-0 flex-col gap-3 p-3 sm:p-4">
+      <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      {children}
     </div>
   );
 }
 
-function parsePayload(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
+function PromptView({ value }: { value?: string }) {
+  const parsed = parseJson(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return <EmptyPayload label="input" value={value} />;
   }
+
+  const prompt = parsed as Record<string, unknown>;
+  const messages = Array.isArray(prompt.messages) ? prompt.messages : [];
+  const entries = [
+    ...(prompt.instructions !== undefined
+      ? [{ role: "system", content: prompt.instructions }]
+      : []),
+    ...messages.map((message) => {
+      const record = asRecord(message);
+      return {
+        role: typeof record?.role === "string" ? record.role : "message",
+        content: record?.content ?? record?.parts ?? message,
+      };
+    }),
+  ];
+  const hiddenCount = Math.max(0, entries.length - 2);
+  const previousMessages = entries.slice(0, hiddenCount);
+  const visibleMessages = entries.slice(hiddenCount);
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      {hiddenCount > 0 && <PreviousMessages messages={previousMessages} />}
+      {visibleMessages.map((message, index) => (
+        <MessageCard
+          key={`${message.role}-${hiddenCount + index}`}
+          role={message.role}
+          index={hiddenCount + index + 1}
+          content={message.content}
+        />
+      ))}
+      {!messages.length && prompt.instructions === undefined && <RawPayload value={value} />}
+    </div>
+  );
 }
 
-function PayloadPreview({ value, depth = 0 }: { value: unknown; depth?: number }) {
-  if (value === null || value === undefined) {
-    return <span className="text-xs text-muted-foreground">null</span>;
+function PreviousMessages({ messages }: { messages: Array<{ role: string; content: unknown }> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="rounded-lg border border-dashed">
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[10px] text-muted-foreground">
+        <HistoryIcon className="size-3.5" />
+        {messages.length} previous {messages.length === 1 ? "message" : "messages"}
+        <ChevronDownIcon className="ml-auto size-3 transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="collapsible-content border-t border-dashed">
+        <div className="flex flex-col gap-2 p-2">
+          {messages.map((message, index) => (
+            <MessageCard
+              key={`${message.role}-${index}`}
+              role={message.role}
+              index={index + 1}
+              content={message.content}
+              defaultOpen={false}
+            />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function MessageCard({
+  role,
+  index,
+  content,
+  defaultOpen = false,
+}: {
+  role: string;
+  index: number;
+  content: unknown;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const parts = Array.isArray(content) ? content : [content];
+  const roleStyle = getRoleStyle(role);
+  const RoleIcon = roleStyle.icon;
+  const preview = summarizeContent(content);
+
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className={cn("overflow-hidden rounded-lg border", roleStyle.container)}
+    >
+      <CollapsibleTrigger
+        className={cn("group flex w-full items-center gap-2 px-3 py-2 text-left", roleStyle.text)}
+      >
+        <span className="font-mono text-[9px] text-muted-foreground">{index}</span>
+        <RoleIcon className="size-3.5 shrink-0" />
+        <span className="font-mono text-[9px] font-semibold uppercase tracking-wider">{role}</span>
+        {parts.length > 1 && (
+          <span className="font-mono text-[9px] text-muted-foreground">{parts.length} parts</span>
+        )}
+        {!open && (
+          <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">
+            {preview}
+          </span>
+        )}
+        <ChevronDownIcon className="ml-auto size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="collapsible-content border-t border-current/10">
+        <div className="flex flex-col gap-1.5 p-2.5">
+          {parts.map((part, partIndex) => (
+            <ContentLine key={partIndex} value={part} />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function ContentLine({ value }: { value: unknown }) {
+  if (typeof value === "string")
+    return <p className="whitespace-pre-wrap px-1 text-xs leading-relaxed">{value}</p>;
+  const part = asRecord(value);
+  if (!part) return <InlineJson value={value} />;
+
+  const type = typeof part.type === "string" ? part.type : "";
+  if (type === "text") {
+    return <p className="whitespace-pre-wrap px-1 text-xs leading-relaxed">{String(part.text)}</p>;
   }
-  if (typeof value === "string") {
-    return <p className="whitespace-pre-wrap text-sm leading-relaxed">{value}</p>;
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return <code className="text-xs">{String(value)}</code>;
-  }
-  if (Array.isArray(value)) {
-    if (!value.length) return <span className="text-xs text-muted-foreground">Empty list</span>;
+  if (type.includes("tool-call")) {
     return (
-      <div className="flex flex-col gap-2">
-        {value.map((item, index) => (
-          <PayloadItem key={index} value={item} depth={depth} />
-        ))}
+      <div className="rounded-md border border-telemetry-tool/35 bg-telemetry-tool/10 px-2.5 py-2 text-telemetry-tool">
+        <div className="mb-1 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-wider">
+          <WrenchIcon className="size-3" /> Tool call · {String(part.toolName ?? "tool")}
+        </div>
+        <InlineJson value={part.input ?? part.args} />
       </div>
     );
   }
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    if (Array.isArray(record.messages) || record.instructions !== undefined) {
-      return <PromptPreview value={record} />;
-    }
-    if (typeof record.type === "string") return <ContentPart value={record} />;
-    if (depth >= 2) {
-      return (
-        <span className="text-xs text-muted-foreground">{Object.keys(record).length} fields</span>
-      );
-    }
-    return <ObjectPreview value={record} depth={depth} />;
-  }
-  return <span className="text-xs text-muted-foreground">Unsupported value</span>;
-}
-
-function PayloadItem({ value, depth }: { value: unknown; depth: number }) {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    const record = value as Record<string, unknown>;
-    if (typeof record.type === "string") return <ContentPart value={record} />;
-  }
-  return (
-    <div className="rounded-lg border bg-muted/20 p-3">
-      <PayloadPreview value={value} depth={depth + 1} />
-    </div>
-  );
-}
-
-function PromptPreview({ value }: { value: Record<string, unknown> }) {
-  return (
-    <div className="flex flex-col gap-3">
-      {value.instructions !== undefined && (
-        <div className="rounded-lg border border-chart-1/30 bg-chart-1/10 p-3">
-          <div className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-wider text-chart-1">
-            Instructions
-          </div>
-          <PayloadPreview value={value.instructions} depth={1} />
+  if (type.includes("tool-result")) {
+    const output = asRecord(part.output);
+    return (
+      <div className="rounded-md border border-telemetry-tool/35 bg-telemetry-tool/10 px-2.5 py-2 text-telemetry-tool">
+        <div className="mb-1 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-wider">
+          <CircleCheckIcon className="size-3" /> Tool result · {String(part.toolName ?? "tool")}
         </div>
-      )}
-      {Array.isArray(value.messages) &&
-        value.messages.map((message, index) => {
-          const record: Record<string, unknown> =
-            typeof message === "object" && message !== null
-              ? (message as Record<string, unknown>)
-              : { content: message };
-          return (
-            <div key={index} className="rounded-lg border bg-muted/20 p-3">
-              <div className="mb-2 flex items-center gap-2">
-                <MessageSquareCodeIcon className="size-3.5 text-chart-2" />
-                <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-chart-2">
-                  {typeof record.role === "string" ? record.role : `Message ${index + 1}`}
-                </span>
-              </div>
-              <PayloadPreview value={record.content} depth={1} />
-            </div>
-          );
-        })}
-    </div>
-  );
+        <InlineJson value={output?.value ?? part.output} />
+      </div>
+    );
+  }
+  if (type === "dynamic-tool" || type.startsWith("tool-")) {
+    return <InputToolPart part={part} />;
+  }
+  if (type.includes("reasoning")) {
+    return (
+      <div className="rounded-md border border-telemetry-thinking/35 bg-telemetry-thinking/10 px-2.5 py-2 text-telemetry-thinking">
+        <div className="mb-1 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-wider">
+          <BrainCircuitIcon className="size-3" /> Reasoning
+        </div>
+        <p className="whitespace-pre-wrap text-xs leading-relaxed">{String(part.text ?? "")}</p>
+      </div>
+    );
+  }
+  if (type === "source-url") {
+    return (
+      <div className="rounded-md border border-telemetry-user/30 bg-telemetry-user/10 px-2.5 py-2 text-telemetry-user">
+        <div className="mb-1 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-wider">
+          <LinkIcon className="size-3" /> URL source
+        </div>
+        <a
+          href={String(part.url)}
+          target="_blank"
+          rel="noreferrer"
+          className="block truncate text-xs underline underline-offset-2"
+        >
+          {String(part.title ?? part.url)}
+        </a>
+      </div>
+    );
+  }
+  if (type === "source-document") {
+    return (
+      <div className="rounded-md border border-telemetry-user/30 bg-telemetry-user/10 px-2.5 py-2 text-telemetry-user">
+        <div className="mb-1 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-wider">
+          <FileIcon className="size-3" /> Document source
+        </div>
+        <p className="text-xs">{String(part.title ?? part.filename ?? part.sourceId)}</p>
+        <p className="mt-1 font-mono text-[9px] opacity-70">{String(part.mediaType)}</p>
+      </div>
+    );
+  }
+  if (type === "file") {
+    return (
+      <div className="rounded-md border border-telemetry-user/30 bg-telemetry-user/10 px-2.5 py-2 text-telemetry-user">
+        <div className="mb-1 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-wider">
+          <FileIcon className="size-3" /> File
+        </div>
+        <p className="truncate text-xs">{String(part.filename ?? part.url ?? "Attached file")}</p>
+        <p className="mt-1 font-mono text-[9px] opacity-70">{String(part.mediaType)}</p>
+      </div>
+    );
+  }
+  if (type === "step-start") {
+    return (
+      <div className="flex items-center gap-1.5 rounded-md border border-dashed px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+        <FlagIcon className="size-3" /> Step start
+      </div>
+    );
+  }
+  if (part.text !== undefined)
+    return <p className="whitespace-pre-wrap text-xs leading-relaxed">{String(part.text)}</p>;
+  return <InlineJson value={value} />;
 }
 
-function ContentPart({ value }: { value: Record<string, unknown> }) {
-  const type = String(value.type);
-  const isReasoning = type.includes("reasoning");
-  const isTool = type.includes("tool");
-  const color = isReasoning ? "text-chart-1" : isTool ? "text-chart-3" : "text-chart-2";
-  const background = isReasoning
-    ? "border-chart-1/30 bg-chart-1/10"
-    : isTool
-      ? "border-chart-3/30 bg-chart-3/10"
-      : "border-chart-2/30 bg-chart-2/10";
-  const title =
-    typeof value.toolName === "string"
-      ? value.toolName
-      : type.replaceAll("-", " ").replaceAll("_", " ");
-  const content = value.text ?? value.output ?? value.input ?? value.args ?? value.content;
+function InputToolPart({ part }: { part: Record<string, unknown> }) {
+  const [open, setOpen] = useState(false);
+  const type = String(part.type);
+  const name =
+    type === "dynamic-tool" && typeof part.toolName === "string"
+      ? part.toolName
+      : type.slice("tool-".length);
+  const state = typeof part.state === "string" ? part.state : "unknown";
+  const failed = state === "output-error" || state === "output-denied";
+  const hasOutput = part.output !== undefined || part.errorText !== undefined || failed;
 
   return (
-    <div className={cn("rounded-lg border p-3", background)}>
-      <div
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className={cn(
+        "overflow-hidden rounded-md border",
+        failed
+          ? "border-destructive/30 bg-destructive/5"
+          : "border-telemetry-tool/35 bg-telemetry-tool/10",
+      )}
+    >
+      <CollapsibleTrigger
         className={cn(
-          "mb-2 flex items-center gap-2 font-mono text-[10px] font-semibold uppercase tracking-wider",
-          color,
+          "group flex w-full items-center gap-2 px-2.5 py-2 text-left",
+          failed ? "text-destructive" : "text-telemetry-tool",
         )}
       >
-        {isTool ? (
-          <WrenchIcon className="size-3.5" />
-        ) : isReasoning ? (
-          <BrainCircuitIcon className="size-3.5" />
+        {failed ? (
+          <CircleAlertIcon className="size-3.5 shrink-0" />
+        ) : hasOutput ? (
+          <CircleCheckIcon className="size-3.5 shrink-0" />
         ) : (
-          <BotIcon className="size-3.5" />
+          <WrenchIcon className="size-3.5 shrink-0" />
         )}
-        {title}
-      </div>
-      {content !== undefined ? (
-        <PayloadPreview value={content} depth={1} />
+        <span className="font-mono text-[9px] font-semibold uppercase tracking-wider">
+          Tool · {name}
+        </span>
+        <span className="truncate font-mono text-[9px] text-muted-foreground">
+          {state.replaceAll("-", " ")}
+        </span>
+        <ChevronDownIcon className="ml-auto size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="collapsible-content border-t border-current/10">
+        <div className={cn("grid gap-2 p-2.5", hasOutput && "sm:grid-cols-2")}>
+          <JsonSection label="Input" value={part.input ?? part.rawInput} />
+          {hasOutput && (
+            <JsonSection
+              label={failed ? "Error" : "Output"}
+              value={part.errorText ?? part.output ?? part.approval}
+              destructive={failed}
+            />
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function OutputView({ value, tools }: { value?: string; tools: Span[] }) {
+  const parsed = parseJson(value);
+  const parts = Array.isArray(parsed)
+    ? parsed
+    : asRecord(parsed) && Array.isArray(asRecord(parsed)?.content)
+      ? (asRecord(parsed)!.content as unknown[])
+      : parsed === undefined
+        ? []
+        : [parsed];
+
+  if (!parts.length && !tools.length) return <EmptyPayload label="output" value={value} />;
+
+  const usedToolIds = new Set<string>();
+  const renderedParts = parts.map((part) => {
+    const record = asRecord(part);
+    if (!String(record?.type).includes("tool-call")) return { part };
+    const toolCallId = typeof record?.toolCallId === "string" ? record.toolCallId : undefined;
+    const toolName = typeof record?.toolName === "string" ? record.toolName : undefined;
+    const tool =
+      tools.find((candidate) => candidate.toolCallId === toolCallId) ??
+      tools.find(
+        (candidate) =>
+          !usedToolIds.has(candidate._id) && (candidate.toolName ?? candidate.name) === toolName,
+      );
+    if (tool) usedToolIds.add(tool._id);
+    return { part, tool };
+  });
+  const unmatchedTools = tools.filter((tool) => !usedToolIds.has(tool._id));
+
+  return (
+    <div className="flex flex-col gap-2">
+      {renderedParts.map(({ part, tool }, index) => (
+        <OutputPart key={index} value={part} tool={tool} />
+      ))}
+      {unmatchedTools.map((tool) => (
+        <ToolResult key={tool._id} tool={tool} />
+      ))}
+    </div>
+  );
+}
+
+function OutputPart({ value, tool }: { value: unknown; tool?: Span }) {
+  const [open, setOpen] = useState(false);
+  const part = asRecord(value);
+  const type = typeof part?.type === "string" ? part.type : "text";
+  const isReasoning = type.includes("reasoning");
+  const isToolCall = type.includes("tool-call");
+  const isToolResult = type.includes("tool-result");
+  const isTool = isToolCall || isToolResult;
+  const failed = tool?.status === "error";
+  const label = isReasoning
+    ? "Thinking"
+    : isToolResult
+      ? `${String(part?.toolName ?? "Tool")} result`
+      : isToolCall
+        ? String(part?.toolName ?? "Tool")
+        : "Text";
+  const output = asRecord(part?.output);
+  const content = isToolCall
+    ? (part?.input ?? part?.args)
+    : isToolResult
+      ? (output?.value ?? part?.output)
+      : (part?.text ?? value);
+  const PartIcon = isReasoning
+    ? BrainCircuitIcon
+    : isToolResult
+      ? CircleCheckIcon
+      : isToolCall
+        ? WrenchIcon
+        : TextIcon;
+
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className={cn(
+        "overflow-hidden rounded-md border text-xs",
+        failed && "border-destructive/30 bg-destructive/5 text-destructive",
+        isReasoning &&
+          !failed &&
+          "border-telemetry-thinking/35 bg-telemetry-thinking/10 text-telemetry-thinking",
+        isToolCall &&
+          !failed &&
+          "border-telemetry-tool/35 bg-telemetry-tool/10 text-telemetry-tool",
+        isToolResult &&
+          !failed &&
+          "border-telemetry-tool/35 bg-telemetry-tool/10 text-telemetry-tool",
+        !isReasoning &&
+          !isTool &&
+          !failed &&
+          "border-telemetry-system/35 bg-telemetry-system/10 text-telemetry-system",
+      )}
+    >
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-3 py-2 text-left">
+        <PartIcon className="size-3.5 shrink-0" />
+        <span className="shrink-0 font-mono text-[10px] font-medium">{label}</span>
+        <span className="min-w-0 flex-1 truncate text-[10px] opacity-75">
+          {typeof content === "string" ? content : compactJson(content)}
+        </span>
+        {tool && (
+          <span className="shrink-0 font-mono text-[9px] text-muted-foreground">
+            {formatTelemetryDuration(tool.durationMs)}
+          </span>
+        )}
+        <ChevronDownIcon className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="collapsible-content border-t border-current/10">
+        {isToolCall ? (
+          <div className={cn("grid gap-2 p-3", tool && "sm:grid-cols-2")}>
+            <JsonSection label="Input" value={content} />
+            {tool && (
+              <JsonSection
+                label={failed ? "Error" : "Output"}
+                value={
+                  tool.error ??
+                  (tool.outputJson ? parseJson(tool.outputJson) : "No output payload was recorded.")
+                }
+                destructive={failed}
+              />
+            )}
+          </div>
+        ) : (
+          <div className="px-3 py-2.5">
+            {typeof content === "string" ? (
+              <p className="whitespace-pre-wrap leading-relaxed">{content}</p>
+            ) : (
+              <JsonBlock value={content} />
+            )}
+          </div>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function ToolResult({ tool }: { tool: Span }) {
+  const [expanded, setExpanded] = useState(false);
+  const result = tool.error ?? tool.outputJson;
+  const failed = tool.status === "error";
+  return (
+    <Collapsible
+      open={expanded}
+      onOpenChange={setExpanded}
+      className={cn(
+        "overflow-hidden rounded-md border",
+        failed
+          ? "border-destructive/30 bg-destructive/5"
+          : "border-telemetry-tool/35 bg-telemetry-tool/10",
+      )}
+    >
+      <CollapsibleTrigger
+        className={cn(
+          "group flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[10px]",
+          failed ? "text-destructive" : "text-telemetry-tool",
+        )}
+      >
+        {failed ? (
+          <CircleAlertIcon className="size-3.5" />
+        ) : (
+          <CircleCheckIcon className="size-3.5" />
+        )}
+        <span className="truncate">
+          {tool.toolName ?? tool.name} {failed ? "failed" : "completed"}
+        </span>
+        <span className="ml-auto text-muted-foreground">
+          {formatTelemetryDuration(tool.durationMs)}
+        </span>
+        <ChevronDownIcon className="size-3 transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="collapsible-content border-t border-current/10">
+        <div className="grid gap-2 p-3 sm:grid-cols-2">
+          <JsonSection
+            label="Arguments"
+            value={tool.inputJson ? parseJson(tool.inputJson) : "No argument payload was recorded."}
+          />
+          <JsonSection
+            label={failed ? "Error" : "Result"}
+            value={result ? parseJson(result) : "No result payload was recorded."}
+            destructive={failed}
+          />
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function ErrorOutput({ message }: { message: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="overflow-hidden rounded-md border border-destructive/30 bg-destructive/5 font-mono text-xs text-destructive"
+    >
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-3 py-2 text-left">
+        <CircleAlertIcon className="size-3.5" /> Error
+        {!open && <span className="min-w-0 flex-1 truncate text-[10px] opacity-80">{message}</span>}
+        <ChevronDownIcon className="ml-auto size-3 transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="collapsible-content border-t border-destructive/20">
+        <p className="whitespace-pre-wrap px-3 py-3 leading-relaxed">{message}</p>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function InputSummary({ value }: { value?: string }) {
+  const parsed = parseJson(value);
+  const prompt = asRecord(parsed);
+  const messages = Array.isArray(prompt?.messages) ? prompt.messages : [];
+  const last = [...messages].reverse().find((message) => {
+    const role = asRecord(message)?.role;
+    return role === "user" || role === "tool" || role === "assistant";
+  });
+  const record = asRecord(last);
+  const role = record?.role;
+  const content = record?.content ?? record?.parts ?? last;
+  const tools = collectToolNames(content);
+  const label = tools.length ? summarizeNames(tools) : (extractText(content) ?? "Prompt");
+
+  return (
+    <span className="flex min-w-0 max-w-[40%] items-center gap-1.5 text-xs text-muted-foreground">
+      {role === "tool" || tools.length ? (
+        <WrenchIcon className="size-3.5 shrink-0" />
       ) : (
-        <ObjectPreview value={value} depth={1} omit={["type", "toolName"]} />
+        <MessageSquareIcon className="size-3.5 shrink-0" />
+      )}
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
+function RunStatus({ status }: { status: TraceResult["trace"]["status"] }) {
+  if (status === "ok") return null;
+  return <Badge variant={status === "error" ? "destructive" : "outline"}>{status}</Badge>;
+}
+
+function RunDetails({ data }: { data: TraceResult }) {
+  const [open, setOpen] = useState(false);
+  const { trace, completion } = data;
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="mt-1 rounded-xl border bg-card">
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-4 py-2.5 text-left text-xs text-muted-foreground">
+        <DatabaseIcon className="size-3.5" />
+        Run details
+        {completion && (
+          <span className="ml-2 font-mono text-[10px]">
+            ${completion.response.pricing.cost.toFixed(6)}
+          </span>
+        )}
+        <ChevronDownIcon className="ml-auto size-3.5 transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="collapsible-content border-t">
+        <div className="grid gap-x-8 gap-y-2 p-4 text-xs sm:grid-cols-2 lg:grid-cols-3">
+          <Detail label="Trace ID" value={trace._id} copy />
+          <Detail label="Request ID" value={trace.requestId} copy />
+          <Detail label="Call ID" value={trace.callId} copy />
+          <Detail label="Function" value={trace.functionId} />
+          <Detail label="Operation" value={trace.operationId} />
+          <Detail label="Finish reason" value={trace.finishReason ?? "-"} />
+          <Detail
+            label="Reasoning tokens"
+            value={formatTokenCount(trace.usage?.reasoningTokens ?? 0)}
+          />
+          <Detail label="Cache read" value={formatTokenCount(trace.usage?.cacheReadTokens ?? 0)} />
+          <Detail
+            label="Cache write"
+            value={formatTokenCount(trace.usage?.cacheWriteTokens ?? 0)}
+          />
+          {completion && <Detail label="Generation ID" value={completion.response.genId} copy />}
+          {completion && (
+            <Detail label="TTFT" value={formatTelemetryDuration(completion.response.ttft)} />
+          )}
+          {completion && (
+            <Detail
+              label="Generation"
+              value={formatTelemetryDuration(completion.response.gen_time)}
+            />
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function Detail({ label, value, copy }: { label: string; value: string; copy?: boolean }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <code className="ml-auto truncate text-[10px]">{value}</code>
+      {copy && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`Copy ${label}`}
+          onClick={() => void navigator.clipboard.writeText(value)}
+        >
+          <CopyIcon />
+        </Button>
       )}
     </div>
   );
 }
 
-function ObjectPreview({
-  value,
-  depth,
-  omit = [],
-}: {
-  value: Record<string, unknown>;
-  depth: number;
-  omit?: string[];
-}) {
-  const entries = Object.entries(value).filter(([key]) => !omit.includes(key));
+function RawPayload({ value }: { value?: string }) {
+  if (!value) return <EmptyPayload label="payload" />;
+  return <JsonBlock value={parseJson(value)} />;
+}
+
+function EmptyPayload({ label, value }: { label: string; value?: string }) {
+  if (value) return <RawPayload value={value} />;
   return (
-    <dl className="flex flex-col divide-y rounded-lg border bg-muted/20">
-      {entries.map(([key, item]) => (
-        <div key={key} className="grid gap-1 px-3 py-2 sm:grid-cols-[8rem_1fr]">
-          <dt className="font-mono text-[11px] text-muted-foreground">{key}</dt>
-          <dd className="min-w-0">
-            <PayloadPreview value={item} depth={depth + 1} />
-          </dd>
-        </div>
-      ))}
-    </dl>
+    <div className="flex min-h-24 items-center justify-center rounded-md border border-dashed px-4 text-center text-xs text-muted-foreground">
+      No {label} payload was recorded.
+    </div>
   );
 }
 
-function CompletionCard({
-  completion,
-  traceCompletionId,
-}: {
-  completion: TraceResult["completion"];
-  traceCompletionId?: Id<"chat_completions">;
-}) {
-  return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 font-mono text-sm uppercase tracking-wider">
-          <CircleDollarSignIcon className="size-4" /> Gateway completion
-        </CardTitle>
-        <CardDescription>The billing record produced by this AI SDK request.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {!completion ? (
-          <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-            {traceCompletionId
-              ? "The linked completion is no longer available."
-              : "No chat_completions record is linked to this trace."}
-          </div>
-        ) : (
-          <div className="grid gap-5 sm:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <Identifier label="Convex ID" value={completion._id} />
-              <Identifier label="Generation ID" value={completion.response.genId} />
-              <Identifier label="Provider gen ID" value={completion.response.providerGenId} />
-              <MetadataRow label="Model" value={completion.model?.slug ?? "Unknown"} />
-              <MetadataRow label="Provider" value={completion.request.provider} />
-              <MetadataRow label="Streamed" value={completion.request.streamed ? "yes" : "no"} />
-            </div>
-            <div className="flex flex-col gap-2">
-              <MetadataRow
-                label="Cost"
-                value={`$${completion.response.pricing.cost.toFixed(6)}`}
-                mono
-              />
-              <MetadataRow label="TTFT" value={formatTelemetryDuration(completion.response.ttft)} />
-              <MetadataRow
-                label="Generation"
-                value={formatTelemetryDuration(completion.response.gen_time)}
-              />
-              <MetadataRow
-                label="Input tokens"
-                value={formatTokenCount(completion.response.usage.prompt_tokens)}
-              />
-              <MetadataRow
-                label="Output tokens"
-                value={formatTokenCount(completion.response.usage.completion_tokens)}
-              />
-              <MetadataRow label="Finish reason" value={completion.response.finish_reason} />
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
+function InlineJson({ value }: { value: unknown }) {
+  return <JsonBlock value={value} />;
 }
 
-function TraceMetric({
-  icon: Icon,
+function JsonSection({
   label,
   value,
+  destructive,
 }: {
-  icon: typeof Clock3Icon;
   label: string;
-  value: string;
+  value: unknown;
+  destructive?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-3 bg-card px-3 py-2.5">
-      <Icon className="size-4 text-muted-foreground" />
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <strong className="ml-auto font-mono text-sm font-medium tabular-nums">{value}</strong>
-    </div>
-  );
-}
-
-function Identifier({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <HashIcon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="w-24 shrink-0 text-xs text-muted-foreground">{label}</span>
-      <code className="min-w-0 flex-1 truncate text-[11px]">{value}</code>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-6 shrink-0"
-        aria-label={`Copy ${label}`}
-        onClick={() => void navigator.clipboard.writeText(value)}
+    <div className="min-w-0">
+      <div
+        className={cn(
+          "mb-1.5 font-mono text-[9px] uppercase tracking-wider text-muted-foreground",
+          destructive && "text-destructive",
+        )}
       >
-        <CopyIcon />
-      </Button>
+        {label}
+      </div>
+      <JsonBlock value={value} />
     </div>
   );
 }
 
-function MetadataRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function JsonBlock({ value }: { value: unknown }) {
+  const code = prettyJson(value);
   return (
-    <div className="flex items-center justify-between gap-3 text-xs">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={cn("truncate text-right", mono && "font-mono")}>{value}</span>
-    </div>
+    <CodeBlock
+      code={code}
+      language="json"
+      className="bg-background/60 [&_code]:text-[10px]! [&_pre]:p-2.5! [&_pre]:text-[10px]!"
+    >
+      <CodeBlockCopyButton size="icon-xs" aria-label="Copy JSON" />
+    </CodeBlock>
   );
+}
+
+function getRoleStyle(role: string) {
+  if (role === "system") {
+    return {
+      icon: ShieldIcon,
+      container: "border-telemetry-system/35 bg-telemetry-system/10",
+      text: "text-telemetry-system",
+    };
+  }
+  if (role === "user") {
+    return {
+      icon: UserRoundIcon,
+      container: "border-telemetry-user/35 bg-telemetry-user/10",
+      text: "text-telemetry-user",
+    };
+  }
+  if (role === "assistant") {
+    return {
+      icon: BotIcon,
+      container: "border-telemetry-assistant/35 bg-telemetry-assistant/10",
+      text: "text-telemetry-assistant",
+    };
+  }
+  if (role === "tool") {
+    return {
+      icon: WrenchIcon,
+      container: "border-telemetry-tool/35 bg-telemetry-tool/10",
+      text: "text-telemetry-tool",
+    };
+  }
+  return {
+    icon: MessageSquareIcon,
+    container: "bg-muted/20",
+    text: "text-muted-foreground",
+  };
+}
+
+function summarizeContent(value: unknown): string {
+  const tools = collectToolNames(value);
+  if (tools.length) return summarizeNames(tools);
+  return extractText(value) ?? compactJson(value) ?? "Empty message";
+}
+
+function prettyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function buildSteps(spans: Span[]): Step[] {
+  const models = spans
+    .filter((span) => span.kind === "model")
+    .sort((a, b) => a.startedAt - b.startedAt);
+  const summaries = spans
+    .filter((span) => span.kind === "step")
+    .sort((a, b) => (a.stepNumber ?? 0) - (b.stepNumber ?? 0));
+  const tools = spans.filter((span) => span.kind === "tool");
+
+  return models.map((model, index) => {
+    const nextStartedAt = models[index + 1]?.startedAt ?? Number.POSITIVE_INFINITY;
+    return {
+      model,
+      summary: summaries.find((span) => span.stepNumber === index) ?? summaries[index],
+      tools: tools.filter(
+        (tool) => tool.startedAt >= model.startedAt && tool.startedAt < nextStartedAt,
+      ),
+    };
+  });
+}
+
+function summarizeOutput(value: string | undefined, tools: Span[]): string {
+  const parsed = parseJson(value);
+  const parts = Array.isArray(parsed) ? parsed : asRecord(parsed)?.content;
+  const toolNames = collectToolNames(parts);
+  if (toolNames.length) return summarizeNames(toolNames);
+  if (tools.length) return summarizeNames(tools.map((tool) => tool.toolName ?? tool.name));
+  return "Response";
+}
+
+function summarizeNames(names: string[]): string {
+  const counts = new Map<string, number>();
+  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+  return [...counts].map(([name, count]) => `${name}${count > 1 ? ` (×${count})` : ""}`).join(", ");
+}
+
+function collectToolNames(value: unknown): string[] {
+  const items = Array.isArray(value) ? value : [value];
+  return items.flatMap((item) => {
+    const record = asRecord(item);
+    const type = typeof record?.type === "string" ? record.type : "";
+    if (type.includes("tool") && typeof record?.toolName === "string") return [record.toolName];
+    if (type.startsWith("tool-") && type !== "tool-call" && type !== "tool-result") {
+      return [type.slice("tool-".length)];
+    }
+    return [];
+  });
+}
+
+function getRunTitle(
+  rootInput: string | undefined,
+  modelInput: string | undefined,
+): string | undefined {
+  for (const value of [rootInput, modelInput]) {
+    const prompt = asRecord(parseJson(value));
+    const messages = Array.isArray(prompt?.messages) ? prompt.messages : [];
+    const userMessage = messages.find((message) => asRecord(message)?.role === "user");
+    const userRecord = asRecord(userMessage);
+    const text = extractText(userRecord?.content ?? userRecord?.parts);
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function extractText(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const text = value.map(extractText).filter(Boolean).join(" ");
+    return text || undefined;
+  }
+  const record = asRecord(value);
+  if (!record) return undefined;
+  if (typeof record.text === "string") return record.text;
+  return extractText(record.content ?? record.parts);
+}
+
+function parseJson(value: string | undefined): unknown {
+  if (!value) return undefined;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return repairTruncatedJson(value) ?? value;
+  }
+}
+
+function repairTruncatedJson(value: string): unknown | undefined {
+  if (!value.endsWith("...")) return undefined;
+  const prefix = value.slice(0, -3);
+  const commaPositions = structuralCommaPositions(prefix);
+
+  for (const candidate of [
+    prefix,
+    ...commaPositions.reverse().map((index) => prefix.slice(0, index)),
+  ]) {
+    const repaired = closeJsonPrefix(candidate);
+    if (!repaired) continue;
+    try {
+      return JSON.parse(repaired);
+    } catch {
+      // Try the previous complete field or array item.
+    }
+  }
+  return undefined;
+}
+
+function structuralCommaPositions(value: string): number[] {
+  const positions: number[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+    } else if (character === '"') inString = true;
+    else if (character === ",") positions.push(index);
+  }
+  return positions;
+}
+
+function closeJsonPrefix(value: string): string | undefined {
+  const stack: Array<"}" | "]"> = [];
+  let inString = false;
+  let escaped = false;
+
+  for (const character of value) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === "{") stack.push("}");
+    else if (character === "[") stack.push("]");
+    else if (character === "}" || character === "]") {
+      if (stack.at(-1) !== character) return undefined;
+      stack.pop();
+    }
+  }
+
+  let repaired = value.trimEnd();
+  if (inString) {
+    repaired = repaired.replace(/\\u[\da-fA-F]{0,3}$/, "");
+    if (repaired.endsWith("\\")) repaired = repaired.slice(0, -1);
+    repaired += '…"';
+  } else if (repaired.endsWith(":")) repaired += "null";
+  else if (repaired.endsWith(",")) repaired = repaired.slice(0, -1);
+
+  return repaired + stack.reverse().join("");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function compactJson(value: unknown): string {
+  if (value === undefined) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function TelemetryDetailSkeleton() {
   return (
-    <div className="flex flex-col gap-4">
-      <Skeleton className="h-8 w-28" />
-      <Skeleton className="h-44" />
-      <Skeleton className="h-80" />
-      <Skeleton className="h-14" />
-      <Skeleton className="h-14" />
+    <div className="flex flex-col gap-3">
+      <Skeleton className="h-7 w-24" />
+      <div className="flex items-center justify-between gap-4 py-2">
+        <Skeleton className="h-5 w-56" />
+        <Skeleton className="hidden h-4 w-96 md:block" />
+      </div>
+      <Skeleton className="h-64 rounded-xl" />
+      <Skeleton className="h-64 rounded-xl" />
     </div>
   );
 }
