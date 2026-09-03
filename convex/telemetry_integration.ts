@@ -276,15 +276,35 @@ function externalTelemetry(
     return undefined;
   }
 
+  const endpoint = otlpTraceEndpoint();
+  let endpointUrl: URL;
+  try {
+    endpointUrl = new URL(endpoint);
+  } catch {
+    return undefined;
+  }
+  if (endpointUrl.protocol !== "http:" && endpointUrl.protocol !== "https:") {
+    return undefined;
+  }
+
+  const isHttps = endpointUrl.protocol === "https:";
+  if (
+    !isHttps &&
+    (process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS || process.env.OTEL_EXPORTER_OTLP_HEADERS)
+  ) {
+    return undefined;
+  }
+
   externalProvider ??= new BasicTracerProvider({
     resource: resourceFromAttributes({
       [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || "radium-gateway",
     }),
     spanProcessors: [
       new BatchSpanProcessor(
+        // The Node OTLP HTTP transport treats redirects as failures and never forwards the payload.
         new OTLPTraceExporter({
-          url: otlpTraceEndpoint(),
-          headers: otlpHeaders(),
+          url: endpoint,
+          ...(isHttps ? { headers: otlpHeaders() } : {}),
         }),
       ),
     ],

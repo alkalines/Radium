@@ -18,6 +18,13 @@ import {
   ChatCompletions_Streaming_Chunk_Type,
 } from "../types/openai/types";
 
+const emptyGenerationUsage = {
+  inputTokens: 0,
+  inputTokenDetails: { cacheReadTokens: null },
+  outputTokens: 0,
+  outputTokenDetails: { reasoningTokens: null },
+};
+
 function toolsParsing(reqData: ChatCompletions_RequestBody_Type) {
   let object: Record<string, any> = {};
   const rawTools = reqData.tools as ToolsSchema[];
@@ -200,6 +207,7 @@ function getAISDKStream(
   provider: Awaited<ReturnType<typeof AIBalancer>>,
   abortSignal: AbortSignal,
   telemetry?: TelemetryOptions,
+  onProviderCall?: () => void,
 ): ReturnType<typeof streamText> {
   const parsedToolChoice = toolChoiceParse(reqData);
   const modelMessages = openAIToModelMessages(reqData.messages);
@@ -245,6 +253,7 @@ function getAISDKStream(
     frequencyPenalty: reqData.frequency_penalty ?? undefined,
     seed: reqData.seed,
     telemetry,
+    onLanguageModelCallStart: onProviderCall,
   });
 }
 
@@ -270,11 +279,15 @@ export async function StreamCompletion(
 ): Promise<ReadableStream<ChatCompletions_Streaming_Chunk_Type | string>> {
   const abort = new AbortController();
   const requestStartedAt = Date.now();
+  let providerDispatched = false;
   const result = await getAISDKStream(
     reqData,
     provider,
     requestSignal ? AbortSignal.any([abort.signal, requestSignal]) : abort.signal,
     telemetry,
+    () => {
+      providerDispatched = true;
+    },
   );
 
   // Usage Callback
@@ -285,32 +298,52 @@ export async function StreamCompletion(
     firstTokenAt ??= now;
     lastTokenAt = now;
   };
-  const endOfCompletion = async () => {
-    const r = await result.usage;
-    try {
-      await genCallback({
-        genId: genID,
-        usage: {
-          completion_tokens: r.outputTokens || 0,
-          completion_tokens_details: {
-            reasoning_tokens: r.outputTokenDetails.reasoningTokens ?? null,
-          },
-          prompt_tokens: r.inputTokens || 0,
-          prompt_tokens_details: {
-            cached_tokens: r.inputTokenDetails.cacheReadTokens ?? null,
-            // @todo: written_cache_tokens
-          },
-        },
-        genTime:
-          firstTokenAt !== undefined && lastTokenAt !== undefined ? lastTokenAt - firstTokenAt : 0,
-        ttft: firstTokenAt !== undefined ? firstTokenAt - requestStartedAt : 0,
+  let completionSettlement: Promise<void> | undefined;
+  const endOfCompletion = () => {
+    if (completionSettlement) return completionSettlement;
+
+    const settlement = (async () => {
+      const r = await Promise.resolve(result.usage).catch(() => {
+        if (!providerDispatched) return;
+        return emptyGenerationUsage;
       });
-    } catch (e) {}
+      if (!r) return;
+
+      try {
+        await genCallback({
+          genId: genID,
+          usage: {
+            completion_tokens: r.outputTokens || 0,
+            completion_tokens_details: {
+              reasoning_tokens: r.outputTokenDetails.reasoningTokens ?? null,
+            },
+            prompt_tokens: r.inputTokens || 0,
+            prompt_tokens_details: {
+              cached_tokens: r.inputTokenDetails.cacheReadTokens ?? null,
+              // @todo: written_cache_tokens
+            },
+          },
+          genTime:
+            firstTokenAt !== undefined && lastTokenAt !== undefined
+              ? lastTokenAt - firstTokenAt
+              : 0,
+          ttft: firstTokenAt !== undefined ? firstTokenAt - requestStartedAt : 0,
+        });
+      } catch (e) {}
+    })();
+    completionSettlement = settlement;
+    return settlement;
   };
 
   // Transform to OpenAI Stream
   const aisdk_response = toUIMessageStream({ stream: result.stream });
-  const chunkLoadStream = convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
+  const chunkLoadStream = (async function* () {
+    try {
+      yield* convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
+    } finally {
+      await endOfCompletion();
+    }
+  })();
   const createdDateUnix = Math.floor(requestStartedAt / 1000);
   let genID: string;
   let finishReasons = {
@@ -583,7 +616,6 @@ export async function StreamCompletion(
           }
         }
       }
-      await endOfCompletion();
 
       // End of the stream
       controllerOutput("[DONE]");
@@ -611,11 +643,15 @@ export async function NonStreamingCompletion(
 ): Promise<ChatCompletions_NotStreaming_ResponseBody_Type> {
   const abort = new AbortController();
   const requestStartedAt = Date.now();
+  let providerDispatched = false;
   const result = await getAISDKStream(
     reqData,
     provider,
     requestSignal ? AbortSignal.any([abort.signal, requestSignal]) : abort.signal,
     telemetry,
+    () => {
+      providerDispatched = true;
+    },
   );
 
   // Usage Callback
@@ -626,32 +662,51 @@ export async function NonStreamingCompletion(
     firstTokenAt ??= now;
     lastTokenAt = now;
   };
-  const endOfCompletion = async () => {
-    const r = await result.usage;
+  let completionSettlement: Promise<void> | undefined;
+  const endOfCompletion = () => {
+    if (completionSettlement) return completionSettlement;
 
-    try {
-      await genCallback({
-        genId: openAIResponse.id || undefined,
-        usage: {
-          completion_tokens: r.outputTokens || 0,
-          completion_tokens_details: {
-            reasoning_tokens: r.outputTokenDetails.reasoningTokens ?? null,
-          },
-          prompt_tokens: r.inputTokens || 0,
-          prompt_tokens_details: {
-            cached_tokens: r.inputTokenDetails.cacheReadTokens ?? null,
-            // @todo: written_cache_tokens
-          },
-        },
-        genTime:
-          firstTokenAt !== undefined && lastTokenAt !== undefined ? lastTokenAt - firstTokenAt : 0,
-        ttft: firstTokenAt !== undefined ? firstTokenAt - requestStartedAt : 0,
+    const settlement = (async () => {
+      const r = await Promise.resolve(result.usage).catch(() => {
+        if (!providerDispatched) return;
+        return emptyGenerationUsage;
       });
-    } catch (e) {}
+      if (!r) return;
+
+      try {
+        await genCallback({
+          genId: openAIResponse.id || undefined,
+          usage: {
+            completion_tokens: r.outputTokens || 0,
+            completion_tokens_details: {
+              reasoning_tokens: r.outputTokenDetails.reasoningTokens ?? null,
+            },
+            prompt_tokens: r.inputTokens || 0,
+            prompt_tokens_details: {
+              cached_tokens: r.inputTokenDetails.cacheReadTokens ?? null,
+              // @todo: written_cache_tokens
+            },
+          },
+          genTime:
+            firstTokenAt !== undefined && lastTokenAt !== undefined
+              ? lastTokenAt - firstTokenAt
+              : 0,
+          ttft: firstTokenAt !== undefined ? firstTokenAt - requestStartedAt : 0,
+        });
+      } catch (e) {}
+    })();
+    completionSettlement = settlement;
+    return settlement;
   };
 
   const aisdk_response = toUIMessageStream({ stream: result.stream });
-  const chunkLoadStream = convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
+  const chunkLoadStream = (async function* () {
+    try {
+      yield* convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
+    } finally {
+      await endOfCompletion();
+    }
+  })();
 
   const createdDateUnix = Math.floor(requestStartedAt / 1000);
 
@@ -738,7 +793,6 @@ export async function NonStreamingCompletion(
       }
     }
   }
-  await endOfCompletion();
 
   return openAIResponse!;
 }

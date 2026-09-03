@@ -989,7 +989,9 @@ function getRunTitle(
   for (const value of [rootInput, modelInput]) {
     const prompt = asRecord(parseJson(value));
     const messages = Array.isArray(prompt?.messages) ? prompt.messages : [];
-    const userMessage = messages.find((message) => asRecord(message)?.role === "user");
+    const userMessage = [...messages]
+      .reverse()
+      .find((message) => asRecord(message)?.role === "user");
     const userRecord = asRecord(userMessage);
     const text = extractText(userRecord?.content ?? userRecord?.parts);
     if (text) return text;

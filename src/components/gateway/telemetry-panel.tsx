@@ -1,4 +1,4 @@
-import { convexQuery } from "@convex-dev/react-query";
+import { convexQuery, useConvexAuth } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { FunctionReturnType } from "convex/server";
@@ -17,6 +17,7 @@ import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { useIsHydrated } from "@/components/auth/use-is-hydrated";
 import {
   Card,
   CardAction,
@@ -79,21 +80,29 @@ export function TelemetryPanel() {
   const [status, setStatus] = useState<TraceStatus>("all");
   const [source, setSource] = useState<TraceSource>("all");
   const [saving, setSaving] = useState(false);
-  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
-  const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
-  const { data: settings } = useQuery(convexQuery(api.telemetry.getSettings, {}));
+  const isHydrated = useIsHydrated();
+  const { isAuthenticated } = useConvexAuth();
+  const convexQueriesEnabled = !isHydrated || isAuthenticated;
+  const { data: userInfo } = useQuery(
+    convexQuery(api.auth.userInfo, convexQueriesEnabled ? {} : "skip"),
+  );
+  const balanceId =
+    convexQueriesEnabled && typeof userInfo !== "string" ? userInfo?.balances[0]?._id : undefined;
+  const { data: settings } = useQuery(
+    convexQuery(api.telemetry.getSettings, convexQueriesEnabled ? {} : "skip"),
+  );
   const setSettings = useMutation(api.telemetry.setSettings);
   const since = ranges[range].days ? now - ranges[range].days! * 86_400_000 : undefined;
   const { data: traces, error: tracesError } = useQuery(
     convexQuery(
       api.telemetry.listTraces,
-      balanceId ? { balance: balanceId, since, limit: 200 } : "skip",
+      balanceId && convexQueriesEnabled ? { balance: balanceId, since, limit: 200 } : "skip",
     ),
   );
   const { data: summary } = useQuery(
     convexQuery(
       api.telemetry.getSummary,
-      balanceId ? { balance: balanceId, since: since ?? 0 } : "skip",
+      balanceId && convexQueriesEnabled ? { balance: balanceId, since: since ?? 0 } : "skip",
     ),
   );
   const filtered = traces?.filter(
