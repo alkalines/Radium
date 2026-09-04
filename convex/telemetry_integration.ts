@@ -283,15 +283,11 @@ function externalTelemetry(
   } catch {
     return undefined;
   }
-  if (endpointUrl.protocol !== "http:" && endpointUrl.protocol !== "https:") {
-    return undefined;
-  }
-
   const isHttps = endpointUrl.protocol === "https:";
-  if (
-    !isHttps &&
-    (process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS || process.env.OTEL_EXPORTER_OTLP_HEADERS)
-  ) {
+  const isLoopbackHttp =
+    endpointUrl.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(endpointUrl.hostname);
+  if (!isHttps && !isLoopbackHttp) {
     return undefined;
   }
 

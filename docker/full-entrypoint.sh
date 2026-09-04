@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-otel_headers="${OTEL_EXPORTER_OTLP_TRACES_HEADERS:-${OTEL_EXPORTER_OTLP_HEADERS:-}}"
-if [ -n "$otel_headers" ]; then
-  otel_endpoint="${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-${OTEL_EXPORTER_OTLP_ENDPOINT:-}}"
-  case "$otel_endpoint" in
-    https://*) ;;
-    *)
-      printf '%s\n' \
-        'OTLP exporter headers require an https:// traces endpoint (set OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT).' \
-        >&2
-      exit 1
-      ;;
-  esac
+otel_endpoint="${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-${OTEL_EXPORTER_OTLP_ENDPOINT:-}}"
+if [ -n "$otel_endpoint" ] && [[ ! "$otel_endpoint" =~ ^https:// && ! "$otel_endpoint" =~ ^http://(localhost|127[.]0[.]0[.]1|[[]::1[]])([:/?]|$) ]]; then
+  printf '%s\n' \
+    'OTLP exporter requires an https:// endpoint unless an http:// endpoint targets loopback (set OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT).' \
+    >&2
+  exit 1
 fi
 
 cleanup() {
