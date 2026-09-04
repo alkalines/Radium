@@ -114,6 +114,7 @@ export const billKey = internalMutation({
       stream: v.boolean(),
       canceled: v.boolean(),
       prompt_cache_key: v.optional(v.string()),
+      telemetry_request_id: v.optional(v.string()),
     }),
     response: v.object({
       gen_id: v.string(),
@@ -191,50 +192,63 @@ export const billKey = internalMutation({
     const billedCost = args.request.byok ? totalCostInference * 0.05 : totalCostInference;
 
     // Database actions
+    const completionId = await ctx.db.insert("chat_completions", {
+      bill: {
+        balance: balanceInfo!._id,
+        key: keyInfo?._id,
+      },
+      request: {
+        byok: args.request.byok,
+        streamed: args.request.stream,
+        canceled: args.request.canceled,
+        model: modelInfo._id,
+        provider: args.request.provider,
+        app: args.request.app,
+      },
+      response: {
+        finish_reason: args.response.finish_reason,
+        gen_time: args.response.gen_time,
+        providerGenId: args.response.provider_gen_id,
+        genId: args.response.gen_id,
+        moderation_latency: undefined, // That is a later kind of problem
+        ttft: args.response.ttft,
+        usage: {
+          prompt_tokens: args.response.usage.prompt_tokens,
+          completion_tokens: args.response.usage.completion_tokens,
+          completion_tokens_details: {
+            reasoning_tokens: args.response.usage.completion_tokens_details.reasoning_tokens,
+          },
+          prompt_tokens_details: {
+            cached_tokens: args.response.usage.prompt_tokens_details.cached_tokens,
+          },
+        },
+        pricing: {
+          completion_tokens: completionPricing,
+          prompt_tokens: promptPricing,
+          prompt_tokens_details: {
+            cached_tokens: cacheReadPricing,
+          },
+          cost_details: {
+            upstream_inference_cost: args.request.byok ? totalCostInference : undefined,
+          },
+          cost: billedCost,
+        },
+      },
+    });
+
+    const traces = args.request.telemetry_request_id
+      ? await ctx.db
+          .query("telemetry_traces")
+          .withIndex("by_balance_and_requestId", (q) =>
+            q.eq("balance", balanceInfo!._id).eq("requestId", args.request.telemetry_request_id!),
+          )
+          .collect()
+      : [];
+
     await Promise.all([
-      ctx.db.insert("chat_completions", {
-        bill: {
-          balance: balanceInfo!._id,
-          key: keyInfo?._id,
-        },
-        request: {
-          byok: args.request.byok,
-          streamed: args.request.stream,
-          canceled: args.request.canceled,
-          model: modelInfo._id,
-          provider: args.request.provider,
-          app: args.request.app,
-        },
-        response: {
-          finish_reason: args.response.finish_reason,
-          gen_time: args.response.gen_time,
-          providerGenId: args.response.provider_gen_id,
-          genId: args.response.gen_id,
-          moderation_latency: undefined, // That is a later kind of problem
-          ttft: args.response.ttft,
-          usage: {
-            prompt_tokens: args.response.usage.prompt_tokens,
-            completion_tokens: args.response.usage.completion_tokens,
-            completion_tokens_details: {
-              reasoning_tokens: args.response.usage.completion_tokens_details.reasoning_tokens,
-            },
-            prompt_tokens_details: {
-              cached_tokens: args.response.usage.prompt_tokens_details.cached_tokens,
-            },
-          },
-          pricing: {
-            completion_tokens: completionPricing,
-            prompt_tokens: promptPricing,
-            prompt_tokens_details: {
-              cached_tokens: cacheReadPricing,
-            },
-            cost_details: {
-              upstream_inference_cost: args.request.byok ? totalCostInference : undefined,
-            },
-            cost: billedCost,
-          },
-        },
-      }),
+      ...traces.map((trace) =>
+        ctx.db.patch("telemetry_traces", trace._id, { chatCompletionId: completionId }),
+      ),
       ctx.db.patch("balances", balanceInfo!._id, {
         credits: AddFunction([balanceInfo!.credits, -billedCost]),
       }),
@@ -244,6 +258,6 @@ export const billKey = internalMutation({
           })
         : null,
     ]);
-    return true;
+    return completionId;
   },
 });

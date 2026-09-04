@@ -33,6 +33,11 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-telemetry-system: var(--telemetry-system);
+  --color-telemetry-user: var(--telemetry-user);
+  --color-telemetry-assistant: var(--telemetry-assistant);
+  --color-telemetry-tool: var(--telemetry-tool);
+  --color-telemetry-thinking: var(--telemetry-thinking);
   --font-sans: "Inter Variable", sans-serif;
   --font-heading: "Merriweather Variable", serif;
   --radius-sm: calc(var(--radius) - 4px);
@@ -79,6 +84,11 @@
   --chart-3: oklch(0.646 0.222 41.116);
   --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
+  --telemetry-system: oklch(0.5 0 0);
+  --telemetry-user: oklch(0.55 0.2 255);
+  --telemetry-assistant: oklch(0.53 0.17 145);
+  --telemetry-tool: oklch(0.52 0.2 300);
+  --telemetry-thinking: oklch(0.62 0.19 55);
   --sidebar: oklch(0.986 0.002 67.8);
   --sidebar-foreground: oklch(0.147 0.004 49.3);
   --sidebar-primary: oklch(0.646 0.222 41.116);
@@ -113,6 +123,11 @@
   --chart-3: oklch(0.646 0.222 41.116);
   --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
+  --telemetry-system: oklch(0.72 0 0);
+  --telemetry-user: oklch(0.72 0.16 255);
+  --telemetry-assistant: oklch(0.72 0.16 145);
+  --telemetry-tool: oklch(0.72 0.18 300);
+  --telemetry-thinking: oklch(0.75 0.17 65);
   --sidebar: oklch(0.214 0.009 43.1);
   --sidebar-foreground: oklch(0.986 0.002 67.8);
   --sidebar-primary: oklch(0.705 0.213 47.604);

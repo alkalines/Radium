@@ -2,7 +2,7 @@
 
 import { useAuth } from "@better-auth-ui/react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeftIcon, Shield, User2 } from "lucide-react";
+import { ArrowLeftIcon, RadioTowerIcon, Shield, User2 } from "lucide-react";
 
 import { chatroomSections } from "@/components/chatroom/chatroom-settings";
 import { gatewaySections } from "@/components/gateway/gateway-settings";
@@ -111,6 +111,19 @@ export function SettingsSidebarSections({ pathname }: { pathname: string }) {
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))}
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={
+                    pathname === "/gateway/telemetry" || pathname.startsWith("/gateway/telemetry/")
+                  }
+                >
+                  <Link to="/gateway/telemetry">
+                    <RadioTowerIcon />
+                    <span>Telemetry</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

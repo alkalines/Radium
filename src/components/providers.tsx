@@ -1,8 +1,10 @@
 import { Link, useNavigate } from "@tanstack/react-router";
+import { useSession } from "@better-auth-ui/react";
 import { ConvexBetterAuthProvider } from "@convex-dev/better-auth/react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ConvexReactClient } from "convex/react";
 import { ThemeProvider, useTheme } from "next-themes";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { authClient } from "@/lib/auth-client";
 import { themePlugin } from "@/lib/auth/theme-plugin";
@@ -67,9 +69,43 @@ export function Providers({
           ]}
           Link={Link}
         >
-          <TooltipProvider>{children}</TooltipProvider>
+          <ConvexAuthQueryCache>
+            <TooltipProvider>{children}</TooltipProvider>
+          </ConvexAuthQueryCache>
         </AuthProvider>
       </ThemeProvider>
     </ConvexBetterAuthProvider>
   );
+}
+
+/**
+ * Convex query keys do not include the Better Auth identity, so discard the
+ * client cache before a different user can reuse the previous user's data.
+ */
+function ConvexAuthQueryCache({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
+  const { data: session, isPending } = useSession(authClient);
+  const userId = session?.user.id;
+  const [cacheIdentity, setCacheIdentity] = useState<{
+    initialized: boolean;
+    userId?: string;
+  }>({ initialized: false });
+  const identityChanged =
+    !isPending && cacheIdentity.initialized && cacheIdentity.userId !== userId;
+
+  useEffect(() => {
+    if (isPending) return;
+
+    if (!cacheIdentity.initialized) {
+      setCacheIdentity({ initialized: true, userId });
+      return;
+    }
+
+    if (!identityChanged) return;
+
+    queryClient.removeQueries({ queryKey: ["convexQuery"] });
+    setCacheIdentity({ initialized: true, userId });
+  }, [cacheIdentity.initialized, identityChanged, isPending, queryClient, userId]);
+
+  return identityChanged ? null : children;
 }

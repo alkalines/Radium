@@ -151,13 +151,21 @@ sequenceDiagram
 
 ### Environment Variables
 
-| Variable               | Required | Description                        |
-| ---------------------- | -------- | ---------------------------------- |
-| `Openrouter_API_Key`   | Yes      | Your OpenRouter API key            |
-| `AISDK_MaxRetries`     | No       | Max retry attempts (default: 0)    |
-| `CONVEX_DEPLOYMENT`    | Yes      | Convex deployment identifier       |
-| `VITE_CONVEX_URL`      | Yes      | Convex cloud URL                   |
-| `VITE_CONVEX_SITE_URL` | Yes      | Convex site URL for HTTP endpoints |
+| Variable                             | Required | Description                                       |
+| ------------------------------------ | -------- | ------------------------------------------------- |
+| `Openrouter_API_Key`                 | Yes      | Your OpenRouter API key                           |
+| `AISDK_MaxRetries`                   | No       | Max retry attempts (default: 0)                   |
+| `CONVEX_DEPLOYMENT`                  | Yes      | Convex deployment identifier                      |
+| `VITE_CONVEX_URL`                    | Yes      | Convex cloud URL                                  |
+| `VITE_CONVEX_SITE_URL`               | Yes      | Convex site URL for HTTP endpoints                |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`        | No       | OTLP/HTTP collector base URL                      |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | No       | Signal-specific OTLP traces URL                   |
+| `OTEL_EXPORTER_OTLP_HEADERS`         | No       | Comma-separated OTLP headers (`key=value`)        |
+| `OTEL_SERVICE_NAME`                  | No       | Exported service name (default: `radium-gateway`) |
+
+AI SDK telemetry is disabled per user by default. Configuring an OTLP endpoint only enables
+external export for users who explicitly enable telemetry; prompt and response recording are
+separate opt-ins.
 
 ---
 
