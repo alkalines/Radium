@@ -19,7 +19,7 @@
 ## Env Gotchas
 
 - The app expects Vite-style public env names: `VITE_CONVEX_URL` and `VITE_CONVEX_SITE_URL`, plus `CONVEX_DEPLOYMENT`.
-- Convex/provider envs include `Openrouter_API_Key` and `AISDK_MaxRetries` as shown in `.env.example`.
+- Convex runtime envs include `SITE_URL`, `SECRET_STORE_KEYS`, `AISDK_MaxRetries`, and the feature-specific `LWC_SECRET`; keep `.env.example` and `docs/deployment.md` aligned with actual usage.
 - `convex/auth.ts` reads `SITE_URL` for Better Auth `baseURL`; keep that available in the Convex environment when auth routes are involved.
 
 ## Generated And Configured Files
@@ -27,6 +27,16 @@
 - Do not edit generated Convex files under `convex/_generated/` or generated TanStack Router file `src/routeTree.gen.ts` by hand.
 - Before changing Convex code, read `convex/_generated/ai/guidelines.md`; its Convex rules override generic knowledge.
 - shadcn is configured by `components.json` with `rsc: false`, aliases under `@/*`, Tailwind CSS at `src/styles/app.css`, and an `@ai-elements` registry.
+
+## Documentation
+
+- Keep `README.md` as the concise project overview, quick start, command list, and entry point into detailed documentation.
+- Put detailed operator and developer guides under `docs/`; add new guides to `docs/README.md` so they remain discoverable.
+- Treat checked-in behavior as the source of truth. Verify commands in `package.json`, HTTP routes in `convex/http.ts`, data shapes in `convex/schema.ts`, web routes in `src/app/`, container behavior in `Dockerfile*` and `docker/`, and releases in `.github/workflows/` before documenting them.
+- Update the relevant documentation in the same change whenever public APIs, environment variables, setup steps, commands, architecture, deployment behavior, or user-visible features change.
+- Clearly label planned or incomplete behavior. Do not present roadmap items, broad compatibility claims, or optional features as implemented facts.
+- Use relative repository links, fenced code blocks with language identifiers, and copy-pasteable Bun commands. Never include real credentials or deployment identifiers in examples.
+- Avoid duplicating detailed content between `README.md` and `docs/`; keep a short summary in the README and link to the owning guide.
 
 ## API And Chat Flow
 

@@ -1,307 +1,186 @@
-# 🌟 Radium
+# Radium
 
-<div align="center">
+**One gateway for your models, providers, and AI applications.**
 
-**An OpenAI-Compatible AI Gateway with Multi-Provider Support and Credit-Based Billing**
+Radium is an open-source AI gateway and chat platform designed to run on your
+own infrastructure. It combines an OpenAI-compatible API, a capable AI
+chatroom, and detailed generation telemetry in one deployable system.
 
-[![Next.js](https://img.shields.io/badge/Next.js-16.0.5-black?logo=next.js)](https://nextjs.org/)
-[![Convex](https://img.shields.io/badge/Convex-1.29.3-ff6b35?logo=convex)](https://convex.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-blue?logo=typescript)](https://www.typescriptlang.org/)
-[![Vercel AI SDK](https://img.shields.io/badge/AI_SDK-5.0.104-black?logo=vercel)](https://sdk.vercel.ai/)
+> Radium is under active development. The Chat Completions compatibility layer
+> is available today, but it does not yet cover every OpenAI API or parameter.
 
-</div>
+## The Radium Platform
 
----
+### Radium Gateway
 
-## 📋 Table of Contents
+Connect AI applications to a single OpenAI-compatible endpoint while Radium
+handles the providers behind it.
 
-- [Overview](#-overview)
-- [Architecture](#-architecture)
-- [Features](#-features)
-- [Getting Started](#-getting-started)
-- [Contributing](#-contributing)
+- Route streaming and non-streaming chat completions across configured models
+  and providers.
+- Bring your own provider credentials and keep them encrypted with Convex
+  Secret Store.
+- Manage a shared model catalogue, provider availability, pricing, context
+  limits, and supported parameters.
+- Issue hashed `rad-sk-...` API keys with optional credit limits.
+- Record token usage, generation cost, time to first token, and completion
+  duration.
 
----
+Radium currently exposes:
 
-## 🎯 Overview
-
-Radium is an **AI Gateway** that provides a unified, OpenAI-compatible API endpoint for routing LLM (Large Language Model) requests through various providers. Think of it as a self-hostable alternative to services like OpenRouter or LiteLLM, with built-in:
-
-- **Credit-based billing system**
-- **API key management**
-- **Usage tracking and analytics**
-- **Multi-provider load balancing**
-- **Streaming (SSE) and non-streaming responses**
-
-The project leverages **Vercel AI SDK** for seamless integration with different AI providers while maintaining OpenAI API compatibility.
-
----
-
-## 🏗 Architecture
-
-### Request Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Client
-    participant Gateway as Radium Gateway
-    participant AISDK as Vercel AI SDK
-    participant LLM as LLM Provider
-
-    Client->>Gateway: OpenAI-Compatible Request
-    Gateway->>Gateway: Validate API Key & Credits
-    Gateway->>AISDK: streamText / generateText
-    AISDK->>LLM: Provider SDK Request
-    LLM-->>AISDK: Provider Response
-    AISDK-->>Gateway: UIMessageStream (Custom Chunks)
-    Gateway-->>Client: OpenAI-Compatible Response<br/>(SSE Chunks or JSON)
+```text
+POST /api/openai/v1/chat/completions
+GET  /api/openai/v1/models
 ```
 
----
+[Explore the Gateway API](docs/api.md)
 
-## ✨ Features
+### Radium Chatroom
 
-### Core Features
+Use the same gateway through Radium's built-in chat experience. The Chatroom
+supports persistent conversations, model and provider selection, reasoning
+controls, configurable tools, and user-connected MCP servers.
 
-| Feature               | Status | Description                                                                    |
-| --------------------- | ------ | ------------------------------------------------------------------------------ |
-| OpenAI-Compatible API | ✅     | Near-full compatibility with `/v1/chat/completions` and `/v1/models` endpoints |
-| Streaming (SSE)       | ✅     | Server-Sent Events for real-time streaming responses                           |
-| Credit System         | ✅     | Pay-per-token billing with user credits                                        |
-| API Key Management    | ✅     | Secure hashed API keys with optional limits                                    |
-| Usage Tracking        | ✅     | Detailed logging of all completions with timing metrics                        |
-| Tool Calling          | ✅     | Full support for function calling and custom tools                             |
-| Reasoning Support     | ✅     | Extended thinking/reasoning token support                                      |
-| Multi-Provider        | 🔄     | Currently OpenRouter, more providers planned                                   |
-| BYOK                  | 🔄     | Bring Your Own Key support (planned)                                           |
-| Load Balancing        | 🔄     | Intelligent provider routing (planned)                                         |
-| Embeddings            | 🔄     | Embedding model support (planned)                                              |
+The Chatroom and public Gateway API share the same provider catalogue,
+credentials, billing records, and internal completion pipeline. This makes it
+useful both as a daily AI workspace and as a direct way to verify a gateway
+configuration.
 
-### Supported Model Features
+[See how requests move through Radium](docs/architecture.md)
 
-- **Reasoning Modes**: `high`, `medium`, `low`, (flags such as `minimal`, `none` can be limited to only a few models)
-- **Input Modalities**: Text, Image, Audio, Video, File
-- **Output Modalities**: Text, Image
+### Radium Telemetry
 
----
+The new telemetry system gives each generation an inspectable execution trace.
+It records request status, provider and model selection, timing, token usage,
+generation steps, and tool calls. Traces and spans can be explored in the
+Gateway UI.
 
-## 🚀 Getting Started
+Telemetry is opt-in per user. Input recording and output recording are separate
+controls, and deployments can optionally export traces to an OTLP/HTTP
+collector.
+
+[Configure telemetry export](docs/deployment.md#opentelemetry-export)
+
+### Self-Hosted By Design
+
+Radium ships as a full self-hosted image containing the TanStack Start app and
+a local Convex backend. A frontend-only image is also available for deployments
+using Convex Cloud or a separately operated Convex backend.
+
+Start the full stack with Docker Compose:
+
+```bash
+SECRET_STORE_KEYS="1:$(openssl rand -base64 32)" \
+docker compose up --build
+```
+
+The full image deploys the bundled Convex functions at startup and persists its
+backend state in a Docker volume.
+
+[Read the deployment guide](docs/deployment.md)
+
+## Future Direction
+
+The following offerings are planned and are not available yet:
+
+- **Radium Membership:** a program for people and teams operating their own
+  Radium deployments, with a simpler path from setup to ongoing use.
+- **Radium Enterprise:** an enterprise-grade offering focused on larger
+  organizations, operational requirements, and managed deployment needs.
+
+The open-source, self-hostable foundation remains central to Radium.
+
+## Technology
+
+Radium is built with TanStack Start, React 19, Convex, AI SDK, Better Auth,
+Tailwind CSS, shadcn/ui, and Bun.
+
+## Local Development
 
 ### Prerequisites
 
-- **Bun** or **Node.js** (v18+)
-- **Convex** account and project
-- **OpenRouter** API key (or other supported provider)
+- [Bun](https://bun.sh)
+- A Convex account and deployment
+- Credentials for at least one supported AI provider
 
-### Installation
+### Quick Start
 
-1. **Clone the repository**
-
-   ```bash
-   git clone https://github.com/alkalines/Radium.git
-   cd Radium
-   ```
-
-2. **Install dependencies**
+1. Install dependencies and create a local environment file.
 
    ```bash
    bun install
-   # or
-   npm install
+   cp .env.example .env.local
    ```
 
-3. **Configure environment variables**
+2. Set the secret placeholders in `.env.local`, then link or create a Convex
+   development deployment.
 
    ```bash
-   cp .env.example .env
+   bun run convex:dev
    ```
 
-   Edit `.env` with your configuration:
+3. Configure the required Convex runtime values described in the
+   [deployment guide](docs/deployment.md#convex-cloud-development).
 
-   ```env
-   Openrouter_API_Key="your-openrouter-api-key"
-   AISDK_MaxRetries="0"
-   CONVEX_DEPLOYMENT="your-convex-deployment"
-   NEXT_PUBLIC_CONVEX_URL="https://your-deployment.convex.cloud"
-   NEXT_PUBLIC_CONVEX_SITE_URL="https://your-deployment.convex.site"
-   ```
-
-4. **Set up Convex**
+4. In another terminal, start the web application.
 
    ```bash
-   npx convex dev
+   bun run vite:dev
    ```
 
-5. **Start the development server**
+5. Open <http://localhost:3000> and create an account.
 
-   ```bash
-   bun dev
-   # or
-   npm run dev
-   ```
+Fresh deployments do not yet provision balances automatically. Create a
+balance for the Better Auth user in the Convex dashboard before configuring
+providers, credentials, and API keys under **Gateway**.
 
-6. **Open the application**
+After initial configuration, `bun run dev` starts Vite and Convex together.
 
-   Navigate to [http://localhost:3000](http://localhost:3000)
+## Try The API
 
----
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-| Variable                             | Required | Description                                       |
-| ------------------------------------ | -------- | ------------------------------------------------- |
-| `Openrouter_API_Key`                 | Yes      | Your OpenRouter API key                           |
-| `AISDK_MaxRetries`                   | No       | Max retry attempts (default: 0)                   |
-| `CONVEX_DEPLOYMENT`                  | Yes      | Convex deployment identifier                      |
-| `VITE_CONVEX_URL`                    | Yes      | Convex cloud URL                                  |
-| `VITE_CONVEX_SITE_URL`               | Yes      | Convex site URL for HTTP endpoints                |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`        | No       | OTLP/HTTP collector base URL                      |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | No       | Signal-specific OTLP traces URL                   |
-| `OTEL_EXPORTER_OTLP_HEADERS`         | No       | Comma-separated OTLP headers (`key=value`)        |
-| `OTEL_SERVICE_NAME`                  | No       | Exported service name (default: `radium-gateway`) |
-
-AI SDK telemetry is disabled per user by default. Configuring an OTLP endpoint only enables
-external export for users who explicitly enable telemetry; prompt and response recording are
-separate opt-ins.
-
----
-
-## 🐳 Containers
-
-Two production images are supported:
-
-- `Dockerfile`: full self-hosted image with the TanStack Start server and a local Convex backend in one container.
-- `Dockerfile.frontend`: frontend/server image only, intended to point at Convex Cloud or a separately hosted Convex backend.
-
-Build the full image:
+OpenAI-compatible endpoints are served from `VITE_CONVEX_SITE_URL`:
 
 ```bash
-docker build -t radium:local .
+curl "$VITE_CONVEX_SITE_URL/api/openai/v1/chat/completions" \
+  -H "Authorization: Bearer $RADIUM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "your-model-slug",
+    "messages": [{ "role": "user", "content": "Hello" }],
+    "stream": false
+  }'
 ```
 
-Or use Docker Compose:
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Architecture](docs/architecture.md)
+- [API reference](docs/api.md)
+- [Deployment and configuration](docs/deployment.md)
+
+## Commands
+
+| Command                | Purpose                                  |
+| ---------------------- | ---------------------------------------- |
+| `bun run dev`          | Start Vite and Convex together           |
+| `bun run vite:dev`     | Start only the web app on port 3000      |
+| `bun run convex:dev`   | Start and develop against Convex         |
+| `bun run vite:build`   | Build the production application         |
+| `bun run vite:start`   | Run the built application                |
+| `bun run lint`         | Run ESLint                               |
+| `bun run format`       | Format supported files with oxfmt        |
+| `bun run format:check` | Check formatting without writing changes |
+
+## Contributing
+
+Use Bun and run the relevant checks before opening a pull request:
 
 ```bash
-SECRET_STORE_KEYS="1:$(openssl rand -base64 32)" docker compose up --build
+bun run lint
+bun run format:check
+bun run vite:build
 ```
 
-Run the full image:
-
-```bash
-docker run --rm \
-  -p 3000:3000 \
-  -p 3210:3210 \
-  -p 3211:3211 \
-  -v radium-convex-data:/convex/data \
-  -e SITE_URL=http://localhost:3000 \
-  -e SECRET_STORE_KEYS='1:<openssl rand -base64 32>' \
-  radium:local
-```
-
-The full image starts Convex first, generates a self-hosted admin key if one was not provided through `CONVEX_SELF_HOSTED_ADMIN_KEY`, deploys the bundled `convex/` functions, then starts the TanStack server on port `3000`. Convex listens on `3210`, and HTTP actions listen on `3211`.
-
-Convex self-hosted instance credentials are generated into `/convex/data/credentials` on first boot. For reproducible production deployments, provide a persistent volume and optionally set `INSTANCE_NAME` plus a 32-byte hex `INSTANCE_SECRET`.
-
-Build the frontend-only image:
-
-```bash
-docker build \
-  -f Dockerfile.frontend \
-  --build-arg VITE_CONVEX_URL=https://your-deployment.convex.cloud \
-  --build-arg VITE_CONVEX_SITE_URL=https://your-deployment.convex.site \
-  -t radium-frontend:local .
-```
-
-Or use Docker Compose:
-
-```bash
-VITE_CONVEX_URL=https://your-deployment.convex.cloud \
-VITE_CONVEX_SITE_URL=https://your-deployment.convex.site \
-docker compose -f docker-compose.frontend.yml up --build
-```
-
-Run the frontend-only image:
-
-```bash
-docker run --rm \
-  -p 3000:3000 \
-  -e CONVEX_URL=https://your-deployment.convex.cloud \
-  -e CONVEX_SITE_URL=https://your-deployment.convex.site \
-  radium-frontend:local
-```
-
-For hosted deployments, set `CONVEX_CLOUD_ORIGIN`, `CONVEX_SITE_ORIGIN`, `CONVEX_URL`, `CONVEX_SITE_URL`, `VITE_CONVEX_URL`, and `VITE_CONVEX_SITE_URL` to externally reachable URLs. The Vite variables are build-time values, so rebuild the image when those public URLs change.
-
----
-
-## 🚢 Releases
-
-Releases are tag-based and use the `version` field in `package.json` as the source of truth.
-
-1. Update `package.json` to the next semver version, for example `0.2.0`.
-2. Merge the version bump to the default branch.
-3. Create and push a matching tag:
-
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-The release workflow builds and pushes these images to GitHub Container Registry:
-
-- `ghcr.io/alkalines/radium:<version>` and `latest` from `Dockerfile`
-- `ghcr.io/alkalines/radium-frontend:<version>` and `latest` from `Dockerfile.frontend`
-
-It also creates a GitHub Release using generated release notes, which include merged pull requests since the previous release. You can also run the workflow manually with a version input; it will create the `v<version>` tag after verifying it matches `package.json`.
-
-### Provider Configuration
-
-To add a new provider, implement the `AIProviderConfig` interface:
-
-```typescript
-const NewProvider: AIProviderConfig = {
-  name: "Provider Name",
-  slug: "provider-slug",
-  defaultBaseURL: "https://api.provider.com/v1/",
-  policies: {
-    trainingOnFree: false,
-    trainingOnPaid: false,
-    privacy_policy: "https://provider.com/privacy",
-    tos: "https://provider.com/terms",
-  },
-  connector: (Config) => {
-    return (model: string, settings?: AIProviderSDK_ModelSettings) => {
-      // Return LanguageModel instance
-    };
-  },
-};
-```
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
----
-
-## 📄 License
-
-This project is open source. See the repository for license details.
-
----
-
-<div align="center">
-
-**Made with ❤️ and 😡 by [Alkalines Team](https://github.com/alkalines)**
-
-</div>
+There is currently no configured automated test script. Update the relevant
+documentation whenever behavior, configuration, commands, or public APIs
+change.
