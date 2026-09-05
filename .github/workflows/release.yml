@@ -24,13 +24,14 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  release:
+  frontend:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          path: packages/frontend
 
       - name: Resolve version
         id: version
