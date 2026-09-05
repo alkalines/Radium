@@ -1,7 +1,7 @@
 services:
   radium:
     build:
-      context: .
+      context: packages/website
       dockerfile: Dockerfile
       args:
         VITE_CONVEX_URL: ${VITE_CONVEX_URL:-http://localhost:3210}
