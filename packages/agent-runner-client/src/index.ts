@@ -1,34 +1,33 @@
-import { fetch } from "bun"
-
-type AgentRunnerConfig = {
-  baseUrl: `http://${string}` | `https://${string}`
+export type AgentRunnerConfig = {
+  baseUrl: string
   token: string
+  fetch?: typeof globalThis.fetch
 }
 
 export default class AgentRunnerClient {
   private baseUrl: string
   private token: string
+  private fetch: typeof globalThis.fetch
   
   constructor(config: AgentRunnerConfig) {
     this.baseUrl = config.baseUrl
     this.token = config.token
+    this.fetch = config.fetch ?? globalThis.fetch
   }
 
-  async health() {
-    this.fetch('/health', {
+  async health(): Promise<unknown> {
+    return this.request('/health', {
       method: 'GET'
     })
   }
   
-  private async fetch(url: `/${string}`, init?: BunFetchRequestInit): Promise<any> {
-    if (!init) init = {}
-    if (!init.headers) init.headers = {}
-
-    // Authentication
-    const headers = new Headers(init.headers)
+  private async request(url: `/${string}`, init?: RequestInit): Promise<unknown> {
+    const headers = new Headers(init?.headers)
     headers.set("Authorization", `Bearer ${this.token}`)
-    init.headers = headers
-    
-    return (await fetch(`${this.baseUrl}${url}`, init)).json()
+
+    return (await this.fetch(`${this.baseUrl}${url}`, {
+      ...init,
+      headers
+    })).json()
   }
 }

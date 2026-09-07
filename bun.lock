@@ -19,9 +19,6 @@
     },
     "packages/agent-runner-client": {
       "name": "agent-runner-client",
-      "devDependencies": {
-        "@types/bun": "latest",
-      },
       "peerDependencies": {
         "typescript": "^7",
       },
