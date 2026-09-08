@@ -2,11 +2,12 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useSession } from "@better-auth-ui/react";
 import { ConvexBetterAuthProvider } from "@convex-dev/better-auth/react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ConvexReactClient } from "convex/react";
+import { useConvexAuth, type ConvexReactClient } from "convex/react";
 import { ThemeProvider, useTheme } from "next-themes";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { authClient } from "@/lib/auth-client";
+import { useFrontendLogger } from "@/lib/logging";
 import { themePlugin } from "@/lib/auth/theme-plugin";
 import { AuthProvider } from "./auth/auth-provider";
 import { TooltipProvider } from "./ui/tooltip";
@@ -70,12 +71,28 @@ export function Providers({
           Link={Link}
         >
           <ConvexAuthQueryCache>
-            <TooltipProvider>{children}</TooltipProvider>
+            <OperationalLogging>
+              <TooltipProvider>{children}</TooltipProvider>
+            </OperationalLogging>
           </ConvexAuthQueryCache>
         </AuthProvider>
       </ThemeProvider>
     </ConvexBetterAuthProvider>
   );
+}
+
+function OperationalLogging({ children }: { children: ReactNode }) {
+  const log = useFrontendLogger();
+  const { isAuthenticated, isLoading } = useConvexAuth();
+  const hasLoggedAppLoad = useRef(false);
+
+  useEffect(() => {
+    if (isLoading || !isAuthenticated || hasLoggedAppLoad.current) return;
+    hasLoggedAppLoad.current = true;
+    log({ level: "info", event: "app.loaded", metadata: { runtime: "browser" } });
+  }, [isAuthenticated, isLoading, log]);
+
+  return children;
 }
 
 /**

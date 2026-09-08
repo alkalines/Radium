@@ -23,6 +23,7 @@ import type * as http_chat_completion from "../http/chat_completion.js";
 import type * as http_models from "../http/models.js";
 import type * as key from "../key.js";
 import type * as keys from "../keys.js";
+import type * as logging from "../logging.js";
 import type * as logs from "../logs.js";
 import type * as mcp from "../mcp.js";
 import type * as models from "../models.js";
@@ -55,6 +56,7 @@ declare const fullApi: ApiFromModules<{
   "http/models": typeof http_models;
   key: typeof key;
   keys: typeof keys;
+  logging: typeof logging;
   logs: typeof logs;
   mcp: typeof mcp;
   models: typeof models;
@@ -94,5 +96,7 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   betterAuth: import("@convex-dev/better-auth/_generated/component.js").ComponentApi<"betterAuth">;
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+  logging: import("../components/logging/_generated/component.js").ComponentApi<"logging">;
   secretStore: import("convex-secret-store/_generated/component.js").ComponentApi<"secretStore">;
 };
