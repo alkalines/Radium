@@ -36,6 +36,7 @@
         "@better-auth-ui/core": "^1.7.14",
         "@better-auth-ui/react": "^1.7.14",
         "@convex-dev/better-auth": "0.12.5",
+        "@convex-dev/rate-limiter": "^0.3.2",
         "@convex-dev/react-query": "^0.1.0",
         "@daveyplate/better-auth-ui": "^3.4.0",
         "@exalabs/ai-sdk": "^2.1.0",
@@ -227,6 +228,8 @@
     "@convex-dev/better-auth": ["@convex-dev/better-auth@0.12.5", "", { "dependencies": { "@better-fetch/fetch": "^1.1.18", "common-tags": "^1.8.2", "convex-helpers": "^0.1.95", "jose": "^6.1.0", "remeda": "^2.32.0", "semver": "^7.7.3", "type-fest": "^5.0.0", "zod": "^4.0.0" }, "peerDependencies": { "better-auth": ">=1.6.11 <1.7.0", "convex": "^1.25.0", "react": "^18.3.1 || ^19.0.0" } }, "sha512-YFUbGk04OlINno9FpOTNZN67AP+kSQsblfep5zs1f/WTgMWjD5FymU6rSSh3mu52gukmDNnBJTjC/lj4QRpjlQ=="],
 
     "@convex-dev/eslint-plugin": ["@convex-dev/eslint-plugin@4.0.0", "", { "dependencies": { "@typescript-eslint/types": "~8.58.0", "@typescript-eslint/utils": "~8.58.0" }, "peerDependencies": { "convex": "^1.43.0" } }, "sha512-7bYP8Fkk+19L7LWl3xIqUqq/0yIEZNoUQHOodZKIvupqmgaMisz8NKz6OkmMwBVLUQ0sh/9+iPK1OyASANiWyw=="],
+
+    "@convex-dev/rate-limiter": ["@convex-dev/rate-limiter@0.3.2", "", { "peerDependencies": { "convex": "^1.24.8", "react": "^18.2.0 || ^19.0.0" }, "optionalPeers": ["react"] }, "sha512-+oBPsBfFbzdxiF/9XaaTQmVnvDlvEfg/c69/v8LxTbw4VLuiflIKlfnPQL8OS0azXQQ11hcPWHmU8ytFmHKDXA=="],
 
     "@convex-dev/react-query": ["@convex-dev/react-query@0.1.0", "", { "peerDependencies": { "@tanstack/react-query": "^5.0.0", "convex": "^1.29.3" } }, "sha512-ULmBZCtAQDUePdBhUv7hj1Yy4QiCelhi6uEIOtMpjW8db6W9CFKvQwLt9heLngccFyMFfAZdOfSrT+cP4AH0Jw=="],
 

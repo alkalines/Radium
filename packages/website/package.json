@@ -1,8 +1,8 @@
 {
   "name": "radium-website",
-  "author": "alkalines",
   "version": "dev",
   "private": false,
+  "author": "alkalines",
   "scripts": {
     "dev": "concurrently -c magenta,yellow --names vite-dev,convex-dev \"bun run vite:dev --clearScreen false\" \"bun run convex:dev\"",
     "convex:dev": "convex dev",
@@ -25,6 +25,7 @@
     "@better-auth-ui/core": "^1.7.14",
     "@better-auth-ui/react": "^1.7.14",
     "@convex-dev/better-auth": "0.12.5",
+    "@convex-dev/rate-limiter": "^0.3.2",
     "@convex-dev/react-query": "^0.1.0",
     "@daveyplate/better-auth-ui": "^3.4.0",
     "@exalabs/ai-sdk": "^2.1.0",
