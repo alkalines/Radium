@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { requireOwnedBalance, requireUserId } from "./keys";
-import { preferChatroomTraces, summarizeTraces } from "../telemetry/summary";
+import { preferChatroomTraces, summarizeTraces } from "../src/utils/telemetry/summary";
 import {
   telemetrySettingsSchema,
   telemetrySourceSchema,

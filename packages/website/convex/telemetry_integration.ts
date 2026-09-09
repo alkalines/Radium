@@ -6,9 +6,9 @@ import {
   createTelemetryIntegrations as createTelemetryCollectorIntegrations,
   type TelemetrySettings,
   type TelemetrySource,
-} from "../telemetry/integration";
+} from "../src/utils/telemetry/integration";
 
-export type { TelemetrySettings } from "../telemetry/integration";
+export type { TelemetrySettings } from "../src/utils/telemetry/integration";
 
 export type TelemetryRequestContext = {
   balance: Id<"balances">;

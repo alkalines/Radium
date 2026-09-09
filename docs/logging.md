@@ -6,7 +6,7 @@ or product analytics.
 
 ## Scope
 
-- `packages/website/logging/server.ts` is the backend helper. Its initial sink is
+- `packages/website/src/utils/logging/server.ts` is the backend helper. Its initial sink is
   `console.log` in the Convex function log stream.
 - `packages/website/src/lib/logging.ts` is the frontend helper. It submits a
   versioned envelope to the authenticated `convex/logging.ts` wrapper.
@@ -23,7 +23,7 @@ component does not make a cloud-configured deployment local.
 
 ## Envelope
 
-The shared contract in `packages/website/logging/contract.ts` is version `1`:
+The shared contract in `packages/website/src/utils/logging/contract.ts` is version `1`:
 
 | Field         | Meaning                                                                |
 | ------------- | ---------------------------------------------------------------------- |
@@ -113,7 +113,7 @@ Convex code can use the backend helper without changing application control
 flow:
 
 ```ts
-import { logger } from "../logging/server";
+import { logger } from "../src/utils/logging/server";
 
 logger.warn("provider.unavailable", {
   metadata: { provider: "example" },
@@ -125,7 +125,7 @@ logger.warn("provider.unavailable", {
 Run unit coverage from the repository root:
 
 ```bash
-bun test packages/website/logging
+bun test packages/website/src/utils/logging
 ```
 
 These tests cover envelope validation and best-effort console behavior, not
