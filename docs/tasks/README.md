@@ -1,7 +1,8 @@
 # Future Agent Tasks
 
 These are separate handoffs, not authorization to execute the entire roadmap in
-one session. All tasks below are **not started**. The minimal operational logging
+one session. Task 01 has an implemented extraction with verification gaps recorded
+in its handoff; other tasks below are **not started**. The minimal operational logging
 foundation is implemented separately; see [logging](../logging.md).
 
 Give an agent one task file, ask it to inspect current source and `AGENTS.md`, and
