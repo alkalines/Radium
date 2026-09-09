@@ -15,7 +15,7 @@
 - `packages/website/src/router.tsx` wires TanStack Router, React Query, and `@convex-dev/react-query`. `@/*` resolves to the website's `src/*`.
 - Run `bun install` at the root. `bun run dev` starts website Vite and Convex, not the Runner.
 - Website commands from the root: `bun run --cwd packages/website vite:dev`, `bun run --cwd packages/website convex:dev`, `bun run --cwd packages/website vite:build`, and `bun run --cwd packages/website vite:start`.
-- Root scripts include `bun run lint`, `bun run format`, and `bun run format:check`. There is no configured test or typecheck script. Run the complete website unit suite with `bun test ./packages/website/src/test.ts`; connect new website unit-test files from that entrypoint. Use explicit, scoped commands for other checks and report their results. Do not run repository-wide formatting for an unrelated change.
+- Root scripts include `bun run lint`, `bun run format`, and `bun run format:check`. There is no configured test or typecheck script. Run the complete website unit suite with `bun test ./packages/website/src/test.ts`; connect new website unit-test files from that entrypoint. Website tests must use Bun's test runner APIs from `bun:test`, not `node:test`. Use explicit, scoped commands for other checks and report their results. Do not run repository-wide formatting for an unrelated change.
 - Check each package's `package.json` before documenting or running commands. Container and release paths still need a workspace-layout audit; see [task queue](docs/tasks/README.md).
 
 ## Work Method
