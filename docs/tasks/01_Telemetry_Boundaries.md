@@ -5,9 +5,8 @@ Scope: behavior-preserving refactor, not a telemetry rewrite.
 
 ## Entry Points
 
-Under `packages/website/`: `convex/telemetry.ts`, `convex/telemetry_schemas.ts`,
-`convex/telemetry_integration.ts`, `convex/schema.ts`, `convex/http/`, and
-`src/components/gateway/telemetry-*`.
+Under `packages/website/`: `convex/telemetry.ts`, `convex/schema.ts`,
+`convex/http/`, `src/utils/telemetry/`, and `src/components/gateway/telemetry-*`.
 
 ## Work
 
@@ -26,9 +25,11 @@ Under `packages/website/`: `convex/telemetry.ts`, `convex/telemetry_schemas.ts`,
 ## Outcome
 
 - Extracted collector/contracts/serialization/export into `packages/website/src/utils/telemetry/integration.ts`
-  with typed persistence callbacks; the Convex adapter retains ownership IDs and mutation wiring.
+  with typed persistence callbacks; `packages/website/src/utils/telemetry/convex.ts`
+  attaches ownership IDs and mutation wiring for action callers.
 - Extracted deduplication and aggregation into `packages/website/src/utils/telemetry/summary.ts`.
-- Kept validators, bounded database access, authorization, schema, and API names in Convex.
+- Consolidated shared validators in `packages/website/src/utils/telemetry/validators.ts`;
+  bounded database access, authorization, schema, and API names remain in Convex.
 - Added collector and summary regression tests. No dependency or schema changes;
   no codegen, deployment, or data migration performed.
 - Documented the boundary and known limitations in the [Gateway overview](../Radium_Gateway.md)
@@ -44,7 +45,7 @@ Under `packages/website/`: `convex/telemetry.ts`, `convex/telemetry_schemas.ts`,
 - `bunx tsc --noEmit --incremental false -p packages/website/tsconfig.json`:
   blocked by 20 existing errors outside changed files (auth UI types, fetch
   types, missing `firstUserMessageText`, and reasoning component props).
-- `bunx eslint packages/website/src/utils/telemetry packages/website/convex/telemetry.ts packages/website/convex/telemetry_integration.ts`:
+- `bunx eslint packages/website/src/utils/telemetry packages/website/convex/telemetry.ts`:
   blocked because root `eslint.config.mjs` cannot resolve the `eslint` package.
-- `bunx oxfmt --check packages/website/src/utils/telemetry packages/website/convex/telemetry.ts packages/website/convex/telemetry_integration.ts docs/Radium_Gateway.md docs/Radium_Gateway/Telemetry.md docs/README.md docs/architecture.md docs/tasks/01_Telemetry_Boundaries.md docs/tasks/README.md`:
+- `bunx oxfmt --check packages/website/src/utils/telemetry packages/website/convex/telemetry.ts docs/Radium_Gateway.md docs/Radium_Gateway/Telemetry.md docs/README.md docs/architecture.md docs/tasks/01_Telemetry_Boundaries.md docs/tasks/README.md`:
   passed for the scoped code/docs; `git diff --check` passed.

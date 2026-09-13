@@ -1,14 +1,14 @@
 import type { Telemetry } from "ai";
-import type { Id } from "./_generated/dataModel";
-import { internal } from "./_generated/api";
-import type { ActionCtx } from "./_generated/server";
+import { internal } from "../../../convex/_generated/api";
+import type { Id } from "../../../convex/_generated/dataModel";
+import type { ActionCtx } from "../../../convex/_generated/server";
 import {
   createTelemetryIntegrations as createTelemetryCollectorIntegrations,
   type TelemetrySettings,
   type TelemetrySource,
-} from "../src/utils/telemetry/integration";
+} from "./integration";
 
-export type { TelemetrySettings } from "../src/utils/telemetry/integration";
+export type { TelemetrySettings } from "./integration";
 
 export type TelemetryRequestContext = {
   balance: Id<"balances">;
@@ -25,7 +25,7 @@ type CollectorOptions = TelemetryRequestContext & {
   functionId: string;
 };
 
-/** Build the local collector and, when configured, an OTLP integration for one request. */
+/** Attach server-derived ownership and Convex persistence to the reusable collector. */
 export function createTelemetryIntegrations(options: CollectorOptions): Telemetry[] {
   return createTelemetryCollectorIntegrations({
     requestId: options.requestId,

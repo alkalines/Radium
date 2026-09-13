@@ -7,7 +7,7 @@ import {
 import type { Id } from "./_generated/dataModel";
 import { Internal_Chat_Completion } from "./http/chat_completion";
 import type { genCallbackType } from "@/utils/translators/openai";
-import type { TelemetryRequestContext } from "./telemetry_integration";
+import type { TelemetryRequestContext } from "@/utils/telemetry/convex";
 
 type ErrorResponse = (error: unknown) => Response;
 

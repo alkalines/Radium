@@ -8,7 +8,7 @@ import {
   telemetrySpanKindSchema,
   telemetryStatusSchema,
   telemetryUsageSchema,
-} from "./telemetry_schemas";
+} from "../src/utils/telemetry/validators";
 
 const defaultSettings = {
   enabled: false,

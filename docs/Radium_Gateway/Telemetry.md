@@ -13,11 +13,11 @@ Paths below are relative to `packages/website/`.
 
 | Owner                                | Responsibility                                                                                                            |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `convex/telemetry.ts`                | Registered settings/trace queries and mutations, ownership checks, indexed read bounds, and persistence                   |
-| `convex/telemetry_schemas.ts`        | Convex validators shared by functions and table schema                                                                    |
-| `convex/telemetry_integration.ts`    | Thin action-context adapter: attach server-derived owner IDs and wire internal start/finish mutations                     |
+| `convex/telemetry.ts`                | Registered settings/trace functions, ownership checks, indexed reads, and persistence                                     |
+| `src/utils/telemetry/convex.ts`      | Thin action-context adapter that attaches server-derived owner IDs and wires internal persistence mutations               |
 | `src/utils/telemetry/integration.ts` | Collector contracts, AI SDK event handling, usage mapping, serialization, error formatting, and optional OTLP integration |
 | `src/utils/telemetry/summary.ts`     | Pure request deduplication and bounded-window summary calculation                                                         |
+| `src/utils/telemetry/validators.ts`  | Convex validators shared by registered functions and table schema                                                         |
 
 The collector receives typed persistence callbacks, not a Convex context or
 generated API. It has no database, browser, or Convex imports. The summary module

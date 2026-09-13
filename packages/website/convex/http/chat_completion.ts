@@ -19,7 +19,7 @@ import { Id } from "../_generated/dataModel";
 import {
   createTelemetryIntegrations,
   type TelemetryRequestContext,
-} from "../telemetry_integration";
+} from "@/utils/telemetry/convex";
 
 export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise<Response> => {
   try {
