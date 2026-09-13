@@ -65,7 +65,7 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
       <Alert>
         <AlertTitle>Trace not found</AlertTitle>
         <AlertDescription>
-          This trace was deleted or does not belong to your balance.
+          This trace was deleted or does not belong to your workspace.
         </AlertDescription>
       </Alert>
     );

@@ -7,6 +7,7 @@ start.
 ## Guides
 
 - [Radium Gateway](Radium_Gateway.md)
+- [Gateway ownership](Radium_Gateway/Ownership.md)
 - [Gateway and Chatroom AI telemetry](Radium_Gateway/Telemetry.md)
 
 | Guide                                             | Contents                                                                     |

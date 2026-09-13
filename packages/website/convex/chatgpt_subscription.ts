@@ -6,7 +6,6 @@ import {
 } from "@opencoredev/loginwithchatgpt-server";
 import type { GenericActionCtx } from "convex/server";
 import { OPENAI_CODEX_SLUG } from "../src/utils/provider_slugs";
-import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { authComponent } from "./auth";
 
@@ -88,8 +87,15 @@ export async function handleChatGPTSubscription(
   request: Request,
 ): Promise<Response> {
   const user = await authComponent.safeGetAuthUser(ctx);
-  const balance = new URL(request.url).searchParams.get("balance") as Id<"balances"> | null;
-  if (!user || !balance) {
+  const workspaceParam = new URL(request.url).searchParams.get("workspace");
+  const workspace =
+    user && workspaceParam
+      ? await ctx.runQuery(internal.workspaces.getOwnedWorkspaceForUser, {
+          workspace: workspaceParam,
+          userId: user._id,
+        })
+      : null;
+  if (!user || !workspace) {
     return withCors(Response.json({ error: "Unauthorized" }, { status: 401 }), request);
   }
 
@@ -104,7 +110,7 @@ export async function handleChatGPTSubscription(
         .filter(Boolean)
         .join(" · ");
       await ctx.runMutation(internal.providers.bindOAuthCredential, {
-        balance,
+        workspace,
         provider: OPENAI_CODEX_SLUG,
         userId: user._id,
         credentials: { sessionCookie },
@@ -117,7 +123,7 @@ export async function handleChatGPTSubscription(
       (body?.status === "expired" || (body?.status === "unauthenticated" && sessionCookie)))
   ) {
     await ctx.runMutation(internal.providers.unbindOAuthCredential, {
-      balance,
+      workspace,
       provider: OPENAI_CODEX_SLUG,
       userId: user._id,
     });

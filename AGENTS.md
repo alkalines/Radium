@@ -3,11 +3,13 @@
 ## Product Direction
 
 - **Radium** is the whole project, not a synonym for its gateway or chat UI. The current product target is self-hosted, bring-your-own-key/account/endpoint operation. Do not introduce required hosted services, prepaid credits, or SaaS billing assumptions.
-- **Radium Gateway** is the OpenRouter-replacement routing product. It currently exposes OpenAI-compatible Chat Completions and model listing. OpenAI Responses, Anthropic Messages, Gemini, and Grok protocol support are future work, not implemented compatibility claims. Optional request capture serves audits and debugging; it is distinct from operational logs and analytics.
+- **Radium Gateway** is the OpenRouter-replacement routing product. It currently exposes OpenAI-compatible Chat Completions and workspace-scoped model listing. OpenAI Responses, Anthropic Messages, Gemini, and Grok protocol support are future work, not implemented compatibility claims. Optional request capture serves audits and debugging; it is distinct from operational logs and analytics.
 - **Radium Chatroom** is the user-facing home for conversations and agents. It owns chat state, configuration, approvals, and agent UX; it uses Gateway for model routing rather than implementing a second router.
+- **Implemented ownership boundary:** Gateway and Chatroom resources use personal, user-owned workspaces for provider configuration, credentials, API keys, chats, usage, and telemetry. A widen-migrate-narrow bridge keeps legacy balance-owned records, keys, and Secret Store namespaces readable until the backfill is verified; new BYOK operation does not require prepaid credits.
+- **Planned workspace access:** Workspaces currently authorize only their Better Auth owner. Organization ownership, invitations, roles, and selected organization members are a planned extension; Better Auth organization records must not be treated as workspace membership until an explicit policy is implemented and tested.
 - **Agent Runner** is the external execution service for agent filesystem access, commands, coding, and other privileged work. `packages/agent-runner` and `packages/agent-runner-client` are currently health-check skeletons, not a functioning execution platform. Do not implement arbitrary shell/file execution in Convex or claim runner integration exists.
 - Convex owns durable state, authorization, reactive queries, and coordination. Its default runtime is constrained, not a general-purpose host OS; external execution belongs in the Runner even though Convex also supports Node actions.
-- Current debt is not the target architecture: `balances` mixes ownership with credits, provider credentials are not a general upstream pool, and routing is random. Do not extend these assumptions into new cross-product contracts. Do not remove persisted behavior without a migration either.
+- Current debt is not the target architecture: `balances` mixes ownership with credits, provider credentials are not a general upstream pool, and routing is random. Do not extend these assumptions into new cross-product contracts. Do not remove persisted behavior without a migration either. The legacy balance bridge is compatibility code, not permission to add new balance or credit dependencies.
 
 ## Repository And Commands
 
@@ -42,6 +44,7 @@
 ## Domain Guardrails
 
 - **Ownership and usage:** `balances`, `keys`, and `chat_completions` currently couple identity, credentials, accounting, and access. The future ownership model must work without credits or payment. Usage/cost estimation can remain useful for BYOK, but is not prepaid billing. Changes require dependency inventory and a widen-migrate-narrow plan, not a table rename.
+- **Workspace scopes:** New resources must carry an explicit workspace owner. Personal chats are private to their creator; `workspace`-scoped chats are currently visible only to the personal workspace owner because organization membership is not implemented. Add organization ownership and selected-member access in the shared policy before broadening that scope.
 - **Upstreams:** distinguish provider/protocol adapter, model mapping, endpoint, credential/account, and schedulable upstream instance. The design must accommodate multiple ChatGPT accounts and multiple vLLM/Ollama servers, not one credential per brand. Pooling, weights, health, concurrency, cooldowns, and safe failover are planned. Never retry after emitted stream output or duplicate billable/side-effecting work without an explicit policy.
 - **Secrets:** preserve write-only secret storage and masked displays. Never put credentials in browser state beyond necessary input, logs, task notes, or model metadata. Endpoint configuration needs an explicit SSRF/private-network policy that still supports deliberately configured local servers.
 - **Observability:** operational logging, optional AI request/audit capture, and analytics are separate purposes with separate privacy and retention policy. Core operation must work locally without PostHog or another hosted collector. Existing optional OTLP export is not a required service.
@@ -53,6 +56,7 @@
 - Gateway HTTP registration: `packages/website/convex/http.ts`; handlers: `packages/website/convex/http/`. Public routes include `POST /api/openai/v1/chat/completions` and `GET /api/openai/v1/models`, hosted on the Convex site, not Vite.
 - Chatroom posts to `POST /api/aisdk/chat`; `packages/website/convex/http/aisdk.chat.ts` uses AI SDK and the internal OpenAI-compatible completion flow.
 - Better Auth: `packages/website/src/app/api/auth/$.ts`, `packages/website/convex/auth.ts`, `packages/website/convex/auth.config.ts`, and `packages/website/convex/convex.config.ts`.
+- Workspace ownership: `packages/website/convex/workspaces.ts`, `packages/website/convex/migrations.ts`, `packages/website/src/utils/workspaces/policy.ts`, and `docs/Radium_Gateway/Ownership.md`.
 - Public env names include `VITE_CONVEX_URL`, `VITE_CONVEX_SITE_URL`, and `CONVEX_DEPLOYMENT`. Convex runtime configuration includes `SITE_URL`, `SECRET_STORE_KEYS`, `AISDK_MaxRetries`, and feature-specific `LWC_SECRET`. Verify usage before changes; keep the owning env example and deployment guide aligned. Never print real env values.
 - Do not hand-edit `packages/website/convex/_generated/` or `packages/website/src/routeTree.gen.ts`.
 

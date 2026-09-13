@@ -17,6 +17,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { api } from "../../convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
@@ -120,7 +121,6 @@ export const Route = createFileRoute("/chat")({
   },
   loader: ({ context: { queryClient } }) => {
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
-    void queryClient.prefetchQuery(convexQuery(api.models.availableModels, {}));
   },
   component: ChatRouteComponent,
 });
@@ -136,8 +136,11 @@ function ChatRouteComponent() {
 function ChatHomePage() {
   const navigate = Route.useNavigate();
   const { isMobile, setOpen, setOpenMobile } = useSidebar();
+  const { workspaceId } = useWorkspace();
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
-  const { data: models } = useQuery(convexQuery(api.models.availableModels, {}));
+  const { data: models } = useQuery(
+    convexQuery(api.models.availableModels, workspaceId ? { workspace: workspaceId } : "skip"),
+  );
   const createChat = useMutation(api.aisdk.CreateChat);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,10 +152,12 @@ function ChatHomePage() {
 
   const userName = typeof userInfo === "string" ? undefined : userInfo?.name;
   const welcomeText = getRandomWelcomeText(userName, welcomeIndex);
-  const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
   const defaultModelQuery = useQuery(
-    convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
+    convexQuery(
+      api.chatroom.getModelDefault,
+      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
   );
   const defaultModel = defaultModelQuery.data;
   const isModelLoading =
@@ -169,7 +174,7 @@ function ChatHomePage() {
   // default, then the first available model as a last resort.
   const selectedModel =
     model ?? (isModelLoading ? undefined : (availableDefaultModel ?? models?.[0]?.slug));
-  const canSubmit = Boolean(balance && selectedModel && !isSubmitting);
+  const canSubmit = Boolean(workspaceId && selectedModel && !isSubmitting);
   const selectedModelData = models?.find((item) => item.slug === selectedModel);
   const selectedProvider = selectedModelData?.providers.some((item) => item.id === provider)
     ? provider
@@ -217,7 +222,7 @@ function ChatHomePage() {
               return;
             }
 
-            if (!balance || !selectedModel) {
+            if (!workspaceId || !selectedModel) {
               setError("Your account is not ready for chat yet.");
               return;
             }
@@ -232,7 +237,7 @@ function ChatHomePage() {
 
             try {
               const chatId = await createChat({
-                balance: balance._id,
+                workspace: workspaceId,
                 messages_queue: {
                   text: trimmedText,
                   files,
@@ -272,7 +277,7 @@ function ChatHomePage() {
           selectedModel={selectedModel}
           selectedProvider={selectedProvider}
           status={isSubmitting ? "submitted" : "ready"}
-          toolsMenu={<ChatToolsMenu balance={balance?._id} />}
+          toolsMenu={<ChatToolsMenu workspace={workspaceId} />}
         />
       </section>
     </main>

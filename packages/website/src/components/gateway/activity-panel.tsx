@@ -50,6 +50,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "../../../convex/_generated/api";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 const DAY = 24 * 60 * 60 * 1000;
 const RANGE_OPTIONS = [
@@ -65,7 +66,6 @@ const dailyCostConfig = {
 const usageTypeConfig = {
   requests: { label: "Requests" },
   byok: { label: "BYOK", color: "var(--chart-2)" },
-  credits: { label: "Credits", color: "var(--chart-4)" },
 } satisfies ChartConfig;
 
 const tokenConfig = {
@@ -104,10 +104,9 @@ function formatDay(value: string): string {
 export function ActivityPanel() {
   const [range, setRange] = useState("30");
   const since = useMemo(() => Date.now() - Number(range) * DAY, [range]);
-  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
-  const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
+  const { workspaceId } = useWorkspace();
   const { data: activity } = useQuery(
-    convexQuery(api.logs.getActivity, balanceId ? { balance: balanceId, since } : "skip"),
+    convexQuery(api.logs.getActivity, workspaceId ? { workspace: workspaceId, since } : "skip"),
   );
 
   const cacheHitRate = activity?.summary.promptTokens
@@ -142,14 +141,14 @@ export function ActivityPanel() {
         </Select>
       </div>
 
-      {!balanceId && userInfo !== undefined && (
+      {!workspaceId && (
         <Alert>
-          <AlertTitle>No activity yet</AlertTitle>
-          <AlertDescription>A gateway balance is required to record activity.</AlertDescription>
+          <AlertTitle>No workspace selected</AlertTitle>
+          <AlertDescription>Create a workspace to record gateway activity.</AlertDescription>
         </Alert>
       )}
 
-      {balanceId && activity === undefined ? (
+      {workspaceId && activity === undefined ? (
         <ActivitySkeleton />
       ) : activity ? (
         <>
@@ -298,22 +297,19 @@ function DailyCostChart({ data }: { data: Array<{ date: string; cost: number }> 
   );
 }
 
-function UsageTypeChart({
-  usageTypes,
-}: {
-  usageTypes: { byok: { requests: number }; credits: { requests: number } };
-}) {
+function UsageTypeChart({ usageTypes }: { usageTypes: { byok: { requests: number } } }) {
   const data = [
     { type: "byok", requests: usageTypes.byok.requests, fill: "var(--color-byok)" },
-    { type: "credits", requests: usageTypes.credits.requests, fill: "var(--color-credits)" },
   ].filter((entry) => entry.requests > 0);
-  const total = usageTypes.byok.requests + usageTypes.credits.requests;
+  const total = usageTypes.byok.requests;
 
   return (
     <Card className="xl:col-span-2">
       <CardHeader>
-        <CardTitle>Usage type</CardTitle>
-        <CardDescription>BYOK compared with Radium credits</CardDescription>
+        <CardTitle>Usage source</CardTitle>
+        <CardDescription>
+          All requests use credentials configured in this workspace.
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex items-center gap-4">
         <ChartContainer config={usageTypeConfig} className="h-56 min-w-0 flex-1">

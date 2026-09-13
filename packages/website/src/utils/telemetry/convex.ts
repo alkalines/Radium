@@ -11,7 +11,9 @@ import {
 export type { TelemetrySettings } from "./integration";
 
 export type TelemetryRequestContext = {
-  balance: Id<"balances">;
+  workspace: Id<"workspaces">;
+  apiKey?: Id<"api_keys">;
+  balance?: Id<"balances">;
   key?: Id<"keys">;
   chatId?: Id<"aisdk_chats">;
   userId: string;
@@ -35,6 +37,8 @@ export function createTelemetryIntegrations(options: CollectorOptions): Telemetr
     persistence: {
       startTrace: (trace) =>
         options.ctx.runMutation(internal.telemetry.startTrace, {
+          workspace: options.workspace,
+          apiKey: options.apiKey,
           balance: options.balance,
           key: options.key,
           userId: options.userId,

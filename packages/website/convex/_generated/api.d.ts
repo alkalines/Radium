@@ -16,7 +16,6 @@ import type * as authors from "../authors.js";
 import type * as chat_titles from "../chat_titles.js";
 import type * as chatgpt_subscription from "../chatgpt_subscription.js";
 import type * as chatroom from "../chatroom.js";
-import type * as credits from "../credits.js";
 import type * as exa from "../exa.js";
 import type * as http from "../http.js";
 import type * as http_chat_completion from "../http/chat_completion.js";
@@ -26,11 +25,15 @@ import type * as keys from "../keys.js";
 import type * as logging from "../logging.js";
 import type * as logs from "../logs.js";
 import type * as mcp from "../mcp.js";
+import type * as migrations from "../migrations.js";
 import type * as models from "../models.js";
+import type * as provider_records from "../provider_records.js";
 import type * as providers from "../providers.js";
 import type * as secrets from "../secrets.js";
 import type * as subscriptions from "../subscriptions.js";
 import type * as telemetry from "../telemetry.js";
+import type * as usage from "../usage.js";
+import type * as workspaces from "../workspaces.js";
 
 import type {
   ApiFromModules,
@@ -47,7 +50,6 @@ declare const fullApi: ApiFromModules<{
   chat_titles: typeof chat_titles;
   chatgpt_subscription: typeof chatgpt_subscription;
   chatroom: typeof chatroom;
-  credits: typeof credits;
   exa: typeof exa;
   http: typeof http;
   "http/chat_completion": typeof http_chat_completion;
@@ -57,11 +59,15 @@ declare const fullApi: ApiFromModules<{
   logging: typeof logging;
   logs: typeof logs;
   mcp: typeof mcp;
+  migrations: typeof migrations;
   models: typeof models;
+  provider_records: typeof provider_records;
   providers: typeof providers;
   secrets: typeof secrets;
   subscriptions: typeof subscriptions;
   telemetry: typeof telemetry;
+  usage: typeof usage;
+  workspaces: typeof workspaces;
 }>;
 
 /**
@@ -93,6 +99,7 @@ export declare const internal: FilterApi<
 export declare const components: {
   betterAuth: import("@convex-dev/better-auth/_generated/component.js").ComponentApi<"betterAuth">;
   rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+  migrations: import("@convex-dev/migrations/_generated/component.js").ComponentApi<"migrations">;
   logging: import("../components/logging/_generated/component.js").ComponentApi<"logging">;
   secretStore: import("convex-secret-store/_generated/component.js").ComponentApi<"secretStore">;
 };

@@ -9,6 +9,8 @@ routing path rather than maintaining a second router.
 
 - [API reference](api.md): routes, authentication, requests, and streaming.
 - [Architecture](architecture.md): request flow, persistence, and current ownership.
+- [Ownership](Radium_Gateway/Ownership.md): personal workspaces, BYOK keys, and
+  the legacy balance migration boundary.
 - [AI telemetry](Radium_Gateway/Telemetry.md): optional request capture, Chatroom
   correlation, local persistence, and optional OTLP export.
 - [Deployment](deployment.md): runtime and exporter configuration.
@@ -16,6 +18,7 @@ routing path rather than maintaining a second router.
 ## Planned And Limited
 
 Responses, Anthropic Messages, Gemini, and Grok protocol compatibility are future
-work. Current random routing and credit-coupled ownership are existing debt, not
-the target BYOK architecture. See the [task queue](tasks/README.md) for upstream
-instances, ownership migration, and load-balancing work.
+work. Random routing and legacy credit-coupled records remain known limitations;
+new Gateway operation is workspace-owned and BYOK-oriented. See the [task
+queue](tasks/README.md) for upstream instances, migration rollout, and
+load-balancing work.

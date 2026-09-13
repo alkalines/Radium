@@ -8,14 +8,18 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { authComponent } from "./auth";
-import { requireUserId } from "./keys";
+import {
+  requireAccessibleChat,
+  resolveWorkspaceForChat,
+  requireOwnedWorkspace,
+} from "./workspaces";
+import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
 
 /**
- * Chatroom configuration, keyed by BetterAuth user. A user has a single
- * {@link chatroom_settings} row holding their default models and default tool
- * "selection" (which built-in tool sets and MCP servers are active). Chats
- * without a per-chat tool override inherit those defaults.
+ * Workspace Chatroom configuration replaces the legacy per-user
+ * {@link chatroom_settings} row holding default models and tool selections
+ * (which built-in tool sets and MCP servers are active). Chats without a
+ * per-chat tool override inherit the active workspace defaults.
  *
  * The chat HTTP handler resolves a chat's effective selection via
  * {@link resolveChatTools}; runtime secrets are loaded from Secret Store by the
@@ -36,22 +40,32 @@ type ToolSelection = {
 
 const EMPTY_SELECTION: ToolSelection = { builtinToolSets: [], mcpServers: [] };
 
-/** Load a chat and assert it belongs to the signed-in user. */
+/** Load a chat and apply its explicit personal/workspace ownership policy. */
 async function requireOwnedChat(ctx: QueryCtx | MutationCtx, chatId: Id<"aisdk_chats">) {
-  const identity = await authComponent.getAuthUser(ctx);
-  if (!identity) throw new Error("Not logged in.");
-
-  const chat = await ctx.db.get("aisdk_chats", chatId);
-  if (!chat || chat.userId !== identity._id) throw new Error("Chat not found.");
-  return chat;
+  return (await requireAccessibleChat(ctx, chatId)).chat;
 }
 
-/** Read the signed-in user's settings row, if any. */
-function settingsForUser(ctx: QueryCtx | MutationCtx, userId: string) {
-  return ctx.db
+/** Read workspace settings, falling back to the legacy per-user row during migration. */
+async function settingsForWorkspace(ctx: QueryCtx | MutationCtx, workspaceId: Id<"workspaces">) {
+  const workspace = await ctx.db.get("workspaces", workspaceId);
+  if (!workspace) return null;
+  const current = await ctx.db
+    .query("workspace_settings")
+    .withIndex("by_workspace", (q) => q.eq("workspace", workspaceId))
+    .first();
+  if (current) return current;
+
+  return await ctx.db
     .query("chatroom_settings")
-    .withIndex("by_userId", (q) => q.eq("userId", userId))
-    .unique();
+    .withIndex("by_userId", (q) => q.eq("userId", workspace.ownerId))
+    .first();
+}
+
+async function requireSettingsWorkspace(
+  ctx: QueryCtx | MutationCtx,
+  workspaceId: Id<"workspaces">,
+) {
+  return await requireOwnedWorkspace(ctx, workspaceId);
 }
 
 /**
@@ -63,13 +77,20 @@ async function sanitizeSelection(
   ctx: MutationCtx,
   userId: string,
   selection: ToolSelection,
+  workspaceId: Id<"workspaces">,
 ): Promise<ToolSelection> {
   const builtinToolSets = selection.builtinToolSets.filter((id) => VALID_BUILTIN_IDS.has(id));
 
   const mcpServers: Id<"mcp_servers">[] = [];
   for (const serverId of selection.mcpServers) {
     const server = await ctx.db.get("mcp_servers", serverId);
-    if (server && server.userId === userId) mcpServers.push(serverId);
+    if (
+      server &&
+      server.userId === userId &&
+      (server.workspace === undefined || server.workspace === workspaceId)
+    ) {
+      mcpServers.push(serverId);
+    }
   }
 
   return { builtinToolSets, mcpServers };
@@ -77,10 +98,10 @@ async function sanitizeSelection(
 
 /** Read the user's default tool selection. */
 export const getToolDefaults = query({
-  args: {},
-  handler: async (ctx): Promise<ToolSelection> => {
-    const userId = await requireUserId(ctx);
-    const row = await settingsForUser(ctx, userId);
+  args: { workspace: v.id("workspaces") },
+  handler: async (ctx, args): Promise<ToolSelection> => {
+    await requireSettingsWorkspace(ctx, args.workspace);
+    const row = await settingsForWorkspace(ctx, args.workspace);
     if (!row) return EMPTY_SELECTION;
     return { builtinToolSets: row.builtinToolSets, mcpServers: row.mcpServers };
   },
@@ -88,17 +109,29 @@ export const getToolDefaults = query({
 
 /** Replace the user's default tool selection. */
 export const setToolDefaults = mutation({
-  args: { selection: toolSelectionValidator },
+  args: { workspace: v.id("workspaces"), selection: toolSelectionValidator },
   handler: async (ctx, args) => {
-    const userId = await requireUserId(ctx);
-    const selection = await sanitizeSelection(ctx, userId, args.selection);
+    const workspace = await requireSettingsWorkspace(ctx, args.workspace);
+    const selection = await sanitizeSelection(
+      ctx,
+      workspace.ownerId,
+      args.selection,
+      args.workspace,
+    );
 
-    const existing = await settingsForUser(ctx, userId);
+    const existing = await ctx.db
+      .query("workspace_settings")
+      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
+      .first();
     if (existing) {
-      await ctx.db.patch("chatroom_settings", existing._id, selection);
+      await ctx.db.patch("workspace_settings", existing._id, selection);
       return existing._id;
     }
-    return await ctx.db.insert("chatroom_settings", { userId, ...selection });
+    return await ctx.db.insert("workspace_settings", {
+      workspace: args.workspace,
+      builtinToolSets: selection.builtinToolSets,
+      mcpServers: selection.mcpServers,
+    });
   },
 });
 
@@ -108,25 +141,27 @@ export const setToolDefaults = mutation({
  * default.
  */
 export const getModelDefault = query({
-  args: {},
-  handler: async (ctx): Promise<string | null> => {
-    const userId = await requireUserId(ctx);
-    const row = await settingsForUser(ctx, userId);
+  args: { workspace: v.id("workspaces") },
+  handler: async (ctx, args): Promise<string | null> => {
+    const workspace = await requireSettingsWorkspace(ctx, args.workspace);
+    const row = await settingsForWorkspace(ctx, args.workspace);
     if (!row?.defaultModel) return null;
 
     const model = await ctx.db
       .query("models")
       .withIndex("by_slug", (q) => q.eq("slug", row.defaultModel!))
       .unique();
-    return model ? row.defaultModel : null;
+    return model && (await workspaceHasModel(ctx, workspace, row.defaultModel))
+      ? row.defaultModel
+      : null;
   },
 });
 
 /** Set (or clear, when `model` is omitted) the user's default model slug. */
 export const setModelDefault = mutation({
-  args: { model: v.optional(v.string()) },
+  args: { workspace: v.id("workspaces"), model: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const userId = await requireUserId(ctx);
+    const workspace = await requireSettingsWorkspace(ctx, args.workspace);
 
     if (args.model) {
       const model = await ctx.db
@@ -134,15 +169,21 @@ export const setModelDefault = mutation({
         .withIndex("by_slug", (q) => q.eq("slug", args.model!))
         .unique();
       if (!model) throw new Error("Unknown model.");
+      if (!(await workspaceHasModel(ctx, workspace, args.model))) {
+        throw new Error("Model is not configured for this workspace.");
+      }
     }
 
-    const existing = await settingsForUser(ctx, userId);
+    const existing = await ctx.db
+      .query("workspace_settings")
+      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
+      .first();
     if (existing) {
-      await ctx.db.patch("chatroom_settings", existing._id, { defaultModel: args.model });
+      await ctx.db.patch("workspace_settings", existing._id, { defaultModel: args.model });
       return existing._id;
     }
-    return await ctx.db.insert("chatroom_settings", {
-      userId,
+    return await ctx.db.insert("workspace_settings", {
+      workspace: workspace._id,
       defaultModel: args.model,
       builtinToolSets: [],
       mcpServers: [],
@@ -152,25 +193,28 @@ export const setModelDefault = mutation({
 
 /** Read the user's title-generator model slug, or `null` if unset/removed. */
 export const getTitleModelDefault = query({
-  args: {},
-  handler: async (ctx): Promise<string | null> => {
-    const userId = await requireUserId(ctx);
-    const row = await settingsForUser(ctx, userId);
+  args: { workspace: v.id("workspaces") },
+  handler: async (ctx, args): Promise<string | null> => {
+    const workspace = await requireSettingsWorkspace(ctx, args.workspace);
+    const row = await settingsForWorkspace(ctx, args.workspace);
     if (!row?.titleModel) return null;
 
     const model = await ctx.db
       .query("models")
       .withIndex("by_slug", (q) => q.eq("slug", row.titleModel!))
       .unique();
-    return isTitleGenerationModel(model) ? row.titleModel : null;
+    return isTitleGenerationModel(model) &&
+      (await workspaceHasModel(ctx, workspace, row.titleModel))
+      ? row.titleModel
+      : null;
   },
 });
 
 /** Set (or clear, when `model` is omitted) the title-generator model slug. */
 export const setTitleModelDefault = mutation({
-  args: { model: v.optional(v.string()) },
+  args: { workspace: v.id("workspaces"), model: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const userId = await requireUserId(ctx);
+    const workspace = await requireSettingsWorkspace(ctx, args.workspace);
 
     if (args.model) {
       const model = await ctx.db
@@ -178,15 +222,21 @@ export const setTitleModelDefault = mutation({
         .withIndex("by_slug", (q) => q.eq("slug", args.model!))
         .unique();
       if (!isTitleGenerationModel(model)) throw new Error("Unknown title model.");
+      if (!(await workspaceHasModel(ctx, workspace, args.model))) {
+        throw new Error("Title model is not configured for this workspace.");
+      }
     }
 
-    const existing = await settingsForUser(ctx, userId);
+    const existing = await ctx.db
+      .query("workspace_settings")
+      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
+      .first();
     if (existing) {
-      await ctx.db.patch("chatroom_settings", existing._id, { titleModel: args.model });
+      await ctx.db.patch("workspace_settings", existing._id, { titleModel: args.model });
       return existing._id;
     }
-    return await ctx.db.insert("chatroom_settings", {
-      userId,
+    return await ctx.db.insert("workspace_settings", {
+      workspace: workspace._id,
       titleModel: args.model,
       builtinToolSets: [],
       mcpServers: [],
@@ -196,28 +246,31 @@ export const setTitleModelDefault = mutation({
 
 /** Read whether reasoning and tool activity use the combined Chain of Thought UI. */
 export const getChainOfThoughtEnabled = query({
-  args: {},
-  handler: async (ctx): Promise<boolean> => {
-    const userId = await requireUserId(ctx);
-    const row = await settingsForUser(ctx, userId);
+  args: { workspace: v.id("workspaces") },
+  handler: async (ctx, args): Promise<boolean> => {
+    await requireSettingsWorkspace(ctx, args.workspace);
+    const row = await settingsForWorkspace(ctx, args.workspace);
     return row?.enableChainOfThought ?? true;
   },
 });
 
 /** Set whether reasoning and tool activity use the combined Chain of Thought UI. */
 export const setChainOfThoughtEnabled = mutation({
-  args: { enabled: v.boolean() },
+  args: { workspace: v.id("workspaces"), enabled: v.boolean() },
   handler: async (ctx, args) => {
-    const userId = await requireUserId(ctx);
-    const existing = await settingsForUser(ctx, userId);
+    const workspace = await requireSettingsWorkspace(ctx, args.workspace);
+    const existing = await ctx.db
+      .query("workspace_settings")
+      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
+      .first();
     if (existing) {
-      await ctx.db.patch("chatroom_settings", existing._id, {
+      await ctx.db.patch("workspace_settings", existing._id, {
         enableChainOfThought: args.enabled,
       });
       return existing._id;
     }
-    return await ctx.db.insert("chatroom_settings", {
-      userId,
+    return await ctx.db.insert("workspace_settings", {
+      workspace: workspace._id,
       enableChainOfThought: args.enabled,
       builtinToolSets: [],
       mcpServers: [],
@@ -236,7 +289,8 @@ export const getChatTools = query({
     const chat = await requireOwnedChat(ctx, args.chatId);
     if (chat.tools) return { ...chat.tools, source: "chat" };
 
-    const defaults = await resolveDefaults(ctx, chat.userId);
+    const workspace = await resolveWorkspaceForChat(ctx, chat);
+    const defaults = workspace ? await resolveDefaults(ctx, workspace._id) : EMPTY_SELECTION;
     return { ...defaults, source: "defaults" };
   },
 });
@@ -246,15 +300,33 @@ export const setChatTools = mutation({
   args: { chatId: v.id("aisdk_chats"), selection: toolSelectionValidator },
   handler: async (ctx, args) => {
     const chat = await requireOwnedChat(ctx, args.chatId);
-    const selection = await sanitizeSelection(ctx, chat.userId, args.selection);
+    const workspace = await resolveWorkspaceForChat(ctx, chat);
+    if (!workspace) throw new Error("Chat workspace not found.");
+    const selection = await sanitizeSelection(ctx, chat.userId, args.selection, workspace._id);
     await ctx.db.patch("aisdk_chats", args.chatId, { tools: selection });
   },
 });
 
-async function resolveDefaults(ctx: QueryCtx, userId: string): Promise<ToolSelection> {
-  const defaults = await settingsForUser(ctx, userId);
+async function resolveDefaults(
+  ctx: QueryCtx | MutationCtx,
+  workspaceId: Id<"workspaces">,
+): Promise<ToolSelection> {
+  const defaults = await settingsForWorkspace(ctx, workspaceId);
   if (!defaults) return EMPTY_SELECTION;
   return { builtinToolSets: defaults.builtinToolSets, mcpServers: defaults.mcpServers };
+}
+
+async function workspaceHasModel(
+  ctx: QueryCtx | MutationCtx,
+  workspace: Doc<"workspaces">,
+  modelSlug: string,
+) {
+  const records = await workspaceProviderRecords(ctx, workspace);
+  return records.some(
+    (record) =>
+      isWorkspaceProviderEnabled(record) &&
+      record.provider.models.some((model) => model.model === modelSlug),
+  );
 }
 
 /**
@@ -267,14 +339,23 @@ export const resolveChatTools = internalQuery({
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
     if (!chat) return { builtinToolSets: [] as string[], mcpServers: [] as ResolvedMcpServer[] };
 
-    const selection = chat.tools ?? (await resolveDefaults(ctx, chat.userId));
+    const workspace = await resolveWorkspaceForChat(ctx, chat);
+    if (!workspace) return { builtinToolSets: [], mcpServers: [] };
+    const selection = chat.tools ?? (await resolveDefaults(ctx, workspace._id));
 
     const mcpServers: ResolvedMcpServer[] = [];
     for (const serverId of selection.mcpServers) {
       const server = await ctx.db.get("mcp_servers", serverId);
-      if (!server || server.userId !== chat.userId) continue;
+      if (
+        !server ||
+        server.userId !== chat.userId ||
+        (workspace && server.workspace !== undefined && server.workspace !== workspace._id)
+      ) {
+        continue;
+      }
       mcpServers.push({
         _id: server._id,
+        workspace: workspace._id,
         name: server.name,
         url: server.url,
         transport: server.transport,
@@ -287,7 +368,7 @@ export const resolveChatTools = internalQuery({
 });
 
 /**
- * Resolve whether the Web Search tool is enabled for a chat and which balance
+ * Resolve whether the Web Search tool is enabled for a chat and which workspace
  * owns its Exa credential.
  */
 export const resolveWebSearch = internalQuery({
@@ -297,21 +378,24 @@ export const resolveWebSearch = internalQuery({
     args,
   ): Promise<{
     enabled: boolean;
-    balance: Id<"balances"> | null;
+    workspace: Id<"workspaces"> | null;
   }> => {
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat) return { enabled: false, balance: null };
+    if (!chat) return { enabled: false, workspace: null };
 
-    const selection = chat.tools ?? (await resolveDefaults(ctx, chat.userId));
+    const workspace = await resolveWorkspaceForChat(ctx, chat);
+    if (!workspace) return { enabled: false, workspace: null };
+    const selection = chat.tools ?? (await resolveDefaults(ctx, workspace._id));
     const enabled = selection.builtinToolSets.includes(WEB_SEARCH_TOOL_ID);
-    if (!enabled) return { enabled: false, balance: null };
+    if (!enabled) return { enabled: false, workspace: null };
 
-    return { enabled, balance: chat.balance };
+    return { enabled, workspace: workspace._id };
   },
 });
 
 type ResolvedMcpServer = {
   _id: Id<"mcp_servers">;
+  workspace: Id<"workspaces">;
   name: string;
   url: string;
   transport: Doc<"mcp_servers">["transport"];

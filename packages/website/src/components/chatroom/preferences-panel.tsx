@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { api } from "../../../convex/_generated/api";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 /**
  * Chatroom → Preferences. Currently a single setting: the default model new
@@ -27,17 +28,29 @@ import { api } from "../../../convex/_generated/api";
  * first available model.
  */
 export function PreferencesPanel() {
+  const { workspaceId } = useWorkspace();
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
-  const { data: models } = useQuery(convexQuery(api.models.availableModels, {}));
+  const { data: models } = useQuery(
+    convexQuery(api.models.availableModels, workspaceId ? { workspace: workspaceId } : "skip"),
+  );
   const { data: defaultModel } = useQuery(
-    convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
+    convexQuery(
+      api.chatroom.getModelDefault,
+      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
   );
   const { data: titleModel } = useQuery(
-    convexQuery(api.chatroom.getTitleModelDefault, signedIn ? {} : "skip"),
+    convexQuery(
+      api.chatroom.getTitleModelDefault,
+      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
   );
   const { data: chainOfThoughtEnabled } = useQuery(
-    convexQuery(api.chatroom.getChainOfThoughtEnabled, signedIn ? {} : "skip"),
+    convexQuery(
+      api.chatroom.getChainOfThoughtEnabled,
+      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
   );
   const setModelDefault = useMutation(api.chatroom.setModelDefault);
   const setTitleModelDefault = useMutation(api.chatroom.setTitleModelDefault);
@@ -59,38 +72,41 @@ export function PreferencesPanel() {
     async (model: string | undefined) => {
       if (!signedIn) return;
       try {
-        await setModelDefault({ model });
+        if (!workspaceId) return;
+        await setModelDefault({ workspace: workspaceId, model });
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Failed to update default model.");
       }
     },
-    [signedIn, setModelDefault],
+    [signedIn, setModelDefault, workspaceId],
   );
 
   const persistTitleModel = useCallback(
     async (model: string | undefined) => {
       if (!signedIn) return;
       try {
-        await setTitleModelDefault({ model });
+        if (!workspaceId) return;
+        await setTitleModelDefault({ workspace: workspaceId, model });
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Failed to update title model.");
       }
     },
-    [signedIn, setTitleModelDefault],
+    [signedIn, setTitleModelDefault, workspaceId],
   );
 
   const persistChainOfThought = useCallback(
     async (enabled: boolean) => {
       if (!signedIn) return;
       try {
-        await setChainOfThoughtEnabled({ enabled });
+        if (!workspaceId) return;
+        await setChainOfThoughtEnabled({ workspace: workspaceId, enabled });
       } catch (error) {
         toast.error(
           error instanceof Error ? error.message : "Failed to update Chain of Thought setting.",
         );
       }
     },
-    [signedIn, setChainOfThoughtEnabled],
+    [signedIn, setChainOfThoughtEnabled, workspaceId],
   );
 
   return (

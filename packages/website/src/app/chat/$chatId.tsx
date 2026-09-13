@@ -81,6 +81,7 @@ import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 export const Route = createFileRoute("/chat/$chatId")({
   staticData: {
@@ -114,9 +115,7 @@ export const Route = createFileRoute("/chat/$chatId")({
     void queryClient.prefetchQuery(
       convexQuery(api.aisdk.GetChat, { chatId: chatId as Id<"aisdk_chats"> }),
     );
-    void queryClient.prefetchQuery(convexQuery(api.models.availableModels, {}));
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
-    void queryClient.prefetchQuery(convexQuery(api.chatroom.getChainOfThoughtEnabled, {}));
   },
   component: ChatConversationPage,
 });
@@ -129,10 +128,10 @@ function ChatConversationPage() {
 
 function ChatConversationContent({ chatId }: { chatId: string }) {
   const convexChatId = chatId as Id<"aisdk_chats">;
+  const { workspaceId } = useWorkspace();
   const search = Route.useSearch();
   const navigate = useNavigate();
   const { data: chat } = useQuery(convexQuery(api.aisdk.GetChat, { chatId: convexChatId }));
-  const { data: models } = useQuery(convexQuery(api.models.availableModels, {}));
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const forkChat = useMutation(api.aisdk.ForkChat);
   const [model, setModel] = useState<string | undefined>(search.model);
@@ -149,14 +148,27 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const latestUserMessageElement = useRef<HTMLDivElement | null>(null);
   const alignmentSpacerElement = useRef<HTMLDivElement | null>(null);
   const submittedApprovalContinuations = useRef(new Set<string>());
-  const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
+  const chatWorkspaceId = typeof chat === "string" || !chat ? undefined : chat.workspace;
+  const settingsWorkspaceId = chatWorkspaceId ?? workspaceId;
+  const { data: models } = useQuery(
+    convexQuery(
+      api.models.availableModels,
+      settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
+  );
   const defaultModelQuery = useQuery(
-    convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
+    convexQuery(
+      api.chatroom.getModelDefault,
+      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
   );
   const defaultModel = defaultModelQuery.data;
   const { data: chainOfThoughtEnabled = true } = useQuery(
-    convexQuery(api.chatroom.getChainOfThoughtEnabled, signedIn ? {} : "skip"),
+    convexQuery(
+      api.chatroom.getChainOfThoughtEnabled,
+      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
   );
   const queuedModel = typeof chat === "string" ? undefined : chat?.messages_queue?.model;
   const queuedProvider = typeof chat === "string" ? undefined : chat?.messages_queue?.provider;
@@ -438,7 +450,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
    */
   const handleForkUser = useCallback(
     async (message: UIMessage, forkModel: string) => {
-      if (!balance) {
+      if (!settingsWorkspaceId) {
         return;
       }
       const index = messages.findIndex((item) => item.id === message.id);
@@ -447,7 +459,8 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       }
       const modelData = models?.find((item) => item.slug === forkModel);
       const newChatId = await forkChat({
-        balance: balance._id,
+        workspace: settingsWorkspaceId,
+        scope: typeof chat === "string" || !chat ? undefined : chat.scope,
         messages: messages.slice(0, index),
         messages_queue: {
           text: getMessageText(message),
@@ -469,7 +482,8 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       });
     },
     [
-      balance,
+      chat,
+      settingsWorkspaceId,
       forkChat,
       messages,
       models,
@@ -486,7 +500,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
    */
   const handleForkAssistant = useCallback(
     async (message: UIMessage, forkModel: string) => {
-      if (!balance) {
+      if (!settingsWorkspaceId) {
         return;
       }
       const index = messages.findIndex((item) => item.id === message.id);
@@ -494,7 +508,8 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         return;
       }
       const newChatId = await forkChat({
-        balance: balance._id,
+        workspace: settingsWorkspaceId,
+        scope: typeof chat === "string" || !chat ? undefined : chat.scope,
         messages: messages.slice(0, index + 1),
       });
       if (newChatId === "Not logged in!") {
@@ -506,7 +521,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         search: { model: forkModel, provider: selectedProvider },
       });
     },
-    [balance, forkChat, messages, navigate, selectedProvider],
+    [chat, forkChat, messages, navigate, selectedProvider, settingsWorkspaceId],
   );
 
   if (chat === undefined) {
@@ -689,7 +704,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
             selectedModel={selectedModel}
             selectedProvider={selectedProvider}
             status={status}
-            toolsMenu={<ChatToolsMenu balance={balance?._id} chatId={convexChatId} />}
+            toolsMenu={<ChatToolsMenu workspace={settingsWorkspaceId} chatId={convexChatId} />}
           />
         </div>
       </div>

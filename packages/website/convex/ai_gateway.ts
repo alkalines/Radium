@@ -16,7 +16,7 @@ type ErrorResponse = (error: unknown) => Response;
  */
 export function createInternalGatewayProvider(
   ctx: GenericActionCtx<any>,
-  balanceId: Id<"balances">,
+  workspaceId: Id<"workspaces">,
   onError: ErrorResponse,
   providerSlug?: string,
   onGeneration?: (generation: Parameters<genCallbackType>[0]) => void,
@@ -30,14 +30,14 @@ export function createInternalGatewayProvider(
       "HTTP-Referer": "https://github.com/alkalines/Radium",
       "X-Title": "Radium Chatroom",
     },
-    fetch: async (_input, init): Promise<Response> => {
+    fetch: (async (_input, init): Promise<Response> => {
       try {
         const requestBody = getGatewayRequestBody(init?.body);
         if (providerSlug) requestBody.provider = providerSlug;
         return await Internal_Chat_Completion(
           ctx,
           requestBody,
-          balanceId,
+          workspaceId,
           onGeneration,
           telemetry,
           init?.signal,
@@ -46,7 +46,7 @@ export function createInternalGatewayProvider(
         console.error(error);
         return onError(error);
       }
-    },
+    }) as typeof fetch,
   });
 }
 

@@ -18,6 +18,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { SUPPORTED_NPM } from "@/utils/models_dev";
 import type { AIProviderNpmPackage } from "@/utils/types/ai_provider";
 import { api } from "../../../convex/_generated/api";
+import type { Id } from "../../../convex/_generated/dataModel";
 
 /** Sensible default credential env var for each SDK package. */
 const DEFAULT_ENV: Partial<Record<AIProviderNpmPackage, string>> = {
@@ -42,10 +43,12 @@ function slugify(value: string): string {
  */
 export function CustomProviderForm({
   importedSlugs,
+  workspaceId,
   onBack,
   onDone,
 }: {
   importedSlugs: string[];
+  workspaceId: Id<"workspaces"> | undefined;
   onBack: () => void;
   onDone: () => void;
 }) {
@@ -87,10 +90,11 @@ export function CustomProviderForm({
   }
 
   async function submit() {
-    if (!valid) return;
+    if (!valid || !workspaceId) return;
     setSubmitting(true);
     try {
       await importProvider({
+        workspace: workspaceId,
         provider: {
           slug: effectiveSlug,
           name: name.trim(),

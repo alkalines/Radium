@@ -38,8 +38,9 @@ bunx convex env set SECRET_STORE_KEYS '1:<base64-key>'
 bunx convex env set AISDK_MaxRetries 0
 ```
 
-Upstream provider credentials are normally added per balance in **Gateway >
-Credentials**. They are not public application environment variables.
+Upstream provider credentials are normally added per workspace in **Gateway >
+Credentials**. They are stored through Convex Secret Store and are not public
+application environment variables.
 
 ### OpenTelemetry Export
 
@@ -59,23 +60,25 @@ accepted only for loopback addresses.
 ## Convex Cloud Development
 
 1. Copy `.env.example` to `.env.local` and set `SECRET_STORE_KEYS`.
-2. Run `bun run convex:dev` and select or create a deployment.
+2. Run `bun run --cwd packages/website convex:dev` and select or create a deployment.
 3. Configure the Convex runtime values shown above.
-4. Run `bun run vite:dev` in another terminal.
+4. Run `bun run --cwd packages/website vite:dev` in another terminal.
 
 Convex writes deployment values such as `CONVEX_DEPLOYMENT`,
 `VITE_CONVEX_URL`, and `VITE_CONVEX_SITE_URL` to the local environment file.
 
-### Initial Balance Provisioning
+### Initial Workspace Provisioning
 
-Balance creation is not automated yet. After the first user signs up, provision
-a `balances` record in the Convex dashboard with that Better Auth user ID and
-an initial `credits` value. `organizationId` and `teamId` are optional. The
-Gateway credentials, API key, chatroom, logs, and telemetry views use the
-signed-in user's first balance.
+After the first user signs up, the application provisions a personal workspace
+through `workspaces.ensurePersonalWorkspace`. Import a provider in **Gateway** to
+create its workspace-local endpoint and model mapping, then configure credentials;
+no balance record or initial credit value is required for new BYOK operation.
 
-This is a current setup limitation, not a production-ready account funding
-workflow.
+Existing balance-owned records are mapped to personal workspaces by the
+resumable migration in `convex/migrations.ts`. The migration runner has not been
+executed automatically by this application setup and must be run only after
+authorization, counts, and Secret Store recovery are verified in a controlled
+environment.
 
 ## Full Self-Hosted Image
 
@@ -137,8 +140,8 @@ Build-time Convex URLs must be present before building:
 
 ```bash
 bun install --frozen-lockfile
-bun run vite:build
-bun run vite:start
+bun run --cwd packages/website vite:build
+bun run --cwd packages/website vite:start
 ```
 
 The production server reads `.output/server/index.mjs` and defaults to port

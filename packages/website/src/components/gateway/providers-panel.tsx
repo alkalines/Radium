@@ -46,7 +46,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { api } from "../../../convex/_generated/api";
-import type { Doc } from "../../../convex/_generated/dataModel";
+import type { Id } from "../../../convex/_generated/dataModel";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
+import type { WorkspaceProviderView } from "@/utils/workspaces/provider";
 import { ImportProviderDialog } from "./import-provider-dialog";
 import { ModelManagerDialog } from "./model-manager-dialog";
 import { ProviderLogo } from "./provider-logo";
@@ -90,13 +92,14 @@ function useMinimumLoading(isLoading: boolean, minMs = 450): boolean {
 }
 
 export function ProvidersPanel() {
-  const { data: providers } = useQuery(convexQuery(api.providers.list, {}));
-  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
+  const { workspaceId } = useWorkspace();
+  const { data: providers } = useQuery(
+    convexQuery(api.providers.list, workspaceId ? { workspace: workspaceId } : "skip"),
+  );
   const setEnabled = useMutation(api.providers.setEnabled);
 
-  const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
   const { data: credentials } = useQuery(
-    convexQuery(api.providers.listCredentials, balanceId ? { balance: balanceId } : "skip"),
+    convexQuery(api.providers.listCredentials, workspaceId ? { workspace: workspaceId } : "skip"),
   );
 
   const connectedSlugs = useMemo(() => {
@@ -119,7 +122,8 @@ export function ProvidersPanel() {
 
   async function toggle(slug: string, enabled: boolean) {
     try {
-      await setEnabled({ slug, enabled });
+      if (!workspaceId) return;
+      await setEnabled({ workspace: workspaceId, slug, enabled });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to update provider.");
     }
@@ -236,7 +240,7 @@ export function ProvidersPanel() {
         open={importOpen}
         onOpenChange={setImportOpen}
         importedSlugs={importedSlugs}
-        balanceId={balanceId}
+        workspaceId={workspaceId}
       />
 
       <ModelManagerDialog
@@ -246,6 +250,7 @@ export function ProvidersPanel() {
 
       <DeleteProviderDialog
         provider={deleting}
+        workspaceId={workspaceId}
         onOpenChange={(open) => !open && setDeletingSlug(null)}
       />
     </div>
@@ -254,19 +259,21 @@ export function ProvidersPanel() {
 
 function DeleteProviderDialog({
   provider,
+  workspaceId,
   onOpenChange,
 }: {
-  provider: Doc<"providers"> | null;
+  provider: WorkspaceProviderView | null;
+  workspaceId: Id<"workspaces"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
   const deleteProvider = useMutation(api.providers.deleteProvider);
   const [submitting, setSubmitting] = useState(false);
 
   async function confirm() {
-    if (!provider) return;
+    if (!provider || !workspaceId) return;
     setSubmitting(true);
     try {
-      await deleteProvider({ slug: provider.slug });
+      await deleteProvider({ workspace: workspaceId, slug: provider.slug });
       toast.success(`Deleted ${provider.name}.`);
       onOpenChange(false);
     } catch (error) {

@@ -21,7 +21,9 @@ Authorization: Bearer rad-sk-...
 ```
 
 Gateway keys are different from the browser's Better Auth session. The key's
-balance must have available credits.
+workspace must have an enabled provider configuration and matching credentials.
+New requests do not require prepaid credits. Legacy balance keys remain usable
+while their workspace mapping and credential backfill are pending.
 
 ## List Models
 
@@ -33,7 +35,9 @@ curl "$RADIUM_URL/api/openai/v1/models" \
 ```
 
 The response is an OpenAI-style model list enriched with Radium's model,
-architecture, parameter, pricing, and provider metadata.
+architecture, parameter, pricing, and provider metadata. It is limited to models
+offered by enabled providers configured for the API key's workspace; provider
+endpoints and model mappings come from that workspace's local configuration.
 
 ## Create Chat Completion
 
@@ -75,9 +79,10 @@ stream terminates with `data: [DONE]`.
 
 ## Provider Selection
 
-By default, Radium resolves an enabled provider that offers the requested
-model and has credentials for the key's balance. Requests may include a
-`provider` slug to constrain routing to a specific configured provider.
+By default, Radium resolves an enabled provider configured for the key's
+workspace that offers the requested model and has matching credentials.
+Requests may include a `provider` slug to constrain routing to a specific
+configured provider.
 
 Provider-specific model IDs are internal catalogue configuration. API callers
 send the global Radium model slug returned by the models endpoint.
@@ -99,12 +104,11 @@ Files, Fine-tuning, or Batch endpoints.
 | ------ | ----------------------------------------------------------------- |
 | `400`  | The JSON body failed request validation                           |
 | `401`  | The bearer token is missing or invalid                            |
-| `402`  | The key's balance has no usable credits                           |
 | `500`  | Routing, provider execution, or another internal operation failed |
 
 Provider/model configuration failures currently surface through the generic
 server error path. Do not depend on a stable error envelope beyond the explicit
-authentication and credit errors.
+authentication and validation errors.
 
 ## Internal Chat Endpoint
 

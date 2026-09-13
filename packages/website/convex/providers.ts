@@ -8,74 +8,25 @@ import {
   query,
   type MutationCtx,
 } from "./_generated/server";
-import { authComponent } from "./auth";
-import { balanceSecretName, providerSecretNamespace, secrets } from "./secrets";
-
-const providerNpmValidator = v.union(
-  v.literal("@openrouter/ai-sdk-provider"),
-  v.literal("@ai-sdk/openai"),
-  v.literal("@ai-sdk/openai-compatible"),
-  v.literal("@ai-sdk/anthropic"),
-  v.literal("@opencoredev/loginwithchatgpt-ai"),
-);
-
-const providerModelValidator = v.object({
-  model: v.string(),
-  upstream_model_id: v.optional(v.string()),
-  quantization: v.optional(
-    v.union(
-      v.literal("int4"),
-      v.literal("int8"),
-      v.literal("fp4"),
-      v.literal("fp6"),
-      v.literal("fp8"),
-      v.literal("fp16"),
-      v.literal("bf16"),
-      v.literal("fp32"),
-    ),
-  ),
-  context: v.number(),
-  max_output: v.number(),
-  pricing: v.object({
-    input: v.string(),
-    output: v.string(),
-    cache_read: v.optional(v.string()),
-    cache_write: v.optional(v.string()),
-  }),
-  supported_parameters: v.array(
-    v.union(
-      v.literal("temperature"),
-      v.literal("top_p"),
-      v.literal("top_k"),
-      v.literal("frequency_penalty"),
-      v.literal("presence_penalty"),
-      v.literal("repetition_penalty"),
-      v.literal("min_p"),
-      v.literal("top_a"),
-      v.literal("seed"),
-      v.literal("max_tokens"),
-      v.literal("logit_bias"),
-      v.literal("logprobs"),
-      v.literal("top_logprobs"),
-      v.literal("response_format"),
-      v.literal("structured_outputs"),
-      v.literal("stop"),
-      v.literal("tools"),
-      v.literal("tool_choice"),
-      v.literal("parallel_tool_calls"),
-      v.literal("verbosity"),
-    ),
-  ),
-  promotions: v.optional(
-    v.object({
-      input: v.optional(v.string()),
-      output: v.optional(v.string()),
-      cache_read: v.optional(v.string()),
-      cache_write: v.optional(v.string()),
-    }),
-  ),
-  moderated: v.boolean(),
-});
+import {
+  balanceSecretName,
+  providerSecretNamespace,
+  secrets,
+  workspaceProviderSecretNamespace,
+} from "./secrets";
+import { requireOwnedWorkspace } from "./workspaces";
+import {
+  isWorkspaceProviderEnabled,
+  workspaceProviderRecords,
+  workspaceProviderView,
+} from "./provider_records";
+import {
+  providerModelValidator,
+  providerNpmValidator,
+  providerSnapshotFromCatalog,
+  type ProviderSnapshot,
+} from "../src/utils/workspaces/provider";
+import { canAccessWorkspace } from "../src/utils/workspaces/policy";
 
 function parseProviderCredentials(provider: string, value: string): Record<string, string> {
   try {
@@ -133,11 +84,64 @@ const globalModelValidator = v.object({
 });
 
 export const list = query({
-  args: {},
-  handler: async (ctx) => {
-    return await ctx.db.query("providers").take(200);
+  args: { workspace: v.id("workspaces") },
+  handler: async (ctx, args) => {
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    return (await workspaceProviderRecords(ctx, workspace)).map(workspaceProviderView);
   },
 });
+
+async function requireWorkspaceProvider(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  slug: string,
+) {
+  const workspace = await requireOwnedWorkspace(ctx, workspaceId);
+  const catalog = await ctx.db
+    .query("providers")
+    .withIndex("by_slug", (q) => q.eq("slug", slug))
+    .unique();
+
+  const configuration = await ctx.db
+    .query("workspace_configurations")
+    .withIndex("by_workspace_and_provider", (q) =>
+      q.eq("workspace", workspaceId).eq("provider", slug),
+    )
+    .first();
+  if (configuration) {
+    if (configuration.deletedAt !== undefined) {
+      throw new Error(`Provider ${slug} is not configured for this workspace.`);
+    }
+    const provider = configuration.snapshot
+      ? configuration.snapshot
+      : catalog
+        ? providerSnapshotFromCatalog(catalog)
+        : null;
+    if (!provider || provider.slug !== slug) {
+      throw new Error(`Provider ${slug} is not configured for this workspace.`);
+    }
+    return { workspace, provider, configuration, catalog };
+  }
+  if (!workspace.legacyBalance || !catalog) {
+    throw new Error(`Provider ${slug} is not configured for this workspace.`);
+  }
+
+  const created = await ctx.db.insert("workspace_configurations", {
+    workspace: workspaceId,
+    provider: slug,
+    enabled: catalog.enabled,
+    active: catalog.enabled,
+    snapshot: providerSnapshotFromCatalog(catalog),
+  });
+  const createdConfiguration = await ctx.db.get("workspace_configurations", created);
+  if (!createdConfiguration) throw new Error("Failed to configure provider.");
+  return {
+    workspace,
+    provider: providerSnapshotFromCatalog(catalog),
+    configuration: createdConfiguration,
+    catalog,
+  };
+}
 
 /**
  * Resolve an author by slug, creating it on demand for unknown authors.
@@ -170,12 +174,11 @@ const importModelValidator = v.object({
 });
 
 /**
- * Upsert each global {@link models} record for an import batch, resolving
- * authors on demand. Validates that every provider model references its global
- * slug so the two stores never drift. Shared by {@link importProvider} and
- * {@link addProviderModels}.
+ * Add missing global model identity records for an import batch, resolving
+ * authors on demand. Existing catalogue metadata is immutable from workspace
+ * mutations. Validates that every provider model references its global slug.
  */
-async function upsertGlobalModels(
+async function ensureGlobalModels(
   ctx: MutationCtx,
   models: { global: typeof globalModelValidator.type; provider: { model: string } }[],
 ) {
@@ -197,27 +200,17 @@ async function upsertGlobalModels(
       .withIndex("by_slug", (q) => q.eq("slug", entry.global.slug))
       .unique();
 
-    if (existingModel) {
-      await ctx.db.patch("models", existingModel._id, modelValue);
-    } else {
-      await ctx.db.insert("models", modelValue);
-    }
+    if (!existingModel) await ctx.db.insert("models", modelValue);
   }
 }
 
 /**
- * Single entry point for adding a gateway provider from the UI. In one
- * transaction it: creates any unknown {@link authors}, upserts each selected
- * model into the global {@link models} table (deduped by slug), and upserts the
- * {@link providers} row (deduped by slug) with its provider-specific model list.
- *
- * Used for both models.dev imports and manual/custom providers — the client
- * shapes the data, this owns persistence and dedup. Replacing an existing
- * provider overwrites its whole model list; use {@link addProviderModels} to
- * merge models into a provider without dropping the rest.
+ * Store a workspace-local provider snapshot. Global catalogue rows and model
+ * metadata are never replaced by workspace mutations.
  */
 export const importProvider = mutation({
   args: {
+    workspace: v.id("workspaces"),
     provider: v.object({
       slug: v.string(),
       name: v.string(),
@@ -233,89 +226,92 @@ export const importProvider = mutation({
     models: v.array(importModelValidator),
   },
   handler: async (ctx, args) => {
-    const identity = await authComponent.getAuthUser(ctx);
-    if (!identity) throw new Error("Not logged in.");
+    await requireOwnedWorkspace(ctx, args.workspace);
 
     if (args.provider.npm === "@ai-sdk/openai-compatible" && !args.provider.api) {
       throw new Error("OpenAI-compatible providers require an api base URL.");
     }
 
-    await upsertGlobalModels(ctx, args.models);
+    await ensureGlobalModels(ctx, args.models);
 
-    const existing = await ctx.db
-      .query("providers")
-      .withIndex("by_slug", (q) => q.eq("slug", args.provider.slug))
-      .unique();
-    const value = {
-      slug: args.provider.slug,
-      name: args.provider.name,
-      npm: args.provider.npm,
-      env: args.provider.env,
-      catalogue_provider: args.provider.catalogue_provider,
-      credential_type: args.provider.credential_type,
-      oauth_flow: args.provider.oauth_flow,
-      doc: args.provider.doc,
-      api: args.provider.api,
-      enabled: args.provider.enabled ?? true,
+    const snapshot: ProviderSnapshot = providerSnapshotFromCatalog({
+      ...args.provider,
       models: args.models.map((entry) => entry.provider),
-    };
+    });
 
-    if (existing) {
-      await ctx.db.replace("providers", existing._id, value);
-      return existing._id;
+    const configuration = await ctx.db
+      .query("workspace_configurations")
+      .withIndex("by_workspace_and_provider", (q) =>
+        q.eq("workspace", args.workspace).eq("provider", args.provider.slug),
+      )
+      .first();
+    if (configuration) {
+      await ctx.db.patch("workspace_configurations", configuration._id, {
+        enabled: args.provider.enabled ?? true,
+        active: true,
+        snapshot,
+        deletedAt: undefined,
+      });
+      return configuration._id;
     }
 
-    return await ctx.db.insert("providers", value);
+    return await ctx.db.insert("workspace_configurations", {
+      workspace: args.workspace,
+      provider: args.provider.slug,
+      enabled: args.provider.enabled ?? true,
+      active: true,
+      snapshot,
+    });
   },
 });
 
 export const setEnabled = mutation({
   args: {
+    workspace: v.id("workspaces"),
     slug: v.string(),
     enabled: v.boolean(),
   },
   handler: async (ctx, args) => {
-    const identity = await authComponent.getAuthUser(ctx);
-    if (!identity) throw new Error("Not logged in.");
-
-    const provider = await ctx.db
-      .query("providers")
-      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
-      .unique();
-    if (!provider) throw new Error(`Provider ${args.slug} not found.`);
-
-    await ctx.db.patch("providers", provider._id, { enabled: args.enabled });
+    const { configuration, provider } = await requireWorkspaceProvider(
+      ctx,
+      args.workspace,
+      args.slug,
+    );
+    await ctx.db.patch("workspace_configurations", configuration._id, {
+      enabled: args.enabled,
+      active: args.enabled,
+      ...(!configuration.snapshot ? { snapshot: provider } : {}),
+    });
   },
 });
 
 /**
- * Merge models into an existing provider without replacing its whole list.
- * Upserts the global {@link models} records, then adds each provider model
- * (replacing any entry with the same slug). Used by the per-provider model
- * manager to add catalogue or custom models incrementally.
+ * Merge models into this workspace's provider snapshot without replacing the
+ * global catalogue row. Global model identity records are added only when the
+ * slug is new.
  */
 export const addProviderModels = mutation({
   args: {
+    workspace: v.id("workspaces"),
     slug: v.string(),
     models: v.array(importModelValidator),
   },
   handler: async (ctx, args) => {
-    const identity = await authComponent.getAuthUser(ctx);
-    if (!identity) throw new Error("Not logged in.");
+    const { configuration, provider } = await requireWorkspaceProvider(
+      ctx,
+      args.workspace,
+      args.slug,
+    );
     if (args.models.length === 0) return;
 
-    const provider = await ctx.db
-      .query("providers")
-      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
-      .unique();
-    if (!provider) throw new Error(`Provider ${args.slug} not found.`);
-
-    await upsertGlobalModels(ctx, args.models);
+    await ensureGlobalModels(ctx, args.models);
 
     const byModel = new Map(provider.models.map((entry) => [entry.model, entry]));
     for (const entry of args.models) byModel.set(entry.provider.model, entry.provider);
 
-    await ctx.db.patch("providers", provider._id, { models: [...byModel.values()] });
+    await ctx.db.patch("workspace_configurations", configuration._id, {
+      snapshot: { ...provider, models: [...byModel.values()] },
+    });
   },
 });
 
@@ -325,113 +321,137 @@ export const addProviderModels = mutation({
  */
 export const removeProviderModel = mutation({
   args: {
+    workspace: v.id("workspaces"),
     slug: v.string(),
     model: v.string(),
   },
   handler: async (ctx, args) => {
-    const identity = await authComponent.getAuthUser(ctx);
-    if (!identity) throw new Error("Not logged in.");
-
-    const provider = await ctx.db
-      .query("providers")
-      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
-      .unique();
-    if (!provider) throw new Error(`Provider ${args.slug} not found.`);
-
-    await ctx.db.patch("providers", provider._id, {
-      models: provider.models.filter((entry) => entry.model !== args.model),
+    const { configuration, provider } = await requireWorkspaceProvider(
+      ctx,
+      args.workspace,
+      args.slug,
+    );
+    await ctx.db.patch("workspace_configurations", configuration._id, {
+      snapshot: {
+        ...provider,
+        models: provider.models.filter((entry) => entry.model !== args.model),
+      },
     });
   },
 });
 
 /**
- * Delete a provider and any BYOK credentials stored against it. Shared global
- * {@link models} records are left in place — they are provider-independent.
+ * Tombstone a provider for this workspace and remove its credentials. Keeping
+ * the row prevents legacy fallback or a later migration from restoring it.
  */
 export const deleteProvider = mutation({
   args: {
+    workspace: v.id("workspaces"),
     slug: v.string(),
   },
   handler: async (ctx, args) => {
-    const identity = await authComponent.getAuthUser(ctx);
-    if (!identity) throw new Error("Not logged in.");
-
-    const provider = await ctx.db
-      .query("providers")
-      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
-      .unique();
-    if (!provider) throw new Error(`Provider ${args.slug} not found.`);
-
-    const credentialPage = await secrets.list(ctx, {
-      namespace: providerSecretNamespace(args.slug),
-      paginationOpts: { numItems: 500, cursor: null },
-    });
-    await Promise.all(
-      credentialPage.page.map((credential) =>
-        secrets.remove(ctx, {
-          namespace: providerSecretNamespace(args.slug),
-          name: credential.name,
-        }),
-      ),
+    const { configuration, provider, workspace } = await requireWorkspaceProvider(
+      ctx,
+      args.workspace,
+      args.slug,
     );
 
-    await ctx.db.delete("providers", provider._id);
+    await secrets.remove(ctx, {
+      namespace: workspaceProviderSecretNamespace(args.workspace, args.slug),
+      name: args.slug,
+    });
+    const credential = await ctx.db
+      .query("workspace_credentials")
+      .withIndex("by_workspace_and_provider", (q) =>
+        q.eq("workspace", args.workspace).eq("provider", args.slug),
+      )
+      .first();
+    if (credential) await ctx.db.delete("workspace_credentials", credential._id);
+    if (workspace.legacyBalance) {
+      await secrets.remove(ctx, {
+        namespace: providerSecretNamespace(args.slug),
+        name: balanceSecretName(workspace.legacyBalance),
+      });
+    }
+    await ctx.db.patch("workspace_configurations", configuration._id, {
+      enabled: false,
+      active: false,
+      ...(!configuration.snapshot ? { snapshot: provider } : {}),
+      deletedAt: Date.now(),
+    });
   },
 });
 
 export const listCredentials = query({
-  args: {
-    balance: v.id("balances"),
-  },
+  args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
-    const identity = await authComponent.getAuthUser(ctx);
-    if (!identity) throw new Error("Not logged in.");
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    const credentials = await ctx.db
+      .query("workspace_credentials")
+      .withIndex("by_workspace_and_provider", (q) => q.eq("workspace", args.workspace))
+      .take(200);
+    const configurations = await ctx.db
+      .query("workspace_configurations")
+      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
+      .take(200);
+    const deletedProviders = new Set(
+      configurations
+        .filter((configuration) => configuration.deletedAt !== undefined)
+        .map((configuration) => configuration.provider),
+    );
+    const result = new Map<
+      string,
+      { _id?: Id<"workspace_credentials">; provider: string; preview: Record<string, string> }
+    >(
+      credentials
+        .filter((credential) => !deletedProviders.has(credential.provider))
+        .map(
+          (credential) =>
+            [
+              credential.provider,
+              { _id: credential._id, provider: credential.provider, preview: credential.preview },
+            ] as const,
+        ),
+    );
 
-    const balance = await ctx.db.get("balances", args.balance);
-    if (!balance || balance.userId !== identity._id) throw new Error("Balance not found.");
-
-    const providers = await ctx.db.query("providers").take(200);
-    const credentials = [];
-
-    for (const provider of providers) {
-      const credential = await secrets.get(ctx, {
-        namespace: providerSecretNamespace(provider.slug),
-        name: balanceSecretName(args.balance),
-      });
-
-      if (!credential.ok) continue;
-
-      credentials.push({
-        _id: provider.slug,
-        provider: provider.slug,
-        preview: credential.metadata?.preview ?? {},
-      });
+    // Keep legacy credentials visible before the Secret Store backfill completes.
+    if (workspace.legacyBalance) {
+      const providers = await ctx.db.query("providers").take(200);
+      for (const provider of providers) {
+        if (result.has(provider.slug) || deletedProviders.has(provider.slug)) continue;
+        const legacy = await secrets.get(ctx, {
+          namespace: providerSecretNamespace(provider.slug),
+          name: balanceSecretName(workspace.legacyBalance),
+        });
+        if (!legacy.ok) continue;
+        let preview = legacy.metadata?.preview;
+        if (!preview) {
+          try {
+            preview = Object.fromEntries(
+              Object.entries(parseProviderCredentials(provider.slug, legacy.value)).map(
+                ([name, value]) => [name, credentialPreview(value)],
+              ),
+            );
+          } catch {
+            continue;
+          }
+        }
+        result.set(provider.slug, { provider: provider.slug, preview });
+      }
     }
 
-    return credentials;
+    return [...result.values()];
   },
 });
 
 export const upsertCredentials = mutation({
   args: {
-    balance: v.id("balances"),
+    workspace: v.id("workspaces"),
     provider: v.string(),
     credentials: v.record(v.string(), v.string()),
   },
   handler: async (ctx, args) => {
-    const identity = await authComponent.getAuthUser(ctx);
-    if (!identity) throw new Error("Not logged in.");
-
-    const [balance, provider] = await Promise.all([
-      ctx.db.get("balances", args.balance),
-      ctx.db
-        .query("providers")
-        .withIndex("by_slug", (q) => q.eq("slug", args.provider))
-        .unique(),
-    ]);
-
-    if (!balance || balance.userId !== identity._id) throw new Error("Balance not found.");
-    if (!provider) throw new Error(`Provider ${args.provider} is not configured.`);
+    const { provider } = await requireWorkspaceProvider(ctx, args.workspace, args.provider);
 
     for (const requiredName of provider.env) {
       if (!args.credentials[requiredName]) {
@@ -444,16 +464,32 @@ export const upsertCredentials = mutation({
     );
 
     await secrets.put(ctx, {
-      namespace: providerSecretNamespace(args.provider),
-      name: balanceSecretName(args.balance),
+      namespace: workspaceProviderSecretNamespace(args.workspace, args.provider),
+      name: args.provider,
       value: JSON.stringify(args.credentials),
       metadata: {
         kind: "provider",
         provider: args.provider,
-        balance: args.balance,
+        workspace: args.workspace,
         preview,
       },
     });
+
+    const existing = await ctx.db
+      .query("workspace_credentials")
+      .withIndex("by_workspace_and_provider", (q) =>
+        q.eq("workspace", args.workspace).eq("provider", args.provider),
+      )
+      .first();
+    if (existing) {
+      await ctx.db.patch("workspace_credentials", existing._id, { preview });
+    } else {
+      await ctx.db.insert("workspace_credentials", {
+        workspace: args.workspace,
+        provider: args.provider,
+        preview,
+      });
+    }
 
     return args.provider;
   },
@@ -461,84 +497,150 @@ export const upsertCredentials = mutation({
 
 export const deleteCredentials = mutation({
   args: {
-    balance: v.id("balances"),
+    workspace: v.id("workspaces"),
     provider: v.string(),
   },
   handler: async (ctx, args) => {
-    const identity = await authComponent.getAuthUser(ctx);
-    if (!identity) throw new Error("Not logged in.");
-
-    const balance = await ctx.db.get("balances", args.balance);
-    if (!balance || balance.userId !== identity._id) throw new Error("Balance not found.");
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
 
     await secrets.remove(ctx, {
-      namespace: providerSecretNamespace(args.provider),
-      name: balanceSecretName(args.balance),
+      namespace: workspaceProviderSecretNamespace(args.workspace, args.provider),
+      name: args.provider,
     });
+    if (workspace.legacyBalance) {
+      await secrets.remove(ctx, {
+        namespace: providerSecretNamespace(args.provider),
+        name: balanceSecretName(workspace.legacyBalance),
+      });
+    }
+    const credential = await ctx.db
+      .query("workspace_credentials")
+      .withIndex("by_workspace_and_provider", (q) =>
+        q.eq("workspace", args.workspace).eq("provider", args.provider),
+      )
+      .first();
+    if (credential) await ctx.db.delete("workspace_credentials", credential._id);
     return true;
   },
 });
 
-/** Associates an opaque OAuth session with a balance after the device flow completes. */
+/** Associates an opaque OAuth session with a workspace after the device flow completes. */
 export const bindOAuthCredential = internalMutation({
   args: {
-    balance: v.id("balances"),
+    workspace: v.id("workspaces"),
     provider: v.string(),
     userId: v.string(),
     credentials: v.record(v.string(), v.string()),
     preview: v.record(v.string(), v.string()),
   },
   handler: async (ctx, args) => {
-    const [balance, provider] = await Promise.all([
-      ctx.db.get("balances", args.balance),
-      ctx.db
-        .query("providers")
-        .withIndex("by_slug", (q) => q.eq("slug", args.provider))
-        .unique(),
-    ]);
-    if (!balance || balance.userId !== args.userId) throw new Error("Balance not found.");
+    const workspace = await ctx.db.get("workspaces", args.workspace);
+    const configuration = await ctx.db
+      .query("workspace_configurations")
+      .withIndex("by_workspace_and_provider", (q) =>
+        q.eq("workspace", args.workspace).eq("provider", args.provider),
+      )
+      .first();
+    const catalog = await ctx.db
+      .query("providers")
+      .withIndex("by_slug", (q) => q.eq("slug", args.provider))
+      .unique();
+    if (!workspace || !canAccessWorkspace(workspace, args.userId)) {
+      throw new Error("Workspace not found.");
+    }
+    const provider = configuration
+      ? configuration.deletedAt === undefined
+        ? (configuration.snapshot ?? (catalog ? providerSnapshotFromCatalog(catalog) : null))
+        : null
+      : workspace.legacyBalance && catalog
+        ? providerSnapshotFromCatalog(catalog)
+        : null;
     if (!provider || provider.credential_type !== "oauth") {
       throw new Error(`OAuth provider ${args.provider} is not configured.`);
     }
+    if (configuration && !configuration.snapshot) {
+      await ctx.db.patch("workspace_configurations", configuration._id, { snapshot: provider });
+    } else if (!configuration && workspace.legacyBalance) {
+      await ctx.db.insert("workspace_configurations", {
+        workspace: args.workspace,
+        provider: args.provider,
+        enabled: catalog?.enabled ?? true,
+        active: catalog?.enabled ?? true,
+        snapshot: provider,
+      });
+    }
 
     await secrets.put(ctx, {
-      namespace: providerSecretNamespace(args.provider),
-      name: balanceSecretName(args.balance),
+      namespace: workspaceProviderSecretNamespace(args.workspace, args.provider),
+      name: args.provider,
       value: JSON.stringify(args.credentials),
       metadata: {
         kind: "provider",
         provider: args.provider,
-        balance: args.balance,
+        workspace: args.workspace,
         preview: args.preview,
       },
     });
+    const existing = await ctx.db
+      .query("workspace_credentials")
+      .withIndex("by_workspace_and_provider", (q) =>
+        q.eq("workspace", args.workspace).eq("provider", args.provider),
+      )
+      .first();
+    if (existing)
+      await ctx.db.patch("workspace_credentials", existing._id, { preview: args.preview });
+    else {
+      await ctx.db.insert("workspace_credentials", {
+        workspace: args.workspace,
+        provider: args.provider,
+        preview: args.preview,
+      });
+    }
   },
 });
 
-/** Removes an OAuth balance binding when its upstream session is disconnected. */
+/** Removes an OAuth workspace binding when its upstream session is disconnected. */
 export const unbindOAuthCredential = internalMutation({
   args: {
-    balance: v.id("balances"),
+    workspace: v.id("workspaces"),
     provider: v.string(),
     userId: v.string(),
   },
   handler: async (ctx, args) => {
-    const balance = await ctx.db.get("balances", args.balance);
-    if (!balance || balance.userId !== args.userId) throw new Error("Balance not found.");
+    const workspace = await ctx.db.get("workspaces", args.workspace);
+    if (!workspace || !canAccessWorkspace(workspace, args.userId)) {
+      throw new Error("Workspace not found.");
+    }
     await secrets.remove(ctx, {
-      namespace: providerSecretNamespace(args.provider),
-      name: balanceSecretName(args.balance),
+      namespace: workspaceProviderSecretNamespace(args.workspace, args.provider),
+      name: args.provider,
     });
+    if (workspace.legacyBalance) {
+      await secrets.remove(ctx, {
+        namespace: providerSecretNamespace(args.provider),
+        name: balanceSecretName(workspace.legacyBalance),
+      });
+    }
+    const credential = await ctx.db
+      .query("workspace_credentials")
+      .withIndex("by_workspace_and_provider", (q) =>
+        q.eq("workspace", args.workspace).eq("provider", args.provider),
+      )
+      .first();
+    if (credential) await ctx.db.delete("workspace_credentials", credential._id);
   },
 });
 
 export const resolveProviderCandidatesForModel = internalQuery({
   args: {
-    balance: v.id("balances"),
+    workspace: v.id("workspaces"),
     modelSlug: v.string(),
     providerSlug: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const workspace = await ctx.db.get("workspaces", args.workspace);
+    if (!workspace || workspace.archivedAt !== undefined) throw new Error("Workspace not found.");
+
     const model = await ctx.db
       .query("models")
       .withIndex("by_slug", (q) => q.eq("slug", args.modelSlug))
@@ -546,19 +648,15 @@ export const resolveProviderCandidatesForModel = internalQuery({
 
     if (!model) throw new Error(`Unknown model: ${args.modelSlug}`);
 
-    const providers = args.providerSlug
-      ? await ctx.db
-          .query("providers")
-          .withIndex("by_slug", (q) => q.eq("slug", args.providerSlug!))
-          .take(1)
-      : await ctx.db.query("providers").take(200);
-    const modelProviders = providers
-      .filter((provider) => provider.enabled)
-      .map((provider) => ({
-        provider,
-        model: provider.models.find((providerModel) => providerModel.model === model.slug),
-      }))
-      .filter((candidate) => candidate.model);
+    const providerRecords = (await workspaceProviderRecords(ctx, workspace)).filter(
+      (record) =>
+        (!args.providerSlug || record.provider.slug === args.providerSlug) &&
+        isWorkspaceProviderEnabled(record),
+    );
+    const modelProviders = providerRecords.flatMap(({ provider }) => {
+      const model = provider.models.find((candidate) => candidate.model === args.modelSlug);
+      return model ? [{ provider, model }] : [];
+    });
 
     if (modelProviders.length === 0) {
       throw new Error(
@@ -572,11 +670,20 @@ export const resolveProviderCandidatesForModel = internalQuery({
 
     for (const modelProvider of modelProviders) {
       const credentials = await secrets.get(ctx, {
-        namespace: providerSecretNamespace(modelProvider.provider.slug),
-        name: balanceSecretName(args.balance),
+        namespace: workspaceProviderSecretNamespace(args.workspace, modelProvider.provider.slug),
+        name: modelProvider.provider.slug,
       });
 
-      if (!credentials.ok) continue;
+      const legacyCredentials =
+        !credentials.ok && workspace.legacyBalance
+          ? await secrets.get(ctx, {
+              namespace: providerSecretNamespace(modelProvider.provider.slug),
+              name: balanceSecretName(workspace.legacyBalance),
+            })
+          : null;
+
+      const storedCredentials = credentials.ok ? credentials : legacyCredentials;
+      if (!storedCredentials?.ok) continue;
 
       candidates.push({
         slug: modelProvider.provider.slug,
@@ -586,7 +693,7 @@ export const resolveProviderCandidatesForModel = internalQuery({
         doc: modelProvider.provider.doc,
         baseURL: modelProvider.provider.api,
         modelId: modelProvider.model!.upstream_model_id ?? model.slug,
-        credentials: parseProviderCredentials(modelProvider.provider.slug, credentials.value),
+        credentials: parseProviderCredentials(modelProvider.provider.slug, storedCredentials.value),
       });
     }
 

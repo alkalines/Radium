@@ -33,7 +33,6 @@ export const Route = createFileRoute("/gateway/telemetry")({
   },
   loader: ({ context: { queryClient } }) => {
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
-    void queryClient.prefetchQuery(convexQuery(api.telemetry.getSettings, {}));
   },
   component: TelemetryRoute,
 });

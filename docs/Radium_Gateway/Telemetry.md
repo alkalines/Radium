@@ -37,10 +37,12 @@ Chatroom passes the same request ID into its nested Gateway calls. List and
 summary queries prefer a Chatroom parent over a Gateway trace for that request
 without reordering requests. Completion linking by request ID remains unchanged.
 
-Public trace reads/deletes retain balance ownership checks. Internal trace start
-validates balance ownership and optional key/chat associations before inserting.
-These policies remain in Convex, not in the reusable collector. Tables, indexes,
-function names, and UI query contracts are unchanged by the extraction.
+Public trace reads/deletes verify workspace ownership, with bounded legacy
+balance fallback while migration is pending. Internal trace start validates the
+workspace owner and optional workspace-key, legacy-key, and chat associations
+before inserting. These policies remain in Convex, not in the reusable collector.
+Tables, indexes, function names, and UI query contracts are unchanged by the
+extraction.
 
 ### Bounds And Failures
 
@@ -80,8 +82,7 @@ and end/abort/error flush behavior are preserved. No hosted collector is require
 Run from the repository root:
 
 ```sh
-bun test ./packages/website/src/utils/telemetry
-bun test ./packages/website
+bun test ./packages/website/src/test.ts
 ```
 
 Regression coverage includes independent capture controls, correlation, payload

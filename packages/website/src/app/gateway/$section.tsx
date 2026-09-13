@@ -26,7 +26,7 @@ export const Route = createFileRoute("/gateway/$section")({
 
     const ensureSession = createIsomorphicFn()
       .server(() =>
-        ensureSessionServer(queryClient, auth, {
+        ensureSessionServer(queryClient, auth as any, {
           baseURL: getRequestUrl().origin,
           headers: getRequestHeaders(),
         }),
@@ -47,9 +47,6 @@ export const Route = createFileRoute("/gateway/$section")({
   },
   loader: ({ context: { queryClient }, params: { section } }) => {
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
-    if (section === "providers" || section === "credentials") {
-      void queryClient.prefetchQuery(convexQuery(api.providers.list, {}));
-    }
   },
   component: GatewayPage,
 });

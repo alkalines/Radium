@@ -1,24 +1,40 @@
 # Self-Hosted Ownership
 
-Status: Not started. First session: design and migration plan, not bulk deletion.
+Status: In progress. Workspace implementation is checked in; migration rollout,
+verification, and narrowing are not complete.
 
 ## Entry Points
 
-Under `packages/website/`: `convex/schema.ts`, `convex/auth.ts`, `convex/key.ts`,
-`convex/keys.ts`, `convex/credits.ts`, `convex/secrets.ts`, `convex/providers.ts`,
-`convex/aisdk.ts`, `convex/logs.ts`, telemetry functions, `convex/http/chat_completion.ts`,
-and Gateway/Chatroom UI references to `balances[0]`.
+Under `packages/website/`: `convex/schema.ts`, `convex/auth.ts`, `convex/workspaces.ts`,
+`convex/migrations.ts`, `convex/key.ts`, `convex/keys.ts`, `convex/usage.ts`,
+`convex/secrets.ts`, `convex/providers.ts`, `convex/aisdk.ts`, `convex/logs.ts`,
+telemetry functions, `convex/http/chat_completion.ts`, `convex/provider_records.ts`,
+and Gateway/Chatroom UI
+workspace selection and ownership call sites.
 
 ## Work
 
 1. Inventory every balance reference and its actual role: owner, credential namespace, usage attribution, quota, or billing. Include API keys, chats, completion history, traces, Exa secrets, and setup/provisioning.
-2. Propose the smallest explicit ownership model for self-hosted BYOK. Resolve single-owner versus workspace requirements with the user; do not invent a multi-tenant SaaS product.
+2. Use personal user-owned workspaces as the explicit self-hosted BYOK ownership model; do not invent a multi-tenant SaaS product.
 3. Separate usage/cost estimates and optional quotas from prepaid credits. Self-hosted requests must not require purchasing or manually provisioning credits. Preserve access control and historical attribution.
-4. Write a widen-migrate-narrow plan with resumable backfills, secret namespace handling, rollback/recovery, and verification; evaluate the migrations component.
-5. Record the decision in `docs/Radium_Gateway/Ownership.md` and link from `docs/Radium_Gateway.md`. Split approved implementation into bounded follow-up task files and update deployment/API docs when behavior actually changes.
+4. Implement and verify a widen-migrate-narrow plan with resumable backfills, secret namespace handling, rollback/recovery, and authorization coverage.
+5. Record the decision in `docs/Radium_Gateway/Ownership.md` and update deployment/API docs when behavior actually changes.
 
 ## Acceptance
 
 - The plan accounts for existing data, keys, encrypted secrets, historical usage, and fresh installs.
-- Future tests include BYOK without credits, ownership isolation, migration resume, and preserved history/credentials.
+- Required verification includes BYOK without credits, ownership isolation,
+  migration resume, and preserved history/credentials.
 - No dropping `balances`, silently disabling auth, remote migration, or renaming IDs across the repository in this design session.
+
+## Current Follow-Up
+
+- Pure authorization and migration contract tests cover personal/workspace chat
+  access, legacy balance isolation, archived workspaces, and idempotent chat
+  backfills. A mocked database test now covers independent provider snapshots,
+  legacy fallback, and deletion tombstones. Add full registered-handler tests
+  before running any deployment migration where a local Convex test harness is
+  available.
+- Verify legacy API-key attribution and Secret Store namespace recovery.
+- Run the migration in a controlled environment, inspect counts, then document
+  the evidence before narrowing legacy fields.

@@ -1,18 +1,10 @@
 import { Link } from "@tanstack/react-router";
-import {
-  ActivityIcon,
-  CreditCardIcon,
-  KeyRoundIcon,
-  KeySquareIcon,
-  RouteIcon,
-  ScrollTextIcon,
-} from "lucide-react";
+import { ActivityIcon, KeyRoundIcon, KeySquareIcon, RouteIcon, ScrollTextIcon } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ProvidersPanel } from "./providers-panel";
 import { CredentialsPanel } from "./credentials-panel";
 import { KeysPanel } from "./keys-panel";
-import { CreditsPanel } from "./credits-panel";
 import { LogsPanel } from "./logs-panel";
 import { ActivityPanel } from "./activity-panel";
 
@@ -22,7 +14,6 @@ export const gatewaySections = [
   { value: "credentials", label: "Credentials", icon: KeyRoundIcon, hidden: false },
   { value: "keys", label: "API Keys", icon: KeySquareIcon, hidden: false },
   { value: "logs", label: "Logs", icon: ScrollTextIcon, hidden: false },
-  { value: "credits", label: "Credits", icon: CreditCardIcon, hidden: true },
 ] as const;
 
 export type GatewaySection = (typeof gatewaySections)[number]["value"];
@@ -64,10 +55,6 @@ export function GatewaySettings({
 
       <TabsContent value="keys" tabIndex={-1}>
         {section === "keys" && <KeysPanel />}
-      </TabsContent>
-
-      <TabsContent value="credits" tabIndex={-1}>
-        {section === "credits" && <CreditsPanel />}
       </TabsContent>
 
       <TabsContent value="logs" tabIndex={-1}>

@@ -9,6 +9,7 @@ import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
 import { SettingsSidebarSections } from "@/components/settings-sidebar";
 import { UserButton } from "@/components/auth/user/user-button";
+import { WorkspaceSwitcher } from "@/components/workspaces/workspace-switcher";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -45,6 +46,7 @@ import {
 } from "@/components/ui/sidebar";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+import { useWorkspace } from "./workspaces/workspace-provider";
 import {
   BotIcon,
   MoreHorizontalIcon,
@@ -93,7 +95,10 @@ const data = {
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   // Subscribe to chats here (not in MainSidebarSections) so the query stays alive while
   // the settings/gateway nav is shown, avoiding a "Loading chats..." flash on return.
-  const { data: chats } = useQuery(convexQuery(api.aisdk.ListChats, {}));
+  const { workspaceId } = useWorkspace();
+  const { data: chats } = useQuery(
+    convexQuery(api.aisdk.ListChats, workspaceId ? { workspace: workspaceId } : "skip"),
+  );
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const inSettings =
     pathname.startsWith("/settings") ||
@@ -102,6 +107,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
   return (
     <Sidebar className="border-r-0" {...props}>
+      <WorkspaceSwitcher />
       {inSettings ? (
         <SettingsSidebarSections pathname={pathname} />
       ) : (

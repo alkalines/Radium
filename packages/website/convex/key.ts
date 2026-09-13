@@ -1,6 +1,10 @@
 import { query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
-import { AddFunction, MultiplyFunction, RemFunction } from "@/utils/math";
+import type { Doc, Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
+import { AddFunction, MultiplyFunction } from "@/utils/math";
+import { canAccessWorkspace, isByokRequest } from "../src/utils/workspaces/policy";
+import { providerSnapshotFromCatalog } from "../src/utils/workspaces/provider";
 
 export const hashAlgorithm = "SHA-512";
 export const hashText = async (text: string) =>
@@ -17,43 +21,68 @@ export const hashText = async (text: string) =>
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
-export const findUsableCredit = (UserCredit: number, UsedKey: number, KeyLimit?: number) =>
-  parseFloat(
-    Math.max(0, (KeyLimit ? Math.min(KeyLimit, UserCredit) : UserCredit) - UsedKey).toFixed(7),
-  );
-
+/**
+ * Resolve a Gateway bearer key without using browser session authentication.
+ * New keys are workspace-owned; the legacy branch exists only while the
+ * widen-migrate-narrow rollout has not completed.
+ */
 export const getKeyInfo = query({
-  args: {
-    key: v.string(),
-  },
+  args: { key: v.string() },
   handler: async (ctx, args) => {
     const hash = await hashText(args.key);
-    const dbKey = await ctx.db
+    const apiKey = await ctx.db
+      .query("api_keys")
+      .withIndex("by_hash", (q) => q.eq("hash", hash))
+      .unique();
+
+    if (apiKey) {
+      const workspace = await ctx.db.get("workspaces", apiKey.workspace);
+      if (!workspace || !canAccessWorkspace(workspace, workspace.ownerId)) {
+        throw new Error("This key is invalid!");
+      }
+
+      return {
+        _id: apiKey._id,
+        _creationTime: apiKey._creationTime,
+        name: apiKey.name,
+        preview: apiKey.preview,
+        workspace: workspace._id,
+        apiKey: apiKey._id,
+        userId: workspace.ownerId,
+      };
+    }
+
+    const legacyKey = await ctx.db
       .query("keys")
       .withIndex("by_hash", (q) => q.eq("hash", hash))
       .unique();
-    if (!dbKey) throw new Error("This key is invalid!");
-    const balanceInfo = await ctx.db.get("balances", dbKey.balance);
-    const usableCredits = findUsableCredit(
-      balanceInfo!.credits,
-      dbKey.usedCredits,
-      dbKey.creditLimit,
-    );
+    if (!legacyKey) throw new Error("This key is invalid!");
+
+    const balance = await ctx.db.get("balances", legacyKey.balance);
+    if (!balance) throw new Error("This key is invalid!");
+    const workspace = await ctx.db
+      .query("workspaces")
+      .withIndex("by_legacyBalance", (q) => q.eq("legacyBalance", legacyKey.balance))
+      .first();
+    if (workspace && !canAccessWorkspace(workspace, balance.userId)) {
+      throw new Error("This key is invalid!");
+    }
 
     return {
-      _id: dbKey._id,
-      _creationTime: dbKey._creationTime,
-      name: dbKey.name,
-      hash: dbKey.hash,
-      creditLimit: dbKey.creditLimit,
-      usedCredits: dbKey.usedCredits,
-      balance: balanceInfo,
-      usableCredits,
+      _id: legacyKey._id,
+      _creationTime: legacyKey._creationTime,
+      name: legacyKey.name,
+      preview: legacyKey.preview,
+      ...(workspace ? { workspace: workspace._id } : {}),
+      legacyBalance: legacyKey.balance,
+      legacyKey: legacyKey._id,
+      userId: balance.userId,
     };
   },
 });
 
-// Usage
+// Usage metadata remains useful for BYOK cost estimates and audit history. It
+// is not a balance, quota, debit, or payment record.
 export type completionUsage = {
   prompt_tokens: number;
   completion_tokens: number;
@@ -78,7 +107,6 @@ export const completionUsageSchema = v.object({
   }),
 });
 
-// Usage
 export type completionPricing = {
   prompt_tokens: number;
   completion_tokens: number;
@@ -99,11 +127,15 @@ export const completionPricingSchema = v.object({
   cost_details: v.optional(v.object({ upstream_inference_cost: v.optional(v.number()) })),
 });
 
-export const billKey = internalMutation({
+/** Record BYOK completion usage without mutating a credit or account balance. */
+export const recordCompletion = internalMutation({
   args: {
     bill: v.object({
+      workspace: v.optional(v.id("workspaces")),
+      apiKey: v.optional(v.id("api_keys")),
+      /** Transitional attribution for completions emitted before migration. */
+      balance: v.optional(v.id("balances")),
       key: v.optional(v.id("keys")),
-      balance: v.id("balances"),
     }),
     request: v.object({
       model_slug: v.string(),
@@ -130,75 +162,113 @@ export const billKey = internalMutation({
           cached_tokens: v.optional(v.number()),
           written_cache_tokens: v.optional(v.number()),
         }),
-        // Search and other parameters should be here too.
       }),
-      ttft: v.number(), // Time To First Token
+      ttft: v.number(),
       gen_time: v.number(),
       finish_reason: v.string(),
     }),
   },
   async handler(ctx, args) {
-    const [keyInfo, balanceInfo, modelInfo, providerInfo] = await Promise.all([
-      args.bill.key ? ctx.db.get("keys", args.bill.key) : undefined,
-      ctx.db.get("balances", args.bill.balance),
+    if (!isByokRequest(args.request.byok)) {
+      throw new Error("Only BYOK requests are supported.");
+    }
+    if (!args.bill.workspace && !args.bill.balance) {
+      throw new Error("Completion ownership is required.");
+    }
+
+    const workspace = args.bill.workspace
+      ? await ctx.db.get("workspaces", args.bill.workspace)
+      : undefined;
+    if (args.bill.workspace && (!workspace || !canAccessWorkspace(workspace, workspace.ownerId))) {
+      throw new Error("Workspace not found.");
+    }
+
+    const apiKey = args.bill.apiKey ? await ctx.db.get("api_keys", args.bill.apiKey) : undefined;
+    if (apiKey && (!workspace || apiKey.workspace !== workspace._id)) {
+      throw new Error("API key workspace mismatch.");
+    }
+
+    const balance = args.bill.balance ? await ctx.db.get("balances", args.bill.balance) : undefined;
+    if (args.bill.balance && !balance) throw new Error("Legacy completion owner not found.");
+    const resolvedWorkspace =
+      workspace ??
+      (balance
+        ? await ctx.db
+            .query("workspaces")
+            .withIndex("by_legacyBalance", (q) => q.eq("legacyBalance", balance._id))
+            .first()
+        : undefined);
+    if (
+      resolvedWorkspace &&
+      !canAccessWorkspace(resolvedWorkspace, balance?.userId ?? resolvedWorkspace.ownerId)
+    ) {
+      throw new Error("Workspace not found.");
+    }
+    const legacyKey = args.bill.key ? await ctx.db.get("keys", args.bill.key) : undefined;
+    if (legacyKey && (!balance || legacyKey.balance !== balance._id)) {
+      throw new Error("Legacy API key ownership mismatch.");
+    }
+    if (resolvedWorkspace && balance && resolvedWorkspace.legacyBalance !== balance._id) {
+      throw new Error("Workspace and legacy owner mismatch.");
+    }
+
+    const [modelInfo, providerInfo] = await Promise.all([
       ctx.db
         .query("models")
         .withIndex("by_slug", (q) => q.eq("slug", args.request.model_slug))
         .unique(),
-      ctx.db
-        .query("providers")
-        .withIndex("by_slug", (q) => q.eq("slug", args.request.provider))
-        .unique(),
+      resolvedWorkspace
+        ? resolveCompletionProvider(ctx, resolvedWorkspace, args.request.provider)
+        : ctx.db
+            .query("providers")
+            .withIndex("by_slug", (q) => q.eq("slug", args.request.provider))
+            .unique(),
     ]);
     if (!modelInfo) throw new Error(`Unknown model: ${args.request.model_slug}`);
-    const modelFromProvider = providerInfo?.models.find((q) => q.model === args.request.model_slug);
+    if (!providerInfo) throw new Error(`Unknown provider: ${args.request.provider}`);
+
+    const modelFromProvider = providerInfo.models.find((q) => q.model === args.request.model_slug);
     if (!modelFromProvider) {
       throw new Error(
         `Model ${args.request.model_slug} is not available on provider ${args.request.provider}.`,
       );
     }
 
-    /**
-     * Pricing
-     * @description There is a need for the MultiplyFunction and AddFunction because otherwise floating point numbers equation get broken. [Click to see an article, about it](https://medium.com/@devinred/weird-math-in-javascript-2379ad151d09)
-     */
-
+    /** Decimal arithmetic avoids making persisted usage estimates drift on floats. */
     const completionPricing = MultiplyFunction([
       args.response.usage.completion_tokens,
-      parseFloat(modelFromProvider!.pricing.output),
+      parseFloat(modelFromProvider.pricing.output),
     ]);
     const cacheReadPricing = MultiplyFunction([
       args.response.usage.prompt_tokens_details.cached_tokens || 0,
-      parseFloat(modelFromProvider!.pricing.cache_read || "0"),
+      parseFloat(modelFromProvider.pricing.cache_read || "0"),
     ]);
     const cacheWritePricing = MultiplyFunction([
       args.response.usage.prompt_tokens_details.written_cache_tokens || 0,
-      parseFloat(modelFromProvider!.pricing.cache_write || "0"),
+      parseFloat(modelFromProvider.pricing.cache_write || "0"),
     ]);
     const promptPricing = MultiplyFunction([
       args.response.usage.prompt_tokens,
-      parseFloat(modelFromProvider!.pricing.input),
+      parseFloat(modelFromProvider.pricing.input),
     ]);
-    const totalCostInference = AddFunction([
+    const estimatedCost = AddFunction([
       completionPricing,
       cacheReadPricing,
       cacheWritePricing,
       promptPricing,
-    ]); // Float numbers are weird in JS...
+    ]);
 
-    /**
-     * @todo 1M per month should be free
-     */
-    const billedCost = args.request.byok ? totalCostInference * 0.05 : totalCostInference;
+    const bill = {
+      ...(resolvedWorkspace ? { workspace: resolvedWorkspace._id } : {}),
+      ...(apiKey ? { apiKey: apiKey._id } : {}),
+      ...(balance ? { balance: balance._id } : {}),
+      ...(legacyKey ? { key: legacyKey._id } : {}),
+    };
 
-    // Database actions
     const completionId = await ctx.db.insert("chat_completions", {
-      bill: {
-        balance: balanceInfo!._id,
-        key: keyInfo?._id,
-      },
+      bill,
       request: {
-        byok: args.request.byok,
+        byok: true,
         streamed: args.request.stream,
         canceled: args.request.canceled,
         model: modelInfo._id,
@@ -210,7 +280,7 @@ export const billKey = internalMutation({
         gen_time: args.response.gen_time,
         providerGenId: args.response.provider_gen_id,
         genId: args.response.gen_id,
-        moderation_latency: undefined, // That is a later kind of problem
+        moderation_latency: undefined,
         ttft: args.response.ttft,
         usage: {
           prompt_tokens: args.response.usage.prompt_tokens,
@@ -228,36 +298,65 @@ export const billKey = internalMutation({
           prompt_tokens_details: {
             cached_tokens: cacheReadPricing,
           },
-          cost_details: {
-            upstream_inference_cost: args.request.byok ? totalCostInference : undefined,
-          },
-          cost: billedCost,
+          cost_details: { upstream_inference_cost: estimatedCost },
+          cost: estimatedCost,
         },
       },
     });
 
-    const traces = args.request.telemetry_request_id
-      ? await ctx.db
-          .query("telemetry_traces")
-          .withIndex("by_balance_and_requestId", (q) =>
-            q.eq("balance", balanceInfo!._id).eq("requestId", args.request.telemetry_request_id!),
-          )
-          .collect()
-      : [];
+    if (args.request.telemetry_request_id) {
+      const traces = resolvedWorkspace
+        ? await ctx.db
+            .query("telemetry_traces")
+            .withIndex("by_workspace_and_requestId", (q) =>
+              q
+                .eq("workspace", resolvedWorkspace._id)
+                .eq("requestId", args.request.telemetry_request_id!),
+            )
+            .take(100)
+        : await ctx.db
+            .query("telemetry_traces")
+            .withIndex("by_balance_and_requestId", (q) =>
+              q.eq("balance", balance!._id).eq("requestId", args.request.telemetry_request_id!),
+            )
+            .take(100);
 
-    await Promise.all([
-      ...traces.map((trace) =>
-        ctx.db.patch("telemetry_traces", trace._id, { chatCompletionId: completionId }),
-      ),
-      ctx.db.patch("balances", balanceInfo!._id, {
-        credits: AddFunction([balanceInfo!.credits, -billedCost]),
-      }),
-      keyInfo
-        ? ctx.db.patch("keys", keyInfo?._id, {
-            usedCredits: AddFunction([keyInfo!.usedCredits, billedCost]),
-          })
-        : null,
-    ]);
+      await Promise.all(
+        traces.map((trace) =>
+          ctx.db.patch("telemetry_traces", trace._id, { chatCompletionId: completionId }),
+        ),
+      );
+    }
+
     return completionId;
   },
 });
+
+/** Read pricing from the workspace snapshot even if routing was disabled mid-request. */
+async function resolveCompletionProvider(
+  ctx: MutationCtx,
+  workspace: Doc<"workspaces">,
+  slug: string,
+) {
+  const configuration = await ctx.db
+    .query("workspace_configurations")
+    .withIndex("by_workspace_and_provider", (q) =>
+      q.eq("workspace", workspace._id).eq("provider", slug),
+    )
+    .first();
+  if (configuration?.snapshot) {
+    return configuration.snapshot.slug === slug ? configuration.snapshot : null;
+  }
+  if (configuration?.deletedAt !== undefined) return null;
+  if (!configuration && !workspace.legacyBalance) return null;
+
+  const catalog = await ctx.db
+    .query("providers")
+    .withIndex("by_slug", (q) => q.eq("slug", slug))
+    .unique();
+  return catalog ? providerSnapshotFromCatalog(catalog) : null;
+}
+
+export type CompletionOwner =
+  | { workspaceId: Id<"workspaces">; apiKeyId?: Id<"api_keys"> }
+  | { legacyBalanceId: Id<"balances">; legacyKeyId?: Id<"keys"> };

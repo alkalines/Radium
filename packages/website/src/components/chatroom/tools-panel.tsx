@@ -37,6 +37,7 @@ import { Switch } from "@/components/ui/switch";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { McpServerDialog, type McpServerEditTarget } from "./mcp-server-dialog";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 /**
  * Chatroom → Tools settings. Manages the user's *default* tool selection (which
@@ -44,13 +45,17 @@ import { McpServerDialog, type McpServerEditTarget } from "./mcp-server-dialog";
  * MCP servers themselves. Per-chat overrides are edited from the chat composer.
  */
 export function ToolsPanel() {
+  const { workspaceId } = useWorkspace();
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
-  // Exa keys are still stored per balance; everything else here is per user.
-  const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
-  const { data: servers } = useQuery(convexQuery(api.mcp.listServers, signedIn ? {} : "skip"));
+  const { data: servers } = useQuery(
+    convexQuery(api.mcp.listServers, signedIn && workspaceId ? { workspace: workspaceId } : "skip"),
+  );
   const { data: defaults } = useQuery(
-    convexQuery(api.chatroom.getToolDefaults, signedIn ? {} : "skip"),
+    convexQuery(
+      api.chatroom.getToolDefaults,
+      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
   );
   const setToolDefaults = useMutation(api.chatroom.setToolDefaults);
 
@@ -63,9 +68,10 @@ export function ToolsPanel() {
   // Persist a new default selection. MCP server ids round-trip as strings and
   // are narrowed back to ids by Convex.
   async function persist(next: ToolSelection) {
-    if (!signedIn) return;
+    if (!signedIn || !workspaceId) return;
     try {
       await setToolDefaults({
+        workspace: workspaceId,
         selection: {
           builtinToolSets: next.builtinToolSets,
           mcpServers: next.mcpServers as Id<"mcp_servers">[],
@@ -130,8 +136,8 @@ export function ToolsPanel() {
                     aria-label={`Enable ${toolSet.name} by default`}
                   />
                 </div>
-                {toolSet.id === WEB_SEARCH_TOOL_ID && enabled && balanceId && (
-                  <ExaApiKeyField balanceId={balanceId} />
+                {toolSet.id === WEB_SEARCH_TOOL_ID && enabled && workspaceId && (
+                  <ExaApiKeyField workspaceId={workspaceId} />
                 )}
               </div>
             );
@@ -240,6 +246,7 @@ export function ToolsPanel() {
       </section>
 
       <McpServerDialog
+        workspaceId={workspaceId}
         open={dialogOpen}
         target={editTarget}
         onOpenChange={(open) => {
@@ -247,18 +254,22 @@ export function ToolsPanel() {
           if (!open) setEditTarget(null);
         }}
       />
-      <DeleteServerDialog target={deleting} onOpenChange={(open) => !open && setDeleting(null)} />
+      <DeleteServerDialog
+        target={deleting}
+        workspaceId={workspaceId}
+        onOpenChange={(open) => !open && setDeleting(null)}
+      />
     </div>
   );
 }
 
 /**
  * Exa API key manager shown under the Web Search tool when it is enabled. The
- * key is required for Web Search to run; it is stored encrypted per balance and
+ * key is required for Web Search to run; it is stored encrypted per workspace and
  * only its masked preview is ever returned.
  */
-function ExaApiKeyField({ balanceId }: { balanceId: Id<"balances"> }) {
-  const { data: stored } = useQuery(convexQuery(api.exa.getApiKey, { balance: balanceId }));
+function ExaApiKeyField({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
+  const { data: stored } = useQuery(convexQuery(api.exa.getApiKey, { workspace: workspaceId }));
   const setApiKey = useMutation(api.exa.setApiKey);
   const deleteApiKey = useMutation(api.exa.deleteApiKey);
 
@@ -275,7 +286,7 @@ function ExaApiKeyField({ balanceId }: { balanceId: Id<"balances"> }) {
     if (!apiKey) return;
     setSubmitting(true);
     try {
-      await setApiKey({ balance: balanceId, apiKey });
+      await setApiKey({ workspace: workspaceId, apiKey });
       toast.success("Exa API key saved.");
       setValue("");
     } catch (error) {
@@ -288,7 +299,7 @@ function ExaApiKeyField({ balanceId }: { balanceId: Id<"balances"> }) {
   async function remove() {
     setSubmitting(true);
     try {
-      await deleteApiKey({ balance: balanceId });
+      await deleteApiKey({ workspace: workspaceId });
       toast.success("Exa API key removed.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to remove Exa API key.");
@@ -347,9 +358,11 @@ function ExaApiKeyField({ balanceId }: { balanceId: Id<"balances"> }) {
 
 function DeleteServerDialog({
   target,
+  workspaceId,
   onOpenChange,
 }: {
   target: { _id: Id<"mcp_servers">; name: string } | null;
+  workspaceId: Id<"workspaces"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
   const deleteServer = useMutation(api.mcp.deleteServer);
@@ -359,7 +372,8 @@ function DeleteServerDialog({
     if (!target) return;
     setSubmitting(true);
     try {
-      await deleteServer({ server: target._id });
+      if (!workspaceId) return;
+      await deleteServer({ workspace: workspaceId, server: target._id });
       toast.success(`Deleted ${target.name}.`);
       onOpenChange(false);
     } catch (error) {

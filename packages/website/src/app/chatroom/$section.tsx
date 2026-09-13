@@ -26,7 +26,7 @@ export const Route = createFileRoute("/chatroom/$section")({
 
     const ensureSession = createIsomorphicFn()
       .server(() =>
-        ensureSessionServer(queryClient, auth, {
+        ensureSessionServer(queryClient, auth as any, {
           baseURL: getRequestUrl().origin,
           headers: getRequestHeaders(),
         }),
@@ -47,10 +47,6 @@ export const Route = createFileRoute("/chatroom/$section")({
   },
   loader: ({ context: { queryClient }, params: { section } }) => {
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
-    if (section === "preferences") {
-      void queryClient.prefetchQuery(convexQuery(api.models.availableModels, {}));
-      void queryClient.prefetchQuery(convexQuery(api.chatroom.getChainOfThoughtEnabled, {}));
-    }
   },
   component: ChatroomPage,
 });
