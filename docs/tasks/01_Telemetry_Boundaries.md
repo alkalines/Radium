@@ -1,12 +1,12 @@
 # Telemetry Boundaries
 
-Status: Not started. Scope: behavior-preserving refactor, not a telemetry rewrite.
+Status: Implemented extraction; deployment-level verification remains open.
+Scope: behavior-preserving refactor, not a telemetry rewrite.
 
 ## Entry Points
 
-Under `packages/website/`: `convex/telemetry.ts`, `convex/telemetry_schemas.ts`,
-`convex/telemetry_integration.ts`, `convex/schema.ts`, `convex/http/`, and
-`src/components/gateway/telemetry-*`.
+Under `packages/website/`: `convex/telemetry.ts`, `convex/schema.ts`,
+`convex/http/`, `src/utils/telemetry/`, and `src/components/gateway/telemetry-*`.
 
 ## Work
 
@@ -21,3 +21,31 @@ Under `packages/website/`: `convex/telemetry.ts`, `convex/telemetry_schemas.ts`,
 - Backend helpers do not import browser-only modules; frontend bundles do not pull server secrets/exporters.
 - Tests cover disabled capture, payload bounds, correlation, ownership, and failure isolation as applicable.
 - No schema migration, billing redesign, operational-log merger, or new analytics pipeline. Coordinate file ownership with tasks 02 and 08.
+
+## Outcome
+
+- Extracted collector/contracts/serialization/export into `packages/website/src/utils/telemetry/integration.ts`
+  with typed persistence callbacks; `packages/website/src/utils/telemetry/convex.ts`
+  attaches ownership IDs and mutation wiring for action callers.
+- Extracted deduplication and aggregation into `packages/website/src/utils/telemetry/summary.ts`.
+- Consolidated shared validators in `packages/website/src/utils/telemetry/validators.ts`;
+  bounded database access, authorization, schema, and API names remain in Convex.
+- Added collector and summary regression tests. No dependency or schema changes;
+  no codegen, deployment, or data migration performed.
+- Documented the boundary and known limitations in the [Gateway overview](../Radium_Gateway.md)
+  and [shared Gateway/Chatroom telemetry guide](../Radium_Gateway/Telemetry.md).
+- Follow-up: deployed ownership/disabled-capture checks, UI smoke tests, and live
+  OTLP delivery remain unverified. Failure propagation is preserved, not replaced
+  with an untested isolation guarantee.
+
+## Verification Evidence
+
+- `bun test ./packages/website/src/utils/telemetry`: 12 passed, 0 failed.
+- `bun test ./packages/website`: 21 passed, 0 failed.
+- `bunx tsc --noEmit --incremental false -p packages/website/tsconfig.json`:
+  blocked by 20 existing errors outside changed files (auth UI types, fetch
+  types, missing `firstUserMessageText`, and reasoning component props).
+- `bunx eslint packages/website/src/utils/telemetry packages/website/convex/telemetry.ts`:
+  blocked because root `eslint.config.mjs` cannot resolve the `eslint` package.
+- `bunx oxfmt --check packages/website/src/utils/telemetry packages/website/convex/telemetry.ts docs/Radium_Gateway.md docs/Radium_Gateway/Telemetry.md docs/README.md docs/architecture.md docs/tasks/01_Telemetry_Boundaries.md docs/tasks/README.md`:
+  passed for the scoped code/docs; `git diff --check` passed.

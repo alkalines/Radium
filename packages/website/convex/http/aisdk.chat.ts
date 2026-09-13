@@ -16,7 +16,7 @@ import { internal } from "../_generated/api";
 import type { ActionCtx } from "../_generated/server";
 import { MCP_SECRET_NAME, mcpSecretNamespace, secrets } from "../secrets";
 import { createInternalGatewayProvider } from "../ai_gateway";
-import { createTelemetryIntegrations } from "../telemetry_integration";
+import { createTelemetryIntegrations } from "@/utils/telemetry/convex";
 
 type ResponseHeaders = Record<string, string>;
 

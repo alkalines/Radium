@@ -31,8 +31,6 @@ import type * as providers from "../providers.js";
 import type * as secrets from "../secrets.js";
 import type * as subscriptions from "../subscriptions.js";
 import type * as telemetry from "../telemetry.js";
-import type * as telemetry_integration from "../telemetry_integration.js";
-import type * as telemetry_schemas from "../telemetry_schemas.js";
 
 import type {
   ApiFromModules,
@@ -64,8 +62,6 @@ declare const fullApi: ApiFromModules<{
   secrets: typeof secrets;
   subscriptions: typeof subscriptions;
   telemetry: typeof telemetry;
-  telemetry_integration: typeof telemetry_integration;
-  telemetry_schemas: typeof telemetry_schemas;
 }>;
 
 /**

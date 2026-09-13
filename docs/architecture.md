@@ -78,6 +78,9 @@ identity rather than trusting a client-provided user identifier.
 
 ## Telemetry
 
+See [AI telemetry boundaries](Radium_Gateway/Telemetry.md) for the shared Gateway
+and Chatroom collector, Convex persistence, and verification limits.
+
 Internal telemetry is opt-in per user. Input and output recording are separate
 settings. Trace records are stored in Convex and may also be exported to an
 OTLP/HTTP collector when an exporter endpoint is configured.

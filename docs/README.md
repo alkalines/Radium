@@ -6,6 +6,9 @@ start.
 
 ## Guides
 
+- [Radium Gateway](Radium_Gateway.md)
+- [Gateway and Chatroom AI telemetry](Radium_Gateway/Telemetry.md)
+
 | Guide                                             | Contents                                                                     |
 | ------------------------------------------------- | ---------------------------------------------------------------------------- |
 | [Architecture](architecture.md)                   | Runtime boundaries, request flow, data ownership, and repository layout      |

@@ -17,9 +17,6 @@ import type {
   ToolExecutionEndEvent,
   ToolExecutionStartEvent,
 } from "ai";
-import type { Id } from "./_generated/dataModel";
-import { internal } from "./_generated/api";
-import type { GenericActionCtx } from "convex/server";
 
 export type TelemetrySettings = {
   enabled: boolean;
@@ -27,22 +24,9 @@ export type TelemetrySettings = {
   recordOutputs: boolean;
 };
 
-export type TelemetryRequestContext = {
-  balance: Id<"balances">;
-  key?: Id<"keys">;
-  chatId?: Id<"aisdk_chats">;
-  userId: string;
-  requestId: string;
-  settings: TelemetrySettings;
-};
+export type TelemetrySource = "chatroom" | "gateway";
 
-type CollectorOptions = TelemetryRequestContext & {
-  ctx: GenericActionCtx<any>;
-  source: "chatroom" | "gateway";
-  functionId: string;
-};
-
-type Usage = {
+export type TelemetryUsage = {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
@@ -51,7 +35,7 @@ type Usage = {
   cacheWriteTokens?: number;
 };
 
-type PendingSpan = {
+export type TelemetrySpan = {
   kind: "step" | "model" | "tool";
   name: string;
   status: "ok" | "error";
@@ -64,47 +48,88 @@ type PendingSpan = {
   toolName?: string;
   toolCallId?: string;
   finishReason?: string;
-  usage?: Usage;
+  usage?: TelemetryUsage;
   error?: string;
   inputJson?: string;
   outputJson?: string;
 };
 
+export type TelemetryStartTrace = {
+  requestId: string;
+  source: TelemetrySource;
+  callId: string;
+  operationId: string;
+  functionId: string;
+  provider: string;
+  model: string;
+  startedAt: number;
+  recordsInputs: boolean;
+  recordsOutputs: boolean;
+  inputJson?: string;
+};
+
+export type TelemetryFinishTrace<TraceId> = {
+  traceId: TraceId;
+  spans: TelemetrySpan[];
+  status: "ok" | "error" | "aborted";
+  endedAt: number;
+  durationMs: number;
+  finishReason?: string;
+  usage?: TelemetryUsage;
+  stepCount?: number;
+  toolCallCount?: number;
+  error?: string;
+  outputJson?: string;
+};
+
+export type TelemetryPersistence<TraceId> = {
+  startTrace: (trace: TelemetryStartTrace) => Promise<TraceId>;
+  finishTrace: (trace: TelemetryFinishTrace<TraceId>) => PromiseLike<unknown>;
+};
+
+export type TelemetryCollectorOptions<TraceId> = {
+  requestId: string;
+  source: TelemetrySource;
+  functionId: string;
+  settings: TelemetrySettings;
+  persistence: TelemetryPersistence<TraceId>;
+};
+
+type PendingSpan = TelemetrySpan;
 type TelemetryStartEvent = Parameters<NonNullable<Telemetry["onStart"]>>[0];
 type TelemetryEndEvent = Parameters<NonNullable<Telemetry["onEnd"]>>[0];
 
 const MAX_PAYLOAD_LENGTH = 32_000;
 const MAX_SPANS = 100;
+
 /** Build the local collector and, when configured, an OTLP integration for one request. */
-export function createTelemetryIntegrations(options: CollectorOptions): Telemetry[] {
-  const integrations: Telemetry[] = [new ConvexTelemetry(options)];
+export function createTelemetryIntegrations<TraceId>(
+  options: TelemetryCollectorOptions<TraceId>,
+): Telemetry[] {
+  const integrations: Telemetry[] = [new TelemetryCollector(options)];
   const external = externalTelemetry(options.requestId, options.source);
   if (external) integrations.push(...external);
   return integrations;
 }
 
-class ConvexTelemetry implements Telemetry {
+class TelemetryCollector<TraceId> implements Telemetry {
   private readonly startedAt = Date.now();
   private readonly stepStarts = new Map<number, number>();
   private readonly toolStarts = new Map<string, number>();
   private readonly spans: PendingSpan[] = [];
   private modelStartedAt: number | undefined;
-  private traceId: Promise<Id<"telemetry_traces">> | undefined;
+  private traceId: Promise<TraceId> | undefined;
   private finalized = false;
   private toolCallCount = 0;
 
-  constructor(private readonly options: CollectorOptions) {}
+  constructor(private readonly options: TelemetryCollectorOptions<TraceId>) {}
 
   onStart(event: TelemetryStartEvent) {
     if (event.operationId !== "ai.streamText") return;
     const textEvent = event as InferTelemetryEvent<GenerateTextStartEvent>;
-    this.traceId = this.options.ctx.runMutation(internal.telemetry.startTrace, {
-      balance: this.options.balance,
-      key: this.options.key,
-      userId: this.options.userId,
-      chatId: this.options.chatId,
-      source: this.options.source,
+    this.traceId = this.options.persistence.startTrace({
       requestId: this.options.requestId,
+      source: this.options.source,
       callId: textEvent.callId,
       operationId: textEvent.operationId,
       functionId: textEvent.functionId ?? this.options.functionId,
@@ -247,7 +272,7 @@ class ConvexTelemetry implements Telemetry {
   private async finish(fields: {
     status: "ok" | "error" | "aborted";
     finishReason?: string;
-    usage?: Usage;
+    usage?: TelemetryUsage;
     stepCount?: number;
     error?: string;
     outputJson?: string;
@@ -255,7 +280,7 @@ class ConvexTelemetry implements Telemetry {
     if (this.finalized || !this.traceId) return;
     this.finalized = true;
     const endedAt = Date.now();
-    await this.options.ctx.runMutation(internal.telemetry.finishTrace, {
+    await this.options.persistence.finishTrace({
       traceId: await this.traceId,
       spans: this.spans.slice(0, MAX_SPANS),
       ...fields,
@@ -268,10 +293,7 @@ class ConvexTelemetry implements Telemetry {
 
 let externalProvider: BasicTracerProvider | undefined;
 
-function externalTelemetry(
-  requestId: string,
-  source: CollectorOptions["source"],
-): Telemetry[] | undefined {
+function externalTelemetry(requestId: string, source: TelemetrySource): Telemetry[] | undefined {
   if (!process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT && !process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
     return undefined;
   }
@@ -319,7 +341,7 @@ function externalTelemetry(
   ];
 }
 
-function mapUsage(usage: LanguageModelUsage): Usage {
+function mapUsage(usage: LanguageModelUsage): TelemetryUsage {
   return compact({
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
