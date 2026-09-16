@@ -17,9 +17,9 @@ Auth. It is separate from the gateway API.
 
 ### Convex
 
-Convex owns persistent data, authenticated functions, billing, provider
-selection, and public HTTP APIs. `convex/http.ts` registers the HTTP routes;
-the OpenAI-compatible implementations are in `convex/http/`.
+Convex owns persistent data, authenticated functions, workspace authorization,
+provider selection, usage, and public HTTP APIs. `convex/http.ts` registers the
+HTTP routes; the OpenAI-compatible implementations are in `convex/http/`.
 
 Consequently, gateway clients call the Convex site origin from
 `VITE_CONVEX_SITE_URL`. They do not call the Vite server on port 3000.
@@ -36,12 +36,12 @@ sequenceDiagram
 
     Client->>HTTP: POST /api/openai/v1/chat/completions
     HTTP->>DB: Hash and validate API key
-    HTTP->>DB: Check available credits
+    HTTP->>DB: Resolve workspace and BYOK credentials from API key
     HTTP->>Gateway: Resolve model and eligible provider
     Gateway->>Provider: AI SDK request
     Provider-->>Gateway: Completion or stream
     Gateway-->>Client: OpenAI-compatible JSON or SSE
-    Gateway->>DB: Record usage and debit credits
+    Gateway->>DB: Record upstream usage and cost
 ```
 
 The built-in chatroom uses `POST /api/aisdk/chat`. That handler calls the same
@@ -49,21 +49,29 @@ internal completion flow and translates it to an AI SDK UI message stream.
 
 ## Provider And Model Data
 
-Global model metadata is stored in `models`. Provider records contain routing
-configuration, supported models, pricing, and supported parameters. A model is
-routable only when:
+Global model identity metadata is stored in `models`. The global `providers`
+table is a catalogue; workspace configuration snapshots contain the endpoint,
+adapter, supported models, pricing, and supported parameters used at runtime.
+Workspace provider/model mutations do not replace global catalogue records. A
+model is routable only when:
 
 - its global model record exists;
-- an enabled provider offers that model slug; and
-- the active balance has credentials for that provider.
+- an enabled local provider configuration offers that model slug; and
+- the active workspace has credentials for that provider.
 
-Provider credentials are scoped to a balance and stored through the Convex
-Secret Store component. The regular Convex tables contain only non-secret
-metadata and masked previews.
+Provider, Exa, and MCP credentials are scoped to a workspace and stored through
+the Convex Secret Store component. Regular Convex tables contain only non-secret
+metadata and masked previews. Broader application-level encryption is future
+work; this document does not claim encrypted workspace records or telemetry.
+
+Provider endpoint configuration is owner-only. Deliberately configured local and
+private endpoints are a required self-hosted use case, but the complete
+SSRF/private-network policy and configurable egress control remain future work;
+see [task 04](tasks/04_Upstream_Instances.md).
 
 The current gateway is BYOK-oriented: users configure upstream provider
-credentials in the Gateway UI. The billing pipeline records upstream token
-cost and applies the configured Radium credit calculation after a completion.
+credentials in the Gateway UI. Completion recording stores upstream token cost
+and usage; it does not require or debit prepaid credits.
 
 ## Authentication And Keys
 
@@ -72,18 +80,56 @@ Gateway HTTP clients authenticate separately with a `rad-sk-...` bearer token.
 Only a SHA-512 hash and masked preview of each gateway key are persisted; the
 plaintext key is returned once when created.
 
-Balances own gateway keys, provider credentials, completions, and telemetry.
-Code handling those records must verify ownership from the server-side auth
-identity rather than trusting a client-provided user identifier.
+Personal workspaces own gateway keys, provider credentials, completions, and
+telemetry. Each user may own multiple workspaces, and `workspace_members` grants
+explicit member access to existing Better Auth users. Owners manage workspace
+resources; members use configured models and shared chats. Legacy balance-owned
+records remain readable during migration. Code handling these records must
+verify access from server-side auth identity and membership data rather than
+trusting a client-provided user identifier. See [Gateway ownership](Radium_Gateway/Ownership.md).
+
+## Chat Scopes
+
+New Chatroom chats have an explicit scope. `personal` chats are private to the
+creator, including when the creator is the workspace owner. `workspace` chats
+are visible to the workspace owner and explicit members. Chat queries and
+mutations enforce this policy through `convex/workspaces.ts`; organization
+records are not consulted. During migration, a chat without an explicit
+workspace is accepted only when its legacy balance maps to the authenticated
+user's active workspace and its stored `userId` matches that user.
+
+Only the chat creator can change `personal` versus `workspace` visibility. An
+workspace owner or chat creator can rename, pin, delete,
+regenerate its title, and set a per-chat tool override. Workspace defaults,
+provider configuration, credentials, API keys, MCP servers, and telemetry remain
+owner-managed; users cannot manage another user's personal chat.
 
 ## Telemetry
 
 See [AI telemetry boundaries](Radium_Gateway/Telemetry.md) for the shared Gateway
 and Chatroom collector, Convex persistence, and verification limits.
 
-Internal telemetry is opt-in per user. Input and output recording are separate
-settings. Trace records are stored in Convex and may also be exported to an
-OTLP/HTTP collector when an exporter endpoint is configured.
+Internal telemetry is opt-in per workspace. Input and output recording are
+separate settings. General telemetry reads are owner-only and filter traces from
+other users' personal chats. Trace records are stored in Convex and may also be
+exported to an OTLP/HTTP collector when an exporter endpoint is configured.
+
+## Migration And Generated State
+
+The schema uses a widen-migrate-narrow bridge. Legacy `balances`, `keys`, legacy
+attribution fields, and Secret Store namespaces are intentionally retained while
+the ownership backfill is pending; the migration does not literally delete the
+legacy tables. `@convex-dev/migrations` is mounted and `convex/migrations.ts`
+defines `runAll` plus paginated verification queries, but neither the runner nor
+deployment verification has been executed.
+
+New workspace-only writes omit legacy required fields, so after those writes
+exist the parent schema cannot be redeployed. The cutover is forward-only rather
+than rollback-compatible. The audited offline API-only binding generator is
+documented in [deployment](deployment.md#offline-api-binding-codegen); it uses
+the installed `componentApiDTS` template, writes only
+`convex/_generated/api.d.ts`, and does not perform remote component analysis or
+deployment verification.
 
 ## Generated Files
 
@@ -92,5 +138,7 @@ Do not manually edit:
 - `convex/_generated/`
 - `src/routeTree.gen.ts`
 
-Run Convex development/code generation and TanStack Router generation through
-the normal project commands instead.
+Use the normal project commands for Convex development and TanStack Router
+generation only after checking their target and upload behavior. Use the audited
+offline API-only command in [deployment](deployment.md#offline-api-binding-codegen)
+when only `api.d.ts` needs refreshing; never hand-edit generated files.

@@ -25,6 +25,7 @@
     "@better-auth-ui/core": "^1.7.14",
     "@better-auth-ui/react": "^1.7.14",
     "@convex-dev/better-auth": "0.12.5",
+    "@convex-dev/migrations": "^0.3.6",
     "@convex-dev/rate-limiter": "^0.3.2",
     "@convex-dev/react-query": "^0.1.0",
     "@daveyplate/better-auth-ui": "^3.4.0",
@@ -59,6 +60,7 @@
     "cmdk": "^1.1.1",
     "concurrently": "^10.0.5",
     "convex": "^1.45.0",
+    "convex-helpers": "^0.1.124",
     "convex-secret-store": "^0.2.0",
     "date-fns": "^4.4.0",
     "embla-carousel-react": "^8.6.0",
@@ -88,15 +90,18 @@
   },
   "devDependencies": {
     "@convex-dev/eslint-plugin": "^4.0.0",
+    "@edge-runtime/vm": "^5.0.0",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/eslint-config": "^0.4.0",
     "@types/node": "^26.4.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
+    "convex-test": "^0.0.58",
     "eslint": "^10.9.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "oxfmt": "^0.65.0",
     "tailwindcss": "^4.3.3",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
   }
 }

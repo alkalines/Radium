@@ -10,6 +10,8 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { createInternalGatewayProvider } from "./ai_gateway";
+import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
+import { getDefaultWorkspaceForUser, resolveWorkspaceForChat } from "./workspaces";
 
 const titleSchema = z.object({
   emoji: z.string().emoji().describe("Exactly one emoji that represents the user's first message."),
@@ -89,11 +91,18 @@ export const generateForChat = internalAction({
     });
     if (!chat || (!args.force && chat.title) || !chat.initialUserMessage.trim()) return null;
 
-    const provider = createInternalGatewayProvider(ctx, chat.balance, () =>
-      Response.json(
-        { error: { message: "Internal gateway request failed", code: 500 } },
-        { status: 500 },
-      ),
+    const provider = createInternalGatewayProvider(
+      ctx,
+      chat.workspace,
+      () =>
+        Response.json(
+          { error: { message: "Internal gateway request failed", code: 500 } },
+          { status: 500 },
+        ),
+      undefined,
+      undefined,
+      undefined,
+      { userId: chat.userId, chatId: args.chatId },
     );
 
     try {
@@ -123,16 +132,32 @@ export const titleGenerationInfo = internalQuery({
     const initialUserMessage = firstUserMessageText(chat);
     if (!initialUserMessage) return null;
 
-    const settings = await ctx.db
-      .query("chatroom_settings")
-      .withIndex("by_userId", (q) => q.eq("userId", chat.userId))
-      .unique();
+    const workspace = await resolveWorkspaceForChat(ctx, chat);
+    if (!workspace) return null;
+    const workspaceSettings = await ctx.db
+      .query("workspace_settings")
+      .withIndex("by_workspace", (q) => q.eq("workspace", workspace._id))
+      .first();
+    const defaultWorkspace = await getDefaultWorkspaceForUser(ctx, workspace.ownerId);
+    const settings =
+      workspaceSettings ??
+      (defaultWorkspace?._id === workspace._id
+        ? await ctx.db
+            .query("chatroom_settings")
+            .withIndex("by_userId", (q) => q.eq("userId", workspace.ownerId))
+            .first()
+        : null);
 
-    const model = await firstAvailableModel(ctx, settings?.titleModel ?? settings?.defaultModel);
+    const model = await firstAvailableModel(
+      ctx,
+      workspace,
+      settings?.titleModel ?? settings?.defaultModel,
+    );
     if (!model) return null;
 
     return {
-      balance: chat.balance,
+      workspace: workspace._id,
+      userId: chat.userId,
       initialUserMessage,
       model,
       title: chat.title,
@@ -156,17 +181,32 @@ export const saveGeneratedTitle = internalMutation({
   },
 });
 
-async function firstAvailableModel(ctx: QueryCtx, preferred?: string) {
+async function firstAvailableModel(
+  ctx: QueryCtx,
+  workspace: Doc<"workspaces">,
+  preferred?: string,
+) {
+  if (workspace.archivedAt !== undefined) return null;
+  const providerRecords = await workspaceProviderRecords(ctx, workspace);
+  const isAvailable = (slug: string) =>
+    providerRecords.some(
+      (record) =>
+        isWorkspaceProviderEnabled(record) &&
+        record.provider.models.some((model) => model.model === slug),
+    );
+
   if (preferred) {
     const model = await ctx.db
       .query("models")
       .withIndex("by_slug", (q) => q.eq("slug", preferred))
       .unique();
-    if (isTitleGenerationModel(model)) return preferred;
+    if (isTitleGenerationModel(model) && isAvailable(preferred)) return preferred;
   }
 
   const models = await ctx.db.query("models").take(200);
-  return models.find(isTitleGenerationModel)?.slug ?? null;
+  return (
+    models.find((model) => isTitleGenerationModel(model) && isAvailable(model.slug))?.slug ?? null
+  );
 }
 
 function sanitizeTitle(title: GeneratedChatTitle): GeneratedChatTitle {

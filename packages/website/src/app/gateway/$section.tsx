@@ -11,6 +11,9 @@ import {
   gatewaySections,
   type GatewaySection,
 } from "@/components/gateway/gateway-settings";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { api } from "../../../convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
@@ -26,7 +29,7 @@ export const Route = createFileRoute("/gateway/$section")({
 
     const ensureSession = createIsomorphicFn()
       .server(() =>
-        ensureSessionServer(queryClient, auth, {
+        ensureSessionServer(queryClient, auth as any, {
           baseURL: getRequestUrl().origin,
           headers: getRequestHeaders(),
         }),
@@ -47,15 +50,35 @@ export const Route = createFileRoute("/gateway/$section")({
   },
   loader: ({ context: { queryClient }, params: { section } }) => {
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
-    if (section === "providers" || section === "credentials") {
-      void queryClient.prefetchQuery(convexQuery(api.providers.list, {}));
-    }
   },
   component: GatewayPage,
 });
 
 function GatewayPage() {
   const { section } = Route.useParams();
+  const { workspace, isLoading } = useWorkspace();
+
+  if (isLoading) {
+    return <Skeleton className="mx-auto h-32 w-full max-w-5xl" />;
+  }
+
+  if (!workspace) {
+    return (
+      <WorkspaceNotice
+        title="Workspace unavailable"
+        description="Select an active workspace to view Gateway settings."
+      />
+    );
+  }
+
+  if (workspace.role === "member") {
+    return (
+      <WorkspaceNotice
+        title="Gateway settings are owner-only"
+        description={`You can use models configured in ${workspace.name}, but only its owner can manage providers, credentials, API keys, logs, and activity.`}
+      />
+    );
+  }
 
   return (
     <div
@@ -66,6 +89,17 @@ function GatewayPage() {
       }
     >
       <GatewaySettings section={section as GatewaySection} hideNav />
+    </div>
+  );
+}
+
+function WorkspaceNotice({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="mx-auto w-full max-w-3xl p-4 md:p-6">
+      <Alert>
+        <AlertTitle>{title}</AlertTitle>
+        <AlertDescription>{description}</AlertDescription>
+      </Alert>
     </div>
   );
 }

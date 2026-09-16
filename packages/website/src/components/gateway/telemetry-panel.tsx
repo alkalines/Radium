@@ -59,6 +59,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api } from "../../../convex/_generated/api";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { ProviderLogo } from "./provider-logo";
 import { formatTelemetryDate, formatTelemetryDuration, formatTokenCount } from "./telemetry-utils";
 
@@ -83,26 +84,25 @@ export function TelemetryPanel() {
   const isHydrated = useIsHydrated();
   const { isAuthenticated } = useConvexAuth();
   const convexQueriesEnabled = !isHydrated || isAuthenticated;
-  const { data: userInfo } = useQuery(
-    convexQuery(api.auth.userInfo, convexQueriesEnabled ? {} : "skip"),
-  );
-  const balanceId =
-    convexQueriesEnabled && typeof userInfo !== "string" ? userInfo?.balances[0]?._id : undefined;
+  const { workspaceId } = useWorkspace();
   const { data: settings } = useQuery(
-    convexQuery(api.telemetry.getSettings, convexQueriesEnabled ? {} : "skip"),
+    convexQuery(
+      api.telemetry.getSettings,
+      convexQueriesEnabled && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
   );
   const setSettings = useMutation(api.telemetry.setSettings);
   const since = ranges[range].days ? now - ranges[range].days! * 86_400_000 : undefined;
   const { data: traces, error: tracesError } = useQuery(
     convexQuery(
       api.telemetry.listTraces,
-      balanceId && convexQueriesEnabled ? { balance: balanceId, since, limit: 200 } : "skip",
+      workspaceId && convexQueriesEnabled ? { workspace: workspaceId, since, limit: 200 } : "skip",
     ),
   );
   const { data: summary } = useQuery(
     convexQuery(
       api.telemetry.getSummary,
-      balanceId && convexQueriesEnabled ? { balance: balanceId, since: since ?? 0 } : "skip",
+      workspaceId && convexQueriesEnabled ? { workspace: workspaceId, since: since ?? 0 } : "skip",
     ),
   );
   const filtered = traces?.filter(
@@ -118,7 +118,8 @@ export function TelemetryPanel() {
   }) {
     setSaving(true);
     try {
-      await setSettings(next);
+      if (!workspaceId) return;
+      await setSettings({ workspace: workspaceId, ...next });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to update telemetry settings.");
     } finally {
@@ -138,7 +139,7 @@ export function TelemetryPanel() {
           <h1 className="text-xl font-semibold tracking-tight">AI SDK telemetry</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Inspect every model call, step, tool execution, payload, and billed gateway completion.
+          Inspect every model call, step, tool execution, payload, and gateway completion.
         </p>
       </header>
 
@@ -195,16 +196,16 @@ export function TelemetryPanel() {
         </CardContent>
       </Card>
 
-      {!balanceId && userInfo !== undefined && (
+      {!workspaceId && (
         <Alert>
-          <AlertTitle>No balance yet</AlertTitle>
+          <AlertTitle>No workspace selected</AlertTitle>
           <AlertDescription>
-            A balance is required before telemetry traces can be recorded.
+            Select or create a workspace before telemetry traces can be recorded.
           </AlertDescription>
         </Alert>
       )}
 
-      {balanceId && (
+      {workspaceId && (
         <>
           <div className="grid gap-px overflow-hidden rounded-xl border bg-border sm:grid-cols-2 xl:grid-cols-4">
             <Metric
@@ -410,7 +411,7 @@ function TraceRow({ trace }: { trace: Trace }) {
         {trace.requestId}
       </TableCell>
       <TableCell className="max-w-36 truncate font-mono text-xs text-muted-foreground">
-        {trace.chatCompletionId ?? "Not billed"}
+        {trace.chatCompletionId ?? "No completion record"}
       </TableCell>
       <TableCell className="text-right font-mono text-xs tabular-nums">
         {formatTelemetryDuration(trace.durationMs)}

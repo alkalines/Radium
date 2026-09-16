@@ -5,7 +5,7 @@ import { useMutation } from "convex/react";
 import { SettingsIcon, WrenchIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { BUILTIN_TOOL_SETS, EMPTY_TOOL_SELECTION } from "@/utils/chatroom/tools";
+import { BUILTIN_TOOL_SETS } from "@/utils/chatroom/tools";
 import {
   DropdownMenuCheckboxItem,
   DropdownMenuItem,
@@ -34,35 +34,39 @@ import type { Id } from "../../../convex/_generated/dataModel";
  *   default selection via {@link api.chatroom.setToolDefaults}.
  */
 export function ChatToolsMenu({
-  balance,
+  workspace,
   chatId,
 }: {
-  balance: Id<"balances"> | undefined;
+  workspace: Id<"workspaces"> | undefined;
   chatId?: Id<"aisdk_chats">;
 }) {
-  const { data: servers } = useQuery(convexQuery(api.mcp.listServers, balance ? {} : "skip"));
+  const { data: servers } = useQuery(
+    convexQuery(api.mcp.listServers, workspace ? { workspace } : "skip"),
+  );
   const { data: chatTools } = useQuery(
     convexQuery(api.chatroom.getChatTools, chatId ? { chatId } : "skip"),
   );
   const { data: defaults } = useQuery(
-    convexQuery(api.chatroom.getToolDefaults, !chatId && balance ? {} : "skip"),
+    convexQuery(api.chatroom.getToolDefaults, !chatId && workspace ? { workspace } : "skip"),
   );
   const setChatTools = useMutation(api.chatroom.setChatTools);
   const setToolDefaults = useMutation(api.chatroom.setToolDefaults);
 
-  const selection = chatId ? chatTools : (defaults ?? EMPTY_TOOL_SELECTION);
+  const selection = chatId ? chatTools : defaults;
   const loading = selection === undefined;
 
-  async function persist(builtinToolSets: string[], mcpServers: string[]) {
+  async function persist(builtinToolSets: string[], mcpServers: Id<"mcp_servers">[]) {
     try {
       if (chatId) {
         await setChatTools({
           chatId,
-          selection: { builtinToolSets, mcpServers: mcpServers as Id<"mcp_servers">[] },
+          selection: { builtinToolSets, mcpServers },
         });
       } else {
+        if (!workspace) return;
         await setToolDefaults({
-          selection: { builtinToolSets, mcpServers: mcpServers as Id<"mcp_servers">[] },
+          workspace,
+          selection: { builtinToolSets, mcpServers },
         });
       }
     } catch (error) {
@@ -78,7 +82,7 @@ export function ChatToolsMenu({
     void persist(builtinToolSets, selection.mcpServers);
   }
 
-  function toggleServer(id: string, enabled: boolean) {
+  function toggleServer(id: Id<"mcp_servers">, enabled: boolean) {
     if (loading) return;
     const mcpServers = enabled
       ? [...selection.mcpServers, id]
@@ -98,7 +102,7 @@ export function ChatToolsMenu({
           <DropdownMenuCheckboxItem
             key={toolSet.id}
             checked={selection?.builtinToolSets.includes(toolSet.id) ?? false}
-            disabled={loading || (!balance && !chatId)}
+            disabled={loading || (!workspace && !chatId)}
             // Keep the menu open so several tools can be toggled in one go.
             onSelect={(event) => event.preventDefault()}
             onCheckedChange={(checked) => toggleBuiltin(toolSet.id, checked)}

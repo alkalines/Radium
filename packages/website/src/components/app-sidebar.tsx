@@ -9,6 +9,7 @@ import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
 import { SettingsSidebarSections } from "@/components/settings-sidebar";
 import { UserButton } from "@/components/auth/user/user-button";
+import { WorkspaceSwitcher } from "@/components/workspaces/workspace-switcher";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -45,6 +46,7 @@ import {
 } from "@/components/ui/sidebar";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+import { useWorkspace } from "./workspaces/workspace-provider";
 import {
   BotIcon,
   MoreHorizontalIcon,
@@ -93,7 +95,10 @@ const data = {
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   // Subscribe to chats here (not in MainSidebarSections) so the query stays alive while
   // the settings/gateway nav is shown, avoiding a "Loading chats..." flash on return.
-  const { data: chats } = useQuery(convexQuery(api.aisdk.ListChats, {}));
+  const { workspaceId } = useWorkspace();
+  const { data: chats, error: chatsError } = useQuery(
+    convexQuery(api.aisdk.ListChats, workspaceId ? { workspace: workspaceId } : "skip"),
+  );
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const inSettings =
     pathname.startsWith("/settings") ||
@@ -102,10 +107,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
   return (
     <Sidebar className="border-r-0" {...props}>
+      <WorkspaceSwitcher />
       {inSettings ? (
         <SettingsSidebarSections pathname={pathname} />
       ) : (
-        <MainSidebarSections pathname={pathname} chats={chats} />
+        <MainSidebarSections chats={chats} chatsError={chatsError} pathname={pathname} />
       )}
       <SidebarFooter>
         <UserButton align="start" className="w-full justify-start" />
@@ -118,9 +124,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 function MainSidebarSections({
   pathname,
   chats,
+  chatsError,
 }: {
   pathname: string;
   chats: SidebarChat[] | string | undefined;
+  chatsError: Error | null;
 }) {
   const chatSections = Array.isArray(chats) ? groupChatsByLastInteraction(chats) : [];
   const navigate = useNavigate();
@@ -148,7 +156,13 @@ function MainSidebarSections({
           <SidebarGroupLabel>Recent chats</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {chats === undefined ? (
+              {chatsError ? (
+                <SidebarMenuItem>
+                  <SidebarMenuButton disabled size="sm">
+                    <span>Chats unavailable for this workspace</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ) : chats === undefined ? (
                 <SidebarMenuItem>
                   <SidebarMenuButton disabled size="sm">
                     <span>Loading chats...</span>
@@ -209,7 +223,9 @@ function MainSidebarSections({
                               )}
                             </Link>
                           </SidebarMenuButton>
-                          <ChatMenu chat={chat} pathname={pathname} navigate={navigate} />
+                          {chat.canManage ? (
+                            <ChatMenu chat={chat} pathname={pathname} navigate={navigate} />
+                          ) : null}
                         </SidebarMenuItem>
                       );
                     })}
@@ -232,6 +248,7 @@ type SidebarChat = {
   pinnedAt?: number;
   lastInteractionAt: number;
   activeStream: boolean;
+  canManage?: boolean;
 };
 
 function ChatMenu({

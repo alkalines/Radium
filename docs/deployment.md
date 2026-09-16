@@ -1,8 +1,9 @@
 # Deployment And Configuration
 
-Radium can use Convex Cloud during local/hosted development, run as a full
-self-hosted container, or run as a frontend-only container against an external
-Convex deployment.
+Radium can use Convex Cloud during local/hosted development. Intended full
+self-hosted and frontend-only container paths are documented below, but both
+container and release paths are currently blocked and unverified pending the
+[workspace-layout audit](tasks/09_Workspace_Operations.md).
 
 ## Environment Variables
 
@@ -14,7 +15,7 @@ Convex deployment.
 | `VITE_CONVEX_URL`      | Yes               | Build/public  | Convex client URL, normally `https://<deployment>.convex.cloud`        |
 | `VITE_CONVEX_SITE_URL` | Yes               | Build/public  | Convex HTTP action origin, normally `https://<deployment>.convex.site` |
 | `SITE_URL`             | Yes               | Convex        | Public web origin used by Better Auth, such as `http://localhost:3000` |
-| `SECRET_STORE_KEYS`    | Yes               | Deploy/Convex | Versioned encryption keys used by Convex Secret Store                  |
+| `SECRET_STORE_KEYS`    | Yes               | Deploy/Convex | Versioned key material used by Convex Secret Store                     |
 | `AISDK_MaxRetries`     | No                | Convex        | AI SDK retry count; defaults to `0`                                    |
 | `LWC_SECRET`           | Feature-specific  | Convex        | Signs ChatGPT Subscription sessions                                    |
 
@@ -38,8 +39,11 @@ bunx convex env set SECRET_STORE_KEYS '1:<base64-key>'
 bunx convex env set AISDK_MaxRetries 0
 ```
 
-Upstream provider credentials are normally added per balance in **Gateway >
-Credentials**. They are not public application environment variables.
+Upstream provider credentials are normally added by the workspace owner in
+**Gateway > Credentials**. They are stored through Convex Secret Store and are
+not public application environment variables. Broader application-level
+encryption is future work; `SECRET_STORE_KEYS` only configures the Secret Store
+component.
 
 ### OpenTelemetry Export
 
@@ -58,30 +62,84 @@ accepted only for loopback addresses.
 
 ## Convex Cloud Development
 
-1. Copy `.env.example` to `.env.local` and set `SECRET_STORE_KEYS`.
-2. Run `bun run convex:dev` and select or create a deployment.
+1. Copy `packages/website/.env.example` to `packages/website/.env.local` and set
+   `SECRET_STORE_KEYS`.
+2. Run `bun run --cwd packages/website convex:dev` and select or create a deployment.
 3. Configure the Convex runtime values shown above.
-4. Run `bun run vite:dev` in another terminal.
+4. Run `bun run --cwd packages/website vite:dev` in another terminal.
 
 Convex writes deployment values such as `CONVEX_DEPLOYMENT`,
-`VITE_CONVEX_URL`, and `VITE_CONVEX_SITE_URL` to the local environment file.
+`VITE_CONVEX_URL`, and `VITE_CONVEX_SITE_URL` to
+`packages/website/.env.local`.
 
-### Initial Balance Provisioning
+### Initial Workspace Provisioning
 
-Balance creation is not automated yet. After the first user signs up, provision
-a `balances` record in the Convex dashboard with that Better Auth user ID and
-an initial `credits` value. `organizationId` and `teamId` are optional. The
-Gateway credentials, API key, chatroom, logs, and telemetry views use the
-signed-in user's first balance.
+After the first user signs up, the application provisions a personal workspace
+through `workspaces.ensurePersonalWorkspace`. Import a provider in **Gateway** to
+create its workspace-local endpoint and model mapping, then configure credentials;
+no balance record or initial credit value is required for new BYOK operation.
 
-This is a current setup limitation, not a production-ready account funding
-workflow.
+The owner can create additional personal workspaces and add any existing Better
+Auth user directly by email as a member. Membership does not use Better Auth
+organizations and has no invitation-acceptance step. Members can use the
+workspace's configured models and shared chats, plus their own private chats;
+workspace configuration, credentials, API keys, MCP servers, defaults, and
+telemetry remain owner-managed.
 
-## Full Self-Hosted Image
+Existing balance-owned records are mapped to personal workspaces by the
+resumable migration in `convex/migrations.ts`. The migration runner has not been
+executed automatically by this application setup and must be run only after
+authorization, counts, and Secret Store recovery are verified in a controlled
+environment.
 
-`Dockerfile` packages the TanStack Start server, Convex backend, deployment
-code, and startup orchestration in one image. Convex listens on port `3210`,
-HTTP actions on `3211`, and the web app on `3000`.
+The migration is forward-only after new workspace-only writes exist: the parent
+schema cannot be redeployed because those writes omit legacy required fields.
+Legacy tables, fields, keys, and Secret Store namespaces are retained during the
+staged cutover rather than literally deleted. See the [ownership guide](Radium_Gateway/Ownership.md)
+for the ordered run and verification procedure.
+
+No remote migration has been run. Narrowing or removing legacy fields is not
+ready until every paginated verification query is exhausted with zero issues and
+the deployment readiness evidence is recorded. A successful component status or
+local test run is not migration-readiness evidence.
+
+### Offline API Binding Codegen
+
+The checked-in root API declaration can be refreshed without a deployment or
+function upload. Run this from the repository root:
+
+```bash
+node \
+  --require ./packages/website/scripts/convex-offline-network-guard.cjs \
+  --experimental-loader ./packages/website/scripts/convex-offline-bindings-loader.mjs \
+  ./packages/website/scripts/generate-convex-api-bindings.mjs \
+  --write
+```
+
+This narrow generator writes only `packages/website/convex/_generated/api.d.ts`.
+It uses the installed Convex `componentApiDTS` template and local static analysis
+of the root component mounts, then formats the result with the installed Convex
+formatter. The network guard is an additional check; it must remain enabled.
+
+The driver is audited against the lockfile's Convex `1.45.0` installation and
+uses an internal CLI export, not a stable public API. Review the generated diff
+after Convex or component dependency updates. It supports the current static
+`convex.config.ts` form and fails closed for dynamic imports, unsupported
+statements, mount options, or component config syntax. It does not generate
+schema, data model, server, or component files, perform remote component
+analysis, or verify a deployment. Do not hand-edit `convex/_generated/` or use
+normal `convex codegen` solely for this offline refresh.
+
+## Full Self-Hosted Image (Blocked Pending Audit)
+
+The full-image path is currently blocked and unverified. The existing workspace
+layout audit found container build-context and dependency-path drift; this
+session documents the intended path but does not repair broad container
+infrastructure. Do not present the commands below as a working quickstart.
+
+The intended `Dockerfile` path packages the TanStack Start server, Convex backend,
+deployment code, and startup orchestration in one image. The intended ports are
+Convex `3210`, HTTP actions `3211`, and the web app `3000`.
 
 ```bash
 SECRET_STORE_KEYS="1:$(openssl rand -base64 32)" \
@@ -91,7 +149,7 @@ docker compose up --build
 The `convex-data` volume persists backend state and generated instance
 credentials. Keep this volume across restarts.
 
-On startup, the container:
+The intended startup orchestration:
 
 1. Starts the local Convex backend.
 2. Generates an admin key when one was not supplied.
@@ -116,10 +174,14 @@ docker compose up --build
 Because the `VITE_*` origins are build arguments, changing them requires an
 image rebuild.
 
-## Frontend-Only Image
+## Frontend-Only Image (Blocked Pending Audit)
 
-`Dockerfile.frontend` runs the built TanStack application and expects Convex to
-be deployed separately.
+The frontend-only container path is subject to the same unresolved workspace
+layout audit. Treat the example as intended configuration, not verified release
+behavior.
+
+The intended `Dockerfile.frontend` path runs the built TanStack application and
+expects Convex to be deployed separately.
 
 ```bash
 VITE_CONVEX_URL=https://your-deployment.convex.cloud \
@@ -137,14 +199,18 @@ Build-time Convex URLs must be present before building:
 
 ```bash
 bun install --frozen-lockfile
-bun run vite:build
-bun run vite:start
+bun run --cwd packages/website vite:build
+bun run --cwd packages/website vite:start
 ```
 
 The production server reads `.output/server/index.mjs` and defaults to port
 `3000` unless `PORT` is set.
 
-## Releases
+## Releases (Blocked Pending Audit)
+
+The release workflow is not currently a verified path. Existing workflow and
+Docker path references require the workspace-layout audit before publishing is
+safe. No release or container repair is included in this documentation change.
 
 `package.json` is the version source of truth. The release workflow accepts a
 matching `v<version>` tag, a `releases/<version>` or `releases/v<version>`

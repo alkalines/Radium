@@ -2,11 +2,12 @@ import { v } from "convex/values";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
-import { findUsableCredit, hashText } from "./key";
+import { hashText, isRevokedKey } from "./key";
+import { requireOwnedWorkspace } from "./workspaces";
 
 /**
- * Return the signed-in user's BetterAuth id, or throw. Shared gate for per-user
- * resources (chatroom settings, MCP servers).
+ * Return the signed-in user's Better Auth id, or throw. This remains separate
+ * from workspace authorization for resources that are intentionally personal.
  */
 export async function requireUserId(ctx: QueryCtx | MutationCtx): Promise<string> {
   const identity = await authComponent.getAuthUser(ctx);
@@ -14,23 +15,6 @@ export async function requireUserId(ctx: QueryCtx | MutationCtx): Promise<string
   return identity._id;
 }
 
-/**
- * Load a balance and assert it belongs to the signed-in user. Shared ownership
- * gate for the gateway's per-balance resources (keys, credits, credentials).
- */
-export async function requireOwnedBalance(ctx: QueryCtx | MutationCtx, balance: Id<"balances">) {
-  const identity = await authComponent.getAuthUser(ctx);
-  if (!identity) throw new Error("Not logged in.");
-
-  const record = await ctx.db.get("balances", balance);
-  if (!record || record.userId !== identity._id) throw new Error("Balance not found.");
-  return record;
-}
-
-/**
- * Generate a fresh gateway API key and its masked preview. The full value is
- * returned to the caller exactly once; only the hash and preview are stored.
- */
 function generateApiKey(): { key: string; preview: string } {
   const bytes = new Uint8Array(24);
   crypto.getRandomValues(bytes);
@@ -42,104 +26,195 @@ function generateApiKey(): { key: string; preview: string } {
   return { key, preview: `rad-sk-…${body.slice(-4)}` };
 }
 
-/** List the signed-in user's API keys for a balance (never returns the secret). */
+export type ListedKey =
+  | {
+      source: "workspace";
+      _id: Id<"api_keys">;
+      _creationTime: number;
+      name: string;
+      preview?: string;
+    }
+  | {
+      source: "legacy";
+      _id: Id<"keys">;
+      _creationTime: number;
+      name: string;
+      preview?: string;
+    };
+
+/**
+ * List active workspace and unmigrated legacy keys. The source tag is required
+ * because Convex document IDs do not carry a runtime table discriminator.
+ */
 export const listKeys = query({
-  args: {
-    balance: v.id("balances"),
-  },
+  args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
-    const balance = await requireOwnedBalance(ctx, args.balance);
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
 
     const keys = await ctx.db
-      .query("keys")
-      .withIndex("by_balance", (q) => q.eq("balance", args.balance))
+      .query("api_keys")
+      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
       .take(200);
 
-    return keys.map((key) => ({
-      _id: key._id,
-      _creationTime: key._creationTime,
-      name: key.name,
-      preview: key.preview,
-      creditLimit: key.creditLimit,
-      usedCredits: key.usedCredits,
-      usableCredits: findUsableCredit(balance.credits, key.usedCredits, key.creditLimit),
-    }));
+    const mappedLegacyKeys = new Set<Id<"keys">>();
+    const activeKeys: ListedKey[] = [];
+    for (const key of keys) {
+      if (key.legacyKey !== undefined) mappedLegacyKeys.add(key.legacyKey);
+      if (isRevokedKey(key)) continue;
+      if (key.legacyKey !== undefined) {
+        const legacyKey = await ctx.db.get("keys", key.legacyKey);
+        if (
+          !legacyKey ||
+          isRevokedKey(legacyKey) ||
+          !workspace.legacyBalance ||
+          legacyKey.balance !== workspace.legacyBalance ||
+          legacyKey.hash !== key.hash
+        ) {
+          continue;
+        }
+      }
+      activeKeys.push({
+        source: "workspace",
+        _id: key._id,
+        _creationTime: key._creationTime,
+        name: key.name,
+        preview: key.preview,
+      });
+    }
+
+    if (workspace.legacyBalance) {
+      const balance = await ctx.db.get("balances", workspace.legacyBalance);
+      if (balance?.userId === workspace.ownerId) {
+        const legacyKeys = await ctx.db
+          .query("keys")
+          .withIndex("by_balance", (q) => q.eq("balance", workspace.legacyBalance!))
+          .take(200);
+
+        for (const key of legacyKeys) {
+          if (isRevokedKey(key) || mappedLegacyKeys.has(key._id)) continue;
+          const mappings = await ctx.db
+            .query("api_keys")
+            .withIndex("by_legacyKey", (q) => q.eq("legacyKey", key._id))
+            .take(1);
+          if (mappings.length > 0) continue;
+          activeKeys.push({
+            source: "legacy",
+            _id: key._id,
+            _creationTime: key._creationTime,
+            name: key.name,
+            preview: key.preview,
+          });
+        }
+      }
+    }
+
+    return activeKeys.sort((a, b) => b._creationTime - a._creationTime).slice(0, 200);
   },
 });
 
 /**
- * Create an API key for a balance and return the plaintext value once. Only the
- * SHA-512 hash and a masked preview are persisted.
+ * Create a workspace API key and return the plaintext value exactly once. Only
+ * the SHA-512 hash and a masked preview are persisted.
  */
 export const createKey = mutation({
   args: {
-    balance: v.id("balances"),
+    workspace: v.id("workspaces"),
     name: v.string(),
-    creditLimit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    await requireOwnedBalance(ctx, args.balance);
+    await requireOwnedWorkspace(ctx, args.workspace);
 
     const name = args.name.trim();
     if (!name) throw new Error("Key name is required.");
-    if (args.creditLimit !== undefined && args.creditLimit < 0) {
-      throw new Error("Credit limit cannot be negative.");
-    }
 
     const { key, preview } = generateApiKey();
-    const _id = await ctx.db.insert("keys", {
-      balance: args.balance,
+    const _id = await ctx.db.insert("api_keys", {
+      workspace: args.workspace,
       name,
       hash: await hashText(key),
       preview,
-      creditLimit: args.creditLimit,
-      usedCredits: 0,
     });
 
     return { _id, key, preview };
   },
 });
 
-/** Rename a key or change its per-key credit limit. */
+/** Rename a workspace API key. */
 export const updateKey = mutation({
   args: {
-    key: v.id("keys"),
-    name: v.optional(v.string()),
-    creditLimit: v.optional(v.union(v.number(), v.null())),
+    key: v.id("api_keys"),
+    name: v.string(),
   },
   handler: async (ctx, args) => {
-    const key = await ctx.db.get("keys", args.key);
+    const key = await ctx.db.get("api_keys", args.key);
     if (!key) throw new Error("Key not found.");
-    await requireOwnedBalance(ctx, key.balance);
+    await requireOwnedWorkspace(ctx, key.workspace);
 
-    const patch: { name?: string; creditLimit?: number | undefined } = {};
-    if (args.name !== undefined) {
-      const name = args.name.trim();
-      if (!name) throw new Error("Key name is required.");
-      patch.name = name;
-    }
-    if (args.creditLimit !== undefined) {
-      if (args.creditLimit !== null && args.creditLimit < 0) {
-        throw new Error("Credit limit cannot be negative.");
-      }
-      patch.creditLimit = args.creditLimit ?? undefined;
-    }
-
-    await ctx.db.patch("keys", args.key, patch);
+    const name = args.name.trim();
+    if (!name) throw new Error("Key name is required.");
+    await ctx.db.patch("api_keys", args.key, { name });
   },
 });
 
-/** Permanently revoke an API key. */
+/** Permanently revoke a workspace API key. Historical completions retain their attribution. */
 export const deleteKey = mutation({
-  args: {
-    key: v.id("keys"),
-  },
+  args: { key: v.id("api_keys") },
   handler: async (ctx, args) => {
-    const key = await ctx.db.get("keys", args.key);
+    const key = await ctx.db.get("api_keys", args.key);
     if (!key) return true;
-    await requireOwnedBalance(ctx, key.balance);
+    await requireOwnedWorkspace(ctx, key.workspace);
 
-    await ctx.db.delete("keys", args.key);
+    const revokedAt = Date.now();
+    const legacyKey = key.legacyKey ? await ctx.db.get("keys", key.legacyKey) : null;
+    const apiKeyRevocation = { revokedAt };
+    await ctx.db.patch("api_keys", args.key, apiKeyRevocation);
+    if (legacyKey) {
+      const legacyKeyRevocation = { revokedAt };
+      await ctx.db.patch("keys", legacyKey._id, legacyKeyRevocation);
+    }
     return true;
   },
 });
+
+/** Revoke an unmigrated legacy key and every mapped workspace copy atomically. */
+export const deleteLegacyKey = mutation({
+  args: {
+    workspace: v.id("workspaces"),
+    keyId: v.id("keys"),
+  },
+  handler: async (ctx, args) => {
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    const key = await ctx.db.get("keys", args.keyId);
+    if (!key) return true;
+
+    if (!workspace.legacyBalance || key.balance !== workspace.legacyBalance) {
+      throw new Error("Key not found.");
+    }
+    const balance = await ctx.db.get("balances", key.balance);
+    if (!balance || balance.userId !== workspace.ownerId) {
+      throw new Error("Key not found.");
+    }
+
+    const mappedKeys = await ctx.db
+      .query("api_keys")
+      .withIndex("by_legacyKey", (q) => q.eq("legacyKey", key._id))
+      .take(200);
+    if (
+      mappedKeys.some(
+        (mappedKey) => mappedKey.workspace !== workspace._id || mappedKey.hash !== key.hash,
+      )
+    ) {
+      throw new Error("Legacy key mapping is invalid.");
+    }
+
+    const revokedAt = Date.now();
+    await ctx.db.patch("keys", key._id, { revokedAt });
+    await Promise.all(
+      mappedKeys.map((mappedKey) => ctx.db.patch("api_keys", mappedKey._id, { revokedAt })),
+    );
+    return true;
+  },
+});
+
+/** Type-only helper for callers that need to construct a new API-key reference. */
+export type WorkspaceApiKeyId = Id<"api_keys">;

@@ -4,23 +4,32 @@ import type { Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import { internal } from "./_generated/api";
+import { requireAccessibleChat, requireWorkspaceAccess } from "./workspaces";
+import { canManageChat, requireChatManager } from "./chatroom";
+import { firstUserMessageText } from "./chat_titles";
+
+const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
+const MAX_CHAT_CANDIDATES = 100;
 
 // Mutation
 export const CreateChat = mutation({
   args: {
-    balance: v.id("balances"),
+    workspace: v.id("workspaces"),
+    scope: v.optional(chatScopeValidator),
     messages_queue: queuedMessageSchema,
   },
   handler: async (ctx, args): Promise<Id<"aisdk_chats"> | "Not logged in!"> => {
     const identity = await authComponent.getAuthUser(ctx);
 
     if (!identity) return "Not logged in!";
+    await requireWorkspaceAccess(ctx, args.workspace);
 
     const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
       messages: [],
       messages_queue: args.messages_queue,
-      balance: args.balance,
+      workspace: args.workspace,
+      scope: args.scope ?? "personal",
       userId: identity._id,
       activeStream: false,
       lastInteractionAt: Date.now(),
@@ -41,7 +50,8 @@ export const CreateChat = mutation({
  */
 export const ForkChat = mutation({
   args: {
-    balance: v.id("balances"),
+    workspace: v.id("workspaces"),
+    scope: v.optional(chatScopeValidator),
     messages: v.array(messageSchema),
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
   },
@@ -49,12 +59,14 @@ export const ForkChat = mutation({
     const identity = await authComponent.getAuthUser(ctx);
 
     if (!identity) return "Not logged in!";
+    await requireWorkspaceAccess(ctx, args.workspace);
 
     const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
       messages: args.messages,
       messages_queue: args.messages_queue ?? undefined,
-      balance: args.balance,
+      workspace: args.workspace,
+      scope: args.scope ?? "personal",
       userId: identity._id,
       activeStream: false,
       lastInteractionAt: Date.now(),
@@ -94,16 +106,39 @@ export const GetChat = query({
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
-    const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat || chat.userId !== identity._id) return "Chat not Found.";
+    const { chat, workspace } = await requireAccessibleChat(ctx, args.chatId);
 
     return {
       id: chat?._id,
+      workspace: workspace._id,
+      scope: chat.scope ?? "personal",
+      canManage: canManageChat(chat, workspace, identity._id),
+      canManageScope: chat.userId === identity._id,
       messages: chat?.messages,
       title: chat?.title,
       activeStream: chat.activeStream,
       messages_queue: chat.messages_queue,
     };
+  },
+});
+
+/** Change a chat's visibility. Only its creator may change its scope. */
+export const SetChatScope = mutation({
+  args: {
+    chatId: v.id("aisdk_chats"),
+    scope: chatScopeValidator,
+  },
+  returns: v.object({ scope: chatScopeValidator }),
+  handler: async (ctx, args) => {
+    const identity = await authComponent.getAuthUser(ctx);
+    if (!identity) throw new Error("Not logged in.");
+
+    const { chat } = await requireAccessibleChat(ctx, args.chatId);
+    if (chat.userId !== identity._id)
+      throw new Error("Only the chat creator can change its scope.");
+
+    await ctx.db.patch("aisdk_chats", args.chatId, { scope: args.scope });
+    return { scope: args.scope };
   },
 });
 
@@ -116,8 +151,7 @@ export const RenameChat = mutation({
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
-    const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat || chat.userId !== identity._id) return "Chat not Found.";
+    await requireChatManager(ctx, args.chatId);
 
     const title = args.title
       .replace(/[\r\n]+/g, " ")
@@ -140,8 +174,7 @@ export const SetChatPinned = mutation({
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
-    const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat || chat.userId !== identity._id) return "Chat not Found.";
+    await requireChatManager(ctx, args.chatId);
 
     await ctx.db.patch("aisdk_chats", args.chatId, {
       pinnedAt: args.pinned ? Date.now() : undefined,
@@ -156,8 +189,7 @@ export const RegenerateChatTitle = mutation({
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
-    const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat || chat.userId !== identity._id) return "Chat not Found.";
+    const { chat } = await requireChatManager(ctx, args.chatId);
     if (!firstUserMessageText(chat)) return "Chat has no prompt to title.";
 
     await ctx.db.patch("aisdk_chats", args.chatId, { title: undefined, emoji: undefined });
@@ -175,8 +207,7 @@ export const DeleteChat = mutation({
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
-    const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat || chat.userId !== identity._id) return "Chat not Found.";
+    await requireChatManager(ctx, args.chatId);
 
     await ctx.db.delete("aisdk_chats", args.chatId);
     return null;
@@ -194,15 +225,58 @@ export const InternalChatInfo = internalQuery({
 });
 
 export const ListChats = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { workspace: v.id("workspaces") },
+  handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
+    const workspace = await requireWorkspaceAccess(ctx, args.workspace);
 
-    const chats = await ctx.db
-      .query("aisdk_chats")
-      .withIndex("by_userId", (q) => q.eq("userId", identity._id))
-      .take(100);
+    const [ownChats, sharedChats, legacyChats] = await Promise.all([
+      ctx.db
+        .query("aisdk_chats")
+        .withIndex("by_workspace_and_userId_and_lastInteractionAt", (q) =>
+          q.eq("workspace", args.workspace).eq("userId", identity._id),
+        )
+        .order("desc")
+        .take(MAX_CHAT_CANDIDATES),
+      ctx.db
+        .query("aisdk_chats")
+        .withIndex("by_workspace_and_scope_and_lastInteractionAt", (q) =>
+          q.eq("workspace", args.workspace).eq("scope", "workspace"),
+        )
+        .order("desc")
+        .take(MAX_CHAT_CANDIDATES),
+      workspace.legacyBalance
+        ? ctx.db
+            .query("aisdk_chats")
+            .withIndex("by_balance_and_lastInteractionAt", (q) =>
+              q.eq("balance", workspace.legacyBalance!),
+            )
+            .order("desc")
+            .take(MAX_CHAT_CANDIDATES)
+        : Promise.resolve([]),
+    ]);
+
+    const chatsById = new Map<Id<"aisdk_chats">, (typeof ownChats)[number]>();
+    const belongsToWorkspace = (chat: (typeof ownChats)[number]) =>
+      chat.workspace === workspace._id &&
+      (chat.balance === undefined || chat.balance === workspace.legacyBalance);
+    for (const chat of ownChats) {
+      if (belongsToWorkspace(chat)) chatsById.set(chat._id, chat);
+    }
+    for (const chat of sharedChats) {
+      if (belongsToWorkspace(chat)) chatsById.set(chat._id, chat);
+    }
+    for (const chat of legacyChats) {
+      if (
+        chat.workspace === undefined &&
+        chat.userId === identity._id &&
+        (chat.scope === undefined || chat.scope === "personal")
+      ) {
+        chatsById.set(chat._id, chat);
+      }
+    }
+    const chats = [...chatsById.values()];
 
     return chats
       .sort((a, b) => {
@@ -218,6 +292,7 @@ export const ListChats = query({
         pinnedAt: chat.pinnedAt,
         lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
         activeStream: chat.activeStream ?? false,
+        canManage: canManageChat(chat, workspace, identity._id),
       }));
   },
 });

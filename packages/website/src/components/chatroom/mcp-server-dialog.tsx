@@ -43,10 +43,12 @@ export type McpServerEditTarget = {
 export function McpServerDialog({
   open,
   target,
+  workspaceId,
   onOpenChange,
 }: {
   open: boolean;
   target: McpServerEditTarget;
+  workspaceId: Id<"workspaces"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
   const createServer = useMutation(api.mcp.createServer);
@@ -76,11 +78,12 @@ export function McpServerDialog({
   const complete = name.trim().length > 0 && url.trim().length > 0 && secretSatisfied;
 
   async function save() {
-    if (!complete) return;
+    if (!complete || !workspaceId) return;
     setSubmitting(true);
     try {
       if (isEditing) {
         await updateServer({
+          workspace: workspaceId,
           server: target._id,
           name: name.trim(),
           url: url.trim(),
@@ -90,6 +93,7 @@ export function McpServerDialog({
         toast.success(`Updated ${name.trim()}.`);
       } else {
         await createServer({
+          workspace: workspaceId,
           name: name.trim(),
           url: url.trim(),
           auth: { type: authType },

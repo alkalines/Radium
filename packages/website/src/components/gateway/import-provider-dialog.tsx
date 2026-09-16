@@ -62,12 +62,12 @@ export function ImportProviderDialog({
   open,
   onOpenChange,
   importedSlugs,
-  balanceId,
+  workspaceId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   importedSlugs: string[];
-  balanceId: Id<"balances"> | undefined;
+  workspaceId: Id<"workspaces"> | undefined;
 }) {
   const { catalogue, error: loadError } = useModelsDevCatalogue(open);
   const [selectedProvider, setSelectedProvider] = useState<SupportedProvider | null>(null);
@@ -95,6 +95,7 @@ export function ImportProviderDialog({
         {custom ? (
           <CustomProviderForm
             importedSlugs={importedSlugs}
+            workspaceId={workspaceId}
             onBack={() => setCustom(false)}
             onDone={done}
           />
@@ -102,7 +103,7 @@ export function ImportProviderDialog({
           <ConfigureProvider
             provider={selectedProvider}
             alreadyImported={importedSlugs.includes(selectedProvider.id)}
-            balanceId={balanceId}
+            workspaceId={workspaceId}
             onBack={() => setSelectedProvider(null)}
             onDone={done}
           />
@@ -255,13 +256,13 @@ function BrowseProviders({
 function ConfigureProvider({
   provider,
   alreadyImported,
-  balanceId,
+  workspaceId,
   onBack,
   onDone,
 }: {
   provider: SupportedProvider;
   alreadyImported: boolean;
-  balanceId: Id<"balances"> | undefined;
+  workspaceId: Id<"workspaces"> | undefined;
   onBack: () => void;
   onDone: () => void;
 }) {
@@ -327,7 +328,9 @@ function ConfigureProvider({
 
     setSubmitting(true);
     try {
+      if (!workspaceId) return;
       await importProvider({
+        workspace: workspaceId,
         provider: {
           slug: provider.id,
           name: provider.name,
@@ -352,14 +355,9 @@ function ConfigureProvider({
         })),
       });
 
-      if (
-        provider.credential_type !== "oauth" &&
-        addKeyNow &&
-        balanceId &&
-        (provider.env?.length ?? 0) > 0
-      ) {
+      if (provider.credential_type !== "oauth" && addKeyNow && (provider.env?.length ?? 0) > 0) {
         await upsertCredentials({
-          balance: balanceId,
+          workspace: workspaceId,
           provider: provider.id,
           credentials,
         });
@@ -508,11 +506,11 @@ function ConfigureProvider({
                   id="add-key-now"
                   checked={addKeyNow}
                   onCheckedChange={(value) => setAddKeyNow(value === true)}
-                  disabled={!balanceId}
+                  disabled={!workspaceId}
                 />
                 <FieldLabel htmlFor="add-key-now" className="font-normal">
                   Add my API key now (BYOK)
-                  {!balanceId && " — requires a balance"}
+                  {!workspaceId && " — requires a workspace"}
                 </FieldLabel>
               </Field>
               {addKeyNow &&
