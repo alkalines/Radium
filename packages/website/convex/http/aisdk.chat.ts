@@ -14,7 +14,12 @@ import type { Id } from "../_generated/dataModel";
 import { authComponent, createAuth } from "../auth";
 import { internal } from "../_generated/api";
 import type { ActionCtx } from "../_generated/server";
-import { MCP_SECRET_NAME, mcpSecretNamespace, secrets } from "../secrets";
+import {
+  MCP_SECRET_NAME,
+  mcpSecretNamespace,
+  secrets,
+  workspaceMcpSecretNamespace,
+} from "../secrets";
 import { createInternalGatewayProvider } from "../ai_gateway";
 import { createTelemetryIntegrations } from "@/utils/telemetry/convex";
 
@@ -71,22 +76,33 @@ export async function handleAISDKChat(
     );
   }
 
-  const chatInfo = await ctx.runQuery(internal.aisdk.InternalChatInfo, {
+  const authorizedChat = await ctx.runQuery(internal.workspaces.authorizeChatForUser, {
     chatId,
+    userId,
   });
 
-  if (!chatInfo || chatInfo.userId !== userId)
+  if (!authorizedChat) {
     return jsonResponse({ error: { message: "Unauthorized", code: 401 } }, responseHeaders, {
       status: 401,
     });
+  }
+
+  const { chat, workspace } = authorizedChat;
+  const workspaceId = workspace._id;
 
   const previousPerformance = getLastAssistantPerformance(body.messages);
-  const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForUser, { userId });
+  const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForWorkspace, {
+    workspace: workspaceId,
+  });
+  const telemetrySettingsForRequest =
+    (chat.scope ?? "personal") === "personal" && chat.userId !== workspace.ownerId
+      ? { ...telemetrySettings, recordInputs: false, recordOutputs: false }
+      : telemetrySettings;
   const requestId = crypto.randomUUID();
   const generations: Array<{ completionTokens: number; generationTimeMs: number }> = [];
   const provider = createInternalGatewayProvider(
     ctx,
-    chatInfo.balance,
+    workspaceId,
     () =>
       jsonResponse(
         { error: { message: "Internal gateway request failed", code: 500 } },
@@ -99,15 +115,16 @@ export async function handleAISDKChat(
         completionTokens: generation.usage.completion_tokens,
         generationTimeMs: generation.genTime,
       }),
-    telemetrySettings.enabled
+    telemetrySettingsForRequest.enabled
       ? {
-          balance: chatInfo.balance,
+          workspace: workspaceId,
           chatId,
           userId,
           requestId,
-          settings: telemetrySettings,
+          settings: telemetrySettingsForRequest,
         }
       : undefined,
+    { userId, chatId },
   );
 
   await ctx.runMutation(internal.aisdk.EditChat, {
@@ -127,19 +144,19 @@ export async function handleAISDKChat(
     // Allow follow-up turns so the model can act on executable tool results
     // (Exa web search, MCP tools) instead of stopping at the first tool call.
     stopWhen: isStepCount(5),
-    telemetry: telemetrySettings.enabled
+    telemetry: telemetrySettingsForRequest.enabled
       ? {
           isEnabled: true,
           functionId: "radium.chat",
-          recordInputs: telemetrySettings.recordInputs,
-          recordOutputs: telemetrySettings.recordOutputs,
+          recordInputs: telemetrySettingsForRequest.recordInputs,
+          recordOutputs: telemetrySettingsForRequest.recordOutputs,
           integrations: createTelemetryIntegrations({
             ctx,
-            balance: chatInfo.balance,
+            workspace: workspaceId,
             chatId,
             userId,
             requestId,
-            settings: telemetrySettings,
+            settings: telemetrySettingsForRequest,
             source: "chatroom",
             functionId: "radium.chat",
           }),
@@ -287,7 +304,7 @@ function aggregatePerformance(
  * connection — call it once the stream finishes or errors.
  *
  * The Web Search built-in tool set contributes the Exa search tool when it is
- * enabled and the balance has an Exa API key configured.
+ * enabled and the workspace has an Exa API key configured.
  *
  * @todo OAuth / OAuth 2.1 servers: supply an `OAuthClientProvider` via the
  *   transport's `authProvider` instead of a static bearer header.
@@ -308,7 +325,13 @@ async function buildChatTools(
 
   for (const server of config.mcpServers) {
     try {
-      const headers = await resolveMcpHeaders(ctx, server._id, server.auth);
+      const headers = await resolveMcpHeaders(
+        ctx,
+        server.workspace,
+        server._id,
+        server.auth,
+        server.legacy,
+      );
       const client = await createMCPClient({
         transport: { type: "http", url: server.url, headers },
       });
@@ -319,8 +342,8 @@ async function buildChatTools(
       for (const [name, definition] of Object.entries(serverTools)) {
         tools[uniqueToolName(tools, `${prefix}_${name}`)] = definition as ToolSet[string];
       }
-    } catch (error) {
-      console.error(`Failed to connect MCP server "${server.name}" (${server.url}):`, error);
+    } catch {
+      console.error("Failed to connect MCP server", { serverId: server._id, name: server.name });
     }
   }
 
@@ -338,7 +361,7 @@ async function buildChatTools(
 
 /**
  * Resolve the Exa web-search tool for a chat. Returns `undefined` (search
- * simply isn't offered) when Web Search is disabled or the balance has no Exa
+ * simply isn't offered) when Web Search is disabled or the workspace has no Exa
  * API key. The key is loaded here and never sent to the client; the user's
  * location is a mock for now (see `src/utils/chatroom/user-location.ts`).
  */
@@ -346,15 +369,15 @@ async function resolveExaWebSearch(
   ctx: ActionCtx,
   chatId: Id<"aisdk_chats">,
 ): Promise<ToolSet[string] | undefined> {
-  const { enabled, balance } = await ctx.runQuery(internal.chatroom.resolveWebSearch, {
+  const { enabled, workspace } = await ctx.runQuery(internal.chatroom.resolveWebSearch, {
     chatId,
   });
-  if (!enabled || !balance) {
+  if (!enabled || !workspace) {
     if (enabled) console.warn("Web Search is enabled but no Exa API key is configured.");
     return undefined;
   }
 
-  const apiKey = await ctx.runQuery(internal.exa.getApiKeyForRuntime, { balance });
+  const apiKey = await ctx.runQuery(internal.exa.getApiKeyForRuntime, { workspace });
   if (!apiKey) return undefined;
 
   return webSearch({ apiKey, userLocation: toExaCountry() }) as ToolSet[string];
@@ -363,16 +386,27 @@ async function resolveExaWebSearch(
 /** Build the request headers for an MCP server connection from its auth config. */
 async function resolveMcpHeaders(
   ctx: ActionCtx,
+  workspaceId: Id<"workspaces">,
   serverId: Id<"mcp_servers">,
   auth: { type: "none" | "bearer" },
+  legacy: boolean,
 ): Promise<Record<string, string> | undefined> {
   if (auth.type !== "bearer") return undefined;
 
-  const token = await secrets.get(ctx, {
-    namespace: mcpSecretNamespace(serverId),
+  const workspaceToken = await secrets.get(ctx, {
+    namespace: workspaceMcpSecretNamespace(workspaceId, serverId),
     name: MCP_SECRET_NAME,
   });
-  return token.ok ? { Authorization: `Bearer ${token.value}` } : undefined;
+  const token = workspaceToken.ok
+    ? workspaceToken
+    : legacy && workspaceToken.reason === "not_found"
+      ? await secrets.get(ctx, {
+          namespace: mcpSecretNamespace(serverId),
+          name: MCP_SECRET_NAME,
+        })
+      : workspaceToken;
+  if (!token.ok) throw new Error("MCP bearer token unavailable.");
+  return { Authorization: `Bearer ${token.value}` };
 }
 
 /** Sanitise a server name into a safe tool-name prefix (`[a-zA-Z0-9_]`). */

@@ -18,6 +18,7 @@ import { Route as GatewayIndexRouteImport } from './app/gateway/index'
 import { Route as GatewaySectionRouteImport } from './app/gateway/$section'
 import { Route as GatewayTelemetryRouteImport } from './app/gateway/telemetry'
 import { Route as SettingsPathRouteImport } from './app/settings/$path'
+import { Route as SettingsWorkspaceRouteImport } from './app/settings/workspace'
 import { Route as ApiAuthSplatRouteImport } from './app/api/auth/$'
 import { Route as ApiChatgptSubscriptionSplatRouteImport } from './app/api/chatgpt-subscription/$'
 import { Route as GatewayTelemetryIdRouteImport } from './app/gateway/telemetry/$id'
@@ -67,6 +68,11 @@ const SettingsPathRoute = SettingsPathRouteImport.update({
   path: '/settings/$path',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsWorkspaceRoute = SettingsWorkspaceRouteImport.update({
+  id: '/settings/workspace',
+  path: '/settings/workspace',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -93,6 +99,7 @@ export interface FileRoutesByFullPath {
   '/gateway/$section': typeof GatewaySectionRoute
   '/gateway/telemetry': typeof GatewayTelemetryRouteWithChildren
   '/settings/$path': typeof SettingsPathRoute
+  '/settings/workspace': typeof SettingsWorkspaceRoute
   '/gateway/': typeof GatewayIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/chatgpt-subscription/$': typeof ApiChatgptSubscriptionSplatRoute
@@ -107,6 +114,7 @@ export interface FileRoutesByTo {
   '/gateway/$section': typeof GatewaySectionRoute
   '/gateway/telemetry': typeof GatewayTelemetryRouteWithChildren
   '/settings/$path': typeof SettingsPathRoute
+  '/settings/workspace': typeof SettingsWorkspaceRoute
   '/gateway': typeof GatewayIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/chatgpt-subscription/$': typeof ApiChatgptSubscriptionSplatRoute
@@ -122,6 +130,7 @@ export interface FileRoutesById {
   '/gateway/$section': typeof GatewaySectionRoute
   '/gateway/telemetry': typeof GatewayTelemetryRouteWithChildren
   '/settings/$path': typeof SettingsPathRoute
+  '/settings/workspace': typeof SettingsWorkspaceRoute
   '/gateway/': typeof GatewayIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/chatgpt-subscription/$': typeof ApiChatgptSubscriptionSplatRoute
@@ -138,6 +147,7 @@ export interface FileRouteTypes {
     | '/gateway/$section'
     | '/gateway/telemetry'
     | '/settings/$path'
+    | '/settings/workspace'
     | '/gateway/'
     | '/api/auth/$'
     | '/api/chatgpt-subscription/$'
@@ -152,6 +162,7 @@ export interface FileRouteTypes {
     | '/gateway/$section'
     | '/gateway/telemetry'
     | '/settings/$path'
+    | '/settings/workspace'
     | '/gateway'
     | '/api/auth/$'
     | '/api/chatgpt-subscription/$'
@@ -166,6 +177,7 @@ export interface FileRouteTypes {
     | '/gateway/$section'
     | '/gateway/telemetry'
     | '/settings/$path'
+    | '/settings/workspace'
     | '/gateway/'
     | '/api/auth/$'
     | '/api/chatgpt-subscription/$'
@@ -180,6 +192,7 @@ export interface RootRouteChildren {
   GatewaySectionRoute: typeof GatewaySectionRoute
   GatewayTelemetryRoute: typeof GatewayTelemetryRouteWithChildren
   SettingsPathRoute: typeof SettingsPathRoute
+  SettingsWorkspaceRoute: typeof SettingsWorkspaceRoute
   GatewayIndexRoute: typeof GatewayIndexRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiChatgptSubscriptionSplatRoute: typeof ApiChatgptSubscriptionSplatRoute
@@ -250,6 +263,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsPathRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/workspace': {
+      id: '/settings/workspace'
+      path: '/settings/workspace'
+      fullPath: '/settings/workspace'
+      preLoaderRoute: typeof SettingsWorkspaceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
@@ -303,6 +323,7 @@ const rootRouteChildren: RootRouteChildren = {
   GatewaySectionRoute: GatewaySectionRoute,
   GatewayTelemetryRoute: GatewayTelemetryRouteWithChildren,
   SettingsPathRoute: SettingsPathRoute,
+  SettingsWorkspaceRoute: SettingsWorkspaceRoute,
   GatewayIndexRoute: GatewayIndexRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiChatgptSubscriptionSplatRoute: ApiChatgptSubscriptionSplatRoute,

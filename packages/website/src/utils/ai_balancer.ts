@@ -7,13 +7,13 @@ import { createChatGPTSubscriptionFetch } from "../../convex/chatgpt_subscriptio
 
 export default async function AIBalancer(
   ctx: GenericActionCtx<any>,
-  balanceId: Id<"balances">,
+  workspaceId: Id<"workspaces">,
   Request: ChatCompletions_RequestBody_Type,
 ) {
   const providerCandidates = await ctx.runQuery(
     internal.providers.resolveProviderCandidatesForModel,
     {
-      balance: balanceId,
+      workspace: workspaceId,
       modelSlug: Request.model,
       providerSlug: Request.provider ?? undefined,
     },

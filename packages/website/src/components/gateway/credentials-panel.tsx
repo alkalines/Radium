@@ -17,13 +17,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "../../../convex/_generated/api";
 import { CredentialsDialog, type CredentialsTarget } from "./credentials-dialog";
 import { ProviderLogo } from "./provider-logo";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 export function CredentialsPanel() {
-  const { data: providers } = useQuery(convexQuery(api.providers.list, {}));
-  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
-  const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
+  const { workspaceId } = useWorkspace();
+  const { data: providers } = useQuery(
+    convexQuery(api.providers.list, workspaceId ? { workspace: workspaceId } : "skip"),
+  );
   const { data: credentials } = useQuery(
-    convexQuery(api.providers.listCredentials, balanceId ? { balance: balanceId } : "skip"),
+    convexQuery(api.providers.listCredentials, workspaceId ? { workspace: workspaceId } : "skip"),
   );
 
   const credentialsBySlug = useMemo(() => {
@@ -44,11 +46,11 @@ export function CredentialsPanel() {
         </p>
       </div>
 
-      {!balanceId && userInfo !== undefined && (
+      {!workspaceId && (
         <Alert>
-          <AlertTitle>No balance yet</AlertTitle>
+          <AlertTitle>No workspace selected</AlertTitle>
           <AlertDescription>
-            A balance is required before credentials can be stored.
+            Select or create a workspace before storing credentials.
           </AlertDescription>
         </Alert>
       )}
@@ -97,7 +99,7 @@ export function CredentialsPanel() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={!balanceId || provider.env.length === 0}
+                  disabled={!workspaceId || provider.env.length === 0}
                   onClick={() =>
                     setTarget({
                       slug: provider.slug,
@@ -118,7 +120,7 @@ export function CredentialsPanel() {
 
       <CredentialsDialog
         target={target}
-        balanceId={balanceId}
+        workspaceId={workspaceId}
         hasExisting={Boolean(target && credentialsBySlug.has(target.slug))}
         preview={target ? credentialsBySlug.get(target.slug) : undefined}
         onOpenChange={(open) => !open && setTarget(null)}

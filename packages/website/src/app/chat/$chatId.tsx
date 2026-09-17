@@ -17,7 +17,15 @@ import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BrainIcon, SearchIcon, WrenchIcon } from "lucide-react";
+import {
+  BrainIcon,
+  ChevronDownIcon,
+  LockKeyholeIcon,
+  SearchIcon,
+  UsersIcon,
+  WrenchIcon,
+} from "lucide-react";
+import { toast } from "sonner";
 
 import {
   ChainOfThought,
@@ -76,11 +84,21 @@ import { ChatMessageActions, type ForkPickerModel } from "@/components/chat/mess
 import { ChatToolsMenu } from "@/components/chat/chat-tools-menu";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 export const Route = createFileRoute("/chat/$chatId")({
   staticData: {
@@ -114,9 +132,7 @@ export const Route = createFileRoute("/chat/$chatId")({
     void queryClient.prefetchQuery(
       convexQuery(api.aisdk.GetChat, { chatId: chatId as Id<"aisdk_chats"> }),
     );
-    void queryClient.prefetchQuery(convexQuery(api.models.availableModels, {}));
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
-    void queryClient.prefetchQuery(convexQuery(api.chatroom.getChainOfThoughtEnabled, {}));
   },
   component: ChatConversationPage,
 });
@@ -129,17 +145,21 @@ function ChatConversationPage() {
 
 function ChatConversationContent({ chatId }: { chatId: string }) {
   const convexChatId = chatId as Id<"aisdk_chats">;
+  const { workspaceId } = useWorkspace();
   const search = Route.useSearch();
   const navigate = useNavigate();
-  const { data: chat } = useQuery(convexQuery(api.aisdk.GetChat, { chatId: convexChatId }));
-  const { data: models } = useQuery(convexQuery(api.models.availableModels, {}));
+  const { data: chat, error: chatError } = useQuery(
+    convexQuery(api.aisdk.GetChat, { chatId: convexChatId }),
+  );
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const forkChat = useMutation(api.aisdk.ForkChat);
+  const setChatScope = useMutation(api.aisdk.SetChatScope);
   const [model, setModel] = useState<string | undefined>(search.model);
   const [provider, setProvider] = useState<string | undefined>(search.provider);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [reasoningBudget, setReasoningBudget] = useState<number>();
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
+  const [scopeSaving, setScopeSaving] = useState(false);
   const [handoffPrompt] = useState(() => readChatHandoff(chatId));
   const [handoffSettled, setHandoffSettled] = useState(() => handoffPrompt === null);
   const loadedInitialMessages = useRef(false);
@@ -149,14 +169,29 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const latestUserMessageElement = useRef<HTMLDivElement | null>(null);
   const alignmentSpacerElement = useRef<HTMLDivElement | null>(null);
   const submittedApprovalContinuations = useRef(new Set<string>());
-  const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
+  const chatWorkspaceId = typeof chat === "string" || !chat ? undefined : chat.workspace;
+  const settingsWorkspaceId = chatWorkspaceId ?? workspaceId;
+  const canManageChat =
+    typeof chat === "object" && chat !== null && "canManage" in chat && chat.canManage === true;
+  const { data: models, error: modelsError } = useQuery(
+    convexQuery(
+      api.models.availableModels,
+      settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
+  );
   const defaultModelQuery = useQuery(
-    convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
+    convexQuery(
+      api.chatroom.getModelDefault,
+      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
   );
   const defaultModel = defaultModelQuery.data;
   const { data: chainOfThoughtEnabled = true } = useQuery(
-    convexQuery(api.chatroom.getChainOfThoughtEnabled, signedIn ? {} : "skip"),
+    convexQuery(
+      api.chatroom.getChainOfThoughtEnabled,
+      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
   );
   const queuedModel = typeof chat === "string" ? undefined : chat?.messages_queue?.model;
   const queuedProvider = typeof chat === "string" ? undefined : chat?.messages_queue?.provider;
@@ -200,6 +235,18 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const handleModelChange = useCallback((nextModel: string) => {
     setModel(nextModel);
   }, []);
+
+  async function updateScope(scope: ChatScope) {
+    if (typeof chat === "string" || !chat || !chat.canManageScope || scopeSaving) return;
+    setScopeSaving(true);
+    try {
+      await setChatScope({ chatId: convexChatId, scope });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to update chat visibility.");
+    } finally {
+      setScopeSaving(false);
+    }
+  }
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
@@ -438,7 +485,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
    */
   const handleForkUser = useCallback(
     async (message: UIMessage, forkModel: string) => {
-      if (!balance) {
+      if (!settingsWorkspaceId) {
         return;
       }
       const index = messages.findIndex((item) => item.id === message.id);
@@ -447,7 +494,8 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       }
       const modelData = models?.find((item) => item.slug === forkModel);
       const newChatId = await forkChat({
-        balance: balance._id,
+        workspace: settingsWorkspaceId,
+        scope: typeof chat === "string" || !chat ? undefined : chat.scope,
         messages: messages.slice(0, index),
         messages_queue: {
           text: getMessageText(message),
@@ -469,7 +517,8 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       });
     },
     [
-      balance,
+      chat,
+      settingsWorkspaceId,
       forkChat,
       messages,
       models,
@@ -486,7 +535,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
    */
   const handleForkAssistant = useCallback(
     async (message: UIMessage, forkModel: string) => {
-      if (!balance) {
+      if (!settingsWorkspaceId) {
         return;
       }
       const index = messages.findIndex((item) => item.id === message.id);
@@ -494,7 +543,8 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         return;
       }
       const newChatId = await forkChat({
-        balance: balance._id,
+        workspace: settingsWorkspaceId,
+        scope: typeof chat === "string" || !chat ? undefined : chat.scope,
         messages: messages.slice(0, index + 1),
       });
       if (newChatId === "Not logged in!") {
@@ -506,8 +556,22 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         search: { model: forkModel, provider: selectedProvider },
       });
     },
-    [balance, forkChat, messages, navigate, selectedProvider],
+    [chat, forkChat, messages, navigate, selectedProvider, settingsWorkspaceId],
   );
+
+  if (chatError) {
+    return (
+      <main className="flex min-h-[calc(100svh-var(--header-height))] items-center justify-center p-4">
+        <Alert className="max-w-md" variant="destructive">
+          <AlertTitle>Chat unavailable</AlertTitle>
+          <AlertDescription>
+            This chat is no longer available to your account. The workspace may have changed or your
+            membership may have been removed.
+          </AlertDescription>
+        </Alert>
+      </main>
+    );
+  }
 
   if (chat === undefined) {
     if (handoffPrompt !== null) {
@@ -564,7 +628,10 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       <main className="flex min-h-[calc(100svh-var(--header-height))] items-center justify-center p-4">
         <Alert className="max-w-md" variant="destructive">
           <AlertTitle>Chat unavailable</AlertTitle>
-          <AlertDescription>{chat}</AlertDescription>
+          <AlertDescription>
+            This chat is no longer available to your account. The workspace may have changed or your
+            membership may have been removed.
+          </AlertDescription>
         </Alert>
       </main>
     );
@@ -572,6 +639,19 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
 
   return (
     <main className="flex h-[calc(100svh-var(--header-height))] min-h-0 flex-col overflow-hidden md:h-[calc(100svh-var(--header-height)-1rem)]">
+      <div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-4 pt-3">
+        <ChatScopeControl
+          canManageScope={chat.canManageScope}
+          saving={scopeSaving}
+          scope={chat.scope}
+          onChange={(nextScope) => void updateScope(nextScope)}
+        />
+        {!chat.canManageScope ? (
+          <span className="text-xs text-muted-foreground">
+            Only the creator can change visibility.
+          </span>
+        ) : null}
+      </div>
       {latestUsage && maxTokens ? (
         <aside className="fixed top-[calc(var(--header-height)+1rem)] right-4 z-10 hidden lg:block">
           <ChatContextIndicator maxTokens={maxTokens} modelId={selectedModel} usage={latestUsage} />
@@ -639,6 +719,15 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
               <AlertDescription>{error.message}</AlertDescription>
             </Alert>
           ) : null}
+          {modelsError ? (
+            <Alert variant="destructive">
+              <AlertTitle>Workspace unavailable</AlertTitle>
+              <AlertDescription>
+                Model settings for this workspace are no longer available. Switch workspaces and
+                reopen the chat if needed.
+              </AlertDescription>
+            </Alert>
+          ) : null}
 
           {latestUsage && maxTokens ? (
             <div className="flex items-center justify-end lg:hidden">
@@ -689,11 +778,84 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
             selectedModel={selectedModel}
             selectedProvider={selectedProvider}
             status={status}
-            toolsMenu={<ChatToolsMenu balance={balance?._id} chatId={convexChatId} />}
+            toolsMenu={
+              canManageChat ? (
+                <ChatToolsMenu workspace={settingsWorkspaceId} chatId={convexChatId} />
+              ) : undefined
+            }
           />
         </div>
       </div>
     </main>
+  );
+}
+
+type ChatScope = "personal" | "workspace";
+
+function ChatScopeControl({
+  canManageScope,
+  saving,
+  scope,
+  onChange,
+}: {
+  canManageScope: boolean;
+  saving: boolean;
+  scope: ChatScope;
+  onChange: (scope: ChatScope) => void;
+}) {
+  const isPersonal = scope === "personal";
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
+          disabled={!canManageScope || saving}
+          title={
+            canManageScope
+              ? "Change conversation visibility"
+              : "Only the creator can change visibility"
+          }
+        >
+          {isPersonal ? <LockKeyholeIcon /> : <UsersIcon />}
+          <span>{isPersonal ? "Personal" : "Workspace"}</span>
+          {canManageScope ? <ChevronDownIcon /> : null}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-72">
+        <DropdownMenuLabel>Conversation visibility</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={scope}
+          onValueChange={(value) => {
+            if (value === "personal" || value === "workspace") onChange(value);
+          }}
+        >
+          <DropdownMenuRadioItem value="personal">
+            <span className="flex flex-col gap-0.5">
+              <span>Personal</span>
+              <span className="text-xs text-muted-foreground">
+                Only the chat creator can see it.
+              </span>
+            </span>
+          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="workspace">
+            <span className="flex flex-col gap-0.5">
+              <span>Workspace</span>
+              <span className="text-xs text-muted-foreground">
+                Members of this workspace can see it.
+              </span>
+            </span>
+          </DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel className="whitespace-normal">
+          Personal chat encryption and audit controls are planned. This setting only controls
+          access.
+        </DropdownMenuLabel>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

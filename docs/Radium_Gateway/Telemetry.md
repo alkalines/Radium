@@ -2,10 +2,11 @@
 
 ## Implemented
 
-AI telemetry is optional request/audit capture, separate from
-[operational logging](../logging.md) and analytics. Collection defaults to off;
-input and output capture are independently controlled. Local persistence does
-not require an external collector.
+AI telemetry is optional request capture for debugging and audit support,
+separate from [operational logging](../logging.md) and analytics. It is not an
+audit ledger or an owner-auditing bypass. Collection defaults to off; input and
+output capture are independently controlled. Local persistence does not require
+an external collector.
 
 ### Responsibilities
 
@@ -13,8 +14,8 @@ Paths below are relative to `packages/website/`.
 
 | Owner                                | Responsibility                                                                                                            |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `convex/telemetry.ts`                | Registered settings/trace functions, ownership checks, indexed reads, and persistence                                     |
-| `src/utils/telemetry/convex.ts`      | Thin action-context adapter that attaches server-derived owner IDs and wires internal persistence mutations               |
+| `convex/telemetry.ts`                | Registered settings/trace functions, workspace/member checks, indexed reads, and persistence                              |
+| `src/utils/telemetry/convex.ts`      | Thin action-context adapter that attaches server-derived workspace and actor IDs and wires internal persistence mutations |
 | `src/utils/telemetry/integration.ts` | Collector contracts, AI SDK event handling, usage mapping, serialization, error formatting, and optional OTLP integration |
 | `src/utils/telemetry/summary.ts`     | Pure request deduplication and bounded-window summary calculation                                                         |
 | `src/utils/telemetry/validators.ts`  | Convex validators shared by registered functions and table schema                                                         |
@@ -27,20 +28,26 @@ exporter environment configuration and may construct an OTLP exporter.
 
 ### Request And Auth Flow
 
-`convex/http/chat_completion.ts` derives ownership from the validated Gateway
-key and loads the owner's settings. `convex/http/aisdk.chat.ts` validates the
-Chatroom session/chat and loads that user's settings. Both entry points gate
-instrumentation on `enabled`; the collector factory itself does not enforce that
-gate. Disabling settings also clears input/output recording flags in persistence.
+`convex/http/chat_completion.ts` derives the workspace from the validated Gateway
+key and loads that workspace's settings. `convex/http/aisdk.chat.ts` validates
+the Chatroom session and chat membership before loading the workspace settings.
+Both entry points gate instrumentation on `enabled`; the collector factory itself
+does not enforce that gate. Disabling settings also clears input/output recording
+flags in persistence.
 
 Chatroom passes the same request ID into its nested Gateway calls. List and
 summary queries prefer a Chatroom parent over a Gateway trace for that request
 without reordering requests. Completion linking by request ID remains unchanged.
 
-Public trace reads/deletes retain balance ownership checks. Internal trace start
-validates balance ownership and optional key/chat associations before inserting.
-These policies remain in Convex, not in the reusable collector. Tables, indexes,
-function names, and UI query contracts are unchanged by the extraction.
+General trace reads, details, summaries, and deletes are owner-only. They verify
+workspace ownership, apply bounded legacy-balance fallback while migration is
+pending, and filter traces associated with another user's personal chat. Shared
+workspace-chat traces remain eligible for the owner. Internal trace start
+validates workspace access for the actor and checks optional workspace-key,
+legacy-key, and chat associations before inserting. These policies remain in
+Convex, not in the reusable collector. Explicit owner-auditing records are not
+implemented; a future audit mode must preserve the same workspace and chat
+authorization.
 
 ### Bounds And Failures
 
@@ -74,14 +81,15 @@ and end/abort/error flush behavior are preserved. No hosted collector is require
 - Authorization, disabled entry-point gating, live OTLP delivery, and browser
   behavior were reviewed in source but not exercised against a deployment in
   this refactor. New tests exercise the extracted helpers with fake persistence.
+- Application-level encryption for captured workspace records is not implemented.
+  Do not treat request capture as encrypted audit evidence or a retention system.
 
 ## Verification
 
 Run from the repository root:
 
 ```sh
-bun test ./packages/website/src/utils/telemetry
-bun test ./packages/website
+bun test ./packages/website/src/test.ts
 ```
 
 Regression coverage includes independent capture controls, correlation, payload

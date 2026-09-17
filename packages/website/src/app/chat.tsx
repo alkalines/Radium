@@ -6,7 +6,8 @@ import { ensureSessionServer } from "@better-auth-ui/core/server";
 import { createFileRoute, Outlet, redirect, useRouterState } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { LockKeyholeIcon, UsersIcon } from "lucide-react";
 
 import { ChatPromptInput, type ReasoningEffort } from "@/components/chat/chat-prompt-input";
 import { ChatToolsMenu } from "@/components/chat/chat-tools-menu";
@@ -15,8 +16,18 @@ import {
   rememberChatHandoff,
 } from "@/components/chat/chat-loading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { api } from "../../convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
@@ -120,7 +131,6 @@ export const Route = createFileRoute("/chat")({
   },
   loader: ({ context: { queryClient } }) => {
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
-    void queryClient.prefetchQuery(convexQuery(api.models.availableModels, {}));
   },
   component: ChatRouteComponent,
 });
@@ -136,30 +146,51 @@ function ChatRouteComponent() {
 function ChatHomePage() {
   const navigate = Route.useNavigate();
   const { isMobile, setOpen, setOpenMobile } = useSidebar();
+  const { workspace, workspaceId } = useWorkspace();
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
-  const { data: models } = useQuery(convexQuery(api.models.availableModels, {}));
+  const {
+    data: models,
+    error: modelsError,
+    isFetching: modelsFetching,
+  } = useQuery(
+    convexQuery(api.models.availableModels, workspaceId ? { workspace: workspaceId } : "skip"),
+  );
   const createChat = useMutation(api.aisdk.CreateChat);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState<string>();
+  const [modelWorkspaceId, setModelWorkspaceId] = useState(workspaceId);
   const [provider, setProvider] = useState<string>();
   const [reasoningBudget, setReasoningBudget] = useState<number>();
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
+  const [scope, setScope] = useState<ChatScope>("personal");
   const [welcomeIndex] = useState(() => Math.floor(Math.random() * welcomeTextCount));
+
+  useEffect(() => {
+    if (modelWorkspaceId === workspaceId) return;
+    setModelWorkspaceId(workspaceId);
+    setModel(undefined);
+    setProvider(undefined);
+  }, [modelWorkspaceId, workspaceId]);
 
   const userName = typeof userInfo === "string" ? undefined : userInfo?.name;
   const welcomeText = getRandomWelcomeText(userName, welcomeIndex);
-  const balance = typeof userInfo === "string" ? undefined : userInfo?.balances[0];
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
   const defaultModelQuery = useQuery(
-    convexQuery(api.chatroom.getModelDefault, signedIn ? {} : "skip"),
+    convexQuery(
+      api.chatroom.getModelDefault,
+      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
   );
   const defaultModel = defaultModelQuery.data;
+  const explicitModel = modelWorkspaceId === workspaceId ? model : undefined;
+  const modelListLoading =
+    models === undefined || modelsFetching || modelWorkspaceId !== workspaceId;
   const isModelLoading =
-    models === undefined ||
+    modelListLoading ||
     Boolean(
       models.length > 0 &&
-      !model &&
+      !explicitModel &&
       (userInfo === undefined || (signedIn && defaultModelQuery.isPending)),
     );
   const availableDefaultModel = models?.some((item) => item.slug === defaultModel)
@@ -168,12 +199,28 @@ function ChatHomePage() {
   // The composer's effective model: explicit choice, then the user's saved
   // default, then the first available model as a last resort.
   const selectedModel =
-    model ?? (isModelLoading ? undefined : (availableDefaultModel ?? models?.[0]?.slug));
-  const canSubmit = Boolean(balance && selectedModel && !isSubmitting);
+    explicitModel ?? (isModelLoading ? undefined : (availableDefaultModel ?? models?.[0]?.slug));
   const selectedModelData = models?.find((item) => item.slug === selectedModel);
+  const canSubmit = Boolean(
+    workspaceId && !isModelLoading && selectedModel && selectedModelData && !isSubmitting,
+  );
   const selectedProvider = selectedModelData?.providers.some((item) => item.id === provider)
     ? provider
     : selectedModelData?.providers[0]?.id;
+
+  useEffect(() => {
+    if (
+      !model ||
+      !models ||
+      modelsFetching ||
+      modelWorkspaceId !== workspaceId ||
+      models.some((item) => item.slug === model)
+    ) {
+      return;
+    }
+    setModel(undefined);
+    setProvider(undefined);
+  }, [model, modelWorkspaceId, models, modelsFetching, workspaceId]);
   const handleModelChange = useCallback((nextModel: string) => {
     setModel(nextModel);
   }, []);
@@ -201,6 +248,15 @@ function ChatHomePage() {
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
+        {modelsError ? (
+          <Alert className="mb-4" variant="destructive">
+            <AlertTitle>Workspace unavailable</AlertTitle>
+            <AlertDescription>
+              This workspace is no longer available to your account. Choose another workspace from
+              the sidebar and try again.
+            </AlertDescription>
+          </Alert>
+        ) : null}
 
         <ChatPromptInput
           disabled={!canSubmit}
@@ -217,7 +273,7 @@ function ChatHomePage() {
               return;
             }
 
-            if (!balance || !selectedModel) {
+            if (!workspaceId || !selectedModel || !selectedModelData) {
               setError("Your account is not ready for chat yet.");
               return;
             }
@@ -232,7 +288,8 @@ function ChatHomePage() {
 
             try {
               const chatId = await createChat({
-                balance: balance._id,
+                workspace: workspaceId,
+                scope,
                 messages_queue: {
                   text: trimmedText,
                   files,
@@ -272,10 +329,65 @@ function ChatHomePage() {
           selectedModel={selectedModel}
           selectedProvider={selectedProvider}
           status={isSubmitting ? "submitted" : "ready"}
-          toolsMenu={<ChatToolsMenu balance={balance?._id} />}
+          toolsMenu={
+            <>
+              <ChatScopeMenu scope={scope} onChange={setScope} />
+              {workspace?.role === "owner" ? <ChatToolsMenu workspace={workspaceId} /> : null}
+            </>
+          }
         />
       </section>
     </main>
+  );
+}
+
+type ChatScope = "personal" | "workspace";
+
+function ChatScopeMenu({
+  scope,
+  onChange,
+}: {
+  scope: ChatScope;
+  onChange: (scope: ChatScope) => void;
+}) {
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>
+        {scope === "personal" ? <LockKeyholeIcon /> : <UsersIcon />}
+        Conversation visibility
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="w-72">
+        <DropdownMenuLabel>New chat visibility</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={scope}
+          onValueChange={(value) => {
+            if (value === "personal" || value === "workspace") onChange(value);
+          }}
+        >
+          <DropdownMenuRadioItem value="personal">
+            <span className="flex flex-col gap-0.5">
+              <span>Personal</span>
+              <span className="text-xs text-muted-foreground">
+                Private to the person who creates it.
+              </span>
+            </span>
+          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="workspace">
+            <span className="flex flex-col gap-0.5">
+              <span>Workspace</span>
+              <span className="text-xs text-muted-foreground">
+                Visible to members of this workspace.
+              </span>
+            </span>
+          </DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel className="whitespace-normal">
+          Personal chat encryption and audit controls are planned. This setting only controls who
+          can access the conversation.
+        </DropdownMenuLabel>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   );
 }
 

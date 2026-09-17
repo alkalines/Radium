@@ -65,7 +65,7 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
       <Alert>
         <AlertTitle>Trace not found</AlertTitle>
         <AlertDescription>
-          This trace was deleted or does not belong to your balance.
+          This trace was deleted or does not belong to your workspace.
         </AlertDescription>
       </Alert>
     );
@@ -771,7 +771,7 @@ function RunDetails({ data }: { data: TraceResult }) {
         Run details
         {completion && (
           <span className="ml-2 font-mono text-[10px]">
-            ${completion.response.pricing.cost.toFixed(6)}
+            Estimated ${completion.response.pricing.cost.toFixed(6)}
           </span>
         )}
         <ChevronDownIcon className="ml-auto size-3.5 transition-transform group-data-[state=open]:rotate-180" />

@@ -1,5 +1,5 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import type { GenericActionCtx } from "convex/server";
+import type { ActionCtx } from "./_generated/server";
 import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
@@ -10,17 +10,19 @@ import type { genCallbackType } from "@/utils/translators/openai";
 import type { TelemetryRequestContext } from "@/utils/telemetry/convex";
 
 type ErrorResponse = (error: unknown) => Response;
+type InternalChatContext = { userId: string; chatId: Id<"aisdk_chats"> };
 
 /**
  * Build the AI SDK provider backed by Radium's internal OpenAI-compatible gateway.
  */
 export function createInternalGatewayProvider(
-  ctx: GenericActionCtx<any>,
-  balanceId: Id<"balances">,
+  ctx: ActionCtx,
+  workspaceId: Id<"workspaces">,
   onError: ErrorResponse,
-  providerSlug?: string,
-  onGeneration?: (generation: Parameters<genCallbackType>[0]) => void,
-  telemetry?: TelemetryRequestContext,
+  providerSlug: string | undefined,
+  onGeneration: ((generation: Parameters<genCallbackType>[0]) => void) | undefined,
+  telemetry: TelemetryRequestContext | undefined,
+  chatContext: InternalChatContext,
 ) {
   return createOpenAICompatible({
     name: "Radium Gateway",
@@ -30,23 +32,29 @@ export function createInternalGatewayProvider(
       "HTTP-Referer": "https://github.com/alkalines/Radium",
       "X-Title": "Radium Chatroom",
     },
-    fetch: async (_input, init): Promise<Response> => {
+    fetch: (async (_input, init): Promise<Response> => {
       try {
         const requestBody = getGatewayRequestBody(init?.body);
         if (providerSlug) requestBody.provider = providerSlug;
+        const downstreamChatContext = {
+          actor: chatContext.userId,
+          userId: chatContext.userId,
+          chatId: chatContext.chatId,
+        };
         return await Internal_Chat_Completion(
           ctx,
           requestBody,
-          balanceId,
+          workspaceId,
           onGeneration,
           telemetry,
           init?.signal,
+          downstreamChatContext,
         );
       } catch (error) {
         console.error(error);
         return onError(error);
       }
-    },
+    }) as typeof fetch,
   });
 }
 

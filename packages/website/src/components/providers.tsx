@@ -10,6 +10,7 @@ import { authClient } from "@/lib/auth-client";
 import { useFrontendLogger } from "@/lib/logging";
 import { themePlugin } from "@/lib/auth/theme-plugin";
 import { AuthProvider } from "./auth/auth-provider";
+import { WorkspaceProvider } from "./workspaces/workspace-provider";
 import { TooltipProvider } from "./ui/tooltip";
 
 export function Providers({
@@ -72,7 +73,9 @@ export function Providers({
         >
           <ConvexAuthQueryCache>
             <OperationalLogging>
-              <TooltipProvider>{children}</TooltipProvider>
+              <WorkspaceProvider>
+                <TooltipProvider>{children}</TooltipProvider>
+              </WorkspaceProvider>
             </OperationalLogging>
           </ConvexAuthQueryCache>
         </AuthProvider>

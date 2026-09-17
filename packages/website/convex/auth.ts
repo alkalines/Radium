@@ -1,7 +1,7 @@
 import { createClient, type GenericCtx } from "@convex-dev/better-auth";
 import { convex } from "@convex-dev/better-auth/plugins";
 import { components } from "./_generated/api";
-import { DataModel, Doc, Id } from "./_generated/dataModel";
+import { DataModel } from "./_generated/dataModel";
 import { internalQuery, query } from "./_generated/server";
 import { betterAuth } from "better-auth";
 import authConfig from "./auth.config";
@@ -33,7 +33,6 @@ export type UserInfoType = {
   email: string;
   name: string;
   profilePicture?: string | null;
-  balances: Doc<"balances">[];
 };
 
 export const userInfo = query({
@@ -42,19 +41,10 @@ export const userInfo = query({
     const userAuth = await authComponent.getAuthUser(ctx);
     if (!userAuth) return "Not logged in!";
 
-    /**
-     * @todo Organization and teams support
-     */
-    const balances = await ctx.db
-      .query("balances")
-      .filter((q) => q.eq(q.field("userId"), userAuth._id))
-      .collect();
-
     return {
       email: userAuth.email,
       name: userAuth.name,
       profilePicture: userAuth?.image,
-      balances: balances,
     };
   },
 });
@@ -66,19 +56,12 @@ export const internalUserInfo = internalQuery({
   handler: async (ctx, args): Promise<UserInfoType> => {
     const userInfo = await authComponent.getAnyUserById(ctx, args.userId);
 
-    /**
-     * @todo Organization and teams support
-     */
-    const balances = await ctx.db
-      .query("balances")
-      .filter((q) => q.eq(q.field("userId"), userInfo!._id))
-      .collect();
+    if (!userInfo) throw new Error("User not found.");
 
     return {
-      email: userInfo!.email,
-      name: userInfo!.name,
-      profilePicture: userInfo!.image,
-      balances: balances,
+      email: userInfo.email,
+      name: userInfo.name,
+      profilePicture: userInfo.image,
     };
   },
 });

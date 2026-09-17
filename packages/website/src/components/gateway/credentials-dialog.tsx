@@ -30,13 +30,13 @@ export type CredentialsTarget = {
 
 export function CredentialsDialog({
   target,
-  balanceId,
+  workspaceId,
   hasExisting,
   preview,
   onOpenChange,
 }: {
   target: CredentialsTarget | null;
-  balanceId: Id<"balances"> | undefined;
+  workspaceId: Id<"workspaces"> | undefined;
   hasExisting: boolean;
   preview?: Record<string, string>;
   onOpenChange: (open: boolean) => void;
@@ -55,21 +55,21 @@ export function CredentialsDialog({
         typeof input === "string" || input instanceof URL ? input : input.url,
         window.location.origin,
       );
-      if (balanceId) url.searchParams.set("balance", balanceId);
+      if (workspaceId) url.searchParams.set("workspace", workspaceId);
       const { data } = await authClient.convex.token({ fetchOptions: { throw: false } });
       const headers = new Headers(init?.headers);
       if (data?.token) headers.set("Authorization", `Bearer ${data.token}`);
       return fetch(url, { ...init, headers, credentials: "include" });
     },
-    [balanceId],
+    [workspaceId],
   );
 
   async function save() {
-    if (!target || !balanceId) return;
+    if (!target || !workspaceId) return;
     setSubmitting(true);
     try {
       await upsertCredentials({
-        balance: balanceId,
+        workspace: workspaceId,
         provider: target.slug,
         credentials: values,
       });
@@ -83,10 +83,10 @@ export function CredentialsDialog({
   }
 
   async function remove() {
-    if (!target || !balanceId) return;
+    if (!target || !workspaceId) return;
     setSubmitting(true);
     try {
-      await deleteCredentials({ balance: balanceId as never, provider: target.slug });
+      await deleteCredentials({ workspace: workspaceId, provider: target.slug });
       toast.success(`Removed credentials for ${target.name}.`);
       onOpenChange(false);
     } catch (error) {
@@ -111,16 +111,16 @@ export function CredentialsDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {!balanceId ? (
+        {!workspaceId ? (
           <p className="text-sm text-muted-foreground">
-            You need an active balance before you can store credentials.
+            You need an active workspace before you can store credentials.
           </p>
         ) : target?.credential_type === "oauth" && target.oauth_flow === "chatgpt-device" ? (
           <div className="flex min-h-24 items-center justify-center py-2">
             <LoginWithChatGPT
               basePath="/api/chatgpt-subscription"
               consent={{ appName: "Radium" }}
-              fetch={oauthFetch}
+              fetch={oauthFetch as typeof fetch}
               label={hasExisting ? "Reconnect ChatGPT" : "Connect ChatGPT"}
             />
           </div>
@@ -150,13 +150,13 @@ export function CredentialsDialog({
         {target?.credential_type !== "oauth" ? (
           <DialogFooter className="sm:justify-between">
             {hasExisting ? (
-              <Button variant="ghost" onClick={remove} disabled={submitting || !balanceId}>
+              <Button variant="ghost" onClick={remove} disabled={submitting || !workspaceId}>
                 Remove
               </Button>
             ) : (
               <span />
             )}
-            <Button onClick={save} disabled={submitting || !balanceId || !complete}>
+            <Button onClick={save} disabled={submitting || !workspaceId || !complete}>
               {submitting && <Spinner data-icon="inline-start" />}
               Save
             </Button>

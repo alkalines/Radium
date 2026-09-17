@@ -13,11 +13,11 @@ import {
   type genCallbackType,
 } from "@/utils/translators/openai";
 import { convertStreamToAsyncIterator } from "@/utils/tools/chunkReader";
-import { completionUsage } from "../key";
-import { GenericActionCtx } from "convex/server";
-import { Id } from "../_generated/dataModel";
+import type { ActionCtx } from "../_generated/server";
+import type { Id } from "../_generated/dataModel";
 import {
   createTelemetryIntegrations,
+  type ChatRequestContext,
   type TelemetryRequestContext,
 } from "@/utils/telemetry/convex";
 
@@ -52,33 +52,41 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
         },
         { status: 401 },
       );
-    if (checkKey.usableCredits <= 0)
+    const apiKey = "apiKey" in checkKey ? checkKey.apiKey : undefined;
+    const legacyBalance = "legacyBalance" in checkKey ? checkKey.legacyBalance : undefined;
+    const legacyKey = "legacyKey" in checkKey ? checkKey.legacyKey : undefined;
+    const workspaceId =
+      checkKey.workspace ??
+      (legacyBalance
+        ? await ctx.runMutation(internal.workspaces.ensureForLegacyBalance, {
+            balance: legacyBalance,
+          })
+        : null);
+    if (!workspaceId) {
       return Response.json(
-        {
-          error: {
-            message: "Not enough credits available.",
-            code: 402,
-          },
-        },
-        { status: 402 },
+        { error: { message: "The API key is not assigned to a workspace.", code: 503 } },
+        { status: 503 },
       );
+    }
 
-    const provider = await AIBalancer(ctx, checkKey.balance!._id, reqData);
-    const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForUser, {
-      userId: checkKey.balance!.userId,
+    const provider = await AIBalancer(ctx, workspaceId, reqData);
+    const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForWorkspace, {
+      workspace: workspaceId,
     });
     // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
     return CreateCompletion(reqData, provider, {
       ctx,
-      balanceId: checkKey.balance!._id,
-      keyId: checkKey._id,
+      workspaceId,
+      apiKeyId: apiKey,
+      legacyBalanceId: legacyBalance,
+      legacyKeyId: legacyKey,
       byok: true,
       abortSignal: req.signal,
       telemetry: telemetrySettings.enabled
         ? {
-            balance: checkKey.balance!._id,
-            key: checkKey._id,
-            userId: checkKey.balance!.userId,
+            workspace: workspaceId,
+            apiKey,
+            userId: checkKey.userId,
             requestId: crypto.randomUUID(),
             settings: telemetrySettings,
           }
@@ -94,22 +102,27 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
 });
 
 export const Internal_Chat_Completion = async (
-  ctx: GenericActionCtx<any>,
+  ctx: ActionCtx,
   reqData: ChatCompletions_RequestBody_Type,
-  balanceId: Id<"balances">,
+  workspaceId: Id<"workspaces">,
   onGeneration?: (generation: Parameters<genCallbackType>[0]) => void,
   telemetry?: TelemetryRequestContext,
   abortSignal?: AbortSignal | null,
+  chatContext?: ChatRequestContext,
 ) => {
-  const provider = await AIBalancer(ctx, balanceId, reqData);
+  const provider = await AIBalancer(ctx, workspaceId, reqData);
+  const effectiveChatContext =
+    chatContext ??
+    (telemetry?.chatId ? { actor: telemetry.userId, chatId: telemetry.chatId } : undefined);
   // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
   return CreateCompletion(reqData, provider, {
     ctx,
-    balanceId,
+    workspaceId,
     byok: true,
     onGeneration,
     telemetry,
     abortSignal,
+    chatContext: effectiveChatContext,
   });
 };
 
@@ -117,9 +130,12 @@ const CreateCompletion = async (
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>,
   info: {
-    ctx: GenericActionCtx<any>;
-    balanceId: Id<"balances">;
-    keyId?: Id<"keys">;
+    ctx: ActionCtx;
+    workspaceId: Id<"workspaces">;
+    apiKeyId?: Id<"api_keys">;
+    legacyBalanceId?: Id<"balances">;
+    legacyKeyId?: Id<"keys">;
+    chatContext?: ChatRequestContext;
     byok: boolean;
     onGeneration?: (generation: Parameters<genCallbackType>[0]) => void;
     telemetry?: TelemetryRequestContext;
@@ -153,11 +169,9 @@ const CreateCompletion = async (
       async (genCompletion) => {
         // End of the stream
         info.onGeneration?.(genCompletion);
-        await info.ctx.runMutation(internal.key.billKey, {
-          bill: {
-            balance: info.balanceId,
-            key: info.keyId,
-          },
+        await info.ctx.runMutation(internal.key.recordCompletion, {
+          bill: completionBill(info),
+          ...completionActor(info),
           request: {
             api: "chat_completions",
             //app
@@ -241,11 +255,9 @@ const CreateCompletion = async (
       async (genCompletion) => {
         // End of the stream
         info.onGeneration?.(genCompletion);
-        await info.ctx.runMutation(internal.key.billKey, {
-          bill: {
-            balance: info.balanceId,
-            key: info.keyId,
-          },
+        await info.ctx.runMutation(internal.key.recordCompletion, {
+          bill: completionBill(info),
+          ...completionActor(info),
           request: {
             api: "chat_completions",
             //app
@@ -291,3 +303,21 @@ const CreateCompletion = async (
     return Response.json(generation);
   }
 };
+
+function completionBill(info: {
+  workspaceId: Id<"workspaces">;
+  apiKeyId?: Id<"api_keys">;
+  legacyBalanceId?: Id<"balances">;
+  legacyKeyId?: Id<"keys">;
+}) {
+  return {
+    workspace: info.workspaceId,
+    ...(info.apiKeyId ? { apiKey: info.apiKeyId } : {}),
+    ...(info.legacyBalanceId ? { balance: info.legacyBalanceId } : {}),
+    ...(info.legacyKeyId ? { key: info.legacyKeyId } : {}),
+  };
+}
+
+function completionActor(info: { chatContext?: ChatRequestContext }) {
+  return info.chatContext ? { actor: info.chatContext.actor, chatId: info.chatContext.chatId } : {};
+}

@@ -39,7 +39,9 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { mapModelsDevModel, type MappedModel } from "@/utils/models_dev";
 import { api } from "../../../convex/_generated/api";
-import type { Doc } from "../../../convex/_generated/dataModel";
+import type { Id } from "../../../convex/_generated/dataModel";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
+import type { WorkspaceProviderView } from "@/utils/workspaces/provider";
 import { formatPerMillion, formatTokens, useModelsDevCatalogue } from "./models-dev-catalogue";
 import { ProviderLogo } from "./provider-logo";
 
@@ -49,9 +51,10 @@ export function ModelManagerDialog({
   provider,
   onOpenChange,
 }: {
-  provider: Doc<"providers"> | null;
+  provider: WorkspaceProviderView | null;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { workspaceId } = useWorkspace();
   const [view, setView] = useState<ManagerView>("list");
 
   function close(open: boolean) {
@@ -63,12 +66,21 @@ export function ModelManagerDialog({
     <Dialog open={provider !== null} onOpenChange={close}>
       <DialogContent className="max-h-[85svh] gap-0 overflow-hidden p-0 sm:max-w-2xl">
         {provider && view === "catalogue" ? (
-          <AddFromCatalogue provider={provider} onBack={() => setView("list")} />
+          <AddFromCatalogue
+            provider={provider}
+            workspaceId={workspaceId}
+            onBack={() => setView("list")}
+          />
         ) : provider && view === "custom" ? (
-          <AddCustomModel provider={provider} onBack={() => setView("list")} />
+          <AddCustomModel
+            provider={provider}
+            workspaceId={workspaceId}
+            onBack={() => setView("list")}
+          />
         ) : provider ? (
           <ManagerList
             provider={provider}
+            workspaceId={workspaceId}
             onAddCatalogue={() => setView("catalogue")}
             onAddCustom={() => setView("custom")}
           />
@@ -80,10 +92,12 @@ export function ModelManagerDialog({
 
 function ManagerList({
   provider,
+  workspaceId,
   onAddCatalogue,
   onAddCustom,
 }: {
-  provider: Doc<"providers">;
+  provider: WorkspaceProviderView;
+  workspaceId: Id<"workspaces"> | undefined;
   onAddCatalogue: () => void;
   onAddCustom: () => void;
 }) {
@@ -93,7 +107,8 @@ function ManagerList({
   async function remove(model: string) {
     setRemoving(model);
     try {
-      await removeModel({ slug: provider.slug, model });
+      if (!workspaceId) return;
+      await removeModel({ workspace: workspaceId, slug: provider.slug, model });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to remove model.");
     } finally {
@@ -183,9 +198,11 @@ function ManagerList({
 
 function AddFromCatalogue({
   provider,
+  workspaceId,
   onBack,
 }: {
-  provider: Doc<"providers">;
+  provider: WorkspaceProviderView;
+  workspaceId: Id<"workspaces"> | undefined;
   onBack: () => void;
 }) {
   const { catalogue, error } = useModelsDevCatalogue(true);
@@ -234,10 +251,11 @@ function AddFromCatalogue({
 
   async function submit() {
     const chosen = available.filter((model) => selected.has(model.provider.model));
-    if (chosen.length === 0) return;
+    if (chosen.length === 0 || !workspaceId) return;
     setSubmitting(true);
     try {
       await addModels({
+        workspace: workspaceId,
         slug: provider.slug,
         models: chosen.map((model) => ({ global: model.global, provider: model.provider })),
       });
@@ -384,7 +402,15 @@ function perTokenString(dollarsPerMillion: string): string {
   return (value / 1_000_000).toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-function AddCustomModel({ provider, onBack }: { provider: Doc<"providers">; onBack: () => void }) {
+function AddCustomModel({
+  provider,
+  workspaceId,
+  onBack,
+}: {
+  provider: WorkspaceProviderView;
+  workspaceId: Id<"workspaces"> | undefined;
+  onBack: () => void;
+}) {
   const addModels = useMutation(api.providers.addProviderModels);
 
   const [name, setName] = useState("");
@@ -401,7 +427,7 @@ function AddCustomModel({ provider, onBack }: { provider: Doc<"providers">; onBa
   const valid = name.trim().length > 0 && upstreamId.trim().length > 0;
 
   async function submit() {
-    if (!valid) return;
+    if (!valid || !workspaceId) return;
     setSubmitting(true);
     try {
       const supported_parameters: MappedModel["provider"]["supported_parameters"] = [
@@ -416,6 +442,7 @@ function AddCustomModel({ provider, onBack }: { provider: Doc<"providers">; onBa
       if (tools) supported_parameters.push("tools", "tool_choice", "parallel_tool_calls");
 
       await addModels({
+        workspace: workspaceId,
         slug: provider.slug,
         models: [
           {

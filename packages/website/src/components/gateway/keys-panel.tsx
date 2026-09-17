@@ -2,6 +2,7 @@ import { useState } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { CheckIcon, CopyIcon, KeySquareIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -35,20 +36,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
-function formatCredits(value: number): string {
-  return `$${value.toFixed(value < 1 ? 4 : 2)}`;
-}
+type KeyRow = FunctionReturnType<typeof api.keys.listKeys>[number];
 
 export function KeysPanel() {
-  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
-  const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
+  const { workspaceId } = useWorkspace();
   const { data: keys } = useQuery(
-    convexQuery(api.keys.listKeys, balanceId ? { balance: balanceId } : "skip"),
+    convexQuery(api.keys.listKeys, workspaceId ? { workspace: workspaceId } : "skip"),
   );
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [deleting, setDeleting] = useState<{ _id: Id<"keys">; name: string } | null>(null);
+  const [deleting, setDeleting] = useState<KeyRow | null>(null);
 
   return (
     <div className="flex flex-col gap-4">
@@ -59,25 +58,25 @@ export function KeysPanel() {
             Issue and manage keys for calling models through the Radium Gateway.
           </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)} disabled={!balanceId}>
+        <Button onClick={() => setCreateOpen(true)} disabled={!workspaceId}>
           <PlusIcon data-icon="inline-start" />
           Create key
         </Button>
       </div>
 
-      {!balanceId && userInfo !== undefined && (
+      {!workspaceId && (
         <Alert>
-          <AlertTitle>No balance yet</AlertTitle>
-          <AlertDescription>A balance is required before keys can be issued.</AlertDescription>
+          <AlertTitle>No workspace selected</AlertTitle>
+          <AlertDescription>Select or create a workspace before issuing keys.</AlertDescription>
         </Alert>
       )}
 
-      {balanceId && keys === undefined ? (
+      {workspaceId && keys === undefined ? (
         <div className="flex flex-col gap-2">
           <Skeleton className="h-16" />
           <Skeleton className="h-16" />
         </div>
-      ) : balanceId && keys && keys.length === 0 ? (
+      ) : workspaceId && keys && keys.length === 0 ? (
         <Empty className="border border-dashed">
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -91,7 +90,7 @@ export function KeysPanel() {
             Create key
           </Button>
         </Empty>
-      ) : balanceId && keys ? (
+      ) : workspaceId && keys ? (
         <div className="flex flex-col divide-y rounded-lg border">
           {keys.map((key) => (
             <div key={key._id} className="flex items-center gap-3 p-3">
@@ -101,19 +100,14 @@ export function KeysPanel() {
                   {key.preview ?? "rad-sk-…"}
                 </span>
               </div>
-              <div className="flex shrink-0 flex-col items-end gap-1">
-                <Badge variant="secondary">{formatCredits(key.usedCredits)} used</Badge>
-                {key.creditLimit !== undefined && (
-                  <span className="text-xs text-muted-foreground">
-                    limit {formatCredits(key.creditLimit)}
-                  </span>
-                )}
-              </div>
+              <Badge variant={key.source === "legacy" ? "secondary" : "outline"}>
+                {key.source === "legacy" ? "Historical" : "Workspace"}
+              </Badge>
               <Button
                 variant="ghost"
                 size="icon"
                 className="text-muted-foreground hover:text-destructive"
-                onClick={() => setDeleting({ _id: key._id, name: key.name })}
+                onClick={() => setDeleting(key)}
                 aria-label={`Revoke ${key.name}`}
               >
                 <Trash2Icon />
@@ -123,8 +117,12 @@ export function KeysPanel() {
         </div>
       ) : null}
 
-      <CreateKeyDialog open={createOpen} onOpenChange={setCreateOpen} balanceId={balanceId} />
-      <RevokeKeyDialog target={deleting} onOpenChange={(open) => !open && setDeleting(null)} />
+      <CreateKeyDialog open={createOpen} onOpenChange={setCreateOpen} workspaceId={workspaceId} />
+      <RevokeKeyDialog
+        target={deleting}
+        workspaceId={workspaceId}
+        onOpenChange={(open) => !open && setDeleting(null)}
+      />
     </div>
   );
 }
@@ -132,34 +130,31 @@ export function KeysPanel() {
 function CreateKeyDialog({
   open,
   onOpenChange,
-  balanceId,
+  workspaceId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  balanceId: Id<"balances"> | undefined;
+  workspaceId: Id<"workspaces"> | undefined;
 }) {
   const createKey = useMutation(api.keys.createKey);
   const [name, setName] = useState("");
-  const [limit, setLimit] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   function reset() {
     setName("");
-    setLimit("");
     setCreated(null);
     setCopied(false);
   }
 
   async function submit() {
-    if (!balanceId || !name.trim()) return;
+    if (!workspaceId || !name.trim()) return;
     setSubmitting(true);
     try {
       const result = await createKey({
-        balance: balanceId,
+        workspace: workspaceId,
         name: name.trim(),
-        creditLimit: limit.trim() ? Number(limit) : undefined,
       });
       setCreated(result.key);
     } catch (error) {
@@ -210,7 +205,7 @@ function CreateKeyDialog({
             <DialogHeader>
               <DialogTitle>Create API key</DialogTitle>
               <DialogDescription>
-                Name your key and optionally cap how much credit it can spend.
+                Name your key for identifying gateway requests from this workspace.
               </DialogDescription>
             </DialogHeader>
             <FieldGroup>
@@ -223,23 +218,12 @@ function CreateKeyDialog({
                   onChange={(event) => setName(event.target.value)}
                 />
               </Field>
-              <Field>
-                <FieldLabel htmlFor="key-limit">Credit limit (optional)</FieldLabel>
-                <Input
-                  id="key-limit"
-                  inputMode="decimal"
-                  placeholder="No limit"
-                  value={limit}
-                  onChange={(event) => setLimit(event.target.value.replace(/[^0-9.]/g, ""))}
-                />
-                <FieldDescription>Maximum credits this key may spend, in dollars.</FieldDescription>
-              </Field>
             </FieldGroup>
             <DialogFooter>
               <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
                 Cancel
               </Button>
-              <Button onClick={submit} disabled={submitting || !name.trim() || !balanceId}>
+              <Button onClick={submit} disabled={submitting || !name.trim() || !workspaceId}>
                 {submitting && <Spinner data-icon="inline-start" />}
                 Create key
               </Button>
@@ -253,19 +237,27 @@ function CreateKeyDialog({
 
 function RevokeKeyDialog({
   target,
+  workspaceId,
   onOpenChange,
 }: {
-  target: { _id: Id<"keys">; name: string } | null;
+  target: KeyRow | null;
+  workspaceId: Id<"workspaces"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
   const deleteKey = useMutation(api.keys.deleteKey);
+  const deleteLegacyKey = useMutation(api.keys.deleteLegacyKey);
   const [submitting, setSubmitting] = useState(false);
 
   async function confirm() {
     if (!target) return;
     setSubmitting(true);
     try {
-      await deleteKey({ key: target._id });
+      if (target.source === "legacy") {
+        if (!workspaceId) return;
+        await deleteLegacyKey({ workspace: workspaceId, keyId: target._id });
+      } else {
+        await deleteKey({ key: target._id });
+      }
       toast.success(`Revoked ${target.name}.`);
       onOpenChange(false);
     } catch (error) {
@@ -281,7 +273,9 @@ function RevokeKeyDialog({
         <DialogHeader>
           <DialogTitle>Revoke {target?.name}?</DialogTitle>
           <DialogDescription>
-            Requests using this key will immediately stop working. This cannot be undone.
+            {target?.source === "legacy"
+              ? "This historical key will stop working immediately. This cannot be undone."
+              : "Requests using this key will immediately stop working. This cannot be undone."}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter className="sm:justify-between">

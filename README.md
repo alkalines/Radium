@@ -18,13 +18,14 @@ handles the providers behind it.
 
 - Route streaming and non-streaming chat completions across configured models
   and providers.
-- Bring your own provider credentials and keep them encrypted with Convex
-  Secret Store.
-- Manage a shared model catalogue, provider availability, pricing, context
-  limits, and supported parameters.
-- Issue hashed `rad-sk-...` API keys with optional credit limits.
+- Configure workspace-local provider endpoints, model mappings, and bring-your-own
+  provider credentials through Convex Secret Store.
+- Use the shared model catalogue while each workspace controls provider
+  availability, pricing, context limits, and supported parameters.
+- Issue hashed, workspace-scoped `rad-sk-...` API keys.
 - Record token usage, generation cost, time to first token, and completion
-  duration.
+  duration as operational estimates; Radium does not charge or require prepaid
+  credits.
 
 Radium currently exposes:
 
@@ -41,12 +42,14 @@ Use the same gateway through Radium's built-in chat experience. The Chatroom
 supports persistent conversations, model and provider selection, reasoning
 controls, configurable tools, and user-connected MCP servers.
 
-The Chatroom and public Gateway API share the same provider catalogue,
-credentials, billing records, and internal completion pipeline. This makes it
-useful both as a daily AI workspace and as a direct way to verify a gateway
-configuration.
+Each signed-in user can own multiple personal workspaces. Owners manage the
+workspace configuration and credentials; explicit members can use its configured
+models and shared chats while their personal chats remain private. The Chatroom
+and public Gateway API share workspace configuration, credentials, usage records,
+and the internal completion pipeline.
 
 [See how requests move through Radium](docs/architecture.md)
+[Read the Chatroom ownership model](docs/Radium_Chatroom.md)
 
 ### Radium Telemetry
 
@@ -55,27 +58,32 @@ It records request status, provider and model selection, timing, token usage,
 generation steps, and tool calls. Traces and spans can be explored in the
 Gateway UI.
 
-Telemetry is opt-in per user. Input recording and output recording are separate
-controls, and deployments can optionally export traces to an OTLP/HTTP
-collector.
+Telemetry is opt-in per workspace. Input recording and output recording are
+separate controls, general Gateway telemetry is owner-only, and private chat
+records are filtered from owner views. Deployments can optionally export traces
+to an OTLP/HTTP collector.
 
 [Configure telemetry export](docs/deployment.md#opentelemetry-export)
 
 ### Self-Hosted By Design
 
-Radium ships as a full self-hosted image containing the TanStack Start app and
-a local Convex backend. A frontend-only image is also available for deployments
-using Convex Cloud or a separately operated Convex backend.
+The repository contains intended full-image and frontend-only container paths for
+self-hosting. Those container and release paths are currently blocked and
+unverified pending the [workspace-layout audit](docs/tasks/09_Workspace_Operations.md);
+do not treat the command below as a working quickstart until that task is
+resolved. The verified development path uses the website package and Convex
+Cloud described below.
 
-Start the full stack with Docker Compose:
+Intended full-image invocation (currently blocked/unverified):
 
 ```bash
 SECRET_STORE_KEYS="1:$(openssl rand -base64 32)" \
 docker compose up --build
 ```
 
-The full image deploys the bundled Convex functions at startup and persists its
-backend state in a Docker volume.
+The intended full image would deploy the bundled Convex functions at startup and
+persist backend state in a Docker volume; this behavior is not currently a
+verified release path.
 
 [Read the deployment guide](docs/deployment.md)
 
@@ -109,14 +117,14 @@ Tailwind CSS, shadcn/ui, and Bun.
 
    ```bash
    bun install
-   cp .env.example .env.local
+   cp packages/website/.env.example packages/website/.env.local
    ```
 
-2. Set the secret placeholders in `.env.local`, then link or create a Convex
-   development deployment.
+2. Set the secret placeholders in `packages/website/.env.local`, then link or
+   create a Convex development deployment.
 
    ```bash
-   bun run convex:dev
+    bun run --cwd packages/website convex:dev
    ```
 
 3. Configure the required Convex runtime values described in the
@@ -125,14 +133,16 @@ Tailwind CSS, shadcn/ui, and Bun.
 4. In another terminal, start the web application.
 
    ```bash
-   bun run vite:dev
+    bun run --cwd packages/website vite:dev
    ```
 
 5. Open <http://localhost:3000> and create an account.
 
-Fresh deployments do not yet provision balances automatically. Create a
-balance for the Better Auth user in the Convex dashboard before configuring
-providers, credentials, and API keys under **Gateway**.
+The application provisions a personal workspace after sign-in. The workspace
+owner can import a provider, configure its credentials, and issue API keys under
+**Gateway**. No balance record or initial credit value is required for new BYOK
+operation. Owners can add existing Better Auth users directly as workspace
+members; there is no invitation-acceptance flow.
 
 After initial configuration, `bun run dev` starts Vite and Convex together.
 
@@ -157,19 +167,24 @@ curl "$VITE_CONVEX_SITE_URL/api/openai/v1/chat/completions" \
 - [Architecture](docs/architecture.md)
 - [API reference](docs/api.md)
 - [Deployment and configuration](docs/deployment.md)
+- [Gateway ownership](docs/Radium_Gateway/Ownership.md)
+- [Chatroom](docs/Radium_Chatroom.md)
+- [Offline API binding codegen](docs/deployment.md#offline-api-binding-codegen)
 
 ## Commands
 
-| Command                | Purpose                                  |
-| ---------------------- | ---------------------------------------- |
-| `bun run dev`          | Start Vite and Convex together           |
-| `bun run vite:dev`     | Start only the web app on port 3000      |
-| `bun run convex:dev`   | Start and develop against Convex         |
-| `bun run vite:build`   | Build the production application         |
-| `bun run vite:start`   | Run the built application                |
-| `bun run lint`         | Run ESLint                               |
-| `bun run format`       | Format supported files with oxfmt        |
-| `bun run format:check` | Check formatting without writing changes |
+| Command                                                               | Purpose                                  |
+| --------------------------------------------------------------------- | ---------------------------------------- |
+| `bun run dev`                                                         | Start Vite and Convex together           |
+| `bun run --cwd packages/website vite:dev`                             | Start only the web app on port 3000      |
+| `bun run --cwd packages/website convex:dev`                           | Start and develop against Convex         |
+| `bun run --cwd packages/website vite:build`                           | Build the production application         |
+| `bun run --cwd packages/website vite:start`                           | Run the built application                |
+| `bun run lint`                                                        | Run ESLint                               |
+| `bun run format`                                                      | Format supported files with oxfmt        |
+| `bun run format:check`                                                | Check formatting without writing changes |
+| `bun test ./packages/website/src/test.ts`                             | Run the website unit suite               |
+| `bun run --cwd packages/website vitest run --config vitest.config.ts` | Run Convex backend regressions           |
 
 ## Contributing
 
@@ -178,9 +193,11 @@ Use Bun and run the relevant checks before opening a pull request:
 ```bash
 bun run lint
 bun run format:check
-bun run vite:build
+bun run --cwd packages/website vite:build
+bun test ./packages/website/src/test.ts
+bun run --cwd packages/website vitest run --config vitest.config.ts
 ```
 
-There is currently no configured automated test script. Update the relevant
-documentation whenever behavior, configuration, commands, or public APIs
-change.
+There is no root `test` script, but the website unit suite is available through
+the explicit command above. Update the relevant documentation whenever behavior,
+configuration, commands, or public APIs change.

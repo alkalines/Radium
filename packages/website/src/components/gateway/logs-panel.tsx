@@ -43,12 +43,17 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { api } from "../../../convex/_generated/api";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { ProviderLogo } from "./provider-logo";
 
 type Generation = FunctionReturnType<typeof api.logs.getGenerations>[number];
 
-function formatCredits(value: number): string {
+function formatCost(value: number): string {
   return `$${value.toFixed(Math.abs(value) < 1 ? 4 : 2)}`;
+}
+
+function formatUsageType(byok: boolean): string {
+  return byok ? "BYOK" : "Historical credits";
 }
 
 function formatDate(timestamp: number): string {
@@ -81,10 +86,9 @@ const RANGE_PRESETS = {
 type RangePreset = keyof typeof RANGE_PRESETS;
 
 export function LogsPanel() {
-  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
-  const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
+  const { workspaceId } = useWorkspace();
   const { data: generations } = useQuery(
-    convexQuery(api.logs.getGenerations, balanceId ? { balance: balanceId } : "skip"),
+    convexQuery(api.logs.getGenerations, workspaceId ? { workspace: workspaceId } : "skip"),
   );
 
   const [preset, setPreset] = useState<RangePreset>("all");
@@ -117,19 +121,19 @@ export function LogsPanel() {
       <div className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold tracking-tight">Logs</h2>
         <p className="text-sm text-muted-foreground">
-          Every gateway request billed to this balance. Select a row to inspect identifiers, tokens,
+          Every gateway request in this workspace. Select a row to inspect identifiers, tokens,
           throughput, and latency.
         </p>
       </div>
 
-      {!balanceId && userInfo !== undefined && (
+      {!workspaceId && (
         <Alert>
-          <AlertTitle>No balance yet</AlertTitle>
-          <AlertDescription>A balance is required to record generations.</AlertDescription>
+          <AlertTitle>No workspace selected</AlertTitle>
+          <AlertDescription>Select or create a workspace to inspect generations.</AlertDescription>
         </Alert>
       )}
 
-      {balanceId && (
+      {workspaceId && (
         <div className="flex flex-wrap items-center gap-2">
           <Select value={preset} onValueChange={(value) => setPreset(value as RangePreset)}>
             <SelectTrigger className="w-44" size="sm">
@@ -186,13 +190,13 @@ export function LogsPanel() {
         </div>
       )}
 
-      {balanceId && generations === undefined ? (
+      {workspaceId && generations === undefined ? (
         <div className="flex flex-col gap-2">
           <Skeleton className="h-10" />
           <Skeleton className="h-10" />
           <Skeleton className="h-10" />
         </div>
-      ) : balanceId && filtered ? (
+      ) : workspaceId && filtered ? (
         filtered.length === 0 ? (
           <Empty className="py-12">
             <EmptyHeader>
@@ -203,7 +207,7 @@ export function LogsPanel() {
               <EmptyDescription>
                 {generations && generations.length > 0
                   ? "No generations match the selected date range."
-                  : "Gateway requests billed to this balance will appear here."}
+                  : "Gateway requests in this workspace will appear here."}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -218,7 +222,7 @@ export function LogsPanel() {
                   <TableHead>Provider</TableHead>
                   <TableHead className="text-right">Input</TableHead>
                   <TableHead className="text-right">Output</TableHead>
-                  <TableHead className="text-right">Cost</TableHead>
+                  <TableHead className="text-right">Estimated cost</TableHead>
                   <TableHead>Usage Type</TableHead>
                   <TableHead className="text-right">Speed</TableHead>
                   <TableHead>Finish Reason</TableHead>
@@ -268,11 +272,11 @@ function GenerationRow({ generation, onSelect }: { generation: Generation; onSel
       <TableCell className="text-right tabular-nums">{response.usage.prompt_tokens}</TableCell>
       <TableCell className="text-right tabular-nums">{response.usage.completion_tokens}</TableCell>
       <TableCell className="text-right font-mono tabular-nums">
-        {formatCredits(response.pricing.cost)}
+        {formatCost(response.pricing.cost)}
       </TableCell>
       <TableCell>
         <Badge variant={request.byok ? "outline" : "secondary"}>
-          {request.byok ? "BYOK" : "Credits"}
+          {formatUsageType(request.byok)}
         </Badge>
       </TableCell>
       <TableCell className="text-right tabular-nums">{tps.toFixed(1)} tok/s</TableCell>
@@ -337,7 +341,7 @@ function GenerationDetail({ generation }: { generation: Generation }) {
           )}
         </DetailSection>
 
-        <DetailSection title="Tokens & Cost">
+        <DetailSection title="Tokens & estimated cost">
           <DetailRow label="Input tokens" value={String(response.usage.prompt_tokens)} />
           <DetailRow label="Output tokens" value={String(response.usage.completion_tokens)} />
           {response.usage.completion_tokens_details.reasoning_tokens != null && (
@@ -352,11 +356,11 @@ function GenerationDetail({ generation }: { generation: Generation }) {
               value={String(response.usage.prompt_tokens_details.cached_tokens)}
             />
           )}
-          <DetailRow label="Cost" value={formatCredits(response.pricing.cost)} mono />
+          <DetailRow label="Estimated cost" value={formatCost(response.pricing.cost)} mono />
         </DetailSection>
 
         <DetailSection title="Request">
-          <DetailRow label="Usage type" value={request.byok ? "BYOK" : "Credits"} />
+          <DetailRow label="Usage type" value={formatUsageType(request.byok)} />
           <DetailRow label="Finish reason" value={response.finish_reason} />
           <DetailRow label="Streamed" value={request.streamed ? "Yes" : "No"} />
           <DetailRow label="Canceled" value={request.canceled ? "Yes" : "No"} />

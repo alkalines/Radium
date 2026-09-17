@@ -50,6 +50,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "../../../convex/_generated/api";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 const DAY = 24 * 60 * 60 * 1000;
 const RANGE_OPTIONS = [
@@ -59,13 +60,13 @@ const RANGE_OPTIONS = [
 ] as const;
 
 const dailyCostConfig = {
-  cost: { label: "Cost", color: "var(--chart-3)" },
+  cost: { label: "Estimated cost", color: "var(--chart-3)" },
 } satisfies ChartConfig;
 
 const usageTypeConfig = {
   requests: { label: "Requests" },
   byok: { label: "BYOK", color: "var(--chart-2)" },
-  credits: { label: "Credits", color: "var(--chart-4)" },
+  legacyCredits: { label: "Historical credits", color: "var(--chart-4)" },
 } satisfies ChartConfig;
 
 const tokenConfig = {
@@ -104,10 +105,9 @@ function formatDay(value: string): string {
 export function ActivityPanel() {
   const [range, setRange] = useState("30");
   const since = useMemo(() => Date.now() - Number(range) * DAY, [range]);
-  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
-  const balanceId = typeof userInfo === "string" ? undefined : userInfo?.balances[0]?._id;
+  const { workspaceId } = useWorkspace();
   const { data: activity } = useQuery(
-    convexQuery(api.logs.getActivity, balanceId ? { balance: balanceId, since } : "skip"),
+    convexQuery(api.logs.getActivity, workspaceId ? { workspace: workspaceId, since } : "skip"),
   );
 
   const cacheHitRate = activity?.summary.promptTokens
@@ -123,7 +123,7 @@ export function ActivityPanel() {
         <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold tracking-tight">Activity</h2>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Spend, traffic, and token behavior across your Radium Gateway.
+            Estimated upstream cost, traffic, and token behavior across your Radium Gateway.
           </p>
         </div>
         <Select value={range} onValueChange={setRange}>
@@ -142,14 +142,14 @@ export function ActivityPanel() {
         </Select>
       </div>
 
-      {!balanceId && userInfo !== undefined && (
+      {!workspaceId && (
         <Alert>
-          <AlertTitle>No activity yet</AlertTitle>
-          <AlertDescription>A gateway balance is required to record activity.</AlertDescription>
+          <AlertTitle>No workspace selected</AlertTitle>
+          <AlertDescription>Create a workspace to record gateway activity.</AlertDescription>
         </Alert>
       )}
 
-      {balanceId && activity === undefined ? (
+      {workspaceId && activity === undefined ? (
         <ActivitySkeleton />
       ) : activity ? (
         <>
@@ -164,7 +164,7 @@ export function ActivityPanel() {
 
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
-              title="Total spend"
+              title="Estimated cost"
               value={formatCurrency(activity.summary.spend)}
               detail={`Across ${range} days`}
               icon={CircleDollarSignIcon}
@@ -254,8 +254,8 @@ function DailyCostChart({ data }: { data: Array<{ date: string; cost: number }> 
   return (
     <Card className="xl:col-span-3">
       <CardHeader>
-        <CardTitle>Daily cost</CardTitle>
-        <CardDescription>Gateway spend over the selected period</CardDescription>
+        <CardTitle>Estimated daily cost</CardTitle>
+        <CardDescription>Estimated upstream cost over the selected period</CardDescription>
       </CardHeader>
       <CardContent>
         <ChartContainer config={dailyCostConfig} className="h-64 w-full">
@@ -301,19 +301,28 @@ function DailyCostChart({ data }: { data: Array<{ date: string; cost: number }> 
 function UsageTypeChart({
   usageTypes,
 }: {
-  usageTypes: { byok: { requests: number }; credits: { requests: number } };
+  usageTypes: {
+    byok: { requests: number };
+    legacyCredits?: { requests: number };
+  };
 }) {
   const data = [
     { type: "byok", requests: usageTypes.byok.requests, fill: "var(--color-byok)" },
-    { type: "credits", requests: usageTypes.credits.requests, fill: "var(--color-credits)" },
+    {
+      type: "legacyCredits",
+      requests: usageTypes.legacyCredits?.requests ?? 0,
+      fill: "var(--color-legacyCredits)",
+    },
   ].filter((entry) => entry.requests > 0);
-  const total = usageTypes.byok.requests + usageTypes.credits.requests;
+  const total = data.reduce((sum, entry) => sum + entry.requests, 0);
 
   return (
     <Card className="xl:col-span-2">
       <CardHeader>
-        <CardTitle>Usage type</CardTitle>
-        <CardDescription>BYOK compared with Radium credits</CardDescription>
+        <CardTitle>Usage source</CardTitle>
+        <CardDescription>
+          All requests use credentials configured in this workspace.
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex items-center gap-4">
         <ChartContainer config={usageTypeConfig} className="h-56 min-w-0 flex-1">
@@ -329,7 +338,9 @@ function UsageTypeChart({
         <div className="flex min-w-28 flex-col gap-3 text-sm">
           {data.map((entry) => (
             <div key={entry.type} className="flex flex-col gap-0.5">
-              <span className="capitalize text-muted-foreground">{entry.type}</span>
+              <span className="text-muted-foreground">
+                {entry.type === "byok" ? "BYOK" : "Historical credits"}
+              </span>
               <span className="font-medium tabular-nums">
                 {total ? ((entry.requests / total) * 100).toFixed(1) : "0.0"}%
               </span>

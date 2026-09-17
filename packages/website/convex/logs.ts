@@ -1,35 +1,76 @@
 import { v } from "convex/values";
-import { query } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
-import { requireOwnedBalance } from "./keys";
+import { query, type QueryCtx } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
+import { requireOwnedWorkspace } from "./workspaces";
+import { filterVisibleCompletions, type AttributedCompletion } from "./chat_observability";
 
-/**
- * Per-generation logs for a balance: the full request/response metadata for each
- * billed completion, used to render the gateway's Logs view.
- *
- * Unlike {@link api.credits.getCredits} — which only summarises spend — this
- * returns the complete persisted metadata for every generation (provider,
- * generation IDs, token usage, pricing breakdown, latency, finish reason).
- */
+type WorkspaceContext = QueryCtx;
+
+async function completionsForWorkspace(
+  ctx: WorkspaceContext,
+  workspace: Doc<"workspaces">,
+  since?: number,
+  readLimit = 200,
+  outputLimit = readLimit,
+) {
+  const current =
+    since !== undefined
+      ? await ctx.db
+          .query("chat_completions")
+          .withIndex("by_workspace", (q) =>
+            q.eq("bill.workspace", workspace._id).gte("_creationTime", since),
+          )
+          .order("desc")
+          .take(readLimit)
+      : await ctx.db
+          .query("chat_completions")
+          .withIndex("by_workspace", (q) => q.eq("bill.workspace", workspace._id))
+          .order("desc")
+          .take(readLimit);
+
+  const legacy = workspace.legacyBalance
+    ? since !== undefined
+      ? await ctx.db
+          .query("chat_completions")
+          .withIndex("by_balance", (q) =>
+            q.eq("bill.balance", workspace.legacyBalance!).gte("_creationTime", since),
+          )
+          .order("desc")
+          .take(readLimit)
+      : await ctx.db
+          .query("chat_completions")
+          .withIndex("by_balance", (q) => q.eq("bill.balance", workspace.legacyBalance!))
+          .order("desc")
+          .take(readLimit)
+    : [];
+  const byId = new Map(current.map((completion) => [completion._id, completion]));
+  for (const completion of legacy) byId.set(completion._id, completion);
+  const visible = await filterVisibleCompletions(ctx, workspace, [
+    ...byId.values(),
+  ] as AttributedCompletion[]);
+  return visible.sort((a, b) => b._creationTime - a._creationTime).slice(0, outputLimit);
+}
+
+/** Per-generation usage metadata for the workspace owner; members have no general Gateway access. */
 export const getGenerations = query({
   args: {
-    balance: v.id("balances"),
-    /** How many recent generations to return (defaults to 100, capped at 200). */
+    workspace: v.id("workspaces"),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    await requireOwnedBalance(ctx, args.balance);
-
-    const completions = await ctx.db
-      .query("chat_completions")
-      .withIndex("by_balance", (q) => q.eq("bill.balance", args.balance))
-      .order("desc")
-      .take(Math.min(args.limit ?? 100, 200));
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    const limit = Math.min(Math.max(args.limit ?? 100, 1), 200);
+    const completions = await completionsForWorkspace(ctx, workspace, undefined, limit * 2, limit);
 
     return Promise.all(
       completions.map(async (completion) => {
         const model = await ctx.db.get("models", completion.request.model);
-        const key = completion.bill.key ? await ctx.db.get("keys", completion.bill.key) : null;
+        const apiKey = completion.bill.apiKey
+          ? await ctx.db.get("api_keys", completion.bill.apiKey)
+          : null;
+        const legacyKey =
+          !apiKey && completion.bill.key ? await ctx.db.get("keys", completion.bill.key) : null;
+        const key = apiKey ?? legacyKey;
         return {
           _id: completion._id,
           _creationTime: completion._creationTime,
@@ -42,35 +83,26 @@ export const getGenerations = query({
             model: model ? { id: model._id, name: model.name, slug: model.slug } : null,
           },
           response: completion.response,
-          // @todo Surface the full request payload — system message, tools,
-          // tool calls, and user/assistant messages — once `chat_completions`
-          // persists it. This will be opt-in since transcripts can be large and
-          // may contain sensitive content (à la the AI SDK Devtools).
         };
       }),
     );
   },
 });
 
-/** Aggregated gateway activity for a bounded reporting window. */
+/**
+ * Aggregated workspace activity for the owner only; members have no general
+ * Gateway access. Costs are historical estimates, never billing or debits.
+ */
 export const getActivity = query({
   args: {
-    balance: v.id("balances"),
+    workspace: v.id("workspaces"),
     since: v.number(),
   },
   handler: async (ctx, args) => {
-    await requireOwnedBalance(ctx, args.balance);
-
-    const limit = 2000;
-    const completions = await ctx.db
-      .query("chat_completions")
-      .withIndex("by_balance", (q) =>
-        q.eq("bill.balance", args.balance).gte("_creationTime", args.since),
-      )
-      .order("desc")
-      .take(limit + 1);
-    const truncated = completions.length > limit;
-    const windowedCompletions = completions.slice(0, limit);
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    const completions = await completionsForWorkspace(ctx, workspace, args.since, 2001);
+    const truncated = completions.length > 2000;
+    const windowedCompletions = completions.slice(0, 2000);
 
     const summary = {
       spend: 0,
@@ -86,17 +118,22 @@ export const getActivity = query({
       { date: string; cost: number; requests: number; models: Record<string, number> }
     >();
     const byModel = new Map<Id<"models">, { requests: number; tokens: number; cost: number }>();
-    const byKey = new Map<Id<"keys"> | "unattributed", { requests: number; cost: number }>();
+    const byKey = new Map<string, { requests: number; cost: number }>();
+    // Keep historical credit traffic separate from current BYOK estimates.
     const usageTypes = {
       byok: { requests: 0, cost: 0 },
-      credits: { requests: 0, cost: 0 },
+      legacyCredits: { requests: 0, cost: 0 },
     };
 
     for (const completion of windowedCompletions) {
       const { usage, pricing } = completion.response;
       const tokens = usage.prompt_tokens + usage.completion_tokens;
       const modelId = completion.request.model;
-      const keyId = completion.bill.key ?? "unattributed";
+      const keyId = completion.bill.apiKey
+        ? `api:${completion.bill.apiKey}`
+        : completion.bill.key
+          ? `legacy:${completion.bill.key}`
+          : "unattributed";
       const date = new Date(completion._creationTime).toISOString().slice(0, 10);
 
       summary.spend += pricing.cost;
@@ -117,7 +154,7 @@ export const getActivity = query({
       key.cost += pricing.cost;
       byKey.set(keyId, key);
 
-      const usageType = completion.request.byok ? usageTypes.byok : usageTypes.credits;
+      const usageType = completion.request.byok ? usageTypes.byok : usageTypes.legacyCredits;
       usageType.requests += 1;
       usageType.cost += pricing.cost;
 
@@ -132,13 +169,23 @@ export const getActivity = query({
     const topKeys = [...byKey.entries()].sort((a, b) => b[1].requests - a[1].requests).slice(0, 5);
     const [models, keys] = await Promise.all([
       Promise.all(topModels.map(([id]) => ctx.db.get("models", id))),
-      Promise.all(topKeys.map(([id]) => (id === "unattributed" ? null : ctx.db.get("keys", id)))),
+      Promise.all(
+        topKeys.map(async ([id]) => {
+          if (id === "unattributed") return null;
+          if (id.startsWith("legacy:")) {
+            const key = await ctx.db.get("keys", id.slice("legacy:".length) as Id<"keys">);
+            return key ? { id, name: key.name } : null;
+          }
+          const key = await ctx.db.get("api_keys", id.slice("api:".length) as Id<"api_keys">);
+          return key ? { id, name: key.name } : null;
+        }),
+      ),
     ]);
     const modelNames = new Map<string, string>(
       models.filter((model) => model !== null).map((model) => [model._id, model.name]),
     );
     const keyNames = new Map<string, string>(
-      keys.filter((key) => key !== null).map((key) => [key._id, key.name]),
+      keys.filter((key) => key !== null).map((key) => [key.id, key.name]),
     );
 
     return {
