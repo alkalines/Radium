@@ -3,7 +3,7 @@
   "author": "alkalines",
   "version": "dev",
   "private": true,
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "apps/*"],
   "homepage": "https://github.com/alkalines/Radium#readme",
   "bugs": {
     "url": "https://github.com/alkalines/Radium/issues"
@@ -13,7 +13,7 @@
     "url": "git+https://github.com/alkalines/Radium.git"
   },
   "scripts": {
-    "dev": "bun --cwd packages/website dev",
+    "dev": "bun --cwd apps/web dev",
     "lint": "eslint",
     "format": "oxfmt",
     "format:check": "oxfmt --check"
