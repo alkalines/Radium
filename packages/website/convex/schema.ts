@@ -26,6 +26,7 @@ export default defineSchema({
     ownerType: v.literal("user"),
     ownerId: v.string(), // Better Auth user ID
     name: v.string(),
+    icon: v.optional(v.string()),
     archivedAt: v.optional(v.number()),
     /** Transitional mapping retained until the legacy tables are retired. */
     legacyBalance: v.optional(v.id("balances")),

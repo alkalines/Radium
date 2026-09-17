@@ -11,6 +11,7 @@ import {
 import { authComponent, createAuth } from "./auth";
 import schema from "./schema";
 import { canAccessResolvedChat, canAccessWorkspace } from "../src/utils/workspaces/policy";
+import { isWorkspaceIconName } from "../src/utils/workspaces/icons";
 
 const MAX_WORKSPACES = 100;
 const MAX_MEMBERS = 200;
@@ -22,6 +23,7 @@ const workspaceSummaryValidator = v.object({
   _id: v.id("workspaces"),
   _creationTime: v.number(),
   name: v.string(),
+  icon: v.optional(v.string()),
   ownerType: v.literal("user"),
   role: workspaceRoleValidator,
 });
@@ -87,6 +89,7 @@ function workspaceSummary(workspace: WorkspaceRecord, role: WorkspaceRole) {
     _id: workspace._id,
     _creationTime: workspace._creationTime,
     name: workspace.name,
+    icon: workspace.icon,
     ownerType: workspace.ownerType,
     role,
   };
@@ -465,6 +468,17 @@ export const rename = mutation({
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     await ctx.db.patch("workspaces", workspace._id, { name: normalizeWorkspaceName(args.name) });
+    return null;
+  },
+});
+
+export const setIcon = mutation({
+  args: { workspace: v.id("workspaces"), icon: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    if (!isWorkspaceIconName(args.icon)) throw new Error("Unsupported workspace icon.");
+    await ctx.db.patch("workspaces", workspace._id, { icon: args.icon });
     return null;
   },
 });

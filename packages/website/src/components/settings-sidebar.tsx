@@ -2,7 +2,7 @@
 
 import { useAuth } from "@better-auth-ui/react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeftIcon, RadioTowerIcon, Shield, User2 } from "lucide-react";
+import { ArrowLeftIcon, BoxesIcon, RadioTowerIcon, Shield, User2 } from "lucide-react";
 
 import { chatroomSections } from "@/components/chatroom/chatroom-settings";
 import { gatewaySections } from "@/components/gateway/gateway-settings";
@@ -15,6 +15,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar";
 
 /**
@@ -28,6 +29,10 @@ import {
  */
 export function SettingsSidebarSections({ pathname }: { pathname: string }) {
   const { basePaths, viewPaths, plugins, localization, Link: AuthLink } = useAuth();
+  const { isMobile, setOpenMobile } = useSidebar();
+  const closeMobileSidebar = () => {
+    if (isMobile) setOpenMobile(false);
+  };
 
   const accountItems = [
     {
@@ -81,6 +86,14 @@ export function SettingsSidebarSections({ pathname }: { pathname: string }) {
           <SidebarGroupLabel>{localization.settings.settings}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild isActive={pathname === "/settings/workspace"}>
+                  <Link to="/settings/workspace" onClick={closeMobileSidebar}>
+                    <BoxesIcon />
+                    <span>Workspaces</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
               {accountItems.map((item) => (
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton asChild isActive={pathname === item.href}>

@@ -181,3 +181,40 @@ test("HTTP chat authorization allows member shared chats but keeps personal chat
     scope: "personal",
   });
 });
+
+test("workspace icons are owner-managed and visible to members", async () => {
+  const t = makeTest();
+  const workspace = await t.run(async (ctx) => {
+    const workspaceId = await ctx.db.insert("workspaces", {
+      ownerType: "user",
+      ownerId: "owner",
+      name: "Shared workspace",
+    });
+    await ctx.db.insert("workspace_members", {
+      workspace: workspaceId,
+      userId: "member",
+      role: "member",
+    });
+    return workspaceId;
+  });
+  const owner = asUser(t, "owner");
+  const member = asUser(t, "member");
+
+  await expect(
+    owner.mutation(anyApi.workspaces.setIcon, { workspace, icon: "rocket" }),
+  ).resolves.toBeNull();
+  await expect(member.query(anyApi.workspaces.list, {})).resolves.toContainEqual(
+    expect.objectContaining({ _id: workspace, icon: "rocket", role: "member" }),
+  );
+  await expect(
+    member.mutation(anyApi.workspaces.setIcon, { workspace, icon: "server" }),
+  ).rejects.toThrow("Workspace not found.");
+  await expect(
+    owner.mutation(anyApi.workspaces.setIcon, { workspace, icon: "not-supported" }),
+  ).rejects.toThrow("Unsupported workspace icon.");
+
+  await t.run(async (ctx) => ctx.db.patch(workspace, { archivedAt: Date.now() }));
+  await expect(
+    owner.mutation(anyApi.workspaces.setIcon, { workspace, icon: "server" }),
+  ).rejects.toThrow("Workspace not found.");
+});

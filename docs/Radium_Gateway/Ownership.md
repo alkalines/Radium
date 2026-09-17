@@ -46,6 +46,13 @@ Auth organization. This is direct membership, not an invitation flow.
   filter other users' personal chats. The Chatroom and Gateway UI expose
   workspace selection; owner management uses the selected workspace for settings,
   credentials, keys, MCP servers, logs, and telemetry.
+- The application sidebar places workspace selection directly below the account
+  menu as a compact icon-and-name control. Owners can choose a workspace icon;
+  existing workspaces without one use the default boxes icon. Workspace creation,
+  renaming, icon selection, direct member access, archiving, and restoration live
+  on the authenticated `/settings/workspace` page. Adding a member grants an
+  existing Better Auth user access immediately; it does not send or create an
+  invitation.
 - Provider, Exa, and MCP secret values stay in Secret Store and are represented in
   application tables by metadata and masked previews. Broader application-level
   encryption is future work. Explicit owner-auditing records are also future

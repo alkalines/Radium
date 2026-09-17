@@ -107,13 +107,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
   return (
     <Sidebar className="border-r-0" {...props}>
-      <WorkspaceSwitcher />
       {inSettings ? (
         <SettingsSidebarSections pathname={pathname} />
       ) : (
         <MainSidebarSections chats={chats} chatsError={chatsError} pathname={pathname} />
       )}
       <SidebarFooter>
+        <WorkspaceSwitcher />
         <UserButton align="start" className="w-full justify-start" />
       </SidebarFooter>
       <SidebarRail />

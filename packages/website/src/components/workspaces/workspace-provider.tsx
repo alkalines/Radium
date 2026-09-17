@@ -1,7 +1,15 @@
 import { convexQuery } from "@convex-dev/react-query";
 import { useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { api } from "../../../convex/_generated/api";
@@ -17,6 +25,10 @@ type WorkspaceContextValue = {
   workspace?: WorkspaceSummary;
   workspaceId?: Id<"workspaces">;
   isLoading: boolean;
+  error: Error | null;
+  isProvisioning: boolean;
+  provisionError: Error | null;
+  retryProvisioning: () => void;
   setWorkspace: (workspaceId: Id<"workspaces">) => void;
 };
 
@@ -25,16 +37,36 @@ const STORAGE_KEY = "radium.workspace";
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
-  const { data, isPending } = useQuery(
+  const { data, isPending, error } = useQuery(
     convexQuery(api.workspaces.list, isAuthenticated ? {} : "skip"),
   );
   const ensurePersonalWorkspace = useMutation(api.workspaces.ensurePersonalWorkspace);
   const provisioned = useRef(false);
   const pendingSelection = useRef<string | undefined>(undefined);
   const [preferredId, setPreferredId] = useState<string>();
+  const [isProvisioning, setIsProvisioning] = useState(false);
+  const [provisionError, setProvisionError] = useState<Error | null>(null);
+
+  const provisionPersonalWorkspace = useCallback(() => {
+    if (!isAuthenticated || provisioned.current) return;
+    provisioned.current = true;
+    setIsProvisioning(true);
+    setProvisionError(null);
+    void ensurePersonalWorkspace({})
+      .catch((error: unknown) => {
+        provisioned.current = false;
+        setProvisionError(
+          error instanceof Error ? error : new Error("Failed to prepare a personal workspace."),
+        );
+      })
+      .finally(() => setIsProvisioning(false));
+  }, [ensurePersonalWorkspace, isAuthenticated]);
 
   useEffect(() => {
-    if (!isAuthenticated) provisioned.current = false;
+    if (!isAuthenticated) {
+      provisioned.current = false;
+      setProvisionError(null);
+    }
   }, [isAuthenticated]);
 
   useEffect(() => {
@@ -58,11 +90,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     ) {
       return;
     }
-    provisioned.current = true;
-    void ensurePersonalWorkspace({}).catch(() => {
-      provisioned.current = false;
-    });
-  }, [data, ensurePersonalWorkspace, isAuthenticated, isPending]);
+    provisionPersonalWorkspace();
+  }, [data, isAuthenticated, isPending, provisionPersonalWorkspace]);
 
   useEffect(() => {
     if (
@@ -96,6 +125,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         workspace,
         workspaceId: workspace?._id,
         isLoading: authLoading || isPending,
+        error,
+        isProvisioning,
+        provisionError,
+        retryProvisioning: provisionPersonalWorkspace,
         setWorkspace,
       }}
     >
