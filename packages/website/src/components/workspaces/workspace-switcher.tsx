@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { CheckIcon, ChevronsUpDownIcon, SettingsIcon } from "lucide-react";
+import { CheckIcon, ChevronsUpDownIcon, RotateCcwIcon, SettingsIcon } from "lucide-react";
 
 import {
   DropdownMenu,
@@ -20,9 +20,18 @@ import { WorkspaceIcon } from "./workspace-icon";
 import { useWorkspace } from "./workspace-provider";
 
 export function WorkspaceSwitcher() {
-  const { workspaces, workspace, workspaceId, isLoading, setWorkspace } =
-    useWorkspace();
+  const {
+    workspaces,
+    workspace,
+    workspaceId,
+    isLoading,
+    isProvisioning,
+    provisionError,
+    retryProvisioning,
+    setWorkspace,
+  } = useWorkspace();
   const { isMobile, setOpenMobile } = useSidebar();
+  const isPreparing = isLoading || isProvisioning;
 
   function closeMobileSidebar() {
     if (isMobile) setOpenMobile(false);
@@ -35,15 +44,19 @@ export function WorkspaceSwitcher() {
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
               className="h-9 rounded-xl px-3"
-              disabled={isLoading || !workspace}
-              tooltip={workspace?.name ?? "Workspace"}
+              disabled={isPreparing || (!workspace && !provisionError)}
+              tooltip={workspace?.name ?? (provisionError ? "Workspace setup failed" : "Workspace")}
             >
               <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-sidebar-accent text-sidebar-accent-foreground">
                 <WorkspaceIcon name={workspace?.icon} className="size-3.5" />
               </span>
               <span className="min-w-0 flex-1 truncate font-medium">
                 {workspace?.name ??
-                  (isLoading ? "Preparing..." : "No workspace")}
+                  (provisionError
+                    ? "Workspace setup failed"
+                    : isPreparing
+                      ? "Preparing..."
+                      : "No workspace")}
               </span>
               <ChevronsUpDownIcon className="ml-auto text-sidebar-foreground/60" />
             </SidebarMenuButton>
@@ -51,6 +64,12 @@ export function WorkspaceSwitcher() {
           <DropdownMenuContent align="start" side="right" className="w-64">
             <DropdownMenuGroup>
               <DropdownMenuLabel>Switch workspace</DropdownMenuLabel>
+              {provisionError ? (
+                <DropdownMenuItem onSelect={retryProvisioning}>
+                  <RotateCcwIcon />
+                  Retry setup
+                </DropdownMenuItem>
+              ) : null}
               {workspaces.map((item) => (
                 <DropdownMenuItem
                   key={item._id}

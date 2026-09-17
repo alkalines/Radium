@@ -54,6 +54,7 @@ import {
   PencilIcon,
   PinIcon,
   PinOffIcon,
+  RotateCcwIcon,
   Route as RouteIcon,
   SparklesIcon,
   Trash2Icon,
@@ -95,7 +96,13 @@ const data = {
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   // Subscribe to chats here (not in MainSidebarSections) so the query stays alive while
   // the settings/gateway nav is shown, avoiding a "Loading chats..." flash on return.
-  const { workspaceId } = useWorkspace();
+  const {
+    workspaceId,
+    isLoading: isWorkspaceLoading,
+    isProvisioning,
+    provisionError,
+    retryProvisioning,
+  } = useWorkspace();
   const { data: chats, error: chatsError } = useQuery(
     convexQuery(api.aisdk.ListChats, workspaceId ? { workspace: workspaceId } : "skip"),
   );
@@ -110,7 +117,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       {inSettings ? (
         <SettingsSidebarSections pathname={pathname} />
       ) : (
-        <MainSidebarSections chats={chats} chatsError={chatsError} pathname={pathname} />
+        <MainSidebarSections
+          chats={chats}
+          chatsError={chatsError}
+          pathname={pathname}
+          workspaceId={workspaceId}
+          isWorkspacePending={isWorkspaceLoading || isProvisioning}
+          provisionError={provisionError}
+          retryProvisioning={retryProvisioning}
+        />
       )}
       <SidebarFooter>
         <WorkspaceSwitcher />
@@ -125,10 +140,18 @@ function MainSidebarSections({
   pathname,
   chats,
   chatsError,
+  workspaceId,
+  isWorkspacePending,
+  provisionError,
+  retryProvisioning,
 }: {
   pathname: string;
   chats: SidebarChat[] | string | undefined;
   chatsError: Error | null;
+  workspaceId?: Id<"workspaces">;
+  isWorkspacePending: boolean;
+  provisionError: Error | null;
+  retryProvisioning: () => void;
 }) {
   const chatSections = Array.isArray(chats) ? groupChatsByLastInteraction(chats) : [];
   const navigate = useNavigate();
@@ -156,7 +179,31 @@ function MainSidebarSections({
           <SidebarGroupLabel>Recent chats</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {chatsError ? (
+              {!workspaceId ? (
+                provisionError ? (
+                  <>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton disabled size="sm">
+                        <span>Workspace setup failed</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton size="sm" onClick={retryProvisioning}>
+                        <RotateCcwIcon />
+                        <span>Retry setup</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  </>
+                ) : (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton disabled size="sm">
+                      <span>
+                        {isWorkspacePending ? "Preparing workspace..." : "No workspace available"}
+                      </span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )
+              ) : chatsError ? (
                 <SidebarMenuItem>
                   <SidebarMenuButton disabled size="sm">
                     <span>Chats unavailable for this workspace</span>
