@@ -348,7 +348,7 @@ test("separates historical credit activity from BYOK estimates", async () => {
       request: { provider: "byok", byok: true, model, streamed: false, canceled: false },
       response: response(7, 2),
     });
-    return { workspace };
+    return { workspace, legacyKey, apiKey };
   });
 
   const owner = asUser(t, "owner");
@@ -361,6 +361,12 @@ test("separates historical credit activity from BYOK estimates", async () => {
     byok: { requests: 1, cost: 7 },
     legacyCredits: { requests: 1, cost: 3 },
   });
+  expect(activity.apiKeys).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: `legacy:${ids.legacyKey}`, name: "Legacy key" }),
+      expect.objectContaining({ id: `api:${ids.apiKey}`, name: "BYOK key" }),
+    ]),
+  );
 
   const usage = await owner.query(anyApi.usage.getUsage, { workspace: ids.workspace });
   expect(usage.completions).toBe(2);

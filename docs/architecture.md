@@ -59,6 +59,12 @@ model is routable only when:
 - an enabled local provider configuration offers that model slug; and
 - the active workspace has credentials for that provider.
 
+While legacy migration is pending, completion routing through Gateway API keys
+and Gateway model listing may use enabled catalogue providers for a
+legacy-balance workspace with no local provider configuration rows. Any existing
+local row, including a disabled or tombstoned row, disables this fallback and
+restores the local-configuration invariant above.
+
 Provider, Exa, and MCP credentials are scoped to a workspace and stored through
 the Convex Secret Store component. Regular Convex tables contain only non-secret
 metadata and masked previews. Broader application-level encryption is future

@@ -457,6 +457,11 @@ if (write) {
   if (!fs.existsSync(dirname(outputPath)))
     fail(`generated directory does not exist: ${relative(repositoryRoot, dirname(outputPath))}`);
   fs.writeFileSync(outputPath, formatted, "utf8");
+} else {
+  const checkedIn = fs.readFileSync(outputPath, "utf8");
+  if (checkedIn !== formatted) {
+    fail(`${relative(repositoryRoot, outputPath)} is stale; rerun with --write`);
+  }
 }
 
 console.log(

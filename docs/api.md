@@ -10,7 +10,10 @@ export RADIUM_API_KEY="rad-sk-..."
 
 Create the workspace API key as its owner in **Gateway > API Keys**. Provider
 credentials and at least one enabled model/provider mapping must also be
-configured in that workspace before requesting a completion.
+configured in that workspace before requesting a completion, except that a
+legacy-balance workspace with no local provider configuration may temporarily
+use enabled catalogue providers while its migration is pending. Any existing
+local configuration row disables that fallback.
 
 ## Authentication
 
@@ -40,6 +43,10 @@ The response is an OpenAI-style model list enriched with Radium's model,
 architecture, parameter, pricing, and provider metadata. It is limited to models
 offered by enabled providers configured for the API key's workspace; provider
 endpoints and model mappings come from that workspace's local configuration.
+While legacy migration is pending, a legacy-balance workspace with no local
+configuration may instead list models from enabled catalogue providers. Any
+existing local configuration row, including a disabled or tombstoned row,
+disables that fallback.
 Workspace members use the same workspace-scoped model set through the Chatroom
 session path.
 

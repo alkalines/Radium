@@ -124,7 +124,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         workspaces,
         workspace,
         workspaceId: workspace?._id,
-        isLoading: authLoading || isPending,
+        isLoading: authLoading || (isAuthenticated && isPending),
         error,
         isProvisioning,
         provisionError,

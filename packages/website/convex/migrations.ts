@@ -1406,9 +1406,6 @@ export const verifyProviderSecrets = internalQuery({
         if (providers.length === 0) {
           addVerificationIssue(issues, samples, "provider_missing", balance._id);
         } else {
-          if (providers.length > 1) {
-            addVerificationIssue(issues, samples, "provider_catalog_duplicate", balance._id);
-          }
           await checkProvider(providers[0]!, providers.length > 1);
         }
       } else {

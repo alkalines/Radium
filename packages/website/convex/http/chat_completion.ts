@@ -52,6 +52,7 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
         },
         { status: 401 },
       );
+    const apiKey = "apiKey" in checkKey ? checkKey.apiKey : undefined;
     const legacyBalance = "legacyBalance" in checkKey ? checkKey.legacyBalance : undefined;
     const legacyKey = "legacyKey" in checkKey ? checkKey.legacyKey : undefined;
     const workspaceId =
@@ -76,7 +77,7 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
     return CreateCompletion(reqData, provider, {
       ctx,
       workspaceId,
-      apiKeyId: checkKey.apiKey,
+      apiKeyId: apiKey,
       legacyBalanceId: legacyBalance,
       legacyKeyId: legacyKey,
       byok: true,
@@ -84,7 +85,7 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
       telemetry: telemetrySettings.enabled
         ? {
             workspace: workspaceId,
-            apiKey: checkKey.apiKey,
+            apiKey,
             userId: checkKey.userId,
             requestId: crypto.randomUUID(),
             settings: telemetrySettings,

@@ -120,8 +120,8 @@ Tailwind CSS, shadcn/ui, and Bun.
    cp packages/website/.env.example packages/website/.env.local
    ```
 
-2. Set the secret placeholders in `.env.local`, then link or create a Convex
-   development deployment.
+2. Set the secret placeholders in `packages/website/.env.local`, then link or
+   create a Convex development deployment.
 
    ```bash
     bun run --cwd packages/website convex:dev

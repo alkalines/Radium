@@ -173,9 +173,11 @@ export const getActivity = query({
         topKeys.map(async ([id]) => {
           if (id === "unattributed") return null;
           if (id.startsWith("legacy:")) {
-            return await ctx.db.get("keys", id.slice("legacy:".length) as Id<"keys">);
+            const key = await ctx.db.get("keys", id.slice("legacy:".length) as Id<"keys">);
+            return key ? { id, name: key.name } : null;
           }
-          return await ctx.db.get("api_keys", id.slice("api:".length) as Id<"api_keys">);
+          const key = await ctx.db.get("api_keys", id.slice("api:".length) as Id<"api_keys">);
+          return key ? { id, name: key.name } : null;
         }),
       ),
     ]);
@@ -183,7 +185,7 @@ export const getActivity = query({
       models.filter((model) => model !== null).map((model) => [model._id, model.name]),
     );
     const keyNames = new Map<string, string>(
-      keys.filter((key) => key !== null).map((key) => [key._id, key.name]),
+      keys.filter((key) => key !== null).map((key) => [key.id, key.name]),
     );
 
     return {

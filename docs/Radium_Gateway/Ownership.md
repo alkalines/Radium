@@ -123,9 +123,10 @@ or use that command as migration-readiness evidence.
   runtime intentionally keeps bounded legacy fallback reads.
 - Provider catalogue records remain global and read-only to workspace mutations.
   A workspace with no configuration rows may temporarily fall back to enabled
-  catalogue providers while its legacy balance migration is pending. Once any
-  local configuration row exists, including a disabled or tombstoned row, the
-  workspace does not use that fallback.
+  catalogue providers while its legacy balance migration is pending. This
+  fallback applies to completion routing through Gateway API keys and to the
+  Gateway model listing. Once any local configuration row exists, including a
+  disabled or tombstoned row, the workspace does not use that fallback.
 - Intentionally blank user-created workspaces may have no provider configuration
   until the owner imports a provider; verification requires catalogue coverage
   for migrated workspaces with legacy resources.
