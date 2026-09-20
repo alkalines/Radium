@@ -7,7 +7,10 @@
     "moduleDetection": "force",
     "jsx": "react-jsx",
     "allowJs": true,
-    "types": ["node"],
+    "types": ["@types/node"],
+    "paths": {
+      "@/*": ["./src/*"]
+    },
 
     // folders
     "rootDir": "src",
