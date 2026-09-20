@@ -33,9 +33,7 @@ yarn-error.log*
 *.tsbuildinfo
 
 # convex
-apps/web/convex/_generated
-apps/web/convex/*/_generated
-apps/web/convex/components/*/_generated
+_generated/
 
 # tanstack
 .tanstack/
