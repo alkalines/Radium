@@ -58,7 +58,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { api } from "../../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { ProviderLogo } from "./provider-logo";
 import { formatTelemetryDate, formatTelemetryDuration, formatTokenCount } from "./telemetry-utils";

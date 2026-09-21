@@ -44,8 +44,8 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar";
-import { api } from "../../convex/_generated/api";
-import type { Id } from "../../convex/_generated/dataModel";
+import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 import { useWorkspace } from "./workspaces/workspace-provider";
 import {
   BotIcon,

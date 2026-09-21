@@ -15,10 +15,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { SUPPORTED_NPM } from "@/utils/models_dev";
-import type { AIProviderNpmPackage } from "@/utils/types/ai_provider";
-import { api } from "../../../convex/_generated/api";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { SUPPORTED_NPM } from "backend/src/utils/models_dev";
+import type { AIProviderNpmPackage } from "backend/src/utils/types/ai_provider";
+import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 
 /** Sensible default credential env var for each SDK package. */
 const DEFAULT_ENV: Partial<Record<AIProviderNpmPackage, string>> = {

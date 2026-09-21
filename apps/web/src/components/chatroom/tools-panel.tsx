@@ -10,7 +10,7 @@ import {
   EMPTY_TOOL_SELECTION,
   WEB_SEARCH_TOOL_ID,
   type ToolSelection,
-} from "@/utils/chatroom/tools";
+} from "backend/src/utils/chatroom/tools";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,8 +34,8 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { api } from "../../../convex/_generated/api";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 import { McpServerDialog, type McpServerEditTarget } from "./mcp-server-dialog";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 

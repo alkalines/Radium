@@ -1,9 +1,9 @@
 import { convexQuery } from "@convex-dev/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import type { Id } from "../../../../convex/_generated/dataModel";
+import type { Id } from "backend/convex/_generated/dataModel";
 
 import { TelemetryDetail } from "@/components/gateway/telemetry-detail";
-import { api } from "../../../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 
 export const Route = createFileRoute("/gateway/telemetry/$id")({
   staticData: { pageTitle: "Telemetry trace" },

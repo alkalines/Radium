@@ -19,7 +19,7 @@ import {
   WORKSPACE_ICON_NAMES,
   resolveWorkspaceIconName,
   type WorkspaceIconName,
-} from "@/utils/workspaces/icons";
+} from "backend/src/utils/workspaces/icons";
 
 const iconComponents: Record<WorkspaceIconName, LucideIcon> = {
   boxes: BoxesIcon,

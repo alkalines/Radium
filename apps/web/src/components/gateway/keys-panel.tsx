@@ -34,8 +34,8 @@ import {
 } from "@/components/ui/input-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
-import { api } from "../../../convex/_generated/api";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 type KeyRow = FunctionReturnType<typeof api.keys.listKeys>[number];

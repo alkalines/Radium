@@ -42,7 +42,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { api } from "../../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { ProviderLogo } from "./provider-logo";
 

@@ -14,7 +14,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "../../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 import { CredentialsDialog, type CredentialsTarget } from "./credentials-dialog";
 import { ProviderLogo } from "./provider-logo";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";

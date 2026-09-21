@@ -28,7 +28,7 @@ import {
 import { useSidebar } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
-import { api } from "../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
 

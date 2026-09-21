@@ -2,7 +2,7 @@ import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { FunctionReturnType } from "convex/server";
-import type { Id } from "../../../convex/_generated/dataModel";
+import type { Id } from "backend/convex/_generated/dataModel";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -33,7 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { api } from "../../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 import { ProviderLogo } from "./provider-logo";
 import { formatTelemetryDate, formatTelemetryDuration, formatTokenCount } from "./telemetry-utils";
 

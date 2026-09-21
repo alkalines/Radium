@@ -12,10 +12,10 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { api } from "../../../convex/_generated/api";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 import { useConvexAuth } from "convex/react";
-import { selectWorkspace } from "@/utils/workspaces/selection";
+import { selectWorkspace } from "backend/src/utils/workspaces/selection";
 
 type WorkspaceList = Exclude<FunctionReturnType<typeof api.workspaces.list>, string>;
 export type WorkspaceSummary = WorkspaceList[number];

@@ -19,7 +19,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { api } from "../../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 /**

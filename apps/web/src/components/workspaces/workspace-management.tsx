@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "../../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -64,7 +64,7 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   resolveWorkspaceIconName,
   type WorkspaceIconName,
-} from "@/utils/workspaces/icons";
+} from "backend/src/utils/workspaces/icons";
 import { WorkspaceIcon, workspaceIconOptions } from "./workspace-icon";
 import { useWorkspace, type WorkspaceSummary } from "./workspace-provider";
 

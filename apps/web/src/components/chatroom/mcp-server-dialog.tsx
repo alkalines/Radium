@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { toast } from "sonner";
 
-import { MCP_AUTH_TYPES, MCP_BEARER_SECRET_KEY, type McpAuthType } from "@/utils/chatroom/tools";
+import { MCP_AUTH_TYPES, MCP_BEARER_SECRET_KEY, type McpAuthType } from "backend/src/utils/chatroom/tools";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -22,8 +22,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { api } from "../../../convex/_generated/api";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 
 /** An MCP server being edited, or `null` when creating a new one. */
 export type McpServerEditTarget = {

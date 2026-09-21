@@ -49,7 +49,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "../../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 const DAY = 24 * 60 * 60 * 1000;

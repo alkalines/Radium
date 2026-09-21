@@ -13,7 +13,7 @@
     "url": "git+https://github.com/alkalines/Radium.git"
   },
   "scripts": {
-    "dev": "bun --cwd apps/web dev",
+    "dev": "concurrently -c magenta,yellow --names vite-dev,convex-dev \"bun --cwd apps/web dev --clearScreen false\" \"bun --cwd packages/backend run dev\"",
     "lint": "eslint",
     "format": "oxfmt",
     "format:check": "oxfmt --check"

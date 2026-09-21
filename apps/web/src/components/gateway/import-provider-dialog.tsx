@@ -42,14 +42,14 @@ import {
   type MappedModel,
   type ModelsDevApi,
   type ModelsDevProvider,
-} from "@/utils/models_dev";
-import type { AIProviderNpmPackage } from "@/utils/types/ai_provider";
-import { api } from "../../../convex/_generated/api";
-import type { Id } from "../../../convex/_generated/dataModel";
+} from "backend/src/utils/models_dev";
+import type { AIProviderNpmPackage } from "backend/src/utils/types/ai_provider";
+import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 import { formatPerMillion, formatTokens, useModelsDevCatalogue } from "./models-dev-catalogue";
 import { CustomProviderForm } from "./custom-provider-form";
 import { ProviderLogo } from "./provider-logo";
-import { OPENAI_CODEX_SLUG } from "@/utils/provider_slugs";
+import { OPENAI_CODEX_SLUG } from "backend/src/utils/provider_slugs";
 
 type SupportedProvider = ModelsDevProvider & {
   npm: AIProviderNpmPackage;

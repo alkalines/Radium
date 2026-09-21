@@ -94,8 +94,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "../../../convex/_generated/api";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";

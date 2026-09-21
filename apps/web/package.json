@@ -4,8 +4,7 @@
   "private": false,
   "author": "alkalines",
   "scripts": {
-    "dev": "concurrently -c magenta,yellow --names vite-dev,convex-dev \"bun run vite:dev --clearScreen false\" \"bun run convex:dev\"",
-    "convex:dev": "convex dev",
+    "dev": "bun run vite:dev",
     "vite:dev": "vite dev",
     "vite:build": "vite build",
     "vite:start": "bun .output/server/index.mjs",
@@ -53,6 +52,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "@xyflow/react": "^12.11.5",
     "ai": "^7.0.87",
+    "backend": "workspace:*",
     "better-auth": "^1.6.16",
     "bowser": "^2.14.1",
     "class-variance-authority": "^0.7.1",

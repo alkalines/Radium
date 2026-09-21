@@ -1,13 +1,13 @@
 import { useConvexAuth, useMutation } from "convex/react";
 
-import { api } from "../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 import {
   createLoggingEnvelope,
   isLoggingEnvelopeWithinLimits,
   LOGGING_PRODUCT,
   LOGGING_SOURCES,
   type LoggingEventInput,
-} from "../utils/logging/contract";
+} from "backend/src/utils/logging/contract";
 
 export type FrontendLogInput = Omit<LoggingEventInput, "product" | "source">;
 

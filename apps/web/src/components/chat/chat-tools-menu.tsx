@@ -5,7 +5,7 @@ import { useMutation } from "convex/react";
 import { SettingsIcon, WrenchIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { BUILTIN_TOOL_SETS } from "@/utils/chatroom/tools";
+import { BUILTIN_TOOL_SETS } from "backend/src/utils/chatroom/tools";
 import {
   DropdownMenuCheckboxItem,
   DropdownMenuItem,
@@ -15,8 +15,8 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
-import { api } from "../../../convex/_generated/api";
-import type { Id } from "../../../convex/_generated/dataModel";
+import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 
 /**
  * The "Tools" submenu shown inside the chat composer's `+` action menu.

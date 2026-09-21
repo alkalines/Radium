@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
-import { api } from "../../../convex/_generated/api";
+import { api } from "backend/convex/_generated/api";
 
 export const Route = createFileRoute("/gateway/telemetry")({
   staticData: { pageTitle: "Telemetry" },
