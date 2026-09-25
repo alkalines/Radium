@@ -1,7 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
-import { loggingEnvelopeSchema } from "../../../src/utils/logging/contract";
+import { loggingEnvelopeSchema } from "../../../src/logging/contract";
 
 export default defineSchema({
   events: defineTable({

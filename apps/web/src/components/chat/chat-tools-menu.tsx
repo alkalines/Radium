@@ -5,7 +5,7 @@ import { useMutation } from "convex/react";
 import { SettingsIcon, WrenchIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { BUILTIN_TOOL_SETS } from "backend/src/utils/chatroom/tools";
+import { BUILTIN_TOOL_SETS } from "backend/src/chatroom/tools";
 import {
   DropdownMenuCheckboxItem,
   DropdownMenuItem,

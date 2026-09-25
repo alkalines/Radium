@@ -1,6 +1,6 @@
 import { v } from "convex/values";
-import { credentialPreview } from "@/utils/credential_preview";
-import { MCP_BEARER_SECRET_KEY } from "@/utils/chatroom/tools";
+import { credentialPreview } from "@/credential_preview";
+import { MCP_BEARER_SECRET_KEY } from "@/chatroom/tools";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import {

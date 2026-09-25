@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import type { Id } from "../../../convex/_generated/dataModel";
-import type { AttributedCompletion } from "../../../convex/chat_observability";
+import type { Id } from "../../convex/_generated/dataModel";
+import type { AttributedCompletion } from "../../convex/chat_observability";
 import { isGatewayCompletionWithoutChat, isOwnerManagedGatewayTrace } from "./policy";
 
 const apiKey = "api_key_1" as Id<"api_keys">;

@@ -6,7 +6,7 @@ are roadmap items, not implemented compatibility promises.
 
 ## Work
 
-1. Inventory the current HTTP routes, translators, streaming/error handling, tool calls, usage attribution, and client tests under `packages/website/convex/http/` and `packages/website/src/utils/translators/`.
+1. Inventory the current HTTP routes, translators, streaming/error handling, tool calls, usage attribution, and client tests under `packages/backend/convex/http/` and `packages/backend/src/translators/`.
 2. Research official OpenAI Responses, Anthropic Messages, Gemini, and Grok APIs. Distinguish protocol differences from provider branding and existing OpenAI compatibility.
 3. Propose a shared routing boundary with protocol-specific request/stream/error translation and explicit capability negotiation. Preserve fields that cannot be translated losslessly; reject unsupported combinations instead of silently dropping semantics.
 4. Create one scoped task per approved protocol, with fixtures and streaming, cancellation, tool-call, error, and usage checks. Do not implement all protocols in one session.

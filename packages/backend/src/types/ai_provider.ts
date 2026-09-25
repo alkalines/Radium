@@ -87,7 +87,7 @@ export type AIProviderSDK_ModelSettings = {
      */
     search_prompt?: string;
   };
-  // Provider is supposed to be at src/utils/ai_balancer.ts
+  // Provider is supposed to be at src/ai_balancer.ts
 };
 export type AIProviderSDK = (
   Config: AIProviderSDK_Config,

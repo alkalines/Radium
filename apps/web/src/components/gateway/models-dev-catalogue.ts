@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { fetchModelsDev, type ModelsDevApi } from "backend/src/utils/models_dev";
+import { fetchModelsDev, type ModelsDevApi } from "backend/src/models_dev";
 
 /** Module-level cache so reopening dialogs doesn't refetch ~2 MB of catalogue. */
 let catalogueCache: Promise<ModelsDevApi> | null = null;

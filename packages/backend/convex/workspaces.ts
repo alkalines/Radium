@@ -10,8 +10,8 @@ import {
 } from "./_generated/server";
 import { authComponent, createAuth } from "./auth";
 import schema from "./schema";
-import { canAccessResolvedChat, canAccessWorkspace } from "../src/utils/workspaces/policy";
-import { isWorkspaceIconName } from "../src/utils/workspaces/icons";
+import { canAccessResolvedChat, canAccessWorkspace } from "../src/workspaces/policy";
+import { isWorkspaceIconName } from "../src/workspaces/icons";
 
 const MAX_WORKSPACES = 100;
 const MAX_MEMBERS = 200;

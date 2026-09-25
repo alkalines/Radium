@@ -10,7 +10,7 @@ import {
   EMPTY_TOOL_SELECTION,
   WEB_SEARCH_TOOL_ID,
   type ToolSelection,
-} from "backend/src/utils/chatroom/tools";
+} from "backend/src/chatroom/tools";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

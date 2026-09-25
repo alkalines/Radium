@@ -9,7 +9,7 @@ import {
   type ToolSet,
   type UIMessage,
 } from "ai";
-import { toExaCountry } from "../../src/utils/chatroom/user-location";
+import { toExaCountry } from "../../src/chatroom/user-location";
 import type { Id } from "../_generated/dataModel";
 import { authComponent, createAuth } from "../auth";
 import { internal } from "../_generated/api";
@@ -21,7 +21,7 @@ import {
   workspaceMcpSecretNamespace,
 } from "../secrets";
 import { createInternalGatewayProvider } from "../ai_gateway";
-import { createTelemetryIntegrations } from "@/utils/telemetry/convex";
+import { createTelemetryIntegrations } from "@/telemetry/convex";
 
 type ResponseHeaders = Record<string, string>;
 
@@ -363,7 +363,7 @@ async function buildChatTools(
  * Resolve the Exa web-search tool for a chat. Returns `undefined` (search
  * simply isn't offered) when Web Search is disabled or the workspace has no Exa
  * API key. The key is loaded here and never sent to the client; the user's
- * location is a mock for now (see `src/utils/chatroom/user-location.ts`).
+ * location is a mock for now (see `src/chatroom/user-location.ts`).
  */
 async function resolveExaWebSearch(
   ctx: ActionCtx,

@@ -1,4 +1,4 @@
-import { Models_Response_Type } from "@/utils/types/openai/models";
+import { Models_Response_Type } from "@/types/openai/models";
 import { v } from "convex/values";
 import { internalQuery, query } from "./_generated/server";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";

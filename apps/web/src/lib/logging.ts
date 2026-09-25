@@ -7,7 +7,7 @@ import {
   LOGGING_PRODUCT,
   LOGGING_SOURCES,
   type LoggingEventInput,
-} from "backend/src/utils/logging/contract";
+} from "backend/src/logging/contract";
 
 export type FrontendLogInput = Omit<LoggingEventInput, "product" | "source">;
 

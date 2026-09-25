@@ -4,22 +4,22 @@ import {
   ChatCompletions_RequestBody,
   ChatCompletions_RequestBody_Type,
   ChatCompletions_Streaming_Chunk_Type,
-} from "@/utils/types/openai/types";
-import AIBalancer from "@/utils/ai_balancer";
+} from "@/types/openai/types";
+import AIBalancer from "@/ai_balancer";
 import * as z from "zod";
 import {
   NonStreamingCompletion,
   StreamCompletion,
   type genCallbackType,
-} from "@/utils/translators/openai";
-import { convertStreamToAsyncIterator } from "@/utils/tools/chunkReader";
+} from "@/translators/openai";
+import { convertStreamToAsyncIterator } from "@/tools/chunkReader";
 import type { ActionCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
 import {
   createTelemetryIntegrations,
   type ChatRequestContext,
   type TelemetryRequestContext,
-} from "@/utils/telemetry/convex";
+} from "@/telemetry/convex";
 
 export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise<Response> => {
   try {

@@ -10,8 +10,8 @@ Auth organization. This is direct membership, not an invitation flow.
 - `workspaces` records use `ownerType: "user"` and the Better Auth user id as
   `ownerId`.
 - Workspace queries and mutations verify access on the server through
-  `packages/website/convex/workspaces.ts` and
-  `packages/website/src/utils/workspaces/policy.ts`. Browser-supplied
+  `packages/backend/convex/workspaces.ts` and
+  `packages/backend/src/workspaces/policy.ts`. Browser-supplied
   ownership or membership identifiers are not trusted.
 - `workspace_members` stores only explicit `member` rows. The owner is implicit.
   `addMember` and `removeMember` accept an existing Better Auth email and are
@@ -151,21 +151,21 @@ or use that command as migration-readiness evidence.
 
 ## Verification
 
-Run the focused website suite with:
+Run the backend unit suite with:
 
 ```sh
-bun test ./packages/website/src/test.ts
+bun test ./packages/backend/src/test.ts
 ```
 
 Run the registered Convex backend regression suite with:
 
 ```sh
-bun run --cwd packages/website vitest run --config vitest.config.ts
+bun run --cwd packages/backend vitest run --config vitest.config.ts
 ```
 
-The Bun suite includes `packages/website/src/utils/workspaces/policy.test.ts`,
-`packages/website/src/utils/workspaces/migration.test.ts`, and
-`packages/website/src/utils/workspaces/provider.test.ts`. The Convex suite
+The Bun suite includes `packages/backend/src/workspaces/policy.test.ts`,
+`packages/backend/src/workspaces/migration.test.ts`, and
+`packages/backend/src/workspaces/provider.test.ts`. The Convex suite
 covers handler-level workspace/member chat authorization, migration ownership
 checks, key revocation, and BYOK usage. No deployment migration has been run.
 Do not run the migration runner as a substitute for ownership and authorization

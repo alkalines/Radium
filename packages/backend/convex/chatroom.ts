@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { BUILTIN_TOOL_SETS, WEB_SEARCH_TOOL_ID } from "@/utils/chatroom/tools";
+import { BUILTIN_TOOL_SETS, WEB_SEARCH_TOOL_ID } from "@/chatroom/tools";
 import {
   internalQuery,
   mutation,

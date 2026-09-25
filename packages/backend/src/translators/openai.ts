@@ -8,7 +8,7 @@ import {
   type UIMessageChunk,
 } from "ai";
 import z from "zod";
-import { completionUsage } from "../../../convex/key";
+import { completionUsage } from "../../convex/key";
 import AIBalancer from "../ai_balancer";
 import { convertStreamToAsyncIterator } from "../tools/chunkReader";
 import { ToolsSchema } from "../types/openai/tools";

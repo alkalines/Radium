@@ -4,7 +4,7 @@ import { requireAccessibleChat } from "./workspaces";
 import {
   isGatewayCompletionWithoutChat,
   isOwnerManagedGatewayTrace,
-} from "../src/utils/workspaces/policy";
+} from "../src/workspaces/policy";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 

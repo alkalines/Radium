@@ -15,8 +15,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { SUPPORTED_NPM } from "backend/src/utils/models_dev";
-import type { AIProviderNpmPackage } from "backend/src/utils/types/ai_provider";
+import { SUPPORTED_NPM } from "backend/src/models_dev";
+import type { AIProviderNpmPackage } from "backend/src/types/ai_provider";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 

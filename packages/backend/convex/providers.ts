@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { credentialPreview } from "@/utils/credential_preview";
+import { credentialPreview } from "@/credential_preview";
 import type { Id } from "./_generated/dataModel";
 import {
   internalMutation,
@@ -27,8 +27,8 @@ import {
   providerNpmValidator,
   providerSnapshotFromCatalog,
   type ProviderSnapshot,
-} from "../src/utils/workspaces/provider";
-import { canAccessWorkspace } from "../src/utils/workspaces/policy";
+} from "../src/workspaces/provider";
+import { canAccessWorkspace } from "../src/workspaces/policy";
 
 type SecretReadResult = Awaited<ReturnType<typeof secrets.get>>;
 type SecretContext = QueryCtx | MutationCtx;

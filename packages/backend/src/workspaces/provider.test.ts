@@ -5,7 +5,7 @@ import {
   isWorkspaceProviderEnabled,
   workspaceProviderRecords,
   workspaceProviderView,
-} from "../../../convex/provider_records";
+} from "../../convex/provider_records";
 
 function provider(slug: string, api: string): ProviderSnapshot {
   return {

@@ -1,9 +1,6 @@
 import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import {
-  providerSnapshotFromCatalog,
-  type ProviderSnapshot,
-} from "../src/utils/workspaces/provider";
+import { providerSnapshotFromCatalog, type ProviderSnapshot } from "../src/workspaces/provider";
 
 type ProviderContext = QueryCtx | MutationCtx;
 

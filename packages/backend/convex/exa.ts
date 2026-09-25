@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { credentialPreview } from "@/utils/credential_preview";
+import { credentialPreview } from "@/credential_preview";
 import {
   internalQuery,
   mutation,

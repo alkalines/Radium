@@ -14,7 +14,7 @@ export const MODELS_DEV_API_URL = "https://models.dev/api.json";
 
 /**
  * The npm provider packages the gateway can actually connect to (see
- * `src/utils/providers.ts`). models.dev lists ~145 providers across many SDK
+ * `src/providers.ts`). models.dev lists ~145 providers across many SDK
  * packages; only these four are wired up, so the rest are surfaced as
  * unsupported in the UI.
  */

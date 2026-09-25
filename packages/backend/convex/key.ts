@@ -3,9 +3,9 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { AddFunction, MultiplyFunction } from "@/utils/math";
-import { canAccessWorkspace, isByokRequest } from "../src/utils/workspaces/policy";
-import { providerSnapshotFromCatalog } from "../src/utils/workspaces/provider";
+import { AddFunction, MultiplyFunction } from "@/math";
+import { canAccessWorkspace, isByokRequest } from "../src/workspaces/policy";
+import { providerSnapshotFromCatalog } from "../src/workspaces/provider";
 
 export const hashAlgorithm = "SHA-512";
 export const hashText = async (text: string) =>

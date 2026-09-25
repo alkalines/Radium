@@ -10,8 +10,8 @@ import {
   loggingEnvelopeSchema,
   LOGGING_LIMITS,
   LOGGING_SOURCES,
-} from "../src/utils/logging/contract";
-import { logger } from "../src/utils/logging/server";
+} from "../src/logging/contract";
+import { logger } from "../src/logging/server";
 
 const rateLimiter = new RateLimiter(components.rateLimiter, {
   ingest: {

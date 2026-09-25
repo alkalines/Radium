@@ -105,8 +105,8 @@ and configurable egress controls are not part of the current API contract; see
 
 ## Compatibility Scope
 
-The request validator and translators under `src/utils/types/openai/` and
-`src/utils/translators/` are the source of truth for accepted fields. Common
+The request validator and translators under `src/types/openai/` and
+`src/translators/` are the source of truth for accepted fields. Common
 chat messages, sampling settings, reasoning settings, tools, tool choice,
 structured response formats, token limits, and streaming are supported where
 the selected provider/model supports them.

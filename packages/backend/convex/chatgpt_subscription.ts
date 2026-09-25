@@ -5,7 +5,7 @@ import {
   type StoredSession,
 } from "@opencoredev/loginwithchatgpt-server";
 import type { GenericActionCtx } from "convex/server";
-import { OPENAI_CODEX_SLUG } from "../src/utils/provider_slugs";
+import { OPENAI_CODEX_SLUG } from "../src/provider_slugs";
 import { internal } from "./_generated/api";
 import { authComponent } from "./auth";
 

@@ -1,9 +1,9 @@
 import { ChatCompletions_RequestBody_Type } from "./types/openai/types";
 import Providers from "./providers";
-import { internal } from "../../convex/_generated/api";
+import { internal } from "../convex/_generated/api";
 import type { GenericActionCtx } from "convex/server";
-import type { Id } from "../../convex/_generated/dataModel";
-import { createChatGPTSubscriptionFetch } from "../../convex/chatgpt_subscription";
+import type { Id } from "../convex/_generated/dataModel";
+import { createChatGPTSubscriptionFetch } from "../convex/chatgpt_subscription";
 
 export default async function AIBalancer(
   ctx: GenericActionCtx<any>,

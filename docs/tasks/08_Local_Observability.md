@@ -5,9 +5,10 @@ Coordinate telemetry boundaries with task 01 and ownership with task 03.
 
 ## Entry Points
 
-Under `packages/website/`: `src/utils/logging/contract.ts`, `src/utils/logging/server.ts`,
-`src/lib/logging.ts`, `convex/logging.ts`, `convex/components/logging/`, and existing
-telemetry tables/functions. Operational events currently have no pruning or read UI.
+Under `packages/backend/`: `src/logging/contract.ts`, `src/logging/server.ts`,
+`convex/logging.ts`, `convex/components/logging/`, and existing telemetry
+tables/functions; frontend helper in `apps/web/src/lib/logging.ts`. Operational
+events currently have no pruning or read UI.
 
 ## Work
 

@@ -3,11 +3,11 @@ import type { ActionCtx } from "./_generated/server";
 import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
-} from "@/utils/types/openai/types";
+} from "@/types/openai/types";
 import type { Id } from "./_generated/dataModel";
 import { Internal_Chat_Completion } from "./http/chat_completion";
-import type { genCallbackType } from "@/utils/translators/openai";
-import type { TelemetryRequestContext } from "@/utils/telemetry/convex";
+import type { genCallbackType } from "@/translators/openai";
+import type { TelemetryRequestContext } from "@/telemetry/convex";
 
 type ErrorResponse = (error: unknown) => Response;
 type InternalChatContext = { userId: string; chatId: Id<"aisdk_chats"> };

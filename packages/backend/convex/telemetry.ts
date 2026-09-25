@@ -8,7 +8,7 @@ import {
   requireWorkspaceAccessForUser,
 } from "./workspaces";
 import { getEffectiveWorkspaceSettings, materializeWorkspaceSettings } from "./chatroom";
-import { preferChatroomTraces, summarizeTraces } from "../src/utils/telemetry/summary";
+import { preferChatroomTraces, summarizeTraces } from "../src/telemetry/summary";
 import {
   filterVisibleTraces,
   isCompletionVisible,
@@ -21,7 +21,7 @@ import {
   telemetrySpanKindSchema,
   telemetryStatusSchema,
   telemetryUsageSchema,
-} from "../src/utils/telemetry/validators";
+} from "../src/telemetry/validators";
 
 const defaultSettings = {
   enabled: false,

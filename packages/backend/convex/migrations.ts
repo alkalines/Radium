@@ -5,7 +5,7 @@ import { components, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import schema from "./schema";
-import { credentialPreview } from "../src/utils/credential_preview";
+import { credentialPreview } from "../src/credential_preview";
 import { getDefaultWorkspaceForUser } from "./workspaces";
 import {
   chatWorkspaceBackfillPatch,
@@ -13,7 +13,7 @@ import {
   migratedRevocationPatch,
   OWNERSHIP_MIGRATION_REMEDIATION,
   secretFailureNeedsRepair,
-} from "../src/utils/workspaces/migration";
+} from "../src/workspaces/migration";
 import {
   MCP_SECRET_NAME,
   balanceSecretName,
@@ -27,7 +27,7 @@ import {
   workspaceProviderSecretNamespace,
   type SecretNamespace,
 } from "./secrets";
-import { providerSnapshotFromCatalog } from "../src/utils/workspaces/provider";
+import { providerSnapshotFromCatalog } from "../src/workspaces/provider";
 
 export const migrations = new Migrations(components.migrations, { schema });
 

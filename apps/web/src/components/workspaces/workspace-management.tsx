@@ -64,7 +64,7 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   resolveWorkspaceIconName,
   type WorkspaceIconName,
-} from "backend/src/utils/workspaces/icons";
+} from "backend/src/workspaces/icons";
 import { WorkspaceIcon, workspaceIconOptions } from "./workspace-icon";
 import { useWorkspace, type WorkspaceSummary } from "./workspace-provider";
 

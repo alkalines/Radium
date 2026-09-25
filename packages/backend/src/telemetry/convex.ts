@@ -1,7 +1,7 @@
 import type { Telemetry } from "ai";
-import { internal } from "../../../convex/_generated/api";
-import type { Id } from "../../../convex/_generated/dataModel";
-import type { ActionCtx } from "../../../convex/_generated/server";
+import { internal } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
+import type { ActionCtx } from "../../convex/_generated/server";
 import {
   createTelemetryIntegrations as createTelemetryCollectorIntegrations,
   type TelemetrySettings,

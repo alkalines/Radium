@@ -37,11 +37,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import { mapModelsDevModel, type MappedModel } from "backend/src/utils/models_dev";
+import { mapModelsDevModel, type MappedModel } from "backend/src/models_dev";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
-import type { WorkspaceProviderView } from "backend/src/utils/workspaces/provider";
+import type { WorkspaceProviderView } from "backend/src/workspaces/provider";
 import { formatPerMillion, formatTokens, useModelsDevCatalogue } from "./models-dev-catalogue";
 import { ProviderLogo } from "./provider-logo";
 

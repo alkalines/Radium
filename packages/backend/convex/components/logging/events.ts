@@ -4,7 +4,7 @@ import {
   isLoggingEnvelopeWithinLimits,
   loggingEnvelopeSchema,
   LOGGING_LIMITS,
-} from "../../../src/utils/logging/contract";
+} from "../../../src/logging/contract";
 import { mutation } from "./_generated/server";
 
 /** Persist one already-authenticated operational event in the isolated component database. */

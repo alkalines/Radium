@@ -8,12 +8,12 @@ import {
   telemetrySpanKindSchema,
   telemetryStatusSchema,
   telemetryUsageSchema,
-} from "../src/utils/telemetry/validators";
+} from "../src/telemetry/validators";
 import {
   providerModelValidator,
   providerNpmValidator,
   providerSnapshotValidator,
-} from "../src/utils/workspaces/provider";
+} from "../src/workspaces/provider";
 
 export default defineSchema({
   /**
