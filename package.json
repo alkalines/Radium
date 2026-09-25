@@ -3,7 +3,7 @@
   "author": "alkalines",
   "version": "dev",
   "private": true,
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "apps/*"],
   "homepage": "https://github.com/alkalines/Radium#readme",
   "bugs": {
     "url": "https://github.com/alkalines/Radium/issues"
@@ -13,9 +13,13 @@
     "url": "git+https://github.com/alkalines/Radium.git"
   },
   "scripts": {
-    "dev": "bun --cwd packages/website dev",
+    "dev": "concurrently -c magenta,yellow --names vite-dev,convex-dev \"bun --cwd apps/web dev --clearScreen false\" \"bun --cwd packages/backend run dev\"",
+    "test": "bun run --cwd packages/backend test",
     "lint": "eslint",
     "format": "oxfmt",
     "format:check": "oxfmt --check"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5"
   }
 }

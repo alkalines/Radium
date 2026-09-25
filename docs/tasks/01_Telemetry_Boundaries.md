@@ -5,8 +5,8 @@ Scope: behavior-preserving refactor, not a telemetry rewrite.
 
 ## Entry Points
 
-Under `packages/website/`: `convex/telemetry.ts`, `convex/schema.ts`,
-`convex/http/`, `src/utils/telemetry/`, and `src/components/gateway/telemetry-*`.
+Under `packages/backend/`: `convex/telemetry.ts`, `convex/schema.ts`,
+`convex/http/`, and `src/telemetry/`; UI in `apps/web/src/components/gateway/telemetry-*`.
 
 ## Work
 
@@ -24,11 +24,11 @@ Under `packages/website/`: `convex/telemetry.ts`, `convex/schema.ts`,
 
 ## Outcome
 
-- Extracted collector/contracts/serialization/export into `packages/website/src/utils/telemetry/integration.ts`
-  with typed persistence callbacks; `packages/website/src/utils/telemetry/convex.ts`
+- Extracted collector/contracts/serialization/export into `packages/backend/src/telemetry/integration.ts`
+  with typed persistence callbacks; `packages/backend/src/telemetry/convex.ts`
   attaches ownership IDs and mutation wiring for action callers.
-- Extracted deduplication and aggregation into `packages/website/src/utils/telemetry/summary.ts`.
-- Consolidated shared validators in `packages/website/src/utils/telemetry/validators.ts`;
+- Extracted deduplication and aggregation into `packages/backend/src/telemetry/summary.ts`.
+- Consolidated shared validators in `packages/backend/src/telemetry/validators.ts`;
   bounded database access, authorization, schema, and API names remain in Convex.
 - Added collector and summary regression tests. No dependency or schema changes;
   no codegen, deployment, or data migration performed.
@@ -40,7 +40,7 @@ Under `packages/website/`: `convex/telemetry.ts`, `convex/schema.ts`,
 
 ## Verification Evidence
 
-- `bun test ./packages/website/src/utils/telemetry`: 12 passed, 0 failed.
+- `bun test ./packages/website/src/utils/telemetry`: 12 passed, 0 failed (original extraction).
 - `bun test ./packages/website`: 21 passed, 0 failed.
 - `bunx tsc --noEmit --incremental false -p packages/website/tsconfig.json`:
   blocked by 20 existing errors outside changed files (auth UI types, fetch

@@ -173,18 +173,17 @@ curl "$VITE_CONVEX_SITE_URL/api/openai/v1/chat/completions" \
 
 ## Commands
 
-| Command                                                               | Purpose                                  |
-| --------------------------------------------------------------------- | ---------------------------------------- |
-| `bun run dev`                                                         | Start Vite and Convex together           |
-| `bun run --cwd packages/website vite:dev`                             | Start only the web app on port 3000      |
-| `bun run --cwd packages/website convex:dev`                           | Start and develop against Convex         |
-| `bun run --cwd packages/website vite:build`                           | Build the production application         |
-| `bun run --cwd packages/website vite:start`                           | Run the built application                |
-| `bun run lint`                                                        | Run ESLint                               |
-| `bun run format`                                                      | Format supported files with oxfmt        |
-| `bun run format:check`                                                | Check formatting without writing changes |
-| `bun test ./packages/website/src/test.ts`                             | Run the website unit suite               |
-| `bun run --cwd packages/website vitest run --config vitest.config.ts` | Run Convex backend regressions           |
+| Command                              | Purpose                                               |
+| ------------------------------------ | ----------------------------------------------------- |
+| `bun run dev`                        | Start Vite and Convex together                        |
+| `bun run --cwd apps/web vite:dev`    | Start only the web app on port 3000                   |
+| `bun run --cwd packages/backend dev` | Start and develop against Convex                      |
+| `bun run --cwd apps/web vite:build`  | Build the production application                      |
+| `bun run --cwd apps/web vite:start`  | Run the built application                             |
+| `bun run lint`                       | Run ESLint                                            |
+| `bun run format`                     | Format supported files with oxfmt                     |
+| `bun run format:check`               | Check formatting without writing changes              |
+| `bun run test`                       | Run backend unit and Convex handler tests with Vitest |
 
 ## Contributing
 
@@ -193,11 +192,10 @@ Use Bun and run the relevant checks before opening a pull request:
 ```bash
 bun run lint
 bun run format:check
-bun run --cwd packages/website vite:build
-bun test ./packages/website/src/test.ts
-bun run --cwd packages/website vitest run --config vitest.config.ts
+bun run --cwd apps/web vite:build
+bun run test
 ```
 
-There is no root `test` script, but the website unit suite is available through
-the explicit command above. Update the relevant documentation whenever behavior,
+The test script runs all backend unit and Convex handler tests through Vitest.
+Update the relevant documentation whenever behavior,
 configuration, commands, or public APIs change.

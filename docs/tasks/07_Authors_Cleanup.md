@@ -4,9 +4,9 @@ Status: Not started. Independent; coordinate model/import edits with task 04.
 
 ## Entry Points
 
-Under `packages/website/`: `convex/authors.ts`, `convex/models.ts`,
-`convex/providers.ts`, `convex/schema.ts`, `src/utils/models_dev.ts`,
-`src/app/chat/$chatId.tsx`, and `src/components/chat/chat-prompt-input.tsx`.
+Under `packages/backend/`: `convex/authors.ts`, `convex/models.ts`,
+`convex/providers.ts`, `convex/schema.ts`, and `src/models_dev.ts`; UI in
+`apps/web/src/app/chat/$chatId.tsx` and `apps/web/src/components/chat/chat-prompt-input.tsx`.
 
 ## Work
 

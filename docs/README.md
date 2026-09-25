@@ -33,13 +33,13 @@ distinguish implemented behavior from proposals and rollout work.
 Documentation describes the checked-in implementation. When the docs and code
 disagree, use these files to verify behavior before correcting the docs:
 
-- HTTP route registration: `packages/website/convex/http.ts`
-- Endpoint behavior: `packages/website/convex/http/`
-- Database records and indexes: `packages/website/convex/schema.ts`
-- Workspace authorization and membership: `packages/website/convex/workspaces.ts` and
-  `packages/website/src/utils/workspaces/policy.ts`
-- Ownership migration definitions and verification: `packages/website/convex/migrations.ts`
-- Web routes: `packages/website/src/app/`
+- HTTP route registration: `packages/backend/convex/http.ts`
+- Endpoint behavior: `packages/backend/convex/http/`
+- Database records and indexes: `packages/backend/convex/schema.ts`
+- Workspace authorization and membership: `packages/backend/convex/workspaces.ts` and
+  `packages/backend/src/workspaces/policy.ts`
+- Ownership migration definitions and verification: `packages/backend/convex/migrations.ts`
+- Web routes: `apps/web/src/app/`
 - Commands and dependency versions: root and package `package.json` files
 - Container behavior: `packages/website/Dockerfile*`, `docker-compose*.yml`, and `packages/website/docker/`
 - Release behavior: `.github/workflows/release.yml`

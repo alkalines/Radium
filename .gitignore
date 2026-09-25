@@ -33,9 +33,9 @@ yarn-error.log*
 *.tsbuildinfo
 
 # convex
-convex/_generated
+_generated/
 
 # tanstack
 .tanstack/
 .output/
-src/routeTree.gen.ts
+routeTree.gen.ts

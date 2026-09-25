@@ -10,15 +10,15 @@ an external collector.
 
 ### Responsibilities
 
-Paths below are relative to `packages/website/`.
+Paths below are relative to `packages/backend/`.
 
-| Owner                                | Responsibility                                                                                                            |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `convex/telemetry.ts`                | Registered settings/trace functions, workspace/member checks, indexed reads, and persistence                              |
-| `src/utils/telemetry/convex.ts`      | Thin action-context adapter that attaches server-derived workspace and actor IDs and wires internal persistence mutations |
-| `src/utils/telemetry/integration.ts` | Collector contracts, AI SDK event handling, usage mapping, serialization, error formatting, and optional OTLP integration |
-| `src/utils/telemetry/summary.ts`     | Pure request deduplication and bounded-window summary calculation                                                         |
-| `src/utils/telemetry/validators.ts`  | Convex validators shared by registered functions and table schema                                                         |
+| Owner                          | Responsibility                                                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `convex/telemetry.ts`          | Registered settings/trace functions, workspace/member checks, indexed reads, and persistence                              |
+| `src/telemetry/convex.ts`      | Thin action-context adapter that attaches server-derived workspace and actor IDs and wires internal persistence mutations |
+| `src/telemetry/integration.ts` | Collector contracts, AI SDK event handling, usage mapping, serialization, error formatting, and optional OTLP integration |
+| `src/telemetry/summary.ts`     | Pure request deduplication and bounded-window summary calculation                                                         |
+| `src/telemetry/validators.ts`  | Convex validators shared by registered functions and table schema                                                         |
 
 The collector receives typed persistence callbacks, not a Convex context or
 generated API. It has no database, browser, or Convex imports. The summary module
@@ -89,7 +89,7 @@ and end/abort/error flush behavior are preserved. No hosted collector is require
 Run from the repository root:
 
 ```sh
-bun test ./packages/website/src/test.ts
+bun run test
 ```
 
 Regression coverage includes independent capture controls, correlation, payload

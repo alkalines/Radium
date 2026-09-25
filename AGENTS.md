@@ -13,13 +13,13 @@
 
 ## Repository And Commands
 
-- This is a Bun workspace. The TanStack Start/Vite frontend **and** Convex app live in `packages/website`. Routes are `packages/website/src/app`, configured with `routesDirectory: "app"` in its `vite.config.mts`.
-- `packages/website/src/router.tsx` wires TanStack Router, React Query, and `@convex-dev/react-query`. `@/*` resolves to the website's `src/*`.
-- Run `bun install` at the root. `bun run dev` starts website Vite and Convex, not the Runner.
-- Website commands from the root: `bun run --cwd packages/website vite:dev`, `bun run --cwd packages/website convex:dev`, `bun run --cwd packages/website vite:build`, and `bun run --cwd packages/website vite:start`.
-- Root scripts include `bun run lint`, `bun run format`, and `bun run format:check`. There is no configured test or typecheck script. Run the complete website unit suite with `bun test ./packages/website/src/test.ts`, and run the registered Convex backend regression suite with `bun run --cwd packages/website vitest run --config vitest.config.ts`; connect new website unit-test files from the appropriate entrypoint. Website unit tests use Bun's test runner APIs from `bun:test`; Convex handler tests use Vitest. Use explicit, scoped commands for other checks and report their results. Do not run repository-wide formatting for an unrelated change.
-- Ownership migration code is staged through `packages/website/convex/migrations.ts` and `@convex-dev/migrations`; `runAll` and the paginated verification queries have not been run against a deployment. Do not run remote migrations or any codegen mode that may upload functions without explicit authorization.
-- The checked-in Convex generated declarations are refreshed with the audited offline API-only command in `docs/deployment.md`, not by hand. It uses the installed Convex `componentApiDTS` internal template, writes only `packages/website/convex/_generated/api.d.ts`, and fails closed on unsupported config syntax. Never hand-edit `packages/website/convex/_generated/`; this path does not perform remote component analysis or deployment verification, so do not claim either.
+- This is a Bun workspace. The TanStack Start/Vite frontend lives in `apps/web`; the Convex app and shared backend code live in `packages/backend`. Frontend routes are `apps/web/src/app`, configured in `apps/web/vite.config.mts`.
+- `apps/web/src/router.tsx` wires TanStack Router, React Query, and `@convex-dev/react-query`. `@/*` resolves to the frontend's `src/*`.
+- Run `bun install` at the root. `bun run dev` starts Vite and Convex, not the Runner.
+- Frontend commands from the root: `bun run --cwd apps/web vite:dev`, `bun run --cwd apps/web vite:build`, and `bun run --cwd apps/web vite:start`. Convex dev: `bun run --cwd packages/backend dev`.
+- Root scripts include `bun run lint`, `bun run format`, `bun run format:check`, and `bun run test`. `bun run test` runs all `packages/backend/src/**/*.test.ts` unit tests and `packages/backend/convex/**/*.test.ts` handler regressions through Vitest (`packages/backend/vitest.config.ts`). Import test APIs from `vitest`; add new tests as `*.test.ts` files under the appropriate tree, without a central test entrypoint. To run a subset, use `bun run --cwd packages/backend test <path-filter>`. There is no configured typecheck script. Use explicit, scoped commands for other checks and report their results. Do not run repository-wide formatting for an unrelated change.
+- Ownership migration code is staged through `packages/backend/convex/migrations.ts` and `@convex-dev/migrations`; `runAll` and the paginated verification queries have not been run against a deployment. Do not run remote migrations or any codegen mode that may upload functions without explicit authorization.
+- The checked-in Convex generated declarations are refreshed with the audited offline API-only command in `docs/deployment.md`, not by hand. It uses the installed Convex `componentApiDTS` internal template, writes only `packages/backend/convex/_generated/api.d.ts`, and fails closed on unsupported config syntax. Never hand-edit `packages/backend/convex/_generated/`; this path does not perform remote component analysis or deployment verification, so do not claim either.
 - Check each package's `package.json` before documenting or running commands. Container and release paths are currently blocked and unverified pending the workspace-layout audit in [task 09](docs/tasks/09_Workspace_Operations.md); do not present those paths as a working quickstart or repair broad infrastructure in an ownership session.
 
 ## Work Method
@@ -33,15 +33,15 @@
 
 ## Boundaries And Reuse
 
-- Keep application `packages/website/convex/` focused on registered queries, mutations, actions, HTTP entry points, schema, configuration, and database/auth policy. Component implementations have their own schema and functions under `packages/website/convex/components/`.
-- Put reusable runtime-neutral contracts, formatting, serialization, routing decisions, and instrumentation helpers **outside** `convex/`, under the nearest domain module in `packages/website/src/utils/`; `packages/website/src/utils/logging/` is the shared logging example. Browser-specific helpers belong elsewhere under `src/`. Shared backend helpers must not import browser state or bundler-only modules.
+- Keep application `packages/backend/convex/` focused on registered queries, mutations, actions, HTTP entry points, schema, configuration, and database/auth policy. Component implementations have their own schema and functions under `packages/backend/convex/components/`.
+- Put reusable runtime-neutral contracts, formatting, serialization, routing decisions, and instrumentation helpers **outside** `convex/`, under the nearest domain module in `packages/backend/src/`; `packages/backend/src/logging/` is the shared logging example. Browser-specific helpers belong elsewhere under `src/`. Shared backend helpers must not import browser state or bundler-only modules.
 - Keep database access and ownership checks near the Convex function that owns them. Small local helpers are fine; do not scatter one feature into `*_schemas`, `*_integration`, and utility modules with duplicate definitions. File count alone is not the problem: establish one owner per contract or policy.
 - Promote genuinely repeated validators, auth checks, provider options, error mappings, and header sets to their nearest shared owner. Avoid copied branches, one-use abstraction layers, generic frameworks, and parallel implementations of the same feature.
 - Prefer a Convex Component for reusable isolated persistence or durable infrastructure; prefer `convex-helpers` for appropriate function wrappers and stateless conveniences. Evaluate maintenance, license, peer versions, self-hosted operation, auth boundaries, idempotency, migrations, and tests before adoption. Do not depend on transitive packages directly.
 - `convex-helpers` is not an auth provider. An app auth wrapper must preserve Better Auth session validation via `authComponent.getAuthUser(ctx)`. Keep browser-session auth, Gateway API-key auth, internal jobs, and upstream credentials distinct. See [research notes](docs/research/Convex_Reuse.md) before adopting wrappers or RLS.
 - Components do not inherit application auth or table access. Authenticate and authorize in the app wrapper, then pass server-derived identity into the component. Never trust browser-supplied ownership identifiers.
 - Use argument and return validators on new Convex functions, bounded/indexed reads, explicit ownership checks, and tested retry/idempotency behavior. Preserve authorization when consolidating code.
-- Use TSDoc for useful public contracts and non-obvious behavior, not narration of obvious code. Follow existing formatting and UI conventions; shadcn config is `packages/website/components.json`, styles are `packages/website/src/styles/app.css`.
+- Use TSDoc for useful public contracts and non-obvious behavior, not narration of obvious code. Follow existing formatting and UI conventions; shadcn config is `apps/web/components.json`, styles are `apps/web/src/styles/app.css`.
 
 ## Domain Guardrails
 
@@ -50,17 +50,17 @@
 - **Upstreams:** distinguish provider/protocol adapter, model mapping, endpoint, credential/account, and schedulable upstream instance. The design must accommodate multiple ChatGPT accounts and multiple vLLM/Ollama servers, not one credential per brand. Pooling, weights, health, concurrency, cooldowns, and safe failover are planned. Never retry after emitted stream output or duplicate billable/side-effecting work without an explicit policy.
 - **Secrets:** preserve write-only Secret Store storage and masked displays. Broader application-level encryption is future work. Never put credentials in browser state beyond necessary input, logs, task notes, or model metadata. Endpoint configuration is owner-only today; a separate [upstream endpoint task](docs/tasks/04_Upstream_Instances.md) must define SSRF/private-network policy and configurable egress while preserving deliberately configured local servers.
 - **Observability:** operational logging, optional AI request capture, and analytics are separate purposes with separate privacy and retention policy. General Gateway telemetry reads are owner-only and filter other users' private chats. Explicit owner-auditing records are future work and must not bypass workspace or chat authorization. Core operation must work locally without PostHog or another hosted collector. Existing optional OTLP export is not a required service.
-- **Logging now:** Convex code uses `packages/website/src/utils/logging/server.ts` (console only); the frontend uses `packages/website/src/lib/logging.ts` and the local logging Component through an authenticated app wrapper. Reuse the versioned contract, bounded metadata, and correlation fields. Do not log secrets, prompts, responses, or transcripts by default. Logging must not break the primary operation. See [logging guide](docs/logging.md) for limits, including missing retention.
+- **Logging now:** Convex code uses `packages/backend/src/logging/server.ts` (console only); the frontend uses `apps/web/src/lib/logging.ts` and the local logging Component through an authenticated app wrapper. Reuse the versioned contract, bounded metadata, and correlation fields. Do not log secrets, prompts, responses, or transcripts by default. Logging must not break the primary operation. See [logging guide](docs/logging.md) for limits, including missing retention.
 - **Legacy code:** inspect references before deleting Authors or similar leftovers. Standalone author queries appear unused, but the author table still supports model imports and selectors. Remove proven dead surfaces separately from persisted-model migrations.
 
 ## Current Entry Points
 
-- Gateway HTTP registration: `packages/website/convex/http.ts`; handlers: `packages/website/convex/http/`. Public routes include `POST /api/openai/v1/chat/completions` and `GET /api/openai/v1/models`, hosted on the Convex site, not Vite.
-- Chatroom posts to `POST /api/aisdk/chat`; `packages/website/convex/http/aisdk.chat.ts` uses AI SDK and the internal OpenAI-compatible completion flow.
-- Better Auth: `packages/website/src/app/api/auth/$.ts`, `packages/website/convex/auth.ts`, `packages/website/convex/auth.config.ts`, and `packages/website/convex/convex.config.ts`.
-- Workspace ownership: `packages/website/convex/workspaces.ts`, `packages/website/convex/migrations.ts`, `packages/website/convex/schema.ts` (`workspaces` and `workspace_members`), `packages/website/src/utils/workspaces/policy.ts`, `packages/website/convex/chat_observability.ts`, and `docs/Radium_Gateway/Ownership.md`.
+- Gateway HTTP registration: `packages/backend/convex/http.ts`; handlers: `packages/backend/convex/http/`. Public routes include `POST /api/openai/v1/chat/completions` and `GET /api/openai/v1/models`, hosted on the Convex site, not Vite.
+- Chatroom posts to `POST /api/aisdk/chat`; `packages/backend/convex/http/aisdk.chat.ts` uses AI SDK and the internal OpenAI-compatible completion flow.
+- Better Auth: `apps/web/src/app/api/auth/$.ts`, `packages/backend/convex/auth.ts`, `packages/backend/convex/auth.config.ts`, and `packages/backend/convex/convex.config.ts`.
+- Workspace ownership: `packages/backend/convex/workspaces.ts`, `packages/backend/convex/migrations.ts`, `packages/backend/convex/schema.ts` (`workspaces` and `workspace_members`), `packages/backend/src/workspaces/policy.ts`, `packages/backend/convex/chat_observability.ts`, and `docs/Radium_Gateway/Ownership.md`.
 - Public env names include `VITE_CONVEX_URL`, `VITE_CONVEX_SITE_URL`, and `CONVEX_DEPLOYMENT`. Convex runtime configuration includes `SITE_URL`, `SECRET_STORE_KEYS`, `AISDK_MaxRetries`, and feature-specific `LWC_SECRET`. Verify usage before changes; keep the owning env example and deployment guide aligned. Never print real env values.
-- Do not hand-edit `packages/website/convex/_generated/` or `packages/website/src/routeTree.gen.ts`.
+- Do not hand-edit `packages/backend/convex/_generated/` or `apps/web/src/routeTree.gen.ts`.
 
 ## Documentation As You Go
 
@@ -74,7 +74,7 @@
 <!-- convex-ai-start -->
 
 Before changing Convex code, read
-`packages/website/convex/_generated/ai/guidelines.md`. Its Convex rules override
+`packages/backend/convex/_generated/ai/guidelines.md` when present. Its Convex rules override
 generic knowledge. Load the relevant available Convex skill for component,
 auth, migration, or performance work. Skills can be installed with
 `bunx convex ai-files install` from the owning package when requested.

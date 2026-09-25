@@ -113,16 +113,10 @@ require prepaid credits and do not debit a Radium balance.
 
 ## Verification
 
-Run the website unit suite from the repository root:
+Run the backend unit and Convex handler suites from the repository root:
 
 ```sh
-bun test ./packages/website/src/test.ts
-```
-
-Run the registered Convex backend regression suite with:
-
-```sh
-bun run --cwd packages/website vitest run --config vitest.config.ts
+bun run test
 ```
 
 The workspace policy tests cover owner/member workspace access, private and
