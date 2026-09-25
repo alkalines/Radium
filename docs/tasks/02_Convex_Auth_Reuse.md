@@ -1,6 +1,6 @@
 # Convex Auth Reuse
 
-Status: Not started. Scope: evaluate and adopt a small shared auth pattern.
+Status: In progress (2026-09-25). Scope: evaluate and adopt a small shared auth pattern.
 Prerequisite: read [research](../research/Convex_Reuse.md) and current official docs.
 
 ## Entry Points
@@ -21,3 +21,19 @@ Under `packages/website/`: `package.json`, `convex/auth.ts`, `convex/keys.ts`,
 - Tests cover absent/expired session, authenticated owner, authenticated non-owner, and internal/API-key paths remaining distinct.
 - No auth weakening, direct imports from transitive dependencies, or accidental public exposure of internal functions.
 - Remaining migration work is listed explicitly. No unrelated provider routing or balance schema changes.
+
+## Progress and remaining work
+
+`convex-helpers@0.1.124` is now a direct backend dependency (peer range supports
+Convex 1.46 and TypeScript 7). `packages/backend/convex/auth.ts` has
+session and direct-workspace query/mutation builders. Public
+workspace configuration, chat and telemetry entry points use them; OAuth
+binding and trace start retain explicit internal authorization checks. The
+per-resource checks and HTTP API-key paths remain separate. See
+[authentication](../Convex/Authentication.md).
+
+Follow up on the internal chat-ID jobs, usage attribution and API-key flows
+individually: identify the trusted caller and propagate authorized identity
+where required before introducing more builders. Review repeated handler
+checks only after measuring and testing each legacy relationship. The legacy
+balance ID audit for chat creation/forking remains an independent follow-up.

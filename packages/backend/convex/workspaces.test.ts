@@ -37,17 +37,12 @@ const authMock = vi.hoisted(() => {
     getAuthUser,
     getAnyUserById: vi.fn(),
     safeGetAuthUser: getAuthUser,
-    createAuth: vi.fn(),
   };
 });
 
-vi.mock("./auth", () => ({
-  authComponent: {
-    getAuthUser: authMock.getAuthUser,
-    getAnyUserById: authMock.getAnyUserById,
-    safeGetAuthUser: authMock.safeGetAuthUser,
-  },
-  createAuth: authMock.createAuth,
+vi.mock("@convex-dev/better-auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@convex-dev/better-auth")>()),
+  createClient: () => authMock,
 }));
 
 const modules = import.meta.glob("./**/*.ts");
@@ -104,6 +99,36 @@ test("CreateChat and ForkChat reject a caller outside the workspace", async () =
       .take(10),
   );
   expect(chats).toHaveLength(0);
+});
+
+test("workspace builders reject missing sessions and enforce owner/member roles", async () => {
+  const t = makeTest();
+  const workspace = await t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Shared" }),
+  );
+  await t.run((ctx) =>
+    ctx.db.insert("workspace_members", { workspace, userId: "member", role: "member" }),
+  );
+
+  await expect(t.query(anyApi.chatroom.getToolDefaults, { workspace })).rejects.toThrow(
+    "Not logged in.",
+  );
+  await expect(t.mutation(anyApi.aisdk.CreateChat, { workspace, messages_queue: messagesQueue }))
+    .resolves.toBe("Not logged in!");
+  await expect(t.query(anyApi.aisdk.ListChats, { workspace })).resolves.toBe("Not logged in!");
+  await expect(
+    asUser(t, "outsider").query(anyApi.chatroom.getToolDefaults, { workspace }),
+  ).rejects.toThrow("Workspace not found.");
+  await expect(
+    asUser(t, "member").query(anyApi.chatroom.getToolDefaults, { workspace }),
+  ).resolves.toBeDefined();
+  await expect(
+    asUser(t, "member").mutation(anyApi.workspaces.rename, { workspace, name: "Forged" }),
+  ).rejects.toThrow("Workspace not found.");
+  await asUser(t, "owner").mutation(anyApi.workspaces.rename, { workspace, name: "Renamed" });
+  expect(await t.run((ctx) => ctx.db.get("workspaces", workspace))).toMatchObject({
+    name: "Renamed",
+  });
 });
 
 test("HTTP chat authorization allows member shared chats but keeps personal chats private", async () => {

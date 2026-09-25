@@ -1,26 +1,30 @@
 # Convex Reuse Research
 
 Research snapshot: 2026-09-07. This is adoption guidance, not a dependency upgrade.
+Update (2026-09-25): `convex-helpers` custom function builders are now a direct
+backend dependency for Better Auth session and workspace guards; see
+[authentication](../Convex/Authentication.md). The other candidates remain
+evaluation items, not implemented features.
 The current-dependency section records components already selected; the evaluation
 table and remaining candidates are not claims of implementation.
 
 ## Current Dependencies
 
-The app lives in `packages/website`. Better Auth, Secret Store, the local logging
+The backend lives in `packages/backend`. Better Auth, Secret Store, the local logging
 component, `@convex-dev/rate-limiter`, and `@convex-dev/migrations` are mounted
 components. The migrations component is used for the staged workspace ownership
 backfill; its runner and verification queries have not been executed against a
 deployment.
 
-`convex-helpers` is a direct dependency because it is required by the migrations
-component; the application does not import it directly. Recheck the lockfile,
-peer ranges, and release notes before changing the component or helper version.
+`convex-helpers@0.1.124` is a direct backend dependency for the custom function
+builders; Better Auth and Secret Store also depend on compatible helper versions.
+Recheck the lockfile, peer ranges, and release notes before upgrading.
 
 ## Recommended Evaluation
 
 | Facility                                | Fit and caution                                                                                                                                               |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `customFunctions`                       | Possible future candidate for shared authenticated query/mutation builders. Preserve `authComponent.getAuthUser(ctx)` and explicit resource ownership checks. |
+| `customFunctions`                       | Adopted for shared authenticated query/mutation builders. Preserve `authComponent.getAuthUser(ctx)` and explicit resource ownership checks. |
 | `rowLevelSecurity`                      | Consider only with a complete policy and all relevant access paths wrapped. It does not automatically secure existing functions.                              |
 | Relationships / `asyncMap`              | Small join conveniences, not a reason to replace readable indexed queries.                                                                                    |
 | Pagination / QueryStreams               | Consider for multi-range iteration or large telemetry lists; start with native pagination.                                                                    |

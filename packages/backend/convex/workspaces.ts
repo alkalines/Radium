@@ -3,8 +3,6 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
-  mutation,
-  query,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
@@ -12,6 +10,7 @@ import { authComponent, createAuth } from "./auth";
 import schema from "./schema";
 import { canAccessResolvedChat, canAccessWorkspace } from "../src/workspaces/policy";
 import { isWorkspaceIconName } from "../src/workspaces/icons";
+import { sessionMutation, sessionQuery, workspaceMutation, workspaceQuery } from "./auth";
 
 const MAX_WORKSPACES = 100;
 const MAX_MEMBERS = 200;
@@ -317,7 +316,8 @@ async function accessibleWorkspacesForUser(
 }
 
 /** List active owned and explicitly shared workspaces for the authenticated user. */
-export const list = query({
+export const list = sessionQuery({
+  allowUnauthenticated: true,
   args: {},
   returns: v.union(v.literal("Not logged in!"), v.array(workspaceSummaryValidator)),
   handler: async (ctx) => {
@@ -356,7 +356,7 @@ export const getOwnedWorkspaceForUser = internalQuery({
  * legacy balance exists, create a mapping immediately so old credentials and
  * API keys remain usable while the resumable migration is pending.
  */
-export const ensurePersonalWorkspace = mutation({
+export const ensurePersonalWorkspace = sessionMutation({
   args: { name: v.optional(v.string()) },
   returns: v.id("workspaces"),
   handler: async (ctx, args) => {
@@ -441,7 +441,7 @@ export const ensureForLegacyBalance = internalMutation({
 });
 
 /** Add another independent personal workspace. */
-export const create = mutation({
+export const create = sessionMutation({
   args: { name: v.string() },
   returns: v.id("workspaces"),
   handler: async (ctx, args) => {
@@ -462,7 +462,8 @@ export const create = mutation({
   },
 });
 
-export const rename = mutation({
+export const rename = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), name: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -472,7 +473,8 @@ export const rename = mutation({
   },
 });
 
-export const setIcon = mutation({
+export const setIcon = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), icon: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -484,7 +486,8 @@ export const setIcon = mutation({
 });
 
 /** List the owner and explicit members of an active workspace. */
-export const listMembers = query({
+export const listMembers = workspaceQuery({
+  role: "owner",
   args: { workspace: v.id("workspaces") },
   returns: v.array(workspaceMemberSummaryValidator),
   handler: async (ctx, args) => {
@@ -537,7 +540,8 @@ function betterAuthUserId(user: BetterAuthUser): string | undefined {
 }
 
 /** Add an existing Better Auth user to an active workspace. */
-export const addMember = mutation({
+export const addMember = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), email: v.string() },
   returns: v.id("workspace_members"),
   handler: async (ctx, args) => {
@@ -560,7 +564,8 @@ export const addMember = mutation({
 });
 
 /** Remove an explicit member by their existing Better Auth email. */
-export const removeMember = mutation({
+export const removeMember = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), email: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -583,7 +588,8 @@ export const removeMember = mutation({
  * deletion is intentionally deferred until a retention and dependency policy
  * exists for completions, traces, credentials, and chats.
  */
-export const archive = mutation({
+export const archive = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces") },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -616,7 +622,7 @@ export const archive = mutation({
 });
 
 /** Restore an archived workspace; membership remains attached to the workspace. */
-export const restore = mutation({
+export const restore = sessionMutation({
   args: { workspace: v.id("workspaces") },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -635,7 +641,8 @@ export const restore = mutation({
 });
 
 /** List archived workspaces owned by the authenticated user. */
-export const listArchived = query({
+export const listArchived = sessionQuery({
+  allowUnauthenticated: true,
   args: {},
   returns: v.union(v.literal("Not logged in!"), v.array(workspaceSummaryValidator)),
   handler: async (ctx) => {

@@ -11,6 +11,8 @@ Chatroom uses this routing path rather than maintaining a second router.
 - [Architecture](architecture.md): request flow, persistence, and current ownership.
 - [Ownership](Radium_Gateway/Ownership.md): personal workspaces, BYOK keys, and
   the legacy balance migration boundary.
+- [Convex authentication](Convex/Authentication.md): session and workspace
+  function builders, including the distinct Gateway API-key boundary.
 - [AI telemetry](Radium_Gateway/Telemetry.md): optional request capture, Chatroom
   correlation, local persistence, and optional OTLP export.
 - [Deployment](deployment.md): runtime and exporter configuration.

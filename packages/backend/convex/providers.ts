@@ -4,8 +4,6 @@ import type { Id } from "./_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
-  mutation,
-  query,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
@@ -17,6 +15,7 @@ import {
   type SecretNamespace,
 } from "./secrets";
 import { requireOwnedWorkspace } from "./workspaces";
+import { workspaceMutation, workspaceQuery } from "./auth";
 import {
   isWorkspaceProviderEnabled,
   workspaceProviderRecords,
@@ -108,7 +107,8 @@ const globalModelValidator = v.object({
   }),
 });
 
-export const list = query({
+export const list = workspaceQuery({
+  role: "owner",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -233,7 +233,8 @@ async function ensureGlobalModels(
  * Store a workspace-local provider snapshot. Global catalogue rows and model
  * metadata are never replaced by workspace mutations.
  */
-export const importProvider = mutation({
+export const importProvider = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     provider: v.object({
@@ -290,7 +291,8 @@ export const importProvider = mutation({
   },
 });
 
-export const setEnabled = mutation({
+export const setEnabled = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     slug: v.string(),
@@ -315,7 +317,8 @@ export const setEnabled = mutation({
  * global catalogue row. Global model identity records are added only when the
  * slug is new.
  */
-export const addProviderModels = mutation({
+export const addProviderModels = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     slug: v.string(),
@@ -344,7 +347,8 @@ export const addProviderModels = mutation({
  * Remove a single model from a provider's offered list. Leaves the shared
  * global {@link models} record untouched, since other providers may serve it.
  */
-export const removeProviderModel = mutation({
+export const removeProviderModel = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     slug: v.string(),
@@ -369,7 +373,8 @@ export const removeProviderModel = mutation({
  * Tombstone a provider for this workspace and remove its credentials. Keeping
  * the row prevents legacy fallback or a later migration from restoring it.
  */
-export const deleteProvider = mutation({
+export const deleteProvider = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     slug: v.string(),
@@ -407,7 +412,8 @@ export const deleteProvider = mutation({
   },
 });
 
-export const listCredentials = query({
+export const listCredentials = workspaceQuery({
+  role: "owner",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -484,7 +490,8 @@ export const listCredentials = query({
   },
 });
 
-export const upsertCredentials = mutation({
+export const upsertCredentials = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
@@ -535,7 +542,8 @@ export const upsertCredentials = mutation({
   },
 });
 
-export const deleteCredentials = mutation({
+export const deleteCredentials = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
