@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "bun:test";
+import { test } from "vitest";
 import { StreamCompletion } from "./openai";
 
 test("settles streaming billing once when aborted after provider dispatch", async () => {

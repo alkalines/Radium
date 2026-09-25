@@ -151,19 +151,13 @@ or use that command as migration-readiness evidence.
 
 ## Verification
 
-Run the backend unit suite with:
+Run the backend unit and Convex handler suites with:
 
 ```sh
-bun test ./packages/backend/src/test.ts
+bun run test
 ```
 
-Run the registered Convex backend regression suite with:
-
-```sh
-bun run --cwd packages/backend vitest run --config vitest.config.ts
-```
-
-The Bun suite includes `packages/backend/src/workspaces/policy.test.ts`,
+The Vitest unit suite includes `packages/backend/src/workspaces/policy.test.ts`,
 `packages/backend/src/workspaces/migration.test.ts`, and
 `packages/backend/src/workspaces/provider.test.ts`. The Convex suite
 covers handler-level workspace/member chat authorization, migration ownership

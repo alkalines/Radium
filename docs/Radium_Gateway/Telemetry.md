@@ -89,7 +89,7 @@ and end/abort/error flush behavior are preserved. No hosted collector is require
 Run from the repository root:
 
 ```sh
-bun test ./packages/website/src/test.ts
+bun run test
 ```
 
 Regression coverage includes independent capture controls, correlation, payload

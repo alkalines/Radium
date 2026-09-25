@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import type { Id } from "../../convex/_generated/dataModel";
 import type { AttributedCompletion } from "../../convex/chat_observability";

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { DEFAULT_WORKSPACE_ICON, isWorkspaceIconName, resolveWorkspaceIconName } from "./icons";
 
 describe("workspace icons", () => {

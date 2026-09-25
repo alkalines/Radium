@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "bun:test";
+import { test } from "vitest";
 import { preferChatroomTraces, summarizeTraces } from "./summary";
 
 test("prefers chatroom traces without changing request order or first same-source match", () => {

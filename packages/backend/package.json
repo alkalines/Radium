@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "convex dev",
+    "test": "vitest run --config vitest.config.ts",
     "codegen": "convex codegen"
   },
   "devDependencies": {

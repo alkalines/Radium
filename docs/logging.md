@@ -125,7 +125,7 @@ logger.warn("provider.unavailable", {
 Run unit coverage from the repository root:
 
 ```bash
-bun test packages/backend/src/logging
+bun run --cwd packages/backend test src/logging
 ```
 
 These tests cover envelope validation and best-effort console behavior, not
