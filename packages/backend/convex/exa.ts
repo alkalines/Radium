@@ -6,7 +6,7 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { requireOwnedWorkspace } from "./workspaces";
-import { ownerMutation, ownerQuery } from "./function_auth";
+import { workspaceMutation, workspaceQuery } from "./auth";
 import {
   EXA_SECRET_NAME,
   exaSecretNamespace,
@@ -42,7 +42,8 @@ async function readSecret(
 }
 
 /** Read the masked preview of a workspace's Exa key, or `null` if none is set. */
-export const getApiKey = ownerQuery({
+export const getApiKey = workspaceQuery({
+  role: "owner",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args): Promise<{ preview: string } | null> => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -74,7 +75,8 @@ export const getApiKey = ownerQuery({
 });
 
 /** Create or replace the workspace's Exa API key. */
-export const setApiKey = ownerMutation({
+export const setApiKey = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), apiKey: v.string() },
   handler: async (ctx, args) => {
     await requireOwnedWorkspace(ctx, args.workspace);
@@ -95,7 +97,8 @@ export const setApiKey = ownerMutation({
 });
 
 /** Delete the workspace's Exa API key. */
-export const deleteApiKey = ownerMutation({
+export const deleteApiKey = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);

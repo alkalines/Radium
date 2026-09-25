@@ -3,7 +3,7 @@ import { v } from "convex/values";
 
 import { components } from "./_generated/api";
 import { authComponent } from "./auth";
-import { authenticatedMutation } from "./function_auth";
+import { sessionMutation } from "./auth";
 import {
   isLoggingEnvelopeWithinLimits,
   LOGGING_PRODUCT,
@@ -25,7 +25,7 @@ const rateLimiter = new RateLimiter(components.rateLimiter, {
  * Authenticated app wrapper for frontend operational events. The browser never
  * supplies the actor identity; the wrapper derives it from the Better Auth user.
  */
-export const ingest = authenticatedMutation({
+export const ingest = sessionMutation({
   args: loggingEnvelopeSchema.fields,
   returns: v.boolean(),
   handler: async (ctx, args) => {

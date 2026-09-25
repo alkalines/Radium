@@ -5,7 +5,7 @@ import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import { internal } from "./_generated/api";
 import { requireAccessibleChat, requireWorkspaceAccess } from "./workspaces";
-import { authenticatedMutation, authenticatedQuery, optionalMemberMutation, optionalMemberQuery } from "./function_auth";
+import { sessionMutation, sessionQuery, workspaceMutation, workspaceQuery } from "./auth";
 import { canManageChat, requireChatManager } from "./chatroom";
 import { firstUserMessageText } from "./chat_titles";
 
@@ -13,7 +13,9 @@ const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace")
 const MAX_CHAT_CANDIDATES = 100;
 
 // Mutation
-export const CreateChat = optionalMemberMutation({
+export const CreateChat = workspaceMutation({
+  role: "member",
+  allowUnauthenticated: true,
   args: {
     workspace: v.id("workspaces"),
     scope: v.optional(chatScopeValidator),
@@ -49,7 +51,9 @@ export const CreateChat = optionalMemberMutation({
  * model), while user forks pass the prior history plus a `messages_queue` so the
  * forked user turn is regenerated with another model on load.
  */
-export const ForkChat = optionalMemberMutation({
+export const ForkChat = workspaceMutation({
+  role: "member",
+  allowUnauthenticated: true,
   args: {
     workspace: v.id("workspaces"),
     scope: v.optional(chatScopeValidator),
@@ -100,7 +104,7 @@ export const EditChat = internalMutation({
   },
 });
 
-export const GetChat = authenticatedQuery({
+export const GetChat = sessionQuery({
   args: {
     chatId: v.id("aisdk_chats"),
   },
@@ -124,7 +128,7 @@ export const GetChat = authenticatedQuery({
 });
 
 /** Change a chat's visibility. Only its creator may change its scope. */
-export const SetChatScope = authenticatedMutation({
+export const SetChatScope = sessionMutation({
   args: {
     chatId: v.id("aisdk_chats"),
     scope: chatScopeValidator,
@@ -143,7 +147,7 @@ export const SetChatScope = authenticatedMutation({
   },
 });
 
-export const RenameChat = authenticatedMutation({
+export const RenameChat = sessionMutation({
   args: {
     chatId: v.id("aisdk_chats"),
     title: v.string(),
@@ -166,7 +170,7 @@ export const RenameChat = authenticatedMutation({
   },
 });
 
-export const SetChatPinned = authenticatedMutation({
+export const SetChatPinned = sessionMutation({
   args: {
     chatId: v.id("aisdk_chats"),
     pinned: v.boolean(),
@@ -184,7 +188,7 @@ export const SetChatPinned = authenticatedMutation({
   },
 });
 
-export const RegenerateChatTitle = authenticatedMutation({
+export const RegenerateChatTitle = sessionMutation({
   args: { chatId: v.id("aisdk_chats") },
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
@@ -202,7 +206,7 @@ export const RegenerateChatTitle = authenticatedMutation({
   },
 });
 
-export const DeleteChat = authenticatedMutation({
+export const DeleteChat = sessionMutation({
   args: { chatId: v.id("aisdk_chats") },
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
@@ -225,7 +229,9 @@ export const InternalChatInfo = internalQuery({
   },
 });
 
-export const ListChats = optionalMemberQuery({
+export const ListChats = workspaceQuery({
+  role: "member",
+  allowUnauthenticated: true,
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);

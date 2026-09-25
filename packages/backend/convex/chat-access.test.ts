@@ -41,12 +41,9 @@ const authMock = vi.hoisted(() => {
   };
 });
 
-vi.mock("./auth", () => ({
-  authComponent: {
-    getAuthUser: authMock.getAuthUser,
-    getAnyUserById: authMock.getAnyUserById,
-    safeGetAuthUser: authMock.safeGetAuthUser,
-  },
+vi.mock("@convex-dev/better-auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@convex-dev/better-auth")>()),
+  createClient: () => authMock,
 }));
 
 const modules = import.meta.glob("./**/*.ts");

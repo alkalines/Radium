@@ -7,7 +7,7 @@ import {
   requireOwnedWorkspace,
   requireWorkspaceAccessForUser,
 } from "./workspaces";
-import { ownerMutation, ownerQuery, authenticatedMutation, authenticatedQuery, internalMemberMutation } from "./function_auth";
+import { workspaceMutation, workspaceQuery, sessionMutation, sessionQuery } from "./auth";
 import { getEffectiveWorkspaceSettings, materializeWorkspaceSettings } from "./chatroom";
 import { preferChatroomTraces, summarizeTraces } from "../src/telemetry/summary";
 import {
@@ -71,7 +71,8 @@ async function workspaceSettings(ctx: QueryCtxOrMutationCtx, workspace: Id<"work
 type QueryCtxOrMutationCtx = Parameters<typeof requireOwnedWorkspace>[0];
 
 /** Read workspace AI SDK telemetry preferences; Gateway management is owner-only. */
-export const getSettings = ownerQuery({
+export const getSettings = workspaceQuery({
+  role: "owner",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -80,7 +81,8 @@ export const getSettings = ownerQuery({
 });
 
 /** Configure owner-only workspace AI SDK telemetry. Collection remains disabled by default. */
-export const setSettings = ownerMutation({
+export const setSettings = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), ...telemetrySettingsSchema.fields },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -148,7 +150,8 @@ async function tracesForWorkspace(
 }
 
 /** List recent owner-visible workspace requests, preferring the parent Chatroom trace. */
-export const listTraces = ownerQuery({
+export const listTraces = workspaceQuery({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     since: v.optional(v.number()),
@@ -183,7 +186,7 @@ async function requireOwnedTrace(ctx: QueryCtxOrMutationCtx, traceId: Id<"teleme
 }
 
 /** Return one owner-visible trace and its ordered child spans; members have no general Gateway access. */
-export const getTrace = authenticatedQuery({
+export const getTrace = sessionQuery({
   args: { traceId: v.id("telemetry_traces") },
   handler: async (ctx, args) => {
     const { trace, workspace } = await requireOwnedTrace(ctx, args.traceId);
@@ -236,7 +239,8 @@ export const getTrace = authenticatedQuery({
 });
 
 /** Aggregate bounded telemetry metrics for the owner only; members have no general Gateway access. */
-export const getSummary = ownerQuery({
+export const getSummary = workspaceQuery({
+  role: "owner",
   args: { workspace: v.id("workspaces"), since: v.number() },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -249,7 +253,7 @@ export const getSummary = ownerQuery({
 });
 
 /** Delete one owner-visible trace and its bounded child payloads/spans; members have no general Gateway access. */
-export const deleteTrace = authenticatedMutation({
+export const deleteTrace = sessionMutation({
   args: { traceId: v.id("telemetry_traces") },
   handler: async (ctx, args) => {
     const { trace } = await requireOwnedTrace(ctx, args.traceId);
@@ -285,7 +289,7 @@ export const getSettingsForWorkspace = internalQuery({
   },
 });
 
-export const startTrace = internalMemberMutation({
+export const startTrace = internalMutation({
   args: {
     workspace: v.id("workspaces"),
     apiKey: v.optional(v.id("api_keys")),

@@ -2,6 +2,8 @@ import { v } from "convex/values";
 import { credentialPreview } from "@/credential_preview";
 import type { Id } from "./_generated/dataModel";
 import {
+  internalMutation,
+  internalQuery,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
@@ -13,7 +15,7 @@ import {
   type SecretNamespace,
 } from "./secrets";
 import { requireOwnedWorkspace } from "./workspaces";
-import { ownerMutation, ownerQuery, internalOwnerMutation, internalActiveWorkspaceQuery } from "./function_auth";
+import { workspaceMutation, workspaceQuery } from "./auth";
 import {
   isWorkspaceProviderEnabled,
   workspaceProviderRecords,
@@ -105,7 +107,8 @@ const globalModelValidator = v.object({
   }),
 });
 
-export const list = ownerQuery({
+export const list = workspaceQuery({
+  role: "owner",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -230,7 +233,8 @@ async function ensureGlobalModels(
  * Store a workspace-local provider snapshot. Global catalogue rows and model
  * metadata are never replaced by workspace mutations.
  */
-export const importProvider = ownerMutation({
+export const importProvider = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     provider: v.object({
@@ -287,7 +291,8 @@ export const importProvider = ownerMutation({
   },
 });
 
-export const setEnabled = ownerMutation({
+export const setEnabled = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     slug: v.string(),
@@ -312,7 +317,8 @@ export const setEnabled = ownerMutation({
  * global catalogue row. Global model identity records are added only when the
  * slug is new.
  */
-export const addProviderModels = ownerMutation({
+export const addProviderModels = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     slug: v.string(),
@@ -341,7 +347,8 @@ export const addProviderModels = ownerMutation({
  * Remove a single model from a provider's offered list. Leaves the shared
  * global {@link models} record untouched, since other providers may serve it.
  */
-export const removeProviderModel = ownerMutation({
+export const removeProviderModel = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     slug: v.string(),
@@ -366,7 +373,8 @@ export const removeProviderModel = ownerMutation({
  * Tombstone a provider for this workspace and remove its credentials. Keeping
  * the row prevents legacy fallback or a later migration from restoring it.
  */
-export const deleteProvider = ownerMutation({
+export const deleteProvider = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     slug: v.string(),
@@ -404,7 +412,8 @@ export const deleteProvider = ownerMutation({
   },
 });
 
-export const listCredentials = ownerQuery({
+export const listCredentials = workspaceQuery({
+  role: "owner",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -481,7 +490,8 @@ export const listCredentials = ownerQuery({
   },
 });
 
-export const upsertCredentials = ownerMutation({
+export const upsertCredentials = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
@@ -532,7 +542,8 @@ export const upsertCredentials = ownerMutation({
   },
 });
 
-export const deleteCredentials = ownerMutation({
+export const deleteCredentials = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
@@ -562,7 +573,7 @@ export const deleteCredentials = ownerMutation({
 });
 
 /** Associates an opaque OAuth session with a workspace after the device flow completes. */
-export const bindOAuthCredential = internalOwnerMutation({
+export const bindOAuthCredential = internalMutation({
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
@@ -637,7 +648,7 @@ export const bindOAuthCredential = internalOwnerMutation({
 });
 
 /** Removes an OAuth workspace binding when its upstream session is disconnected. */
-export const unbindOAuthCredential = internalOwnerMutation({
+export const unbindOAuthCredential = internalMutation({
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
@@ -668,7 +679,7 @@ export const unbindOAuthCredential = internalOwnerMutation({
   },
 });
 
-export const resolveProviderCandidatesForModel = internalActiveWorkspaceQuery({
+export const resolveProviderCandidatesForModel = internalQuery({
   args: {
     workspace: v.id("workspaces"),
     modelSlug: v.string(),

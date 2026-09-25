@@ -25,10 +25,10 @@ Under `packages/website/`: `package.json`, `convex/auth.ts`, `convex/keys.ts`,
 ## Progress and remaining work
 
 `convex-helpers@0.1.124` is now a direct backend dependency (peer range supports
-Convex 1.46 and TypeScript 7). `packages/backend/convex/function_auth.ts` has
-session, direct-workspace, and server-derived user/workspace builders. Public
+Convex 1.46 and TypeScript 7). `packages/backend/convex/auth.ts` has
+session and direct-workspace query/mutation builders. Public
 workspace configuration, chat and telemetry entry points use them; OAuth
-binding and trace start use internal attribution builders. The explicit
+binding and trace start retain explicit internal authorization checks. The
 per-resource checks and HTTP API-key paths remain separate. See
 [authentication](../Convex/Authentication.md).
 

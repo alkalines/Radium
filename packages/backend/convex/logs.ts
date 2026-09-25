@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { type QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireOwnedWorkspace } from "./workspaces";
-import { ownerQuery } from "./function_auth";
+import { workspaceQuery } from "./auth";
 import { filterVisibleCompletions, type AttributedCompletion } from "./chat_observability";
 
 type WorkspaceContext = QueryCtx;
@@ -53,7 +53,8 @@ async function completionsForWorkspace(
 }
 
 /** Per-generation usage metadata for the workspace owner; members have no general Gateway access. */
-export const getGenerations = ownerQuery({
+export const getGenerations = workspaceQuery({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     limit: v.optional(v.number()),
@@ -94,7 +95,8 @@ export const getGenerations = ownerQuery({
  * Aggregated workspace activity for the owner only; members have no general
  * Gateway access. Costs are historical estimates, never billing or debits.
  */
-export const getActivity = ownerQuery({
+export const getActivity = workspaceQuery({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     since: v.number(),

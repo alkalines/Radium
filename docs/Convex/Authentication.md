@@ -2,39 +2,33 @@
 
 ## Implemented
 
-`packages/backend/convex/function_auth.ts` exports `convex-helpers` custom
-query/mutation builders. `authenticatedQuery` and `authenticatedMutation`
-validate the Better Auth session through `authComponent.getAuthUser(ctx)` and
-expose `ctx.user`. `ownerQuery` / `ownerMutation` require an active personal
-workspace owned by that user; `memberQuery` / `memberMutation` permit the owner
-or a direct `workspace_members` member. They accept a validated `workspace`
-argument and expose `ctx.authorizedWorkspace`. Denials use `Not logged in.` or
-`Workspace not found.`; existing handler-level resource checks remain in place
+`packages/backend/convex/auth.ts` exports four `convex-helpers` builders:
+`sessionQuery`, `sessionMutation`, `workspaceQuery`, and `workspaceMutation`.
+All validate the Better Auth session through `authComponent.getAuthUser(ctx)`.
+Workspace builders take `role: "owner" | "member"` and a validated `workspace`
+argument. Member access requires direct `workspace_members` membership (or
+ownership). They expose `ctx.user`; denials use `Not logged in.` or
+`Workspace not found.`. Existing handler-level resource checks remain in place
 for provider, key, chat and legacy-pointer relationships. An authenticated
 session alone is never proof of access to a chat or arbitrary resource ID.
 
-`internalOwnerMutation` and `internalMemberMutation` check a workspace against
-the `userId` passed by a trusted internal caller. They **do not** authenticate
-that ID: the HTTP/action entry point must first validate its session or API
-key and derive the ID server-side. OAuth credential binding and trace start
-use these builders. Other internal queries/mutations have distinct policies:
-some operate on already-authorized chat IDs, some serve API-key requests, and
-migration/maintenance functions run without a browser session. Do not wrap
-those in a browser-session builder. Gateway API-key authentication stays at
-the HTTP boundary; `ctx.auth.getUserIdentity()` is not a substitute for Better
-Auth validation.
+Internal functions retain their explicit authorization checks instead of using
+browser-session builders. Their trusted HTTP/action entry points must first
+validate a session or API key and derive user IDs server-side. Some operate on
+already-authorized chat IDs, others serve API-key requests, and
+migration/maintenance functions run without a browser session. Gateway API-key
+authentication stays at the HTTP boundary; `ctx.auth.getUserIdentity()` is not
+a substitute for Better Auth validation.
 
-`internalActiveWorkspaceQuery` checks only that a workspace exists and is
-active for internal model/provider resolution. It does **not** authorize a
-principal; its HTTP/action caller must already have checked the request's
+Internal model/provider resolution checks for an active workspace in its
+handler; its HTTP/action caller must already have checked the request's
 session or API key and workspace scope.
 
-`optionalSessionQuery` and `optionalMemberQuery` preserve the existing
+`allowUnauthenticated: true` preserves the existing
 `workspaces.list`, `workspaces.listArchived` and `aisdk.ListChats` signed-out
-string results. `auth.userInfo` retains its direct Better Auth check in the
-auth module to avoid an initialization cycle. An authenticated `ListChats`
+string results (including `auth.userInfo`). An authenticated `ListChats`
 caller must still pass the member/owner workspace check before its handler.
-`optionalMemberMutation` similarly preserves signed-out returns for
+The same option preserves signed-out returns for
 `aisdk.CreateChat` and `aisdk.ForkChat` while checking workspace membership
 for signed-in callers.
 

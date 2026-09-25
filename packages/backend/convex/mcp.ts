@@ -8,7 +8,7 @@ import {
   requireOwnedWorkspace,
   requireWorkspaceAccess,
 } from "./workspaces";
-import { memberQuery, ownerMutation } from "./function_auth";
+import { workspaceQuery, workspaceMutation } from "./auth";
 import {
   MCP_SECRET_NAME,
   mcpSecretNamespace,
@@ -88,7 +88,8 @@ async function isLegacyServerForWorkspace(
 }
 
 /** List a workspace's MCP servers (never returns secrets). */
-export const listServers = memberQuery({
+export const listServers = workspaceQuery({
+  role: "member",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const workspace = await requireWorkspaceAccess(ctx, args.workspace);
@@ -154,7 +155,8 @@ export const listServers = memberQuery({
 });
 
 /** Create an MCP server, storing any supplied bearer token in Secret Store. */
-export const createServer = ownerMutation({
+export const createServer = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     name: v.string(),
@@ -203,7 +205,8 @@ export const createServer = ownerMutation({
  * value replaces the stored token, while omitting it preserves the existing one
  * (unless the auth type changes away from `bearer`, which clears it).
  */
-export const updateServer = ownerMutation({
+export const updateServer = workspaceMutation({
+  role: "owner",
   args: {
     workspace: v.id("workspaces"),
     server: v.id("mcp_servers"),
@@ -302,7 +305,8 @@ export const updateServer = ownerMutation({
  * Delete an MCP server. Dangling references in tool defaults or per-chat
  * selections are tolerated — the tool resolver filters to existing servers.
  */
-export const deleteServer = ownerMutation({
+export const deleteServer = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), server: v.id("mcp_servers") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);

@@ -13,7 +13,7 @@ import {
   resolveWorkspaceForChat,
   requireWorkspaceAccess,
 } from "./workspaces";
-import { memberQuery, ownerMutation, authenticatedMutation, authenticatedQuery } from "./function_auth";
+import { workspaceQuery, workspaceMutation, sessionMutation, sessionQuery } from "./auth";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
 
 /**
@@ -194,7 +194,8 @@ async function sanitizeSelection(
 }
 
 /** Read the user's default tool selection. */
-export const getToolDefaults = memberQuery({
+export const getToolDefaults = workspaceQuery({
+  role: "member",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args): Promise<ToolSelection> => {
     const workspace = await requireWorkspaceAccess(ctx, args.workspace);
@@ -203,7 +204,8 @@ export const getToolDefaults = memberQuery({
 });
 
 /** Replace the user's default tool selection. */
-export const setToolDefaults = ownerMutation({
+export const setToolDefaults = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), selection: toolSelectionValidator },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -229,7 +231,8 @@ export const setToolDefaults = ownerMutation({
  * validated against the catalogue so a removed model never sticks as a phantom
  * default.
  */
-export const getModelDefault = memberQuery({
+export const getModelDefault = workspaceQuery({
+  role: "member",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args): Promise<string | null> => {
     const workspace = await requireWorkspaceAccess(ctx, args.workspace);
@@ -247,7 +250,8 @@ export const getModelDefault = memberQuery({
 });
 
 /** Set (or clear, when `model` is omitted) the user's default model slug. */
-export const setModelDefault = ownerMutation({
+export const setModelDefault = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), model: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -281,7 +285,8 @@ export const setModelDefault = ownerMutation({
 });
 
 /** Read the user's title-generator model slug, or `null` if unset/removed. */
-export const getTitleModelDefault = memberQuery({
+export const getTitleModelDefault = workspaceQuery({
+  role: "member",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args): Promise<string | null> => {
     const workspace = await requireWorkspaceAccess(ctx, args.workspace);
@@ -300,7 +305,8 @@ export const getTitleModelDefault = memberQuery({
 });
 
 /** Set (or clear, when `model` is omitted) the title-generator model slug. */
-export const setTitleModelDefault = ownerMutation({
+export const setTitleModelDefault = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), model: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -334,7 +340,8 @@ export const setTitleModelDefault = ownerMutation({
 });
 
 /** Read whether reasoning and tool activity use the combined Chain of Thought UI. */
-export const getChainOfThoughtEnabled = memberQuery({
+export const getChainOfThoughtEnabled = workspaceQuery({
+  role: "member",
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args): Promise<boolean> => {
     await requireWorkspaceAccess(ctx, args.workspace);
@@ -344,7 +351,8 @@ export const getChainOfThoughtEnabled = memberQuery({
 });
 
 /** Set whether reasoning and tool activity use the combined Chain of Thought UI. */
-export const setChainOfThoughtEnabled = ownerMutation({
+export const setChainOfThoughtEnabled = workspaceMutation({
+  role: "owner",
   args: { workspace: v.id("workspaces"), enabled: v.boolean() },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -372,7 +380,7 @@ export const setChainOfThoughtEnabled = ownerMutation({
  * otherwise the user's defaults. `source` tells the UI whether toggling will
  * create a per-chat override or is still reflecting the defaults.
  */
-export const getChatTools = authenticatedQuery({
+export const getChatTools = sessionQuery({
   args: { chatId: v.id("aisdk_chats") },
   handler: async (ctx, args): Promise<ToolSelection & { source: "chat" | "defaults" }> => {
     const { chat, workspace } = await requireAccessibleChat(ctx, args.chatId);
@@ -387,7 +395,7 @@ export const getChatTools = authenticatedQuery({
 });
 
 /** Set (or clear) a chat's per-chat tool override. */
-export const setChatTools = authenticatedMutation({
+export const setChatTools = sessionMutation({
   args: { chatId: v.id("aisdk_chats"), selection: toolSelectionValidator },
   handler: async (ctx, args) => {
     const { workspace } = await requireChatManager(ctx, args.chatId);
