@@ -1,13 +1,14 @@
 import { v } from "convex/values";
 import { credentialPreview } from "@/credential_preview";
 import { MCP_BEARER_SECRET_KEY } from "@/chatroom/tools";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import {
   getDefaultWorkspaceForUser,
   requireOwnedWorkspace,
   requireWorkspaceAccess,
 } from "./workspaces";
+import { memberQuery, ownerMutation } from "./function_auth";
 import {
   MCP_SECRET_NAME,
   mcpSecretNamespace,
@@ -87,7 +88,7 @@ async function isLegacyServerForWorkspace(
 }
 
 /** List a workspace's MCP servers (never returns secrets). */
-export const listServers = query({
+export const listServers = memberQuery({
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const workspace = await requireWorkspaceAccess(ctx, args.workspace);
@@ -153,7 +154,7 @@ export const listServers = query({
 });
 
 /** Create an MCP server, storing any supplied bearer token in Secret Store. */
-export const createServer = mutation({
+export const createServer = ownerMutation({
   args: {
     workspace: v.id("workspaces"),
     name: v.string(),
@@ -202,7 +203,7 @@ export const createServer = mutation({
  * value replaces the stored token, while omitting it preserves the existing one
  * (unless the auth type changes away from `bearer`, which clears it).
  */
-export const updateServer = mutation({
+export const updateServer = ownerMutation({
   args: {
     workspace: v.id("workspaces"),
     server: v.id("mcp_servers"),
@@ -301,7 +302,7 @@ export const updateServer = mutation({
  * Delete an MCP server. Dangling references in tool defaults or per-chat
  * selections are tolerated — the tool resolver filters to existing servers.
  */
-export const deleteServer = mutation({
+export const deleteServer = ownerMutation({
   args: { workspace: v.id("workspaces"), server: v.id("mcp_servers") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);

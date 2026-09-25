@@ -1,7 +1,8 @@
 import { v } from "convex/values";
-import { query, type QueryCtx } from "./_generated/server";
+import { type QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { requireOwnedWorkspace } from "./workspaces";
+import { ownerQuery } from "./function_auth";
 import { filterVisibleCompletions, type AttributedCompletion } from "./chat_observability";
 
 async function recentCompletions(
@@ -31,7 +32,7 @@ async function recentCompletions(
 }
 
 /** Read-only usage summary for the owner; members have no general Gateway access. */
-export const getUsage = query({
+export const getUsage = ownerQuery({
   args: {
     workspace: v.id("workspaces"),
     limit: v.optional(v.number()),

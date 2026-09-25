@@ -1,5 +1,8 @@
 # Radium Chatroom
 
+See [Convex authentication](Convex/Authentication.md) for session and workspace
+function builders used by Chatroom queries and mutations.
+
 Radium Chatroom is the user-facing home for conversations, model selection,
 reasoning controls, approvals, and tools. It uses the Gateway's internal
 OpenAI-compatible completion path; it does not implement a second provider

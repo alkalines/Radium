@@ -1,9 +1,10 @@
 import { v } from "convex/values";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
 import { hashText, isRevokedKey } from "./key";
 import { requireOwnedWorkspace } from "./workspaces";
+import { ownerMutation, ownerQuery, authenticatedMutation } from "./function_auth";
 
 /**
  * Return the signed-in user's Better Auth id, or throw. This remains separate
@@ -46,7 +47,7 @@ export type ListedKey =
  * List active workspace and unmigrated legacy keys. The source tag is required
  * because Convex document IDs do not carry a runtime table discriminator.
  */
-export const listKeys = query({
+export const listKeys = ownerQuery({
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -116,7 +117,7 @@ export const listKeys = query({
  * Create a workspace API key and return the plaintext value exactly once. Only
  * the SHA-512 hash and a masked preview are persisted.
  */
-export const createKey = mutation({
+export const createKey = ownerMutation({
   args: {
     workspace: v.id("workspaces"),
     name: v.string(),
@@ -140,7 +141,7 @@ export const createKey = mutation({
 });
 
 /** Rename a workspace API key. */
-export const updateKey = mutation({
+export const updateKey = authenticatedMutation({
   args: {
     key: v.id("api_keys"),
     name: v.string(),
@@ -157,7 +158,7 @@ export const updateKey = mutation({
 });
 
 /** Permanently revoke a workspace API key. Historical completions retain their attribution. */
-export const deleteKey = mutation({
+export const deleteKey = authenticatedMutation({
   args: { key: v.id("api_keys") },
   handler: async (ctx, args) => {
     const key = await ctx.db.get("api_keys", args.key);
@@ -177,7 +178,7 @@ export const deleteKey = mutation({
 });
 
 /** Revoke an unmigrated legacy key and every mapped workspace copy atomically. */
-export const deleteLegacyKey = mutation({
+export const deleteLegacyKey = ownerMutation({
   args: {
     workspace: v.id("workspaces"),
     keyId: v.id("keys"),

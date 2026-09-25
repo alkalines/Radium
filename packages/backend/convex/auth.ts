@@ -35,6 +35,7 @@ export type UserInfoType = {
   profilePicture?: string | null;
 };
 
+// userInfo intentionally returns null for signed-out callers (rather than throwing).
 export const userInfo = query({
   args: {},
   handler: async (ctx): Promise<UserInfoType | "Not logged in!"> => {
