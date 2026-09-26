@@ -163,16 +163,6 @@ export async function requireWorkspaceAccessForUser(
   return workspace!;
 }
 
-/** Require the authenticated user to own or be explicitly assigned to a workspace. */
-export async function requireWorkspaceAccess(
-  ctx: QueryCtx | MutationCtx,
-  workspaceId: Id<"workspaces">,
-): Promise<WorkspaceRecord> {
-  const identity = await authComponent.getAuthUser(ctx);
-  if (!identity) throw new Error("Not logged in.");
-  return await requireWorkspaceAccessForUser(ctx, workspaceId, identity._id);
-}
-
 async function authorizeChatRecord(
   ctx: QueryCtx | MutationCtx,
   chatId: Id<"aisdk_chats">,

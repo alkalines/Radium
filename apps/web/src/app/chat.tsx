@@ -303,10 +303,6 @@ function ChatHomePage() {
                 },
               });
 
-              if (chatId === "Not logged in!") {
-                throw new Error("Please sign in again.");
-              }
-
               rememberChatHandoff(chatId, trimmedText);
 
               await navigateWithChatTransition(() =>

@@ -3,11 +3,8 @@ import { credentialPreview } from "@/credential_preview";
 import { MCP_BEARER_SECRET_KEY } from "@/chatroom/tools";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import {
-  getDefaultWorkspaceForUser,
-  requireOwnedWorkspace,
-  requireWorkspaceAccess,
-} from "./workspaces";
+import { getDefaultWorkspaceForUser, requireOwnedWorkspace } from "./workspaces";
+import { workspaceQuery } from "./helpers";
 import {
   MCP_SECRET_NAME,
   mcpSecretNamespace,
@@ -87,22 +84,20 @@ async function isLegacyServerForWorkspace(
 }
 
 /** List a workspace's MCP servers (never returns secrets). */
-export const listServers = query({
-  args: { workspace: v.id("workspaces") },
+export const listServers = workspaceQuery({
+  args: {},
   handler: async (ctx, args) => {
-    const workspace = await requireWorkspaceAccess(ctx, args.workspace);
-
     const workspaceServers = await ctx.db
       .query("mcp_servers")
       .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
       .take(200);
 
-    const defaultWorkspace = await getDefaultWorkspaceForUser(ctx, workspace.ownerId);
+    const defaultWorkspace = await getDefaultWorkspaceForUser(ctx, ctx.workspace.ownerId);
     const legacyServers =
-      defaultWorkspace?._id === workspace._id
+      defaultWorkspace?._id === ctx.workspace._id
         ? await ctx.db
             .query("mcp_servers")
-            .withIndex("by_userId", (q) => q.eq("userId", workspace.ownerId))
+            .withIndex("by_userId", (q) => q.eq("userId", ctx.workspace.ownerId))
             .take(200)
         : [];
     const visibleServers = [

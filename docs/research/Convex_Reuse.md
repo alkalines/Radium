@@ -6,28 +6,39 @@ table and remaining candidates are not claims of implementation.
 
 ## Current Dependencies
 
-The app lives in `packages/website`. Better Auth, Secret Store, the local logging
+The backend lives in `packages/backend`. Better Auth, Secret Store, the local logging
 component, `@convex-dev/rate-limiter`, and `@convex-dev/migrations` are mounted
 components. The migrations component is used for the staged workspace ownership
 backfill; its runner and verification queries have not been executed against a
 deployment.
 
-`convex-helpers` is a direct dependency because it is required by the migrations
-component; the application does not import it directly. Recheck the lockfile,
-peer ranges, and release notes before changing the component or helper version.
+As of 2026-09-26, `convex-helpers` is a direct backend dependency pinned to
+`0.1.124`. `convex/helpers.ts` imports its `customFunctions` builders for shared
+workspace session authorization. This Apache-2.0 release supports the installed
+Convex `1.46.0` and TypeScript 7 peer ranges; `0.1.119`, previously resolved
+transitively, did not declare TypeScript 7 support. Better Auth backend version
+`1.6.33` satisfies the adapter's `>=1.6.11 <1.7.0` peer range.
+
+The official component catalog was checked for this adoption. The existing
+Better Auth component owns session persistence; a new component is unnecessary
+for stateless app-context customization and cannot inherit app table access.
+`customFunctions` is the appropriate helper, with application workspace policy
+retained in `convex/workspaces.ts`. It needs no hosted service, new persistence,
+migration, or retry policy. Handler regressions exercise the shared authorization
+before database operations. Blanket RLS remains unevaluated for broader adoption.
 
 ## Recommended Evaluation
 
-| Facility                                | Fit and caution                                                                                                                                               |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `customFunctions`                       | Possible future candidate for shared authenticated query/mutation builders. Preserve `authComponent.getAuthUser(ctx)` and explicit resource ownership checks. |
-| `rowLevelSecurity`                      | Consider only with a complete policy and all relevant access paths wrapped. It does not automatically secure existing functions.                              |
-| Relationships / `asyncMap`              | Small join conveniences, not a reason to replace readable indexed queries.                                                                                    |
-| Pagination / QueryStreams               | Consider for multi-range iteration or large telemetry lists; start with native pagination.                                                                    |
-| Validators / Zod integration            | Reuse existing native `v` and Zod contracts. Check newer native Convex equivalents before adding helpers.                                                     |
-| Triggers                                | Potential rollup/cleanup tool; all relevant writes must use wrappers. Dashboard edits/imports bypass triggers.                                                |
-| Sessions                                | Anonymous client session IDs, not a replacement for Better Auth.                                                                                              |
-| Query cache / generic CRUD / JS filters | Avoid redundant caching, authorization-free CRUD, and unbounded scans.                                                                                        |
+| Facility                                | Fit and caution                                                                                                                                          |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `customFunctions`                       | Adopted for workspace query/mutation builders, including internal variants. Retains Better Auth session validation and explicit workspace access policy. |
+| `rowLevelSecurity`                      | Consider only with a complete policy and all relevant access paths wrapped. It does not automatically secure existing functions.                         |
+| Relationships / `asyncMap`              | Small join conveniences, not a reason to replace readable indexed queries.                                                                               |
+| Pagination / QueryStreams               | Consider for multi-range iteration or large telemetry lists; start with native pagination.                                                               |
+| Validators / Zod integration            | Reuse existing native `v` and Zod contracts. Check newer native Convex equivalents before adding helpers.                                                |
+| Triggers                                | Potential rollup/cleanup tool; all relevant writes must use wrappers. Dashboard edits/imports bypass triggers.                                           |
+| Sessions                                | Anonymous client session IDs, not a replacement for Better Auth.                                                                                         |
+| Query cache / generic CRUD / JS filters | Avoid redundant caching, authorization-free CRUD, and unbounded scans.                                                                                   |
 
 The current workspace policy is application-owned rather than supplied by a
 generic wrapper. Each user can own multiple personal workspaces;

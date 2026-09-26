@@ -13,8 +13,8 @@ import {
   requireAccessibleChat,
   requireOwnedWorkspace,
   resolveWorkspaceForChat,
-  requireWorkspaceAccess,
 } from "./workspaces";
+import { workspaceQuery } from "./helpers";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
 
 /**
@@ -195,11 +195,10 @@ async function sanitizeSelection(
 }
 
 /** Read the user's default tool selection. */
-export const getToolDefaults = query({
-  args: { workspace: v.id("workspaces") },
-  handler: async (ctx, args): Promise<ToolSelection> => {
-    const workspace = await requireWorkspaceAccess(ctx, args.workspace);
-    return resolveDefaults(ctx, workspace);
+export const getToolDefaults = workspaceQuery({
+  args: {},
+  handler: async (ctx): Promise<ToolSelection> => {
+    return resolveDefaults(ctx, ctx.workspace);
   },
 });
 
@@ -230,10 +229,9 @@ export const setToolDefaults = mutation({
  * validated against the catalogue so a removed model never sticks as a phantom
  * default.
  */
-export const getModelDefault = query({
-  args: { workspace: v.id("workspaces") },
+export const getModelDefault = workspaceQuery({
+  args: {},
   handler: async (ctx, args): Promise<string | null> => {
-    const workspace = await requireWorkspaceAccess(ctx, args.workspace);
     const row = await settingsForWorkspace(ctx, args.workspace);
     if (!row?.defaultModel) return null;
 
@@ -241,7 +239,7 @@ export const getModelDefault = query({
       .query("models")
       .withIndex("by_slug", (q) => q.eq("slug", row.defaultModel!))
       .unique();
-    return model && (await workspaceHasModel(ctx, workspace, row.defaultModel))
+    return model && (await workspaceHasModel(ctx, ctx.workspace, row.defaultModel))
       ? row.defaultModel
       : null;
   },
@@ -282,10 +280,9 @@ export const setModelDefault = mutation({
 });
 
 /** Read the user's title-generator model slug, or `null` if unset/removed. */
-export const getTitleModelDefault = query({
-  args: { workspace: v.id("workspaces") },
+export const getTitleModelDefault = workspaceQuery({
+  args: {},
   handler: async (ctx, args): Promise<string | null> => {
-    const workspace = await requireWorkspaceAccess(ctx, args.workspace);
     const row = await settingsForWorkspace(ctx, args.workspace);
     if (!row?.titleModel) return null;
 
@@ -294,7 +291,7 @@ export const getTitleModelDefault = query({
       .withIndex("by_slug", (q) => q.eq("slug", row.titleModel!))
       .unique();
     return isTitleGenerationModel(model) &&
-      (await workspaceHasModel(ctx, workspace, row.titleModel))
+      (await workspaceHasModel(ctx, ctx.workspace, row.titleModel))
       ? row.titleModel
       : null;
   },
@@ -335,10 +332,9 @@ export const setTitleModelDefault = mutation({
 });
 
 /** Read whether reasoning and tool activity use the combined Chain of Thought UI. */
-export const getChainOfThoughtEnabled = query({
-  args: { workspace: v.id("workspaces") },
+export const getChainOfThoughtEnabled = workspaceQuery({
+  args: {},
   handler: async (ctx, args): Promise<boolean> => {
-    await requireWorkspaceAccess(ctx, args.workspace);
     const row = await settingsForWorkspace(ctx, args.workspace);
     return row?.enableChainOfThought ?? true;
   },

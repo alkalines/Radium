@@ -1,9 +1,12 @@
 /// <reference types="vite/client" />
 
-import { anyApi } from "convex/server";
+import { anyApi, makeFunctionReference } from "convex/server";
+import { api } from "./_generated/api";
 import { convexTest } from "convex-test";
 import { expect, test, vi } from "vitest";
 import schema from "./schema";
+import { v } from "convex/values";
+import { internalWorkspaceMutation, internalWorkspaceQuery } from "./helpers";
 
 type TestIdentity = {
   tokenIdentifier?: string;
@@ -71,6 +74,109 @@ const messagesQueue = {
   model: "test-model",
   webSearch: false,
 };
+
+test("workspace builders reject absent and expired Better Auth sessions before reading or writing", async () => {
+  const t = makeTest();
+  const workspace = await t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Private" }),
+  );
+  await expect(t.query(api.aisdk.ListChats, { workspace })).rejects.toThrow("Not logged in.");
+  await expect(
+    t.mutation(api.aisdk.CreateChat, { workspace, messages_queue: messagesQueue }),
+  ).rejects.toThrow("Not logged in.");
+
+  // A JWT identity is insufficient when Better Auth rejects the session.
+  authMock.getAuthUser.mockRejectedValueOnce(new Error("Unauthenticated"));
+  await expect(asUser(t, "owner").query(api.models.availableModels, { workspace })).rejects.toThrow(
+    "Unauthenticated",
+  );
+  authMock.getAuthUser.mockRejectedValueOnce(new Error("Unauthenticated"));
+  await expect(
+    asUser(t, "owner").mutation(api.aisdk.ForkChat, { workspace, messages: [] }),
+  ).rejects.toThrow("Unauthenticated");
+  expect(await t.run((ctx) => ctx.db.query("aisdk_chats").collect())).toEqual([]);
+});
+
+test("workspace mutation uses the Better Auth user once and preserves member attribution", async () => {
+  const t = makeTest();
+  const workspace = await t.run(async (ctx) => {
+    const workspace = await ctx.db.insert("workspaces", {
+      ownerType: "user",
+      ownerId: "owner",
+      name: "Shared",
+    });
+    await ctx.db.insert("workspace_members", { workspace, userId: "member", role: "member" });
+    return workspace;
+  });
+  authMock.getAuthUser.mockClear();
+  const chatId = await asUser(t, "member").mutation(api.aisdk.ForkChat, {
+    workspace,
+    messages: [],
+  });
+  expect(authMock.getAuthUser).toHaveBeenCalledTimes(1);
+  expect(await t.run((ctx) => ctx.db.get("aisdk_chats", chatId))).toMatchObject({
+    workspace,
+    userId: "member",
+    scope: "personal",
+  });
+  await t.run((ctx) => ctx.db.patch("workspaces", workspace, { archivedAt: Date.now() }));
+  for (const userId of ["owner", "member"]) {
+    await expect(asUser(t, userId).query(api.aisdk.ListChats, { workspace })).rejects.toThrow(
+      "Workspace not found.",
+    );
+    await expect(
+      asUser(t, userId).mutation(api.aisdk.ForkChat, { workspace, messages: [] }),
+    ).rejects.toThrow("Workspace not found.");
+  }
+});
+
+test("internal workspace builders retain internal visibility and require a session and membership", async () => {
+  const read = internalWorkspaceQuery({
+    args: {},
+    returns: v.object({ userId: v.string(), name: v.string() }),
+    handler: (ctx) => ({ userId: ctx.identity._id, name: ctx.workspace.name }),
+  });
+  const write = internalWorkspaceMutation({
+    args: { name: v.string() },
+    returns: v.null(),
+    handler: async (ctx, args) => {
+      await ctx.db.patch("workspaces", args.workspace, { name: args.name });
+      return null;
+    },
+  });
+  expect(read.isInternal).toBe(true);
+  expect(write.isInternal).toBe(true);
+  const readRef = makeFunctionReference<"query">("workspace_builder_fixture:read");
+  const writeRef = makeFunctionReference<"mutation">("workspace_builder_fixture:write");
+  const t = convexTest({
+    schema,
+    modules: {
+      ...modules,
+      "./workspace_builder_fixture.ts": async () => ({ read, write }),
+    },
+  });
+  const workspace = await t.run((ctx) =>
+    ctx.db.insert("workspaces", {
+      ownerType: "user",
+      ownerId: "owner",
+      name: "Original",
+    }),
+  );
+  for (const caller of [t, asUser(t, "outsider")]) {
+    await expect(caller.query(readRef, { workspace })).rejects.toThrow();
+    await expect(caller.mutation(writeRef, { workspace, name: "Denied" })).rejects.toThrow();
+  }
+  const owner = asUser(t, "owner");
+  await expect(owner.query(readRef, { workspace })).resolves.toEqual({
+    userId: "owner",
+    name: "Original",
+  });
+  await owner.mutation(writeRef, { workspace, name: "Updated" });
+  await expect(owner.query(readRef, { workspace })).resolves.toEqual({
+    userId: "owner",
+    name: "Updated",
+  });
+});
 
 test("CreateChat and ForkChat reject a caller outside the workspace", async () => {
   const t = makeTest();

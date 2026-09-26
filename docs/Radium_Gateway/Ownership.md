@@ -58,6 +58,56 @@ Auth organization. This is direct membership, not an invitation flow.
   encryption is future work. Explicit owner-auditing records are also future
   work and must not bypass workspace or chat authorization.
 
+## Workspace Function Builders (Implemented)
+
+`packages/backend/convex/helpers.ts` exports `workspaceQuery`, `workspaceMutation`,
+`internalWorkspaceQuery`, and `internalWorkspaceMutation`, built with
+`convex-helpers/server/customFunctions`. Each builder:
+
+1. Adds the required `workspace: v.id("workspaces")` argument automatically.
+2. Calls `authComponent.getAuthUser(ctx)` once to validate the Better Auth session.
+3. Uses `requireWorkspaceAccessForUser` from `workspaces.ts` to check active
+   workspace ownership or explicit membership.
+4. Supplies the full Better Auth user as `ctx.identity`, the authorized document
+   as `ctx.workspace`, and preserves `args.workspace` for existing indexed reads.
+
+Handlers declare only their additional arguments and their return validator:
+
+```ts
+import { v } from "convex/values";
+import { workspaceQuery } from "./helpers";
+
+export const workspaceName = workspaceQuery({
+  args: {},
+  returns: v.string(),
+  handler: (ctx) => ctx.workspace.name,
+});
+```
+
+The nine former `requireWorkspaceAccess` call sites use these builders: chat
+creation, forking and listing; available models; MCP server listing; and the four
+workspace default queries in `chatroom.ts`. Authentication failures throw before
+the handler executes. `CreateChat`, `ForkChat`, and `ListChats` no longer return
+the `"Not logged in!"` sentinel. Missing, archived, and inaccessible workspaces
+continue to throw `"Workspace not found."`. Frontend creation errors use the
+existing inline error display; fork errors use a toast.
+
+These builders grant **owner or member** access. Owner-only configuration writes
+still use `requireOwnedWorkspace`, and chat-specific operations still enforce
+personal/shared visibility and management policy. A workspace check alone does
+not authorize reading another user's personal chat.
+
+Internal builders preserve internal visibility but require a propagated Better
+Auth session too. They are available for session-backed internal calls; existing
+API-key flows, HTTP authorization using server-derived user IDs, and scheduled
+jobs retain their explicit policies and raw internal builders. They must not be
+converted to session-backed builders indiscriminately.
+
+Verification: `bun run test` runs handler regressions for missing/rejected
+sessions, outsider denial, owner/member access, member chat attribution, archived
+workspaces, internal visibility, and personal chat privacy. Remaining work is
+tracked in [Convex auth reuse](../tasks/02_Convex_Auth_Reuse.md).
+
 ## Migration
 
 The schema is widened rather than replacing legacy ownership fields. Legacy
