@@ -12,6 +12,19 @@ export type WorkspaceMember = {
 
 export type ChatScope = "personal" | "workspace";
 
+/**
+ * Check management after the caller has authorized the chat's workspace and visibility.
+ * Creators manage their own chats; workspace owners can also manage shared chats.
+ * This predicate does not grant owners access to another user's personal chat.
+ */
+export function canManageChat(
+  chat: { userId: string; scope?: ChatScope },
+  workspace: Pick<WorkspaceOwner, "ownerId">,
+  userId: string,
+): boolean {
+  return chat.userId === userId || (chat.scope === "workspace" && workspace.ownerId === userId);
+}
+
 export type ChatOwnership = {
   userId: string;
   workspaceId?: string;

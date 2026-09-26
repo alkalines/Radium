@@ -6,8 +6,9 @@ import {
   getDefaultWorkspaceForUser,
   requireOwnedWorkspace,
   requireWorkspaceAccessForUser,
+  loadWorkspaceSettings,
 } from "./workspaces";
-import { getEffectiveWorkspaceSettings, materializeWorkspaceSettings } from "./chatroom";
+import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "./helpers";
 import { preferChatroomTraces, summarizeTraces } from "../src/telemetry/summary";
 import {
   filterVisibleTraces,
@@ -60,46 +61,29 @@ const spanFields = {
   outputJson: v.optional(v.string()),
 };
 
-async function workspaceSettings(ctx: QueryCtxOrMutationCtx, workspace: Id<"workspaces">) {
-  return await ctx.db
-    .query("workspace_settings")
-    .withIndex("by_workspace", (q) => q.eq("workspace", workspace))
-    .first();
-}
-
 type QueryCtxOrMutationCtx = Parameters<typeof requireOwnedWorkspace>[0];
 
 /** Read workspace AI SDK telemetry preferences; Gateway management is owner-only. */
-export const getSettings = query({
-  args: { workspace: v.id("workspaces") },
-  handler: async (ctx, args) => {
-    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
-    return (await getEffectiveWorkspaceSettings(ctx, workspace)).telemetry ?? defaultSettings;
+export const getSettings = ownedWorkspaceQuery({
+  args: {},
+  returns: telemetrySettingsSchema,
+  handler: async (ctx) => {
+    return ctx.workspace.settings.telemetry ?? defaultSettings;
   },
 });
 
 /** Configure owner-only workspace AI SDK telemetry. Collection remains disabled by default. */
-export const setSettings = mutation({
-  args: { workspace: v.id("workspaces"), ...telemetrySettingsSchema.fields },
+export const setSettings = ownedWorkspaceMutation({
+  args: telemetrySettingsSchema.fields,
+  returns: v.id("workspace_settings"),
   handler: async (ctx, args) => {
-    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
-    const existing = await workspaceSettings(ctx, args.workspace);
     const telemetry = {
       enabled: args.enabled,
       recordInputs: args.enabled && args.recordInputs,
       recordOutputs: args.enabled && args.recordOutputs,
     };
 
-    if (existing) {
-      await ctx.db.patch("workspace_settings", existing._id, { telemetry });
-      return existing._id;
-    }
-    return await ctx.db.insert(
-      "workspace_settings",
-      materializeWorkspaceSettings(await getEffectiveWorkspaceSettings(ctx, workspace), {
-        telemetry,
-      }),
-    );
+    return await ctx.workspace.updateSettings({ telemetry });
   },
 });
 
@@ -271,7 +255,7 @@ export const getSettingsForUser = internalQuery({
   handler: async (ctx, args) => {
     const workspace = await getDefaultWorkspaceForUser(ctx, args.userId);
     if (!workspace) return defaultSettings;
-    return (await getEffectiveWorkspaceSettings(ctx, workspace)).telemetry ?? defaultSettings;
+    return (await loadWorkspaceSettings(ctx, workspace)).telemetry ?? defaultSettings;
   },
 });
 
@@ -280,7 +264,7 @@ export const getSettingsForWorkspace = internalQuery({
   handler: async (ctx, args) => {
     const workspace = await ctx.db.get("workspaces", args.workspace);
     if (!workspace || workspace.archivedAt !== undefined) return defaultSettings;
-    return (await getEffectiveWorkspaceSettings(ctx, workspace)).telemetry ?? defaultSettings;
+    return (await loadWorkspaceSettings(ctx, workspace)).telemetry ?? defaultSettings;
   },
 });
 

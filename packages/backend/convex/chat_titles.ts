@@ -10,9 +10,8 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { createInternalGatewayProvider } from "./ai_gateway";
-import { getEffectiveWorkspaceSettings } from "./chatroom";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
-import { resolveWorkspaceForChat } from "./workspaces";
+import { loadWorkspaceSettings, resolveWorkspaceForChat } from "./workspaces";
 
 const titleSchema = z.object({
   emoji: z.string().emoji().describe("Exactly one emoji that represents the user's first message."),
@@ -135,7 +134,7 @@ export const titleGenerationInfo = internalQuery({
 
     const workspace = await resolveWorkspaceForChat(ctx, chat);
     if (!workspace) return null;
-    const settings = await getEffectiveWorkspaceSettings(ctx, workspace);
+    const settings = await loadWorkspaceSettings(ctx, workspace);
 
     const model = await firstAvailableModel(
       ctx,

@@ -27,6 +27,14 @@ retained in `convex/workspaces.ts`. It needs no hosted service, new persistence,
 migration, or retry policy. Handler regressions exercise the shared authorization
 before database operations. Blanket RLS remains unevaluated for broader adoption.
 
+The 2026-09-26 context-enrichment follow-up rechecked the official component
+catalog and `customFunctions` documentation. The existing builders also fit
+workspace settings snapshots and mutation-only update methods. Chat permission
+predicates remain standalone functions. Better Auth remains the session provider; no component is
+needed to move app-owned settings into the authorized context. Settings database
+access remains in `convex/workspaces.ts`, and the pure management predicate lives
+in `src/workspaces/policy.ts`.
+
 ## Recommended Evaluation
 
 | Facility                                | Fit and caution                                                                                                                                          |

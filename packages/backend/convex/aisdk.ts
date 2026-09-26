@@ -4,10 +4,10 @@ import type { Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import { internal } from "./_generated/api";
-import { requireAccessibleChat } from "./workspaces";
+import { requireAccessibleChat, requireChatManager } from "./workspaces";
 import { workspaceMutation, workspaceQuery } from "./helpers";
-import { canManageChat, requireChatManager } from "./chatroom";
 import { firstUserMessageText } from "./chat_titles";
+import { canManageChat } from "../src/workspaces/policy";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
 const MAX_CHAT_CANDIDATES = 100;
@@ -97,13 +97,13 @@ export const GetChat = query({
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
-    const { chat, workspace } = await requireAccessibleChat(ctx, args.chatId);
+    const { chat, workspace, canManage } = await requireAccessibleChat(ctx, args.chatId);
 
     return {
       id: chat?._id,
       workspace: workspace._id,
       scope: chat.scope ?? "personal",
-      canManage: canManageChat(chat, workspace, identity._id),
+      canManage,
       canManageScope: chat.userId === identity._id,
       messages: chat?.messages,
       title: chat?.title,

@@ -11,10 +11,11 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
   getDefaultWorkspaceForUser,
   requireAccessibleChat,
-  requireOwnedWorkspace,
+  loadWorkspaceSettings,
+  requireChatManager,
   resolveWorkspaceForChat,
 } from "./workspaces";
-import { workspaceQuery } from "./helpers";
+import { ownedWorkspaceMutation, workspaceQuery } from "./helpers";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
 
 /**
@@ -39,133 +40,6 @@ type ToolSelection = {
   builtinToolSets: string[];
   mcpServers: Id<"mcp_servers">[];
 };
-
-const EMPTY_SELECTION: ToolSelection = { builtinToolSets: [], mcpServers: [] };
-
-export type EffectiveWorkspaceSettings = {
-  workspace: Id<"workspaces">;
-  defaultModel?: string;
-  titleModel?: string;
-  enableChainOfThought?: boolean;
-  telemetry?: NonNullable<Doc<"workspace_settings">["telemetry"]>;
-  builtinToolSets: string[];
-  mcpServers: Id<"mcp_servers">[];
-};
-
-export type WorkspaceSettingsOverrides = Partial<
-  Pick<
-    EffectiveWorkspaceSettings,
-    | "defaultModel"
-    | "titleModel"
-    | "enableChainOfThought"
-    | "telemetry"
-    | "builtinToolSets"
-    | "mcpServers"
-  >
->;
-
-async function workspaceSettingsRow(ctx: QueryCtx | MutationCtx, workspaceId: Id<"workspaces">) {
-  const current = await ctx.db
-    .query("workspace_settings")
-    .withIndex("by_workspace", (q) => q.eq("workspace", workspaceId))
-    .first();
-  return current;
-}
-
-function settingsValue(
-  workspace: Id<"workspaces">,
-  settings:
-    | Pick<
-        EffectiveWorkspaceSettings,
-        | "defaultModel"
-        | "titleModel"
-        | "enableChainOfThought"
-        | "telemetry"
-        | "builtinToolSets"
-        | "mcpServers"
-      >
-    | null
-    | undefined,
-): EffectiveWorkspaceSettings {
-  return {
-    workspace,
-    ...(settings?.defaultModel !== undefined ? { defaultModel: settings.defaultModel } : {}),
-    ...(settings?.titleModel !== undefined ? { titleModel: settings.titleModel } : {}),
-    ...(settings?.enableChainOfThought !== undefined
-      ? { enableChainOfThought: settings.enableChainOfThought }
-      : {}),
-    ...(settings?.telemetry !== undefined ? { telemetry: settings.telemetry } : {}),
-    builtinToolSets: settings?.builtinToolSets ?? [],
-    mcpServers: settings?.mcpServers ?? [],
-  };
-}
-
-/** Preserve all effective fields when a legacy settings row is materialized. */
-export function materializeWorkspaceSettings(
-  settings: EffectiveWorkspaceSettings,
-  overrides: WorkspaceSettingsOverrides,
-): EffectiveWorkspaceSettings {
-  const defaultModel = "defaultModel" in overrides ? overrides.defaultModel : settings.defaultModel;
-  const titleModel = "titleModel" in overrides ? overrides.titleModel : settings.titleModel;
-  const enableChainOfThought =
-    "enableChainOfThought" in overrides
-      ? overrides.enableChainOfThought
-      : settings.enableChainOfThought;
-  const telemetry = "telemetry" in overrides ? overrides.telemetry : settings.telemetry;
-
-  return {
-    workspace: settings.workspace,
-    ...(defaultModel !== undefined ? { defaultModel } : {}),
-    ...(titleModel !== undefined ? { titleModel } : {}),
-    ...(enableChainOfThought !== undefined ? { enableChainOfThought } : {}),
-    ...(telemetry !== undefined ? { telemetry } : {}),
-    builtinToolSets: overrides.builtinToolSets ?? settings.builtinToolSets,
-    mcpServers: overrides.mcpServers ?? settings.mcpServers,
-  };
-}
-
-/** Read the effective workspace settings without letting legacy values bleed into other workspaces. */
-export async function getEffectiveWorkspaceSettings(
-  ctx: QueryCtx | MutationCtx,
-  workspace: Doc<"workspaces">,
-): Promise<EffectiveWorkspaceSettings> {
-  const current = await workspaceSettingsRow(ctx, workspace._id);
-  if (current) return settingsValue(workspace._id, current);
-
-  const defaultWorkspace = await getDefaultWorkspaceForUser(ctx, workspace.ownerId);
-  if (defaultWorkspace?._id !== workspace._id) {
-    return settingsValue(workspace._id, undefined);
-  }
-
-  const legacy = await ctx.db
-    .query("chatroom_settings")
-    .withIndex("by_userId", (q) => q.eq("userId", workspace.ownerId))
-    .first();
-  return settingsValue(workspace._id, legacy);
-}
-
-/** Read workspace settings, using the legacy row only for the default workspace. */
-async function settingsForWorkspace(ctx: QueryCtx | MutationCtx, workspaceId: Id<"workspaces">) {
-  const workspace = await ctx.db.get("workspaces", workspaceId);
-  return workspace ? getEffectiveWorkspaceSettings(ctx, workspace) : null;
-}
-
-export function canManageChat(
-  chat: Pick<Doc<"aisdk_chats">, "userId" | "scope">,
-  workspace: Pick<Doc<"workspaces">, "ownerId">,
-  userId: string,
-): boolean {
-  return chat.userId === userId || (chat.scope === "workspace" && workspace.ownerId === userId);
-}
-
-/** Require chat access before allowing creator or workspace-owner management actions. */
-export async function requireChatManager(ctx: QueryCtx | MutationCtx, chatId: Id<"aisdk_chats">) {
-  const access = await requireAccessibleChat(ctx, chatId);
-  if (!canManageChat(access.chat, access.workspace, access.userId)) {
-    throw new Error("Chat not found.");
-  }
-  return access;
-}
 
 /**
  * Sanitise a selection against the workspace. Legacy user-owned servers are
@@ -198,29 +72,18 @@ async function sanitizeSelection(
 export const getToolDefaults = workspaceQuery({
   args: {},
   handler: async (ctx): Promise<ToolSelection> => {
-    return resolveDefaults(ctx, ctx.workspace);
+    return sanitizeSelection(ctx, ctx.workspace, ctx.workspace.settings);
   },
 });
 
 /** Replace the user's default tool selection. */
-export const setToolDefaults = mutation({
-  args: { workspace: v.id("workspaces"), selection: toolSelectionValidator },
+export const setToolDefaults = ownedWorkspaceMutation({
+  args: { selection: toolSelectionValidator },
+  returns: v.id("workspace_settings"),
   handler: async (ctx, args) => {
-    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
-    const selection = await sanitizeSelection(ctx, workspace, args.selection);
+    const selection = await sanitizeSelection(ctx, ctx.workspace, args.selection);
 
-    const existing = await ctx.db
-      .query("workspace_settings")
-      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
-      .first();
-    if (existing) {
-      await ctx.db.patch("workspace_settings", existing._id, selection);
-      return existing._id;
-    }
-    return await ctx.db.insert(
-      "workspace_settings",
-      materializeWorkspaceSettings(await getEffectiveWorkspaceSettings(ctx, workspace), selection),
-    );
+    return await ctx.workspace.updateSettings(selection);
   },
 });
 
@@ -231,25 +94,26 @@ export const setToolDefaults = mutation({
  */
 export const getModelDefault = workspaceQuery({
   args: {},
-  handler: async (ctx, args): Promise<string | null> => {
-    const row = await settingsForWorkspace(ctx, args.workspace);
-    if (!row?.defaultModel) return null;
+  handler: async (ctx): Promise<string | null> => {
+    if (!ctx.workspace.settings.defaultModel) return null;
 
     const model = await ctx.db
       .query("models")
-      .withIndex("by_slug", (q) => q.eq("slug", row.defaultModel!))
+      .withIndex("by_slug", (q) => q.eq("slug", ctx.workspace.settings.defaultModel!))
       .unique();
-    return model && (await workspaceHasModel(ctx, ctx.workspace, row.defaultModel))
-      ? row.defaultModel
+    return model &&
+      (await workspaceHasModel(ctx, ctx.workspace, ctx.workspace.settings.defaultModel))
+      ? ctx.workspace.settings.defaultModel
       : null;
   },
 });
 
 /** Set (or clear, when `model` is omitted) the user's default model slug. */
-export const setModelDefault = mutation({
-  args: { workspace: v.id("workspaces"), model: v.optional(v.string()) },
+export const setModelDefault = ownedWorkspaceMutation({
+  args: { model: v.optional(v.string()) },
+  returns: v.id("workspace_settings"),
   handler: async (ctx, args) => {
-    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    const workspace = ctx.workspace;
 
     if (args.model) {
       const model = await ctx.db
@@ -257,51 +121,38 @@ export const setModelDefault = mutation({
         .withIndex("by_slug", (q) => q.eq("slug", args.model!))
         .unique();
       if (!model) throw new Error("Unknown model.");
-      if (!(await workspaceHasModel(ctx, workspace, args.model))) {
+      if (!(await workspaceHasModel(ctx, ctx.workspace, args.model))) {
         throw new Error("Model is not configured for this workspace.");
       }
     }
 
-    const existing = await ctx.db
-      .query("workspace_settings")
-      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
-      .first();
-    if (existing) {
-      await ctx.db.patch("workspace_settings", existing._id, { defaultModel: args.model });
-      return existing._id;
-    }
-    return await ctx.db.insert(
-      "workspace_settings",
-      materializeWorkspaceSettings(await getEffectiveWorkspaceSettings(ctx, workspace), {
-        defaultModel: args.model,
-      }),
-    );
+    return await workspace.updateSettings({ defaultModel: args.model });
   },
 });
 
 /** Read the user's title-generator model slug, or `null` if unset/removed. */
 export const getTitleModelDefault = workspaceQuery({
   args: {},
-  handler: async (ctx, args): Promise<string | null> => {
-    const row = await settingsForWorkspace(ctx, args.workspace);
-    if (!row?.titleModel) return null;
+  handler: async (ctx): Promise<string | null> => {
+    if (!ctx.workspace.settings.titleModel) return null;
 
     const model = await ctx.db
       .query("models")
-      .withIndex("by_slug", (q) => q.eq("slug", row.titleModel!))
+      .withIndex("by_slug", (q) => q.eq("slug", ctx.workspace.settings.titleModel!))
       .unique();
     return isTitleGenerationModel(model) &&
-      (await workspaceHasModel(ctx, ctx.workspace, row.titleModel))
-      ? row.titleModel
+      (await workspaceHasModel(ctx, ctx.workspace, ctx.workspace.settings.titleModel))
+      ? ctx.workspace.settings.titleModel
       : null;
   },
 });
 
 /** Set (or clear, when `model` is omitted) the title-generator model slug. */
-export const setTitleModelDefault = mutation({
-  args: { workspace: v.id("workspaces"), model: v.optional(v.string()) },
+export const setTitleModelDefault = ownedWorkspaceMutation({
+  args: { model: v.optional(v.string()) },
+  returns: v.id("workspace_settings"),
   handler: async (ctx, args) => {
-    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    const workspace = ctx.workspace;
 
     if (args.model) {
       const model = await ctx.db
@@ -309,58 +160,29 @@ export const setTitleModelDefault = mutation({
         .withIndex("by_slug", (q) => q.eq("slug", args.model!))
         .unique();
       if (!isTitleGenerationModel(model)) throw new Error("Unknown title model.");
-      if (!(await workspaceHasModel(ctx, workspace, args.model))) {
+      if (!(await workspaceHasModel(ctx, ctx.workspace, args.model))) {
         throw new Error("Title model is not configured for this workspace.");
       }
     }
 
-    const existing = await ctx.db
-      .query("workspace_settings")
-      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
-      .first();
-    if (existing) {
-      await ctx.db.patch("workspace_settings", existing._id, { titleModel: args.model });
-      return existing._id;
-    }
-    return await ctx.db.insert(
-      "workspace_settings",
-      materializeWorkspaceSettings(await getEffectiveWorkspaceSettings(ctx, workspace), {
-        titleModel: args.model,
-      }),
-    );
+    return await workspace.updateSettings({ titleModel: args.model });
   },
 });
 
 /** Read whether reasoning and tool activity use the combined Chain of Thought UI. */
 export const getChainOfThoughtEnabled = workspaceQuery({
   args: {},
-  handler: async (ctx, args): Promise<boolean> => {
-    const row = await settingsForWorkspace(ctx, args.workspace);
-    return row?.enableChainOfThought ?? true;
+  handler: async (ctx): Promise<boolean> => {
+    return ctx.workspace.settings.enableChainOfThought ?? true;
   },
 });
 
 /** Set whether reasoning and tool activity use the combined Chain of Thought UI. */
-export const setChainOfThoughtEnabled = mutation({
-  args: { workspace: v.id("workspaces"), enabled: v.boolean() },
+export const setChainOfThoughtEnabled = ownedWorkspaceMutation({
+  args: { enabled: v.boolean() },
+  returns: v.id("workspace_settings"),
   handler: async (ctx, args) => {
-    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
-    const existing = await ctx.db
-      .query("workspace_settings")
-      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
-      .first();
-    if (existing) {
-      await ctx.db.patch("workspace_settings", existing._id, {
-        enableChainOfThought: args.enabled,
-      });
-      return existing._id;
-    }
-    return await ctx.db.insert(
-      "workspace_settings",
-      materializeWorkspaceSettings(await getEffectiveWorkspaceSettings(ctx, workspace), {
-        enableChainOfThought: args.enabled,
-      }),
-    );
+    return await ctx.workspace.updateSettings({ enableChainOfThought: args.enabled });
   },
 });
 
@@ -397,8 +219,7 @@ async function resolveDefaults(
   ctx: QueryCtx | MutationCtx,
   workspace: Doc<"workspaces">,
 ): Promise<ToolSelection> {
-  const defaults = await settingsForWorkspace(ctx, workspace._id);
-  if (!defaults) return EMPTY_SELECTION;
+  const defaults = await loadWorkspaceSettings(ctx, workspace);
   return sanitizeSelection(ctx, workspace, {
     builtinToolSets: defaults.builtinToolSets,
     mcpServers: defaults.mcpServers,

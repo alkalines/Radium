@@ -1,6 +1,6 @@
 # Convex Auth Reuse
 
-Status: Workspace-access wrapper slice implemented; broader auth consolidation remains.
+Status: Workspace-access wrappers and settings context implemented; broader auth consolidation remains.
 Scope: evaluate and adopt a small shared auth pattern.
 Prerequisite: read [research](../research/Convex_Reuse.md) and current official docs.
 
@@ -22,11 +22,16 @@ Under `packages/backend/`: `package.json`, `convex/helpers.ts`, `convex/auth.ts`
 - Implemented in `convex/helpers.ts`: public/internal workspace query and mutation
   builders exposing `ctx.identity` from `authComponent.getAuthUser(ctx)` and the
   authorized `ctx.workspace`. All nine `requireWorkspaceAccess` call sites migrated.
+- Workspace context now provides effective `settings` and mutation-only
+  `updateSettings`. Chat permission predicates remain standalone functions in
+  `src/workspaces/policy.ts`. Owner-only builders cover Chatroom default writes
+  and telemetry settings. Settings persistence and legacy fallback are centralized
+  in `workspaces.ts`; chat management policy is shared with chat-specific access.
 - Added direct `convex-helpers@0.1.124`; selection and compatibility are recorded in
   [reuse research](../research/Convex_Reuse.md).
 - `CreateChat`, `ForkChat`, and `ListChats` throw on failed authentication rather
   than returning a string sentinel; creation/fork UI callers handle errors.
-- Owner-only, chat-specific, optional-session, and non-workspace session checks
+- Other owner-only, chat-specific, optional-session, and non-workspace session checks
   remain explicit. Further consolidation needs its own inventory and regressions.
   API-key/HTTP and background-job authorization remain separate. Internal
   workspace builders are available but no existing background jobs were migrated.
@@ -53,6 +58,23 @@ Under `packages/backend/`: `package.json`, `convex/helpers.ts`, `convex/auth.ts`
   older audited Convex version; that workspace-layout blocker remains in task 09.
   The new module exports builders only; the migrated registered functions retain
   their existing names and their checked-in API imports infer the updated types.
+
+## Settings Context Follow-up Verification (2026-09-26)
+
+- `bun run --cwd packages/backend test`: 72 tests passed across 16 files.
+  The four added regressions cover context settings, legacy isolation and
+  materialization, explicit model clearing, caller-specific management policy, and
+  owner-only builders/settings updates.
+- Scoped `apps/web/node_modules/.bin/oxfmt --check` on all changed files and
+  `git diff --check`: passed.
+- `packages/backend/node_modules/.bin/tsc --project packages/backend/tsconfig.json --rootDir packages/backend --noEmit`:
+  still fails on the existing backend/test issues listed above (also missing
+  `BodyInit`). No diagnostics in the modified implementation or new test bodies.
+- Scoped `apps/web/node_modules/.bin/eslint` on the seven changed implementation
+  files remains blocked by the root config's unresolved `eslint` import.
+- No build, codegen, deployment, or remote migration was run. Existing registered
+  function names and arguments are retained; declarations infer the new builders
+  without adding an API module.
 
 ## Acceptance
 
