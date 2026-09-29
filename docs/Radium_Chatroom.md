@@ -71,6 +71,16 @@ and approval UI for tool calls. Filesystem, command, and coding execution belong
 to the external Agent Runner; the checked-in Runner packages are health-check
 skeletons and are not an execution platform.
 
+`packages/backend/convex/aisdk_tools.ts` owns workspace-authorized MCP server
+management and Exa credential operations. The web UI calls its public functions;
+the chat action loads built-in tool credentials through its provider-scoped internal runtime query and
+loads MCP bearer tokens server-side. Configuration normalization and tool-name
+collision rules live in `packages/backend/src/chatroom/aisdk-tools.ts`. Exa is
+the current agentic search integration; additional search integrations can use
+their own credential and runtime rules under the same Chatroom tool boundary.
+Missing Exa keys omit web search; a failing MCP connection is skipped. Secret
+Store recovery failures remain errors for credential management.
+
 ### Telemetry
 
 AI telemetry is optional and disabled by default. Input and output capture are

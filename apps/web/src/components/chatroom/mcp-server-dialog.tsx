@@ -55,8 +55,8 @@ export function McpServerDialog({
   workspaceId: Id<"workspaces"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
-  const createServer = useMutation(api.mcp.createServer);
-  const updateServer = useMutation(api.mcp.updateServer);
+  const createServer = useMutation(api.aisdk_tools.createMcpServer);
+  const updateServer = useMutation(api.aisdk_tools.updateMcpServer);
 
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");

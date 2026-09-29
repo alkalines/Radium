@@ -629,7 +629,7 @@ test("does not copy stale MCP secrets for servers without bearer auth", async ()
   expect(stored.server?.workspace).toBe(ids.workspace);
   expect(stored.source.ok).toBe(true);
   expect(stored.destination).toEqual({ ok: false, reason: "not_found" });
-  const listed = await asUser(t, "owner").query(anyApi.mcp.listServers, {
+  const listed = await asUser(t, "owner").query(anyApi.aisdk_tools.listMcpServers, {
     workspace: ids.workspace,
   });
   expect(listed).toEqual([
@@ -662,11 +662,11 @@ test("MCP metadata reads and updates require recovery for unusable bearer tokens
       getSecret.mockClear();
       getSecret.mockResolvedValue({ ok: false, reason });
       await expect(
-        asUser(t, "owner").query(anyApi.mcp.listServers, { workspace: ids.workspace }),
+        asUser(t, "owner").query(anyApi.aisdk_tools.listMcpServers, { workspace: ids.workspace }),
       ).rejects.toThrow("Secret Store recovery required");
       expect(getSecret).toHaveBeenCalledTimes(1);
       await expect(
-        asUser(t, "owner").mutation(anyApi.mcp.updateServer, {
+        asUser(t, "owner").mutation(anyApi.aisdk_tools.updateMcpServer, {
           workspace: ids.workspace,
           server: ids.server,
           auth: { type: "bearer" },
@@ -677,4 +677,57 @@ test("MCP metadata reads and updates require recovery for unusable bearer tokens
   } finally {
     getSecret.mockRestore();
   }
+});
+
+test("Exa credentials stay owner-managed and are available only through the internal runtime query", async () => {
+  const t = makeTest();
+  const workspace = await t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Search" }),
+  );
+
+  await expect(
+    asUser(t, "other").mutation(anyApi.aisdk_tools.setExaApiKey, {
+      workspace,
+      apiKey: "other-key",
+    }),
+  ).rejects.toThrow();
+  await expect(
+    asUser(t, "owner").mutation(anyApi.aisdk_tools.setExaApiKey, {
+      workspace,
+      apiKey: "  ",
+    }),
+  ).rejects.toThrow("An Exa API key is required.");
+
+  await asUser(t, "owner").mutation(anyApi.aisdk_tools.setExaApiKey, {
+    workspace,
+    apiKey: "  test-exa-key  ",
+  });
+  const preview = await asUser(t, "owner").query(anyApi.aisdk_tools.getExaApiKey, {
+    workspace,
+  });
+  expect(preview?.preview).toBeTruthy();
+  expect(preview?.preview).not.toContain("test-exa-key");
+  await expect(
+    asUser(t, "other").query(anyApi.aisdk_tools.getExaApiKey, { workspace }),
+  ).rejects.toThrow();
+  expect(
+    await t.query(anyApi.aisdk_tools.getBuiltinToolCredentialForRuntime, {
+      workspace,
+      provider: "exa",
+    }),
+  ).toBe("test-exa-key");
+  await expect(
+    t.query(anyApi.aisdk_tools.getBuiltinToolCredentialForRuntime, {
+      workspace,
+      provider: "unknown_provider",
+    }),
+  ).rejects.toThrow();
+
+  await asUser(t, "owner").mutation(anyApi.aisdk_tools.deleteExaApiKey, { workspace });
+  expect(
+    await t.query(anyApi.aisdk_tools.getBuiltinToolCredentialForRuntime, {
+      workspace,
+      provider: "exa",
+    }),
+  ).toBeNull();
 });

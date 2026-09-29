@@ -3,8 +3,8 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
-const websiteRoot = resolvePath(scriptsDirectory, "..");
-const convexEsmRoot = resolvePath(websiteRoot, "node_modules/convex/dist/esm");
+const backendRoot = resolvePath(scriptsDirectory, "../../../packages/backend");
+const convexEsmRoot = resolvePath(backendRoot, "node_modules/convex/dist/esm");
 
 // The published CLI bundles these imports. Keep the direct template usable
 // without loading the deployment-oriented CLI modules.

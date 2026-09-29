@@ -10,6 +10,11 @@ import {
   type UIMessage,
 } from "ai";
 import { toExaCountry } from "../../src/chatroom/user-location";
+import {
+  EXA_TOOL_CREDENTIAL_PROVIDER,
+  toolNamePrefix,
+  uniqueToolName,
+} from "../../src/chatroom/aisdk-tools";
 import type { Id } from "../_generated/dataModel";
 import { authComponent, createAuth } from "../auth";
 import { internal } from "../_generated/api";
@@ -377,7 +382,10 @@ async function resolveExaWebSearch(
     return undefined;
   }
 
-  const apiKey = await ctx.runQuery(internal.exa.getApiKeyForRuntime, { workspace });
+  const apiKey = await ctx.runQuery(internal.aisdk_tools.getBuiltinToolCredentialForRuntime, {
+    workspace,
+    provider: EXA_TOOL_CREDENTIAL_PROVIDER,
+  });
   if (!apiKey) return undefined;
 
   return webSearch({ apiKey, userLocation: toExaCountry() }) as ToolSet[string];
@@ -407,23 +415,6 @@ async function resolveMcpHeaders(
       : workspaceToken;
   if (!token.ok) throw new Error("MCP bearer token unavailable.");
   return { Authorization: `Bearer ${token.value}` };
-}
-
-/** Sanitise a server name into a safe tool-name prefix (`[a-zA-Z0-9_]`). */
-function toolNamePrefix(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return slug || "mcp";
-}
-
-/** Ensure a tool name is unique within `tools`, appending a counter if needed. */
-function uniqueToolName(tools: ToolSet, name: string): string {
-  if (!(name in tools)) return name;
-  let counter = 2;
-  while (`${name}_${counter}` in tools) counter++;
-  return `${name}_${counter}`;
 }
 
 /**

@@ -110,18 +110,18 @@ function upload. Run this from the repository root:
 
 ```bash
 node \
-  --require ./packages/website/scripts/convex-offline-network-guard.cjs \
-  --experimental-loader ./packages/website/scripts/convex-offline-bindings-loader.mjs \
-  ./packages/website/scripts/generate-convex-api-bindings.mjs \
+  --require ./apps/web/scripts/convex-offline-network-guard.cjs \
+  --experimental-loader ./apps/web/scripts/convex-offline-bindings-loader.mjs \
+  ./apps/web/scripts/generate-convex-api-bindings.mjs \
   --write
 ```
 
-This narrow generator writes only `packages/website/convex/_generated/api.d.ts`.
+This narrow generator writes only `packages/backend/convex/_generated/api.d.ts`.
 It uses the installed Convex `componentApiDTS` template and local static analysis
 of the root component mounts, then formats the result with the installed Convex
 formatter. The network guard is an additional check; it must remain enabled.
 
-The driver is audited against the lockfile's Convex `1.45.0` installation and
+The driver is checked against the installed Convex `1.46.0` template and
 uses an internal CLI export, not a stable public API. Review the generated diff
 after Convex or component dependency updates. It supports the current static
 `convex.config.ts` form and fails closed for dynamic imports, unsupported

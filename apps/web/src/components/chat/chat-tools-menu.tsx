@@ -41,7 +41,7 @@ export function ChatToolsMenu({
   chatId?: Id<"aisdk_chats">;
 }) {
   const { data: servers } = useQuery(
-    convexQuery(api.mcp.listServers, workspace ? { workspace } : "skip"),
+    convexQuery(api.aisdk_tools.listMcpServers, workspace ? { workspace } : "skip"),
   );
   const { data: chatTools } = useQuery(
     convexQuery(api.chatroom.getChatTools, chatId ? { chatId } : "skip"),

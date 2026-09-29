@@ -39,7 +39,7 @@ The message validator is `convex/aisdk_schemas.ts`; it admits AI SDK message par
 | Exa        | `balance:<balanceId>:tools` / `exa`   | `workspace:<workspaceId>:tools` / `exa`                      |
 | MCP bearer | `mcp:<serverId>` / `bearer`           | `workspace:<workspaceId>:mcp:<serverId>` / `bearer`          |
 
-Secret Store metadata includes type and masked preview; `workspace_credentials` is metadata, not the secret. A missing secret may be legitimately absent; expired or unavailable encryption keys block verified migration. Preserve write-only display behavior and key material availability while migrating. ChatGPT subscription session-cookie credentials are stored through the provider secret path; `subscription_state` also holds login/rate-limit state. Consult `convex/providers.ts`, `convex/exa.ts`, `convex/mcp.ts`, and `convex/chatgpt_subscription.ts` before changing their lifecycle.
+Secret Store metadata includes type and masked preview; `workspace_credentials` is metadata, not the secret. A missing secret may be legitimately absent; expired or unavailable encryption keys block verified migration. Preserve write-only display behavior and key material availability while migrating. ChatGPT subscription session-cookie credentials are stored through the provider secret path; `subscription_state` also holds login/rate-limit state. Consult `convex/providers.ts`, `convex/aisdk_tools.ts`, and `convex/chatgpt_subscription.ts` before changing their lifecycle.
 
 ## 3. Authorization and externally visible contracts
 

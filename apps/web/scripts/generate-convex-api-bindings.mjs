@@ -6,13 +6,13 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
-const websiteRoot = resolve(scriptsDirectory, "..");
-const repositoryRoot = resolve(websiteRoot, "../..");
-const functionsRoot = join(websiteRoot, "convex");
+const repositoryRoot = resolve(scriptsDirectory, "../../..");
+const backendRoot = join(repositoryRoot, "packages/backend");
+const functionsRoot = join(backendRoot, "convex");
 const outputPath = join(functionsRoot, "_generated", "api.d.ts");
-const websitePackageJson = join(websiteRoot, "package.json");
-const websiteRequire = createRequire(websitePackageJson);
-const auditedConvexVersion = "1.45.0";
+const backendPackageJson = join(backendRoot, "package.json");
+const websiteRequire = createRequire(backendPackageJson);
+const auditedConvexVersion = "1.46.0";
 const args = process.argv.slice(2);
 
 if (args.some((arg) => arg !== "--write")) {
@@ -194,13 +194,21 @@ function componentName(configPath) {
   const parsed = statements(configPath);
   let defineComponentImported = false;
   let validatorImported = false;
+  const childImports = new Map();
   for (const statement of parsed) {
     const serverImport = /^import \{ defineComponent \} from "convex\/server"$/.test(statement);
     const valuesImport = /^import \{ v \} from "convex\/values"$/.test(statement);
     if (serverImport) defineComponentImported = true;
     else if (valuesImport) validatorImported = true;
-    else if (statement.startsWith("import "))
-      fail(`unsupported component config import in ${relative(repositoryRoot, configPath)}`);
+    else if (statement.startsWith("import ")) {
+      const match =
+        /^import ([$A-Za-z_][$A-Za-z0-9_]*) from "([^"]+\/convex\.config(?:\.js)?)"$/.exec(
+          statement,
+        );
+      if (!match)
+        fail(`unsupported component config import in ${relative(repositoryRoot, configPath)}`);
+      childImports.set(match[1], match[2]);
+    }
   }
   if (!defineComponentImported)
     fail(`component config must import defineComponent from convex/server`);
@@ -232,6 +240,10 @@ function componentName(configPath) {
       }
       continue;
     }
+    const useMatch = /^([$A-Za-z_][$A-Za-z0-9_]*)\.use\(([$A-Za-z_][$A-Za-z0-9_]*)\)$/.exec(
+      statement,
+    );
+    if (useMatch && useMatch[1] === declaration && childImports.has(useMatch[2])) continue;
     fail(`unsupported component config syntax in ${relative(repositoryRoot, configPath)}`);
   }
   if (!exported) fail(`component config must have one export default`);
