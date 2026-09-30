@@ -58,7 +58,7 @@
 - Gateway HTTP bridge: `packages/backend/convex/http.ts`; application router and handlers: `packages/backend/src/http/`. Public routes include `POST /api/openai/v1/chat/completions` and `GET /api/openai/v1/models`, hosted on the Convex site, not Vite. Hono owns application CORS; Better Auth registers directly with Convex.
 - Chatroom posts to `POST /api/aisdk/chat`; `packages/backend/src/http/aisdk.chat.ts` uses AI SDK and the internal OpenAI-compatible completion flow.
 - Better Auth: `apps/web/src/app/api/auth/$.ts`, `packages/backend/convex/auth.ts`, `packages/backend/convex/auth.config.ts`, and `packages/backend/convex/convex.config.ts`.
-- Workspace ownership: `packages/backend/convex/workspaces.ts`, `packages/backend/convex/migrations.ts`, `packages/backend/convex/schema.ts` (`workspaces` and `workspace_members`), `packages/backend/src/workspaces/policy.ts`, `packages/backend/convex/chat_observability.ts`, and `docs/Radium_Gateway/Ownership.md`.
+- Workspace ownership: `packages/backend/convex/workspaces.ts`, `packages/backend/convex/migrations.ts`, `packages/backend/convex/schema.ts` (`workspaces` and `workspace_members`), `packages/backend/src/workspaces/policy.ts`, `packages/backend/convex/chatroom.ts` (chat observability visibility), and `docs/Radium_Gateway/Ownership.md`.
 - Public env names include `VITE_CONVEX_URL`, `VITE_CONVEX_SITE_URL`, and `CONVEX_DEPLOYMENT`. Convex runtime configuration includes `SITE_URL`, `SECRET_STORE_KEYS`, `AISDK_MaxRetries`, and feature-specific `LWC_SECRET`. Verify usage before changes; keep the owning env example and deployment guide aligned. Never print real env values.
 - Do not hand-edit `packages/backend/convex/_generated/` or `apps/web/src/routeTree.gen.ts`.
 

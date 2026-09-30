@@ -15,7 +15,7 @@ import {
   isCompletionVisible,
   isTraceVisible,
   type AttributedCompletion,
-} from "./chat_observability";
+} from "./chatroom";
 import {
   telemetrySettingsSchema,
   telemetrySourceSchema,

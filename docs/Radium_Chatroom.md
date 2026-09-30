@@ -97,6 +97,20 @@ queries and mutations. `convex/aisdk.ts` creates and lists chats, while
 `src/http/aisdk.chat.ts` validates the session and chat before streaming;
 the action resolves workspace tools and calls the internal Gateway provider.
 
+`packages/backend/convex/chatroom.ts` owns workspace defaults, per-chat tool
+resolution, internal title-generation handlers, and database-backed chat visibility
+checks used by Gateway usage, logs, and telemetry. Runtime-neutral title generation,
+prompt extraction, title sanitization, and title-model eligibility live in
+`packages/backend/src/chatroom/titles.ts`. Chat creation, forking, and manual title
+regeneration schedule `internal.chatroom.generateForChat`; title generation uses the
+workspace's configured title/default model or an available text-chat fallback.
+Generation failures leave the chat usable, and generated titles do not overwrite an
+existing title unless regeneration is forced.
+
+The former `chat_titles` internal function paths have moved to `chatroom`; callers
+and offline API bindings are updated together. When deploying this rename, account
+for already queued jobs that reference the old paths.
+
 The workspace's upstream credentials are BYOK credentials. Completion usage and
 cost estimates are retained as operational data only. Chatroom requests do not
 require prepaid credits and do not debit a Radium balance.
@@ -133,3 +147,15 @@ The workspace policy tests cover owner/member workspace access, private and
 shared chat scopes, archived workspaces, and legacy ownership isolation. The
 Convex suite covers handler-level workspace/member chat authorization and related
 ownership regressions.
+
+Title and visibility refactor regressions can be run with:
+
+```sh
+bun run --cwd packages/backend test convex/chatroom.test.ts src/chatroom/titles.test.ts
+```
+
+These cover initial-prompt extraction, existing-title preservation and forced
+replacement, enabled workspace model selection and fallback, archived workspaces,
+the consolidated scheduled title action, and private-chat sibling filtering for
+telemetry list and direct reads. The scheduler test uses an unconfigured workspace
+and makes no upstream model request.

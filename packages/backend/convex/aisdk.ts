@@ -6,7 +6,7 @@ import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import { internal } from "./_generated/api";
 import { requireAccessibleChat, requireChatManager } from "./workspaces";
 import { workspaceMutation, workspaceQuery } from "./helpers";
-import { firstUserMessageText } from "./chat_titles";
+import { firstUserMessageText } from "@/chatroom/titles";
 import { canManageChat } from "../src/workspaces/policy";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
@@ -31,7 +31,7 @@ export const CreateChat = workspaceMutation({
       lastInteractionAt: Date.now(),
     });
 
-    await ctx.scheduler.runAfter(0, internal.chat_titles.generateForChat, { chatId });
+    await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, { chatId });
     return chatId;
   },
 });
@@ -64,7 +64,7 @@ export const ForkChat = workspaceMutation({
     });
 
     if (args.messages_queue?.text.trim()) {
-      await ctx.scheduler.runAfter(0, internal.chat_titles.generateForChat, { chatId });
+      await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, { chatId });
     }
     return chatId;
   },
@@ -184,7 +184,7 @@ export const RegenerateChatTitle = mutation({
     if (!firstUserMessageText(chat)) return "Chat has no prompt to title.";
 
     await ctx.db.patch("aisdk_chats", args.chatId, { title: undefined, emoji: undefined });
-    await ctx.scheduler.runAfter(0, internal.chat_titles.generateForChat, {
+    await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, {
       chatId: args.chatId,
       force: true,
     });

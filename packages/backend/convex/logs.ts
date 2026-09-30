@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { query, type QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireOwnedWorkspace } from "./workspaces";
-import { filterVisibleCompletions, type AttributedCompletion } from "./chat_observability";
+import { filterVisibleCompletions, type AttributedCompletion } from "./chatroom";
 
 type WorkspaceContext = QueryCtx;
 
