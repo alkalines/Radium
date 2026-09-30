@@ -35,6 +35,19 @@ needed to move app-owned settings into the authorized context. Settings database
 access remains in `convex/workspaces.ts`, and the pure management predicate lives
 in `src/workspaces/policy.ts`.
 
+### Subscription HTTP Routing (2026-09-29)
+
+The installed `convex-helpers/server/hono` adapter (`HttpRouterWithHono`) fits
+subscription routing: it passes Convex action context as Hono bindings and retains
+existing Convex route registrations, including Better Auth. Current official
+helper/Hono documentation and the installed adapter source were checked. Hono
+is a direct backend dependency rather than an implicit transitive import.
+Authentication still uses Better Auth session validation and application-owned
+workspace checks. The existing internal subscription-state functions retain
+their persistence and retry behavior; this change needs no new component or
+migration. An official Components directory lookup was attempted but failed to
+decode, so no new catalog candidate was evaluated or adopted.
+
 ## Recommended Evaluation
 
 | Facility                                | Fit and caution                                                                                                                                          |

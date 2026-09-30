@@ -1,12 +1,16 @@
-import { httpRouter } from "convex/server";
+import { HttpRouterWithHono, type HonoWithConvex } from "convex-helpers/server/hono";
+import { Hono } from "hono";
+import type { ActionCtx } from "./_generated/server";
 import { httpAction } from "./_generated/server";
 import { authComponent, createAuth } from "./auth";
 import { HTTP_Request_Chat_Completion } from "./http/chat_completion";
 import { handleAISDKChat } from "./http/aisdk.chat";
 import { HTTP_Request_OpenAI_Models } from "./http/models";
-import { chatGPTSubscriptionOptions, handleChatGPTSubscription } from "./chatgpt_subscription";
+import { subscriptionRouter } from "../src/subscriptions/router";
 
-const http = httpRouter();
+const app: HonoWithConvex<ActionCtx> = new Hono();
+app.route("/api/subscription", subscriptionRouter);
+const http = new HttpRouterWithHono(app);
 
 function aisdkCorsHeaders() {
   const origin = new URL(process.env.SITE_URL!).origin;
@@ -28,20 +32,6 @@ http.route({
   method: "POST",
   path: "/api/openai/v1/chat/completions",
   handler: HTTP_Request_Chat_Completion,
-});
-
-for (const method of ["GET", "POST"] as const) {
-  http.route({
-    method,
-    pathPrefix: "/api/chatgpt-subscription/",
-    handler: httpAction(handleChatGPTSubscription),
-  });
-}
-
-http.route({
-  method: "OPTIONS",
-  pathPrefix: "/api/chatgpt-subscription/",
-  handler: httpAction(async (_ctx, request) => chatGPTSubscriptionOptions(request)),
 });
 
 http.route({

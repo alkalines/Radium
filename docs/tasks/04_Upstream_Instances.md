@@ -6,7 +6,7 @@ First session: define the model and migration, then split adapter implementation
 ## Entry Points
 
 Under `packages/backend/`: `convex/providers.ts`, `convex/secrets.ts`,
-`convex/chatgpt_subscription.ts`, `convex/schema.ts`, `src/providers.ts`, and
+`src/subscriptions/chatgpt.ts`, `convex/schema.ts`, `src/providers.ts`, and
 `src/ai_balancer.ts`; UI in `apps/web/src/components/gateway/credentials-dialog.tsx`.
 
 ## Work

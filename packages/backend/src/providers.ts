@@ -3,6 +3,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createChatGPTProxyProvider } from "@opencoredev/loginwithchatgpt-ai";
+import { CHATGPT_SUBSCRIPTION_PATH } from "./subscriptions/paths";
 import type {
   AIProviderConfig,
   AIProviderSDK_Config,
@@ -71,7 +72,7 @@ const Providers = {
         const supportedEffort = ["none", "low", "medium", "high", "xhigh"].includes(effort ?? "");
 
         return createChatGPTProxyProvider({
-          basePath: "https://radium.internal/api/chatgpt-subscription",
+          basePath: `https://radium.internal${CHATGPT_SUBSCRIPTION_PATH}`,
           fetch: config.fetch,
           headers: supportedEffort
             ? { "x-login-with-chatgpt-reasoning-effort": effort! }

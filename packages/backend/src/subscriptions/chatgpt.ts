@@ -4,19 +4,17 @@ import {
   type RateLimitBucket,
   type StoredSession,
 } from "@opencoredev/loginwithchatgpt-server";
-import type { GenericActionCtx } from "convex/server";
-import { OPENAI_CODEX_SLUG } from "../src/provider_slugs";
-import { internal } from "./_generated/api";
-import { authComponent } from "./auth";
+import { OPENAI_CODEX_SLUG } from "../provider_slugs";
+import { internal } from "../../convex/_generated/api";
+import type { ActionCtx } from "../../convex/_generated/server";
+import { authComponent } from "../../convex/auth";
+import { CHATGPT_SUBSCRIPTION_PATH } from "./paths";
 
 const COOKIE_NAME = "lwc_chatgpt_subscription";
 
 type SubscriptionNamespace = "session" | "rate_limit";
 
-function createStore<T>(
-  ctx: GenericActionCtx<any>,
-  namespace: SubscriptionNamespace,
-): KeyValueStore<T> {
+function createStore<T>(ctx: ActionCtx, namespace: SubscriptionNamespace): KeyValueStore<T> {
   return {
     async get(key) {
       return (await ctx.runQuery(internal.subscriptions.getState, {
@@ -45,7 +43,7 @@ function createStore<T>(
   };
 }
 
-function createHandler(ctx: GenericActionCtx<any>) {
+function createHandler(ctx: ActionCtx) {
   const secret = process.env.LWC_SECRET;
   if (!secret) {
     throw new Error("LWC_SECRET must be configured in the Convex environment.");
@@ -53,7 +51,7 @@ function createHandler(ctx: GenericActionCtx<any>) {
   const siteUrl = process.env.SITE_URL;
 
   return createChatGPTHandler({
-    basePath: "/api/chatgpt-subscription",
+    basePath: CHATGPT_SUBSCRIPTION_PATH,
     secret,
     sessionStore: createStore<StoredSession>(ctx, "session"),
     cookieName: COOKIE_NAME,
@@ -69,13 +67,16 @@ function createHandler(ctx: GenericActionCtx<any>) {
 
 /** Creates the request-scoped fetch consumed by the ChatGPT AI SDK provider. */
 export function createChatGPTSubscriptionFetch(
-  ctx: GenericActionCtx<any>,
+  ctx: ActionCtx,
   sessionCookie: string,
 ): typeof fetch {
   const handler = createHandler(ctx);
-  const sourceRequest = new Request("https://radium.internal/api/chatgpt-subscription/responses", {
-    headers: { cookie: sessionCookie },
-  });
+  const sourceRequest = new Request(
+    `https://radium.internal${CHATGPT_SUBSCRIPTION_PATH}/responses`,
+    {
+      headers: { cookie: sessionCookie },
+    },
+  );
   const proxyFetch = handler.proxyFetch(sourceRequest);
 
   return proxyFetch;
@@ -83,7 +84,7 @@ export function createChatGPTSubscriptionFetch(
 
 /** Handles device login, session state, model discovery, logout, and inference proxying. */
 export async function handleChatGPTSubscription(
-  ctx: GenericActionCtx<any>,
+  ctx: ActionCtx,
   request: Request,
 ): Promise<Response> {
   const user = await authComponent.safeGetAuthUser(ctx);
@@ -96,7 +97,7 @@ export async function handleChatGPTSubscription(
         })
       : null;
   if (!user || !workspace) {
-    return withCors(Response.json({ error: "Unauthorized" }, { status: 401 }), request);
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const response = await createHandler(ctx).handler(request);
@@ -129,11 +130,7 @@ export async function handleChatGPTSubscription(
     });
   }
 
-  return withCors(response, request);
-}
-
-export function chatGPTSubscriptionOptions(request: Request) {
-  return withCors(new Response(null, { status: 204 }), request);
+  return response;
 }
 
 function readSessionCookie(cookieHeader: string | null) {
@@ -150,20 +147,4 @@ async function readJson(response: Response): Promise<any> {
   } catch {
     return undefined;
   }
-}
-
-function withCors(response: Response, request: Request) {
-  const headers = new Headers(response.headers);
-  const origin = request.headers.get("origin");
-  const siteOrigin = process.env.SITE_URL ? new URL(process.env.SITE_URL).origin : undefined;
-  if (origin && origin === siteOrigin) headers.set("Access-Control-Allow-Origin", origin);
-  headers.set("Access-Control-Allow-Credentials", "true");
-  headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  headers.set("Vary", "Origin");
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
 }

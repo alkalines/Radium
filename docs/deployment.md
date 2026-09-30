@@ -22,6 +22,11 @@ container and release paths are currently blocked and unverified pending the
 `VITE_*` values are public and embedded at build time. Never put provider API
 keys or other secrets in a `VITE_*` variable.
 
+The frontend server also reads `VITE_CONVEX_SITE_URL` for its generic
+`/api/backend/*` proxy, forwarding to the Convex site's `/api/*` routes. See the
+[subscription provider guide](Radium_Gateway/Subscriptions.md) for the Hono
+subscription routes and device-auth flow.
+
 Generate local secrets with:
 
 ```bash

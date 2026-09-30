@@ -118,7 +118,7 @@ export function CredentialsDialog({
         ) : target?.credential_type === "oauth" && target.oauth_flow === "chatgpt-device" ? (
           <div className="flex min-h-24 items-center justify-center py-2">
             <LoginWithChatGPT
-              basePath="/api/chatgpt-subscription"
+              basePath="/api/backend/subscription/chatgpt-subscription"
               consent={{ appName: "Radium" }}
               fetch={oauthFetch as typeof fetch}
               label={hasExisting ? "Reconnect ChatGPT" : "Connect ChatGPT"}
