@@ -6,7 +6,7 @@ Ownership persistence depends on task 03; boundary research can proceed now.
 ## Entry Points
 
 `packages/agent-runner/src/index.ts`, `packages/agent-runner-client/src/index.ts`,
-`packages/website/convex/http/aisdk.chat.ts`, `packages/website/convex/chatroom.ts`,
+`packages/backend/src/http/aisdk.chat.ts`, `packages/website/convex/chatroom.ts`,
 and Chatroom tools/approvals UI. Runner and client currently implement health only.
 
 ## Work

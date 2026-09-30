@@ -5,7 +5,7 @@ import {
   type ChatCompletions_RequestBody_Type,
 } from "@/types/openai/types";
 import type { Id } from "./_generated/dataModel";
-import { Internal_Chat_Completion } from "./http/chat_completion";
+import { Internal_Chat_Completion } from "../src/http/chat_completion";
 import type { genCallbackType } from "@/translators/openai";
 import type { TelemetryRequestContext } from "@/telemetry/convex";
 

@@ -9,26 +9,24 @@ import {
   type ToolSet,
   type UIMessage,
 } from "ai";
-import { toExaCountry } from "../../src/chatroom/user-location";
+import { toExaCountry } from "../chatroom/user-location";
 import {
   EXA_TOOL_CREDENTIAL_PROVIDER,
   toolNamePrefix,
   uniqueToolName,
-} from "../../src/chatroom/aisdk-tools";
-import type { Id } from "../_generated/dataModel";
-import { authComponent, createAuth } from "../auth";
-import { internal } from "../_generated/api";
-import type { ActionCtx } from "../_generated/server";
+} from "../chatroom/aisdk-tools";
+import type { Id } from "../../convex/_generated/dataModel";
+import { authComponent, createAuth } from "../../convex/auth";
+import { internal } from "../../convex/_generated/api";
+import type { ActionCtx } from "../../convex/_generated/server";
 import {
   MCP_SECRET_NAME,
   mcpSecretNamespace,
   secrets,
   workspaceMcpSecretNamespace,
-} from "../secrets";
-import { createInternalGatewayProvider } from "../ai_gateway";
+} from "../../convex/secrets";
+import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { createTelemetryIntegrations } from "@/telemetry/convex";
-
-type ResponseHeaders = Record<string, string>;
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
@@ -40,22 +38,8 @@ type AISDKChatRequestBody = {
   chatId?: Id<"aisdk_chats">;
 };
 
-function jsonResponse(body: unknown, responseHeaders: ResponseHeaders, init?: ResponseInit) {
-  return Response.json(body, {
-    ...init,
-    headers: {
-      ...responseHeaders,
-      ...init?.headers,
-    },
-  });
-}
-
 /** Handles the authenticated AI SDK chat request body and stream lifecycle. */
-export async function handleAISDKChat(
-  ctx: ActionCtx,
-  req: Request,
-  responseHeaders: ResponseHeaders,
-): Promise<Response> {
+export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Response> {
   const authUser = await authComponent.safeGetAuthUser(ctx);
   const session = authUser?._id
     ? null
@@ -65,18 +49,20 @@ export async function handleAISDKChat(
   const userId = authUser?._id ?? session?.user.id;
 
   if (!userId) {
-    return jsonResponse({ error: { message: "Unauthorized", code: 401 } }, responseHeaders, {
-      status: 401,
-    });
+    return Response.json(
+      { error: { message: "Unauthorized", code: 401 } },
+      {
+        status: 401,
+      },
+    );
   }
 
   const body = (await req.json()) as AISDKChatRequestBody;
   const chatId = (body?.chatId || body?.id)!;
 
   if (!chatId || !body.model || !Array.isArray(body.messages)) {
-    return jsonResponse(
+    return Response.json(
       { error: { message: "Invalid chat request", code: 400 } },
-      responseHeaders,
       { status: 400 },
     );
   }
@@ -87,9 +73,12 @@ export async function handleAISDKChat(
   });
 
   if (!authorizedChat) {
-    return jsonResponse({ error: { message: "Unauthorized", code: 401 } }, responseHeaders, {
-      status: 401,
-    });
+    return Response.json(
+      { error: { message: "Unauthorized", code: 401 } },
+      {
+        status: 401,
+      },
+    );
   }
 
   const { chat, workspace } = authorizedChat;
@@ -109,9 +98,8 @@ export async function handleAISDKChat(
     ctx,
     workspaceId,
     () =>
-      jsonResponse(
+      Response.json(
         { error: { message: "Internal gateway request failed", code: 500 } },
-        responseHeaders,
         { status: 500 },
       ),
     body.provider,
@@ -189,7 +177,6 @@ export async function handleAISDKChat(
   let reasoningStartTime: number | null = null;
 
   return createUIMessageStreamResponse({
-    headers: responseHeaders,
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: body.messages,

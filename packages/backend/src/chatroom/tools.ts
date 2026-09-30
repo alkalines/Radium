@@ -88,7 +88,7 @@ export type BuiltinToolSet = {
  * These are intentionally config-only for now — they make the selection UI and
  * persistence real end-to-end, but none execute yet. To ship a working tool
  * set, add its executable builder where `streamText` is configured (see
- * `convex/http/aisdk.chat.ts`) and set `available: true` here.
+ * `src/http/aisdk.chat.ts`) and set `available: true` here.
  */
 export const BUILTIN_TOOL_SETS = [
   {

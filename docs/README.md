@@ -36,6 +36,8 @@ Documentation describes the checked-in implementation. When the docs and code
 disagree, use these files to verify behavior before correcting the docs:
 
 - HTTP route registration: `packages/backend/convex/http.ts`
+- Application HTTP routes and handlers: `packages/backend/src/http/`; see
+  [routing and CORS](api.md#http-routing-and-cors)
 - Endpoint behavior: `packages/backend/convex/http/`
 - Database records and indexes: `packages/backend/convex/schema.ts`
 - Workspace authorization and membership: `packages/backend/convex/workspaces.ts` and

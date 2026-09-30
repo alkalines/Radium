@@ -94,7 +94,7 @@ associated with another user's personal chats are filtered out. See the
 The browser authenticates with Better Auth and calls authenticated Convex
 queries and mutations. `convex/aisdk.ts` creates and lists chats, while
 `convex/workspaces.ts` resolves owner/member access and chat visibility.
-`convex/http/aisdk.chat.ts` validates the session and chat before streaming;
+`src/http/aisdk.chat.ts` validates the session and chat before streaming;
 the action resolves workspace tools and calls the internal Gateway provider.
 
 The workspace's upstream credentials are BYOK credentials. Completion usage and

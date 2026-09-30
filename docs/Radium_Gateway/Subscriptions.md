@@ -17,9 +17,11 @@ query parameter. The generic frontend proxy forwards it to
   bodies (including streams), status, and Set-Cookie headers. Redirects are passed
   through rather than followed server-side. The proxy adds no authentication of
   its own; each Convex endpoint enforces its existing policy.
-- `packages/backend/convex/http.ts` mounts the Hono subscription router using
-  `HttpRouterWithHono` from `convex-helpers/server/hono`. Existing Gateway,
-  Chatroom, and Better Auth routes are registered on that same Convex router.
+- `packages/backend/src/http/router.ts` mounts the Hono subscription router
+  alongside Gateway and Chatroom handlers. `packages/backend/convex/http.ts`
+  connects the app using `HttpRouterWithHono` from `convex-helpers/server/hono`
+  and registers Better Auth directly on the Convex router. See
+  [HTTP routing and CORS](../api.md#http-routing-and-cors).
 - `packages/backend/src/subscriptions/router.ts` owns the subscription route
   namespace and shared CORS middleware. Add further subscription integrations as
   subroutes here. Credentialed CORS allows only the origin configured by

@@ -28,8 +28,8 @@ exporter environment configuration and may construct an OTLP exporter.
 
 ### Request And Auth Flow
 
-`convex/http/chat_completion.ts` derives the workspace from the validated Gateway
-key and loads that workspace's settings. `convex/http/aisdk.chat.ts` validates
+`src/http/chat_completion.ts` derives the workspace from the validated Gateway
+key and loads that workspace's settings. `src/http/aisdk.chat.ts` validates
 the Chatroom session and chat membership before loading the workspace settings.
 Both entry points gate instrumentation on `enabled`; the collector factory itself
 does not enforce that gate. Disabling settings also clears input/output recording

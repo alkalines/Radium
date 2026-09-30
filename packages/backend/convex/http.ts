@@ -1,70 +1,10 @@
-import { HttpRouterWithHono, type HonoWithConvex } from "convex-helpers/server/hono";
-import { Hono } from "hono";
-import type { ActionCtx } from "./_generated/server";
-import { httpAction } from "./_generated/server";
+import { HttpRouterWithHono } from "convex-helpers/server/hono";
+import { app } from "../src/http/router";
 import { authComponent, createAuth } from "./auth";
-import { HTTP_Request_Chat_Completion } from "./http/chat_completion";
-import { handleAISDKChat } from "./http/aisdk.chat";
-import { HTTP_Request_OpenAI_Models } from "./http/models";
-import { subscriptionRouter } from "../src/subscriptions/router";
 
-const app: HonoWithConvex<ActionCtx> = new Hono();
-app.route("/api/subscription", subscriptionRouter);
 const http = new HttpRouterWithHono(app);
 
-function aisdkCorsHeaders() {
-  const origin = new URL(process.env.SITE_URL!).origin;
-
-  return {
-    "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Origin": origin,
-    Vary: "Origin",
-  };
-}
-
-/**
- * OpenAI Endpoint
- */
-
-http.route({
-  method: "POST",
-  path: "/api/openai/v1/chat/completions",
-  handler: HTTP_Request_Chat_Completion,
-});
-
-http.route({
-  method: "GET",
-  path: "/api/openai/v1/models",
-  handler: HTTP_Request_OpenAI_Models,
-});
-
-/**
- * Better Auth
- */
+// Better Auth owns its routes and CORS independently of the application router.
 authComponent.registerRoutes(http, createAuth);
-
-/**
- * AISDK
- */
-
-http.route({
-  method: "POST",
-  path: "/api/aisdk/chat",
-  handler: httpAction((ctx, req) => handleAISDKChat(ctx, req, aisdkCorsHeaders())),
-});
-
-http.route({
-  method: "OPTIONS",
-  path: "/api/aisdk/chat",
-  handler: httpAction(
-    async () =>
-      new Response(null, {
-        status: 204,
-        headers: aisdkCorsHeaders(),
-      }),
-  ),
-});
 
 export default http;
