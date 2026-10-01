@@ -12,13 +12,16 @@ an external collector.
 
 Paths below are relative to `packages/backend/`.
 
-| Owner                          | Responsibility                                                                                                            |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `convex/telemetry.ts`          | Registered settings/trace functions, workspace/member checks, indexed reads, and persistence                              |
-| `src/telemetry/convex.ts`      | Thin action-context adapter that attaches server-derived workspace and actor IDs and wires internal persistence mutations |
-| `src/telemetry/integration.ts` | Collector contracts, AI SDK event handling, usage mapping, serialization, error formatting, and optional OTLP integration |
-| `src/telemetry/summary.ts`     | Pure request deduplication and bounded-window summary calculation                                                         |
-| `src/telemetry/validators.ts`  | Convex validators shared by registered functions and table schema                                                         |
+| Owner                              | Responsibility                                                                                                            |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `convex/observability/aiTraces.ts` | Registered settings/trace functions, workspace/member checks, indexed reads, and persistence                              |
+| `src/telemetry/convex.ts`          | Thin action-context adapter that attaches server-derived workspace and actor IDs and wires internal persistence mutations |
+| `src/telemetry/integration.ts`     | Collector contracts, AI SDK event handling, usage mapping, serialization, error formatting, and optional OTLP integration |
+| `src/telemetry/summary.ts`         | Pure request deduplication and bounded-window summary calculation                                                         |
+| `src/telemetry/validators.ts`      | Convex validators shared by registered functions and table schema                                                         |
+
+See [observability and usage](../observability.md) for the shared namespace and
+compatibility exports. `convex/telemetry.ts` re-exports the original API.
 
 The collector receives typed persistence callbacks, not a Convex context or
 generated API. It has no database, browser, or Convex imports. The summary module
@@ -28,8 +31,8 @@ exporter environment configuration and may construct an OTLP exporter.
 
 ### Request And Auth Flow
 
-`convex/http/chat_completion.ts` derives the workspace from the validated Gateway
-key and loads that workspace's settings. `convex/http/aisdk.chat.ts` validates
+`src/http/chat_completion.ts` derives the workspace from the validated Gateway
+key and loads that workspace's settings. `src/http/aisdk.chat.ts` validates
 the Chatroom session and chat membership before loading the workspace settings.
 Both entry points gate instrumentation on `enabled`; the collector factory itself
 does not enforce that gate. Disabling settings also clears input/output recording

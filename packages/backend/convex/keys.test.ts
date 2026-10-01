@@ -4,7 +4,7 @@ import { anyApi } from "convex/server";
 import { convexTest } from "convex-test";
 import { expect, test, vi } from "vitest";
 import schema from "./schema";
-import { hashText } from "./key";
+import { hashText } from "./keys";
 
 type TestIdentity = {
   tokenIdentifier?: string;
@@ -99,7 +99,7 @@ test("deleting a migrated key revokes the legacy fallback too", async () => {
   });
 
   const owner = asUser(t, "owner");
-  await expect(owner.query(anyApi.key.getKeyInfo, { key: plaintext })).resolves.toMatchObject({
+  await expect(owner.query(anyApi.keys.getKeyInfo, { key: plaintext })).resolves.toMatchObject({
     workspace: ids.workspace,
     apiKey: ids.apiKey,
   });
@@ -117,7 +117,7 @@ test("deleting a migrated key revokes the legacy fallback too", async () => {
 
   expect(revocations.legacy).toBeDefined();
   expect(revocations.migrated).toBeDefined();
-  await expect(t.query(anyApi.key.getKeyInfo, { key: plaintext })).rejects.toThrow(
+  await expect(t.query(anyApi.keys.getKeyInfo, { key: plaintext })).rejects.toThrow(
     "This key is invalid!",
   );
 });
@@ -198,14 +198,14 @@ test("recordCompletion only records BYOK usage and does not debit a balance", as
   };
 
   await expect(
-    t.mutation(anyApi.key.recordCompletion, {
+    t.mutation(anyApi.keys.recordCompletion, {
       bill: { workspace: ids.workspace },
       request: { ...request, byok: false },
       response,
     }),
   ).rejects.toThrow("Only BYOK requests are supported.");
 
-  const completionId = await t.mutation(anyApi.key.recordCompletion, {
+  const completionId = await t.mutation(anyApi.keys.recordCompletion, {
     bill: { workspace: ids.workspace },
     request: { ...request, byok: true },
     response,

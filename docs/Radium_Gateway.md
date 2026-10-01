@@ -13,7 +13,11 @@ Chatroom uses this routing path rather than maintaining a second router.
   the legacy balance migration boundary.
 - [AI telemetry](Radium_Gateway/Telemetry.md): optional request capture, Chatroom
   correlation, local persistence, and optional OTLP export.
+- [Observability and usage](observability.md): operational events, generation
+  history, usage estimates, and the shared API organization.
 - [Deployment](deployment.md): runtime and exporter configuration.
+- [Subscription providers](Radium_Gateway/Subscriptions.md): device login,
+  shared Hono routing, and the generic frontend backend proxy.
 
 The [Chatroom overview](Radium_Chatroom.md) describes the shared workspace chat
 surface and its owner/member behavior.

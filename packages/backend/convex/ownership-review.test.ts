@@ -6,7 +6,8 @@ import { anyApi } from "convex/server";
 import { convexTest } from "convex-test";
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import schema from "./schema";
-import { hashText } from "./key";
+import { api } from "./_generated/api";
+import { hashText } from "./keys";
 import {
   MCP_SECRET_NAME,
   mcpSecretNamespace,
@@ -200,7 +201,7 @@ test("lists unmigrated legacy keys and revokes a legacy mapping atomically", asy
   });
   expect(revocations.legacy).toBeDefined();
   expect(revocations.workspace).toBe(revocations.legacy);
-  await expect(t.query(anyApi.key.getKeyInfo, { key: "mapped-secret" })).rejects.toThrow(
+  await expect(t.query(anyApi.keys.getKeyInfo, { key: "mapped-secret" })).rejects.toThrow(
     "This key is invalid!",
   );
 });
@@ -290,6 +291,7 @@ test("separates historical credit activity from BYOK estimates", async () => {
       name: "Activity workspace",
       legacyBalance: balance,
     });
+    await ctx.db.insert("workspace_members", { workspace, userId: "member", role: "member" });
     const author = await ctx.db.insert("authors", { name: "Test", slug: "test" });
     const model = await ctx.db.insert("models", {
       name: "Test model",
@@ -348,6 +350,28 @@ test("separates historical credit activity from BYOK estimates", async () => {
       request: { provider: "byok", byok: true, model, streamed: false, canceled: false },
       response: response(7, 2),
     });
+    const privateChat = await ctx.db.insert("aisdk_chats", {
+      workspace,
+      userId: "member",
+      scope: "personal",
+      messages: [],
+      chat_completions: [],
+      activeStream: false,
+      lastInteractionAt: 1,
+    });
+    await ctx.db.insert("chat_completions", {
+      bill: { workspace },
+      userId: "member",
+      chatId: privateChat,
+      request: {
+        provider: "private",
+        byok: true,
+        model,
+        streamed: false,
+        canceled: false,
+      },
+      response: response(100, 100),
+    });
     return { workspace, legacyKey, apiKey };
   });
 
@@ -374,6 +398,106 @@ test("separates historical credit activity from BYOK estimates", async () => {
     true,
     false,
   ]);
+  expect(await owner.query(api.observability.usage.getUsage, { workspace: ids.workspace })).toEqual(
+    usage,
+  );
+  expect(
+    await owner.query(api.observability.usage.getActivity, {
+      workspace: ids.workspace,
+      since: 0,
+    }),
+  ).toEqual(activity);
+  const generations = await owner.query(api.observability.usage.getGenerations, {
+    workspace: ids.workspace,
+  });
+  expect(generations).toHaveLength(2);
+  expect(await owner.query(api.logs.getGenerations, { workspace: ids.workspace })).toEqual(
+    generations,
+  );
+  for (const user of ["member", "outsider"]) {
+    const caller = asUser(t, user);
+    for (const endpoint of [
+      api.observability.usage.getUsage,
+      api.observability.usage.getGenerations,
+    ]) {
+      await expect(caller.query(endpoint, { workspace: ids.workspace })).rejects.toThrow();
+    }
+    await expect(
+      caller.query(api.observability.usage.getActivity, { workspace: ids.workspace, since: 0 }),
+    ).rejects.toThrow();
+  }
+});
+
+test("AI trace namespaces preserve owner-only reads and personal chat privacy", async () => {
+  const t = makeTest();
+  const ids = await t.run(async (ctx) => {
+    const workspace = await ctx.db.insert("workspaces", {
+      ownerType: "user",
+      ownerId: "owner",
+      name: "Traces",
+    });
+    await ctx.db.insert("workspace_members", { workspace, userId: "member", role: "member" });
+    const chatId = await ctx.db.insert("aisdk_chats", {
+      workspace,
+      userId: "member",
+      scope: "personal",
+      messages: [],
+      chat_completions: [],
+      activeStream: false,
+      lastInteractionAt: 1,
+    });
+    const fields = {
+      workspace,
+      userId: "owner",
+      source: "gateway" as const,
+      requestId: "request",
+      callId: "call",
+      operationId: "operation",
+      functionId: "function",
+      provider: "provider",
+      model: "model",
+      status: "ok" as const,
+      startedAt: 1,
+      recordsInputs: false,
+      recordsOutputs: false,
+    };
+    const visible = await ctx.db.insert("telemetry_traces", fields);
+    const hidden = await ctx.db.insert("telemetry_traces", {
+      ...fields,
+      userId: "member",
+      source: "chatroom",
+      chatId,
+      requestId: "private-request",
+    });
+    return { workspace, visible, hidden };
+  });
+  const owner = asUser(t, "owner");
+  const listed = await owner.query(api.observability.aiTraces.listTraces, {
+    workspace: ids.workspace,
+  });
+  expect(listed.map((trace: { _id: string }) => trace._id)).toEqual([ids.visible]);
+  expect(await owner.query(api.telemetry.listTraces, { workspace: ids.workspace })).toEqual(listed);
+  expect(
+    (await owner.query(api.observability.aiTraces.getTrace, { traceId: ids.visible })).trace._id,
+  ).toBe(ids.visible);
+  await expect(
+    owner.query(api.observability.aiTraces.getTrace, { traceId: ids.hidden }),
+  ).rejects.toThrow("Trace not found.");
+  for (const user of ["member", "outsider"]) {
+    const caller = asUser(t, user);
+    await expect(
+      caller.query(api.observability.aiTraces.listTraces, { workspace: ids.workspace }),
+    ).rejects.toThrow();
+    await expect(
+      caller.query(api.observability.aiTraces.getSummary, {
+        workspace: ids.workspace,
+        since: 0,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      caller.query(api.observability.aiTraces.getTrace, { traceId: ids.visible }),
+    ).rejects.toThrow();
+  }
 });
 
 test("migrates explicit chat history after its creator loses membership", async () => {
@@ -629,7 +753,7 @@ test("does not copy stale MCP secrets for servers without bearer auth", async ()
   expect(stored.server?.workspace).toBe(ids.workspace);
   expect(stored.source.ok).toBe(true);
   expect(stored.destination).toEqual({ ok: false, reason: "not_found" });
-  const listed = await asUser(t, "owner").query(anyApi.mcp.listServers, {
+  const listed = await asUser(t, "owner").query(anyApi.aisdk_tools.listMcpServers, {
     workspace: ids.workspace,
   });
   expect(listed).toEqual([
@@ -662,11 +786,11 @@ test("MCP metadata reads and updates require recovery for unusable bearer tokens
       getSecret.mockClear();
       getSecret.mockResolvedValue({ ok: false, reason });
       await expect(
-        asUser(t, "owner").query(anyApi.mcp.listServers, { workspace: ids.workspace }),
+        asUser(t, "owner").query(anyApi.aisdk_tools.listMcpServers, { workspace: ids.workspace }),
       ).rejects.toThrow("Secret Store recovery required");
       expect(getSecret).toHaveBeenCalledTimes(1);
       await expect(
-        asUser(t, "owner").mutation(anyApi.mcp.updateServer, {
+        asUser(t, "owner").mutation(anyApi.aisdk_tools.updateMcpServer, {
           workspace: ids.workspace,
           server: ids.server,
           auth: { type: "bearer" },
@@ -677,4 +801,57 @@ test("MCP metadata reads and updates require recovery for unusable bearer tokens
   } finally {
     getSecret.mockRestore();
   }
+});
+
+test("Exa credentials stay owner-managed and are available only through the internal runtime query", async () => {
+  const t = makeTest();
+  const workspace = await t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Search" }),
+  );
+
+  await expect(
+    asUser(t, "other").mutation(anyApi.aisdk_tools.setExaApiKey, {
+      workspace,
+      apiKey: "other-key",
+    }),
+  ).rejects.toThrow();
+  await expect(
+    asUser(t, "owner").mutation(anyApi.aisdk_tools.setExaApiKey, {
+      workspace,
+      apiKey: "  ",
+    }),
+  ).rejects.toThrow("An Exa API key is required.");
+
+  await asUser(t, "owner").mutation(anyApi.aisdk_tools.setExaApiKey, {
+    workspace,
+    apiKey: "  test-exa-key  ",
+  });
+  const preview = await asUser(t, "owner").query(anyApi.aisdk_tools.getExaApiKey, {
+    workspace,
+  });
+  expect(preview?.preview).toBeTruthy();
+  expect(preview?.preview).not.toContain("test-exa-key");
+  await expect(
+    asUser(t, "other").query(anyApi.aisdk_tools.getExaApiKey, { workspace }),
+  ).rejects.toThrow();
+  expect(
+    await t.query(anyApi.aisdk_tools.getBuiltinToolCredentialForRuntime, {
+      workspace,
+      provider: "exa",
+    }),
+  ).toBe("test-exa-key");
+  await expect(
+    t.query(anyApi.aisdk_tools.getBuiltinToolCredentialForRuntime, {
+      workspace,
+      provider: "unknown_provider",
+    }),
+  ).rejects.toThrow();
+
+  await asUser(t, "owner").mutation(anyApi.aisdk_tools.deleteExaApiKey, { workspace });
+  expect(
+    await t.query(anyApi.aisdk_tools.getBuiltinToolCredentialForRuntime, {
+      workspace,
+      provider: "exa",
+    }),
+  ).toBeNull();
 });

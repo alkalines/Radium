@@ -9,21 +9,24 @@ import {
   type ToolSet,
   type UIMessage,
 } from "ai";
-import { toExaCountry } from "../../src/chatroom/user-location";
-import type { Id } from "../_generated/dataModel";
-import { authComponent, createAuth } from "../auth";
-import { internal } from "../_generated/api";
-import type { ActionCtx } from "../_generated/server";
+import { toExaCountry } from "../chatroom/user-location";
+import {
+  EXA_TOOL_CREDENTIAL_PROVIDER,
+  toolNamePrefix,
+  uniqueToolName,
+} from "../chatroom/aisdk-tools";
+import type { Id } from "../../convex/_generated/dataModel";
+import { authComponent, createAuth } from "../../convex/auth";
+import { internal } from "../../convex/_generated/api";
+import type { ActionCtx } from "../../convex/_generated/server";
 import {
   MCP_SECRET_NAME,
   mcpSecretNamespace,
   secrets,
   workspaceMcpSecretNamespace,
-} from "../secrets";
-import { createInternalGatewayProvider } from "../ai_gateway";
+} from "../../convex/secrets";
+import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { createTelemetryIntegrations } from "@/telemetry/convex";
-
-type ResponseHeaders = Record<string, string>;
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
@@ -35,22 +38,8 @@ type AISDKChatRequestBody = {
   chatId?: Id<"aisdk_chats">;
 };
 
-function jsonResponse(body: unknown, responseHeaders: ResponseHeaders, init?: ResponseInit) {
-  return Response.json(body, {
-    ...init,
-    headers: {
-      ...responseHeaders,
-      ...init?.headers,
-    },
-  });
-}
-
 /** Handles the authenticated AI SDK chat request body and stream lifecycle. */
-export async function handleAISDKChat(
-  ctx: ActionCtx,
-  req: Request,
-  responseHeaders: ResponseHeaders,
-): Promise<Response> {
+export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Response> {
   const authUser = await authComponent.safeGetAuthUser(ctx);
   const session = authUser?._id
     ? null
@@ -60,18 +49,20 @@ export async function handleAISDKChat(
   const userId = authUser?._id ?? session?.user.id;
 
   if (!userId) {
-    return jsonResponse({ error: { message: "Unauthorized", code: 401 } }, responseHeaders, {
-      status: 401,
-    });
+    return Response.json(
+      { error: { message: "Unauthorized", code: 401 } },
+      {
+        status: 401,
+      },
+    );
   }
 
   const body = (await req.json()) as AISDKChatRequestBody;
   const chatId = (body?.chatId || body?.id)!;
 
   if (!chatId || !body.model || !Array.isArray(body.messages)) {
-    return jsonResponse(
+    return Response.json(
       { error: { message: "Invalid chat request", code: 400 } },
-      responseHeaders,
       { status: 400 },
     );
   }
@@ -82,18 +73,24 @@ export async function handleAISDKChat(
   });
 
   if (!authorizedChat) {
-    return jsonResponse({ error: { message: "Unauthorized", code: 401 } }, responseHeaders, {
-      status: 401,
-    });
+    return Response.json(
+      { error: { message: "Unauthorized", code: 401 } },
+      {
+        status: 401,
+      },
+    );
   }
 
   const { chat, workspace } = authorizedChat;
   const workspaceId = workspace._id;
 
   const previousPerformance = getLastAssistantPerformance(body.messages);
-  const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForWorkspace, {
-    workspace: workspaceId,
-  });
+  const telemetrySettings = await ctx.runQuery(
+    internal.observability.aiTraces.getSettingsForWorkspace,
+    {
+      workspace: workspaceId,
+    },
+  );
   const telemetrySettingsForRequest =
     (chat.scope ?? "personal") === "personal" && chat.userId !== workspace.ownerId
       ? { ...telemetrySettings, recordInputs: false, recordOutputs: false }
@@ -104,9 +101,8 @@ export async function handleAISDKChat(
     ctx,
     workspaceId,
     () =>
-      jsonResponse(
+      Response.json(
         { error: { message: "Internal gateway request failed", code: 500 } },
-        responseHeaders,
         { status: 500 },
       ),
     body.provider,
@@ -184,7 +180,6 @@ export async function handleAISDKChat(
   let reasoningStartTime: number | null = null;
 
   return createUIMessageStreamResponse({
-    headers: responseHeaders,
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: body.messages,
@@ -377,7 +372,10 @@ async function resolveExaWebSearch(
     return undefined;
   }
 
-  const apiKey = await ctx.runQuery(internal.exa.getApiKeyForRuntime, { workspace });
+  const apiKey = await ctx.runQuery(internal.aisdk_tools.getBuiltinToolCredentialForRuntime, {
+    workspace,
+    provider: EXA_TOOL_CREDENTIAL_PROVIDER,
+  });
   if (!apiKey) return undefined;
 
   return webSearch({ apiKey, userLocation: toExaCountry() }) as ToolSet[string];
@@ -407,23 +405,6 @@ async function resolveMcpHeaders(
       : workspaceToken;
   if (!token.ok) throw new Error("MCP bearer token unavailable.");
   return { Authorization: `Bearer ${token.value}` };
-}
-
-/** Sanitise a server name into a safe tool-name prefix (`[a-zA-Z0-9_]`). */
-function toolNamePrefix(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return slug || "mcp";
-}
-
-/** Ensure a tool name is unique within `tools`, appending a counter if needed. */
-function uniqueToolName(tools: ToolSet, name: string): string {
-  if (!(name in tools)) return name;
-  let counter = 2;
-  while (`${name}_${counter}` in tools) counter++;
-  return `${name}_${counter}`;
 }
 
 /**

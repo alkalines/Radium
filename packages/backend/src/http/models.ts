@@ -1,7 +1,7 @@
-import { api, internal } from "../_generated/api";
-import { httpAction } from "../_generated/server";
+import { api, internal } from "../../convex/_generated/api";
+import type { ActionCtx } from "../../convex/_generated/server";
 
-export const HTTP_Request_OpenAI_Models = httpAction(async (ctx, req): Promise<any> => {
+export async function handleOpenAIModels(ctx: ActionCtx, req: Request): Promise<Response> {
   // Auth
   const authBearer = req.headers.get("Authorization")?.replace("Bearer ", "");
   if (!authBearer || authBearer === "")
@@ -15,7 +15,7 @@ export const HTTP_Request_OpenAI_Models = httpAction(async (ctx, req): Promise<a
       { status: 401 },
     );
   const checkKey = await ctx
-    .runQuery(api.key.getKeyInfo, {
+    .runQuery(api.keys.getKeyInfo, {
       key: authBearer,
     })
     .catch(() => {});
@@ -45,4 +45,4 @@ export const HTTP_Request_OpenAI_Models = httpAction(async (ctx, req): Promise<a
   }
 
   return Response.json(await ctx.runQuery(internal.models.openaiModels, { workspace }));
-});
+}

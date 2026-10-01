@@ -9,12 +9,13 @@ or product analytics.
 - `packages/backend/src/logging/server.ts` is the backend helper. Its initial sink is
   `console.log` in the Convex function log stream.
 - `apps/web/src/lib/logging.ts` is the frontend helper. It submits a
-  versioned envelope to the authenticated `convex/logging.ts` wrapper.
+  versioned envelope to the authenticated `convex/observability/events.ts` wrapper.
 - `packages/backend/convex/components/logging/` is a local Convex Component. Its
   `events` table is isolated from the application's regular tables.
 - The provider logs one representative `app.loaded` event after Convex confirms
-  an authenticated browser session. Existing AI telemetry is not refactored by
-  this feature.
+  an authenticated browser session. The broader module organization is documented
+  in [observability and usage](observability.md); `convex/logging.ts` remains a
+  compatibility export.
 
 There is no required hosted logging or analytics service, no PostHog integration,
 and no new logging environment variable. The component runs in the configured

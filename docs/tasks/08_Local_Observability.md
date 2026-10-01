@@ -6,9 +6,14 @@ Coordinate telemetry boundaries with task 01 and ownership with task 03.
 ## Entry Points
 
 Under `packages/backend/`: `src/logging/contract.ts`, `src/logging/server.ts`,
-`convex/logging.ts`, `convex/components/logging/`, and existing telemetry
+`convex/observability/events.ts`, `convex/components/logging/`, and existing telemetry
 tables/functions; frontend helper in `apps/web/src/lib/logging.ts`. Operational
 events currently have no pruning or read UI.
+
+The [observability organization](../observability.md) is implemented: usage and
+AI traces have separate owners under `convex/observability/`, with compatibility
+exports at the original paths. Persistent backend events and logging ingestion
+integration coverage remain follow-up work.
 
 ## Work
 

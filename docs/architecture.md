@@ -24,8 +24,10 @@ Auth. It is separate from the gateway API.
 ### Convex
 
 Convex owns persistent data, authenticated functions, workspace authorization,
-provider selection, usage, and public HTTP APIs. `convex/http.ts` registers the
-HTTP routes; the OpenAI-compatible implementations are in `convex/http/`.
+provider selection, usage, and public HTTP APIs. `convex/http.ts` bridges the
+Hono application in `src/http/router.ts` and registers Better Auth natively;
+the OpenAI-compatible and Chatroom handlers are in `src/http/`. Hono handles
+application CORS; see [HTTP routing and CORS](api.md#http-routing-and-cors).
 
 Consequently, gateway clients call the Convex site origin from
 `VITE_CONVEX_SITE_URL`. They do not call the Vite server on port 3000.

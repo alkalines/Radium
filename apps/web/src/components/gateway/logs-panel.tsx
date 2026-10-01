@@ -46,7 +46,7 @@ import { api } from "backend/convex/_generated/api";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { ProviderLogo } from "./provider-logo";
 
-type Generation = FunctionReturnType<typeof api.logs.getGenerations>[number];
+type Generation = FunctionReturnType<typeof api.observability.usage.getGenerations>[number];
 
 function formatCost(value: number): string {
   return `$${value.toFixed(Math.abs(value) < 1 ? 4 : 2)}`;
@@ -88,7 +88,10 @@ type RangePreset = keyof typeof RANGE_PRESETS;
 export function LogsPanel() {
   const { workspaceId } = useWorkspace();
   const { data: generations } = useQuery(
-    convexQuery(api.logs.getGenerations, workspaceId ? { workspace: workspaceId } : "skip"),
+    convexQuery(
+      api.observability.usage.getGenerations,
+      workspaceId ? { workspace: workspaceId } : "skip",
+    ),
   );
 
   const [preset, setPreset] = useState<RangePreset>("all");

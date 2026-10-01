@@ -10,7 +10,7 @@ import {
 } from "./_generated/server";
 import { authComponent, createAuth } from "./auth";
 import schema from "./schema";
-import { canAccessResolvedChat, canAccessWorkspace } from "../src/workspaces/policy";
+import { canAccessResolvedChat, canAccessWorkspace, canManageChat } from "../src/workspaces/policy";
 import { isWorkspaceIconName } from "../src/workspaces/icons";
 
 const MAX_WORKSPACES = 100;
@@ -44,6 +44,82 @@ const authorizedChatValidator = v.union(
 );
 
 export type WorkspaceRecord = Doc<"workspaces">;
+
+type WorkspaceSettings = Omit<Doc<"workspace_settings">, "_id" | "_creationTime">;
+type WorkspaceSettingsOverrides = Partial<Omit<WorkspaceSettings, "workspace">>;
+
+/**
+ * Read effective settings for an already-authorized or internally resolved workspace.
+ * A workspace row is authoritative, including cleared optional fields. Legacy
+ * user settings apply only when that row is missing in the owner's first active
+ * workspace, so creating another workspace never copies the old defaults into it.
+ */
+export async function loadWorkspaceSettings(
+  ctx: QueryCtx,
+  workspace: WorkspaceRecord,
+): Promise<WorkspaceSettings> {
+  let settings: WorkspaceSettingsOverrides | null = await ctx.db
+    .query("workspace_settings")
+    .withIndex("by_workspace", (q) => q.eq("workspace", workspace._id))
+    .first();
+
+  if (!settings) {
+    const defaultWorkspace = await getDefaultWorkspaceForUser(ctx, workspace.ownerId);
+
+    if (defaultWorkspace?._id === workspace._id) {
+      settings = await ctx.db
+        .query("chatroom_settings")
+        .withIndex("by_userId", (q) => q.eq("userId", workspace.ownerId))
+        .first();
+    }
+  }
+
+  // Expose settings values only, without storage metadata or legacy user ownership.
+  // Empty tool arrays are valid defaults; optional model/UI fields stay unset.
+  return {
+    workspace: workspace._id,
+    ...(settings?.defaultModel !== undefined ? { defaultModel: settings.defaultModel } : {}),
+    ...(settings?.titleModel !== undefined ? { titleModel: settings.titleModel } : {}),
+    ...(settings?.enableChainOfThought !== undefined
+      ? { enableChainOfThought: settings.enableChainOfThought }
+      : {}),
+    ...(settings?.telemetry !== undefined ? { telemetry: settings.telemetry } : {}),
+    builtinToolSets: settings?.builtinToolSets ?? [],
+    mcpServers: settings?.mcpServers ?? [],
+  };
+}
+
+/**
+ * Apply an owner-only partial update within the caller's mutation transaction.
+ * Omitted fields are preserved; explicit undefined clears optional fields. The
+ * first write copies all effective legacy settings before applying the update.
+ * The context's entry-time settings snapshot is not modified by this write.
+ */
+export async function updateWorkspaceSettings(
+  ctx: MutationCtx,
+  workspace: WorkspaceRecord & { settings: WorkspaceSettings },
+  userId: string,
+  overrides: WorkspaceSettingsOverrides,
+) {
+  if (!canAccessWorkspace(workspace, userId)) throw new Error("Workspace not found.");
+
+  // Read the current row so repeated updates in one mutation patch the latest
+  // values instead of replacing them with the entry-time snapshot.
+  const existing = await ctx.db
+    .query("workspace_settings")
+    .withIndex("by_workspace", (q) => q.eq("workspace", workspace._id))
+    .first();
+
+  if (existing) {
+    await ctx.db.patch("workspace_settings", existing._id, overrides);
+
+    return existing._id;
+  }
+
+  const settings = { ...workspace.settings, ...overrides };
+
+  return await ctx.db.insert("workspace_settings", settings);
+}
 
 type WorkspaceRole = "owner" | "member";
 type WorkspaceAccess = {
@@ -163,16 +239,6 @@ export async function requireWorkspaceAccessForUser(
   return workspace!;
 }
 
-/** Require the authenticated user to own or be explicitly assigned to a workspace. */
-export async function requireWorkspaceAccess(
-  ctx: QueryCtx | MutationCtx,
-  workspaceId: Id<"workspaces">,
-): Promise<WorkspaceRecord> {
-  const identity = await authComponent.getAuthUser(ctx);
-  if (!identity) throw new Error("Not logged in.");
-  return await requireWorkspaceAccessForUser(ctx, workspaceId, identity._id);
-}
-
 async function authorizeChatRecord(
   ctx: QueryCtx | MutationCtx,
   chatId: Id<"aisdk_chats">,
@@ -211,7 +277,23 @@ export async function requireAccessibleChat(
 
   const authorized = await authorizeChatRecord(ctx, chatId, identity._id);
   if (!authorized) throw new Error("Chat not found.");
-  return { ...authorized, userId: identity._id };
+
+  // Management is evaluated only after visibility: workspace ownership alone
+  // never grants access to a member's personal chat.
+  return {
+    ...authorized,
+    userId: identity._id,
+    canManage: canManageChat(authorized.chat, authorized.workspace, identity._id),
+  };
+}
+
+/** Access must be checked before creator/workspace-owner management permission. */
+export async function requireChatManager(ctx: QueryCtx | MutationCtx, chatId: Id<"aisdk_chats">) {
+  const access = await requireAccessibleChat(ctx, chatId);
+
+  if (!access.canManage) throw new Error("Chat not found.");
+
+  return access;
 }
 
 /** Authorize a chat for an HTTP caller after that caller's session was validated. */

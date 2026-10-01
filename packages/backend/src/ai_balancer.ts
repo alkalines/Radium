@@ -3,7 +3,7 @@ import Providers from "./providers";
 import { internal } from "../convex/_generated/api";
 import type { GenericActionCtx } from "convex/server";
 import type { Id } from "../convex/_generated/dataModel";
-import { createChatGPTSubscriptionFetch } from "../convex/chatgpt_subscription";
+import { createChatGPTSubscriptionFetch } from "./subscriptions/chatgpt";
 
 export default async function AIBalancer(
   ctx: GenericActionCtx<any>,

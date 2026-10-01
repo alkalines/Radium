@@ -1,24 +1,36 @@
 import { v } from "convex/values";
 import { credentialPreview } from "@/credential_preview";
 import { MCP_BEARER_SECRET_KEY } from "@/chatroom/tools";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
 import {
-  getDefaultWorkspaceForUser,
-  requireOwnedWorkspace,
-  requireWorkspaceAccess,
-} from "./workspaces";
+  EXA_TOOL_CREDENTIAL_PROVIDER,
+  normalizeMcpUrl,
+  requireMcpName,
+  requireExaApiKey,
+} from "@/chatroom/aisdk-tools";
+import {
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
+import { getDefaultWorkspaceForUser, requireOwnedWorkspace } from "./workspaces";
+import { workspaceQuery } from "./helpers";
 import {
   MCP_SECRET_NAME,
+  EXA_SECRET_NAME,
+  exaSecretNamespace,
   mcpSecretNamespace,
   secrets,
+  workspaceExaSecretNamespace,
   workspaceMcpSecretNamespace,
   type SecretNamespace,
 } from "./secrets";
 
 /**
  * MCP (Model Context Protocol) server management. Each server belongs to a
- * BetterAuth user and may carry a secret (a bearer token today) stored in the
+ * workspace and may carry a secret (a bearer token today) stored in the
  * shared Secret Store component, with a masked preview kept for display.
  */
 
@@ -56,20 +68,6 @@ async function readSecret(
   }
 }
 
-function normalizeUrl(url: string): string {
-  const trimmed = url.trim();
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    throw new Error("MCP server URL must be a valid absolute URL.");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("MCP server URL must use http or https.");
-  }
-  return parsed.toString();
-}
-
 function buildPreview(auth: { type: "none" | "bearer" }, secret: string | undefined) {
   if (auth.type !== "bearer" || !secret?.trim()) return undefined;
   return { [MCP_BEARER_SECRET_KEY]: credentialPreview(secret.trim()) };
@@ -87,22 +85,20 @@ async function isLegacyServerForWorkspace(
 }
 
 /** List a workspace's MCP servers (never returns secrets). */
-export const listServers = query({
-  args: { workspace: v.id("workspaces") },
+export const listMcpServers = workspaceQuery({
+  args: {},
   handler: async (ctx, args) => {
-    const workspace = await requireWorkspaceAccess(ctx, args.workspace);
-
     const workspaceServers = await ctx.db
       .query("mcp_servers")
       .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
       .take(200);
 
-    const defaultWorkspace = await getDefaultWorkspaceForUser(ctx, workspace.ownerId);
+    const defaultWorkspace = await getDefaultWorkspaceForUser(ctx, ctx.workspace.ownerId);
     const legacyServers =
-      defaultWorkspace?._id === workspace._id
+      defaultWorkspace?._id === ctx.workspace._id
         ? await ctx.db
             .query("mcp_servers")
-            .withIndex("by_userId", (q) => q.eq("userId", workspace.ownerId))
+            .withIndex("by_userId", (q) => q.eq("userId", ctx.workspace.ownerId))
             .take(200)
         : [];
     const visibleServers = [
@@ -153,7 +149,7 @@ export const listServers = query({
 });
 
 /** Create an MCP server, storing any supplied bearer token in Secret Store. */
-export const createServer = mutation({
+export const createMcpServer = mutation({
   args: {
     workspace: v.id("workspaces"),
     name: v.string(),
@@ -165,9 +161,8 @@ export const createServer = mutation({
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     const userId = workspace.ownerId;
 
-    const name = args.name.trim();
-    if (!name) throw new Error("Server name is required.");
-    const url = normalizeUrl(args.url);
+    const name = requireMcpName(args.name);
+    const url = normalizeMcpUrl(args.url);
     if (args.auth.type === "bearer" && !args.secret?.trim()) {
       throw new Error("A bearer token is required for bearer authentication.");
     }
@@ -202,7 +197,7 @@ export const createServer = mutation({
  * value replaces the stored token, while omitting it preserves the existing one
  * (unless the auth type changes away from `bearer`, which clears it).
  */
-export const updateServer = mutation({
+export const updateMcpServer = mutation({
   args: {
     workspace: v.id("workspaces"),
     server: v.id("mcp_servers"),
@@ -223,12 +218,10 @@ export const updateServer = mutation({
     const patch: Record<string, unknown> = { auth };
 
     if (args.name !== undefined) {
-      const name = args.name.trim();
-      if (!name) throw new Error("Server name is required.");
-      patch.name = name;
+      patch.name = requireMcpName(args.name);
     }
     if (args.url !== undefined) {
-      patch.url = normalizeUrl(args.url);
+      patch.url = normalizeMcpUrl(args.url);
     }
 
     // Resolve the secret. A non-bearer auth type drops any stored token.
@@ -301,7 +294,7 @@ export const updateServer = mutation({
  * Delete an MCP server. Dangling references in tool defaults or per-chat
  * selections are tolerated — the tool resolver filters to existing servers.
  */
-export const deleteServer = mutation({
+export const deleteMcpServer = mutation({
   args: { workspace: v.id("workspaces"), server: v.id("mcp_servers") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -321,5 +314,108 @@ export const deleteServer = mutation({
     });
     await ctx.db.delete("mcp_servers", args.server);
     return true;
+  },
+});
+
+/** Masked Exa credential preview key; Exa powers the built-in agentic web search tool. */
+const EXA_API_KEY_SECRET = "apiKey";
+
+/** Read the masked preview of a workspace's Exa key, or `null` if none is set. */
+export const getExaApiKey = query({
+  args: { workspace: v.id("workspaces") },
+  handler: async (ctx, args): Promise<{ preview: string } | null> => {
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    const row = await readSecret(
+      ctx,
+      {
+        namespace: workspaceExaSecretNamespace(args.workspace),
+        name: EXA_SECRET_NAME,
+      },
+      "workspace Exa credential",
+    );
+    if (row.ok) {
+      const preview = row.metadata?.preview?.[EXA_API_KEY_SECRET];
+      return preview ? { preview } : null;
+    }
+
+    if (!workspace.legacyBalance) return null;
+    const legacyRow = await readSecret(
+      ctx,
+      {
+        namespace: exaSecretNamespace(workspace.legacyBalance),
+        name: EXA_SECRET_NAME,
+      },
+      "legacy Exa credential",
+    );
+    const preview = legacyRow.ok ? legacyRow.metadata?.preview?.[EXA_API_KEY_SECRET] : undefined;
+    return preview ? { preview } : null;
+  },
+});
+
+/** Create or replace the workspace's Exa API key. */
+export const setExaApiKey = mutation({
+  args: { workspace: v.id("workspaces"), apiKey: v.string() },
+  handler: async (ctx, args) => {
+    await requireOwnedWorkspace(ctx, args.workspace);
+    const apiKey = requireExaApiKey(args.apiKey);
+    const preview = { [EXA_API_KEY_SECRET]: credentialPreview(apiKey) };
+    const result = await secrets.put(ctx, {
+      namespace: workspaceExaSecretNamespace(args.workspace),
+      name: EXA_SECRET_NAME,
+      value: apiKey,
+      metadata: { kind: "exa", workspace: args.workspace, preview },
+    });
+    return result.secretId;
+  },
+});
+
+/** Delete the workspace's Exa API key. */
+export const deleteExaApiKey = mutation({
+  args: { workspace: v.id("workspaces") },
+  handler: async (ctx, args) => {
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    await secrets.remove(ctx, {
+      namespace: workspaceExaSecretNamespace(args.workspace),
+      name: EXA_SECRET_NAME,
+    });
+    if (workspace.legacyBalance) {
+      await secrets.remove(ctx, {
+        namespace: exaSecretNamespace(workspace.legacyBalance),
+        name: EXA_SECRET_NAME,
+      });
+    }
+    return true;
+  },
+});
+
+/** Load a built-in tool provider's workspace credential for server-side execution only.
+ * The validated provider determines the Secret Store key; callers cannot request
+ * arbitrary namespaces. Web search can support other providers independently of Exa.
+ */
+export const getBuiltinToolCredentialForRuntime = internalQuery({
+  args: { workspace: v.id("workspaces"), provider: v.literal(EXA_TOOL_CREDENTIAL_PROVIDER) },
+  handler: async (ctx, args) => {
+    const workspace = await ctx.db.get("workspaces", args.workspace);
+    if (!workspace) return null;
+    const row = await readSecret(
+      ctx,
+      {
+        namespace: workspaceExaSecretNamespace(args.workspace),
+        name: EXA_SECRET_NAME,
+      },
+      "workspace Exa credential",
+    );
+    if (row.ok) return row.value;
+    if (!workspace.legacyBalance) return null;
+
+    const legacyRow = await readSecret(
+      ctx,
+      {
+        namespace: exaSecretNamespace(workspace.legacyBalance),
+        name: EXA_SECRET_NAME,
+      },
+      "legacy Exa credential",
+    );
+    return legacyRow.ok ? legacyRow.value : null;
   },
 });

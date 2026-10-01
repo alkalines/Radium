@@ -9,7 +9,7 @@ export const Route = createFileRoute("/gateway/telemetry/$id")({
   staticData: { pageTitle: "Telemetry trace" },
   loader: ({ context: { queryClient }, params: { id } }) => {
     void queryClient.prefetchQuery(
-      convexQuery(api.telemetry.getTrace, { traceId: id as Id<"telemetry_traces"> }),
+      convexQuery(api.observability.aiTraces.getTrace, { traceId: id as Id<"telemetry_traces"> }),
     );
   },
   component: TelemetryTracePage,

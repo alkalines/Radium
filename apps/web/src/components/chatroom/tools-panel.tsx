@@ -49,7 +49,10 @@ export function ToolsPanel() {
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
   const { data: servers } = useQuery(
-    convexQuery(api.mcp.listServers, signedIn && workspaceId ? { workspace: workspaceId } : "skip"),
+    convexQuery(
+      api.aisdk_tools.listMcpServers,
+      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
   );
   const { data: defaults } = useQuery(
     convexQuery(
@@ -269,9 +272,11 @@ export function ToolsPanel() {
  * only its masked preview is ever returned.
  */
 function ExaApiKeyField({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
-  const { data: stored } = useQuery(convexQuery(api.exa.getApiKey, { workspace: workspaceId }));
-  const setApiKey = useMutation(api.exa.setApiKey);
-  const deleteApiKey = useMutation(api.exa.deleteApiKey);
+  const { data: stored } = useQuery(
+    convexQuery(api.aisdk_tools.getExaApiKey, { workspace: workspaceId }),
+  );
+  const setApiKey = useMutation(api.aisdk_tools.setExaApiKey);
+  const deleteApiKey = useMutation(api.aisdk_tools.deleteExaApiKey);
 
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -365,7 +370,7 @@ function DeleteServerDialog({
   workspaceId: Id<"workspaces"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
-  const deleteServer = useMutation(api.mcp.deleteServer);
+  const deleteServer = useMutation(api.aisdk_tools.deleteMcpServer);
   const [submitting, setSubmitting] = useState(false);
 
   async function confirm() {

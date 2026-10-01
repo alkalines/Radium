@@ -42,7 +42,7 @@ export function createTelemetryIntegrations(options: CollectorOptions): Telemetr
     settings: options.settings,
     persistence: {
       startTrace: (trace) =>
-        options.ctx.runMutation(internal.telemetry.startTrace, {
+        options.ctx.runMutation(internal.observability.aiTraces.startTrace, {
           workspace: options.workspace,
           apiKey: options.apiKey,
           balance: options.balance,
@@ -51,7 +51,8 @@ export function createTelemetryIntegrations(options: CollectorOptions): Telemetr
           chatId: options.chatId,
           ...trace,
         }),
-      finishTrace: (trace) => options.ctx.runMutation(internal.telemetry.finishTrace, trace),
+      finishTrace: (trace) =>
+        options.ctx.runMutation(internal.observability.aiTraces.finishTrace, trace),
     },
   });
 }

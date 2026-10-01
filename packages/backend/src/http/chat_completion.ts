@@ -1,5 +1,4 @@
-import { httpAction } from "../_generated/server";
-import { api, internal } from "../_generated/api";
+import { api, internal } from "../../convex/_generated/api";
 import {
   ChatCompletions_RequestBody,
   ChatCompletions_RequestBody_Type,
@@ -13,15 +12,15 @@ import {
   type genCallbackType,
 } from "@/translators/openai";
 import { convertStreamToAsyncIterator } from "@/tools/chunkReader";
-import type { ActionCtx } from "../_generated/server";
-import type { Id } from "../_generated/dataModel";
+import type { ActionCtx } from "../../convex/_generated/server";
+import type { Id } from "../../convex/_generated/dataModel";
 import {
   createTelemetryIntegrations,
   type ChatRequestContext,
   type TelemetryRequestContext,
 } from "@/telemetry/convex";
 
-export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise<Response> => {
+export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promise<Response> {
   try {
     const reqData = ChatCompletions_RequestBody.parse(await req.json());
 
@@ -38,7 +37,7 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
         { status: 401 },
       );
     const checkKey = await ctx
-      .runQuery(api.key.getKeyInfo, {
+      .runQuery(api.keys.getKeyInfo, {
         key: authBearer,
       })
       .catch((E) => {});
@@ -70,9 +69,12 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
     }
 
     const provider = await AIBalancer(ctx, workspaceId, reqData);
-    const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForWorkspace, {
-      workspace: workspaceId,
-    });
+    const telemetrySettings = await ctx.runQuery(
+      internal.observability.aiTraces.getSettingsForWorkspace,
+      {
+        workspace: workspaceId,
+      },
+    );
     // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
     return CreateCompletion(reqData, provider, {
       ctx,
@@ -99,7 +101,7 @@ export const HTTP_Request_Chat_Completion = httpAction(async (ctx, req): Promise
     console.log(e);
     return Response.json({ error: e.message }, { status: 500 });
   }
-});
+}
 
 export const Internal_Chat_Completion = async (
   ctx: ActionCtx,
@@ -169,7 +171,7 @@ const CreateCompletion = async (
       async (genCompletion) => {
         // End of the stream
         info.onGeneration?.(genCompletion);
-        await info.ctx.runMutation(internal.key.recordCompletion, {
+        await info.ctx.runMutation(internal.keys.recordCompletion, {
           bill: completionBill(info),
           ...completionActor(info),
           request: {
@@ -255,7 +257,7 @@ const CreateCompletion = async (
       async (genCompletion) => {
         // End of the stream
         info.onGeneration?.(genCompletion);
-        await info.ctx.runMutation(internal.key.recordCompletion, {
+        await info.ctx.runMutation(internal.keys.recordCompletion, {
           bill: completionBill(info),
           ...completionActor(info),
           request: {

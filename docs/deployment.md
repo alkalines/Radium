@@ -22,6 +22,11 @@ container and release paths are currently blocked and unverified pending the
 `VITE_*` values are public and embedded at build time. Never put provider API
 keys or other secrets in a `VITE_*` variable.
 
+The frontend server also reads `VITE_CONVEX_SITE_URL` for its generic
+`/api/backend/*` proxy, forwarding to the Convex site's `/api/*` routes. See the
+[subscription provider guide](Radium_Gateway/Subscriptions.md) for the Hono
+subscription routes and device-auth flow.
+
 Generate local secrets with:
 
 ```bash
@@ -110,18 +115,18 @@ function upload. Run this from the repository root:
 
 ```bash
 node \
-  --require ./packages/website/scripts/convex-offline-network-guard.cjs \
-  --experimental-loader ./packages/website/scripts/convex-offline-bindings-loader.mjs \
-  ./packages/website/scripts/generate-convex-api-bindings.mjs \
+  --require ./apps/web/scripts/convex-offline-network-guard.cjs \
+  --experimental-loader ./apps/web/scripts/convex-offline-bindings-loader.mjs \
+  ./apps/web/scripts/generate-convex-api-bindings.mjs \
   --write
 ```
 
-This narrow generator writes only `packages/website/convex/_generated/api.d.ts`.
+This narrow generator writes only `packages/backend/convex/_generated/api.d.ts`.
 It uses the installed Convex `componentApiDTS` template and local static analysis
 of the root component mounts, then formats the result with the installed Convex
 formatter. The network guard is an additional check; it must remain enabled.
 
-The driver is audited against the lockfile's Convex `1.45.0` installation and
+The driver is checked against the installed Convex `1.46.0` template and
 uses an internal CLI export, not a stable public API. Review the generated diff
 after Convex or component dependency updates. It supports the current static
 `convex.config.ts` form and fails closed for dynamic imports, unsupported

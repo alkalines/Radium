@@ -5,7 +5,7 @@ Status: Not started. Depends on task 04's upstream instance contract.
 ## Entry Points
 
 Under `packages/backend/`: `src/ai_balancer.ts`, `src/providers.ts`,
-`convex/providers.ts`, and `convex/http/chat_completion.ts`.
+`convex/providers.ts`, and `src/http/chat_completion.ts`.
 Current behavior randomly chooses an eligible provider; it is not a health-aware pool.
 
 ## Work

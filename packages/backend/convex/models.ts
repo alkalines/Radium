@@ -2,7 +2,7 @@ import { Models_Response_Type } from "@/types/openai/models";
 import { v } from "convex/values";
 import { internalQuery, query } from "./_generated/server";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
-import { requireWorkspaceAccess } from "./workspaces";
+import { workspaceQuery } from "./helpers";
 
 export const openaiModels = internalQuery({
   args: { workspace: v.id("workspaces") },
@@ -74,13 +74,12 @@ export const openaiModels = internalQuery({
   },
 });
 
-export const availableModels = query({
-  args: { workspace: v.id("workspaces") },
-  async handler(ctx, args) {
-    const workspace = await requireWorkspaceAccess(ctx, args.workspace);
+export const availableModels = workspaceQuery({
+  args: {},
+  async handler(ctx) {
     const [models, providerRecords] = await Promise.all([
       ctx.db.query("models").take(200),
-      workspaceProviderRecords(ctx, workspace),
+      workspaceProviderRecords(ctx, ctx.workspace),
     ]);
     const configuredProviders = providerRecords.filter(isWorkspaceProviderEnabled);
 

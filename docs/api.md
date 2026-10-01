@@ -135,3 +135,37 @@ They are not invoices, prepaid credits, or a debit against the workspace.
 `POST /api/aisdk/chat` serves the bundled chatroom and emits an AI SDK UI
 message stream. It uses browser session authentication and is not part of the
 public OpenAI-compatible contract.
+
+## HTTP Routing And CORS
+
+`packages/backend/src/http/router.ts` owns the implemented application routes:
+Gateway completions/models, Chatroom chat, and the subscription subrouter.
+Handlers under `packages/backend/src/http/` accept the Convex `ActionCtx` and raw
+`Request`; Hono receives that context through `c.env`. Database access remains
+through the existing Convex queries/mutations, with the same key, workspace,
+session, and chat authorization checks.
+
+`packages/backend/convex/http.ts` connects this app with `HttpRouterWithHono`
+from `convex-helpers/server/hono`. Better Auth continues to register native
+Convex routes and owns its own CORS; native routes take precedence over Hono.
+
+Hono handles Chatroom and subscription preflights before authentication and
+adds CORS headers to their responses, including errors and streams:
+
+- Chatroom: exact `/api/aisdk/chat` path; POST/OPTIONS.
+- Subscriptions: `/api/subscription/*`; GET/POST/OPTIONS.
+- Both allow credentials and Content-Type/Authorization only for the origin
+  of Convex's `SITE_URL`. Missing `SITE_URL` grants no cross-origin access.
+- Gateway bearer-key endpoints retain their existing behavior without a CORS
+  middleware policy. CORS does not replace endpoint authentication.
+
+These routes run on the Convex site, not a separate Hono server. There is no
+persisted-data migration or new protocol compatibility from this refactor.
+Local routing/CORS/streaming regressions can be run with:
+
+```bash
+bun run --cwd packages/backend test src/http src/subscriptions
+```
+
+Live provider streaming and browser cookie behavior require a configured
+deployment; local tests do not verify upstream availability.

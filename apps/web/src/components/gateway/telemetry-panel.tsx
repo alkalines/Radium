@@ -63,7 +63,7 @@ import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { ProviderLogo } from "./provider-logo";
 import { formatTelemetryDate, formatTelemetryDuration, formatTokenCount } from "./telemetry-utils";
 
-type Trace = FunctionReturnType<typeof api.telemetry.listTraces>[number];
+type Trace = FunctionReturnType<typeof api.observability.aiTraces.listTraces>[number];
 type TraceStatus = "all" | Trace["status"];
 type TraceSource = "all" | Trace["source"];
 type Range = "24h" | "7d" | "30d" | "all";
@@ -87,21 +87,21 @@ export function TelemetryPanel() {
   const { workspaceId } = useWorkspace();
   const { data: settings } = useQuery(
     convexQuery(
-      api.telemetry.getSettings,
+      api.observability.aiTraces.getSettings,
       convexQueriesEnabled && workspaceId ? { workspace: workspaceId } : "skip",
     ),
   );
-  const setSettings = useMutation(api.telemetry.setSettings);
+  const setSettings = useMutation(api.observability.aiTraces.setSettings);
   const since = ranges[range].days ? now - ranges[range].days! * 86_400_000 : undefined;
   const { data: traces, error: tracesError } = useQuery(
     convexQuery(
-      api.telemetry.listTraces,
+      api.observability.aiTraces.listTraces,
       workspaceId && convexQueriesEnabled ? { workspace: workspaceId, since, limit: 200 } : "skip",
     ),
   );
   const { data: summary } = useQuery(
     convexQuery(
-      api.telemetry.getSummary,
+      api.observability.aiTraces.getSummary,
       workspaceId && convexQueriesEnabled ? { workspace: workspaceId, since: since ?? 0 } : "skip",
     ),
   );

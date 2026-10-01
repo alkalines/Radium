@@ -507,9 +507,6 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
           webSearch: false,
         },
       });
-      if (newChatId === "Not logged in!") {
-        return;
-      }
       await navigate({
         to: "/chat/$chatId",
         params: { chatId: newChatId },
@@ -547,9 +544,6 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
         scope: typeof chat === "string" || !chat ? undefined : chat.scope,
         messages: messages.slice(0, index + 1),
       });
-      if (newChatId === "Not logged in!") {
-        return;
-      }
       await navigate({
         to: "/chat/$chatId",
         params: { chatId: newChatId },
@@ -682,11 +676,12 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
                 onEditCancel={() => setEditingId(null)}
                 onEditStart={() => setEditingId(message.id)}
                 onEditSubmit={(nextText) => handleEditSubmit(message, nextText)}
-                onFork={(forkModel) =>
-                  message.role === "assistant"
-                    ? void handleForkAssistant(message, forkModel)
-                    : void handleForkUser(message, forkModel)
-                }
+                onFork={(forkModel) => {
+                  const fork = message.role === "assistant" ? handleForkAssistant : handleForkUser;
+                  void fork(message, forkModel).catch((error) => {
+                    toast.error(error instanceof Error ? error.message : "Failed to fork chat.");
+                  });
+                }}
                 onRetry={() => handleRetry(message)}
                 status={status}
               />

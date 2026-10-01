@@ -1,6 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-import { completionPricingSchema, completionUsageSchema } from "./key";
+import { completionPricingSchema, completionUsageSchema } from "../src/usage/completion";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import {
   telemetrySettingsSchema,

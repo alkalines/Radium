@@ -40,6 +40,13 @@ Auth organization. This is direct membership, not an invitation flow.
   preview are persisted; the `rad-sk-...` value is returned once.
 - Gateway requests resolve a workspace from the new API key. Legacy balance keys
   remain readable while their workspace mapping is created or backfilled.
+  `packages/backend/convex/keys.ts` owns key management, bearer-key resolution
+  (`api.keys.getKeyInfo`), and completion recording (`internal.keys.recordCompletion`).
+  The former `key` module's registered function paths have moved to `keys`; direct
+  Convex callers must update their references alongside deployment.
+  Shared completion usage/pricing contracts live in
+  `packages/backend/src/usage/completion.ts`, allowing the schema to use them
+  without importing registered functions or workspace authorization.
 - Usage and upstream cost are retained as operational data. New completion
   recording does not require or debit prepaid credits.
 - General Gateway usage, logs, activity, and telemetry reads are owner-only and
@@ -57,6 +64,82 @@ Auth organization. This is direct membership, not an invitation flow.
   application tables by metadata and masked previews. Broader application-level
   encryption is future work. Explicit owner-auditing records are also future
   work and must not bypass workspace or chat authorization.
+
+## Workspace Function Builders (Implemented)
+
+`packages/backend/convex/helpers.ts` exports `workspaceQuery`, `workspaceMutation`,
+`ownedWorkspaceQuery`, `ownedWorkspaceMutation`, `internalWorkspaceQuery`, and
+`internalWorkspaceMutation`, built with
+`convex-helpers/server/customFunctions`. Each builder:
+
+1. Adds the required `workspace: v.id("workspaces")` argument automatically.
+2. Calls `authComponent.getAuthUser(ctx)` once to validate the Better Auth session.
+3. Uses `requireWorkspaceAccessForUser` from `workspaces.ts` to check active
+   workspace ownership or explicit membership, or `requireWorkspaceOwnedByUser`
+   for the owner-only variants.
+4. Supplies the full Better Auth user as `ctx.identity` and the authorized document
+   enriched with `ctx.workspace.settings`.
+   Preserves `args.workspace` for existing indexed reads.
+5. Mutation builders also supply `ctx.workspace.updateSettings(overrides)`, which
+   independently enforces owner-only writes. The `ownedWorkspace*` builders reject
+   members before loading settings or executing the handler.
+
+Handlers declare only their additional arguments and their return validator:
+
+```ts
+import { v } from "convex/values";
+import { workspaceQuery } from "./helpers";
+
+export const reasoningEnabled = workspaceQuery({
+  args: {},
+  returns: v.boolean(),
+  handler: (ctx) => ctx.workspace.settings.enableChainOfThought ?? true,
+});
+```
+
+The nine former `requireWorkspaceAccess` call sites use these builders: chat
+creation, forking and listing; available models; MCP server listing; and the four
+workspace default queries in `chatroom.ts`. Authentication failures throw before
+the handler executes. `CreateChat`, `ForkChat`, and `ListChats` no longer return
+the `"Not logged in!"` sentinel. Missing, archived, and inaccessible workspaces
+continue to throw `"Workspace not found."`. Frontend creation errors use the
+existing inline error display; fork errors use a toast.
+
+Settings are a snapshot loaded once at handler entry using the workspace index.
+An existing `workspace_settings` row is authoritative; only the owner's first
+active workspace can fall back to legacy `chatroom_settings`. A first settings
+write materializes all effective fields, while subsequent writes patch only the
+supplied fields. Explicit `undefined` clears optional fields such as the model;
+omitting a field preserves it. Chatroom default mutations and telemetry settings
+use the owner-only builders and this shared update method. Tool selections and
+model availability are still validated by their owning handlers.
+
+The regular builders grant **owner or member** access; the `ownedWorkspace*`
+variants grant **owner-only** access. Other owner-only resource handlers still use
+`requireOwnedWorkspace`. Chat permission predicates stay outside the context in
+`src/workspaces/policy.ts`. Call `canManageChat(chat, workspace, userId)` explicitly
+for already-visible chats; `canAccessChat` handles the separate visibility policy.
+Chat-specific operations use `requireAccessibleChat` (which also supplies
+`canManage`) or `requireChatManager` in `workspaces.ts` to enforce visibility first.
+A workspace check alone does not authorize another user's personal chat.
+
+Every wrapped call reads settings, even if the handler does not use them; during
+the legacy bridge a missing row also requires bounded default-workspace lookup.
+Mutation workspace contexts have a server-only settings writer and should not be returned whole
+from a Convex function. Return only the needed serializable fields. Internal
+jobs with an already-resolved workspace use the same `loadWorkspaceSettings`
+implementation directly, without browser-session wrappers.
+
+Internal builders preserve internal visibility but require a propagated Better
+Auth session too. They are available for session-backed internal calls; existing
+API-key flows, HTTP authorization using server-derived user IDs, and scheduled
+jobs retain their explicit policies and raw internal builders. They must not be
+converted to session-backed builders indiscriminately.
+
+Verification: `bun run test` runs handler regressions for missing/rejected
+sessions, outsider denial, owner/member access, member chat attribution, archived
+workspaces, internal visibility, and personal chat privacy. Remaining work is
+tracked in [Convex auth reuse](../tasks/02_Convex_Auth_Reuse.md).
 
 ## Migration
 

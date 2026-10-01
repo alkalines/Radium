@@ -4,38 +4,34 @@ import type { Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import { internal } from "./_generated/api";
-import { requireAccessibleChat, requireWorkspaceAccess } from "./workspaces";
-import { canManageChat, requireChatManager } from "./chatroom";
-import { firstUserMessageText } from "./chat_titles";
+import { requireAccessibleChat, requireChatManager } from "./workspaces";
+import { workspaceMutation, workspaceQuery } from "./helpers";
+import { firstUserMessageText } from "@/chatroom/titles";
+import { canManageChat } from "../src/workspaces/policy";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
 const MAX_CHAT_CANDIDATES = 100;
 
 // Mutation
-export const CreateChat = mutation({
+export const CreateChat = workspaceMutation({
   args: {
-    workspace: v.id("workspaces"),
     scope: v.optional(chatScopeValidator),
     messages_queue: queuedMessageSchema,
   },
-  handler: async (ctx, args): Promise<Id<"aisdk_chats"> | "Not logged in!"> => {
-    const identity = await authComponent.getAuthUser(ctx);
-
-    if (!identity) return "Not logged in!";
-    await requireWorkspaceAccess(ctx, args.workspace);
-
+  returns: v.id("aisdk_chats"),
+  handler: async (ctx, args): Promise<Id<"aisdk_chats">> => {
     const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
       messages: [],
       messages_queue: args.messages_queue,
       workspace: args.workspace,
       scope: args.scope ?? "personal",
-      userId: identity._id,
+      userId: ctx.identity._id,
       activeStream: false,
       lastInteractionAt: Date.now(),
     });
 
-    await ctx.scheduler.runAfter(0, internal.chat_titles.generateForChat, { chatId });
+    await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, { chatId });
     return chatId;
   },
 });
@@ -48,32 +44,27 @@ export const CreateChat = mutation({
  * model), while user forks pass the prior history plus a `messages_queue` so the
  * forked user turn is regenerated with another model on load.
  */
-export const ForkChat = mutation({
+export const ForkChat = workspaceMutation({
   args: {
-    workspace: v.id("workspaces"),
     scope: v.optional(chatScopeValidator),
     messages: v.array(messageSchema),
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
   },
-  handler: async (ctx, args): Promise<Id<"aisdk_chats"> | "Not logged in!"> => {
-    const identity = await authComponent.getAuthUser(ctx);
-
-    if (!identity) return "Not logged in!";
-    await requireWorkspaceAccess(ctx, args.workspace);
-
+  returns: v.id("aisdk_chats"),
+  handler: async (ctx, args): Promise<Id<"aisdk_chats">> => {
     const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
       messages: args.messages,
       messages_queue: args.messages_queue ?? undefined,
       workspace: args.workspace,
       scope: args.scope ?? "personal",
-      userId: identity._id,
+      userId: ctx.identity._id,
       activeStream: false,
       lastInteractionAt: Date.now(),
     });
 
     if (args.messages_queue?.text.trim()) {
-      await ctx.scheduler.runAfter(0, internal.chat_titles.generateForChat, { chatId });
+      await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, { chatId });
     }
     return chatId;
   },
@@ -106,13 +97,13 @@ export const GetChat = query({
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
-    const { chat, workspace } = await requireAccessibleChat(ctx, args.chatId);
+    const { chat, workspace, canManage } = await requireAccessibleChat(ctx, args.chatId);
 
     return {
       id: chat?._id,
       workspace: workspace._id,
       scope: chat.scope ?? "personal",
-      canManage: canManageChat(chat, workspace, identity._id),
+      canManage,
       canManageScope: chat.userId === identity._id,
       messages: chat?.messages,
       title: chat?.title,
@@ -193,7 +184,7 @@ export const RegenerateChatTitle = mutation({
     if (!firstUserMessageText(chat)) return "Chat has no prompt to title.";
 
     await ctx.db.patch("aisdk_chats", args.chatId, { title: undefined, emoji: undefined });
-    await ctx.scheduler.runAfter(0, internal.chat_titles.generateForChat, {
+    await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, {
       chatId: args.chatId,
       force: true,
     });
@@ -224,18 +215,14 @@ export const InternalChatInfo = internalQuery({
   },
 });
 
-export const ListChats = query({
-  args: { workspace: v.id("workspaces") },
+export const ListChats = workspaceQuery({
+  args: {},
   handler: async (ctx, args) => {
-    const identity = await authComponent.getAuthUser(ctx);
-    if (!identity) return "Not logged in!";
-    const workspace = await requireWorkspaceAccess(ctx, args.workspace);
-
     const [ownChats, sharedChats, legacyChats] = await Promise.all([
       ctx.db
         .query("aisdk_chats")
         .withIndex("by_workspace_and_userId_and_lastInteractionAt", (q) =>
-          q.eq("workspace", args.workspace).eq("userId", identity._id),
+          q.eq("workspace", args.workspace).eq("userId", ctx.identity._id),
         )
         .order("desc")
         .take(MAX_CHAT_CANDIDATES),
@@ -246,11 +233,11 @@ export const ListChats = query({
         )
         .order("desc")
         .take(MAX_CHAT_CANDIDATES),
-      workspace.legacyBalance
+      ctx.workspace.legacyBalance
         ? ctx.db
             .query("aisdk_chats")
             .withIndex("by_balance_and_lastInteractionAt", (q) =>
-              q.eq("balance", workspace.legacyBalance!),
+              q.eq("balance", ctx.workspace.legacyBalance!),
             )
             .order("desc")
             .take(MAX_CHAT_CANDIDATES)
@@ -259,8 +246,8 @@ export const ListChats = query({
 
     const chatsById = new Map<Id<"aisdk_chats">, (typeof ownChats)[number]>();
     const belongsToWorkspace = (chat: (typeof ownChats)[number]) =>
-      chat.workspace === workspace._id &&
-      (chat.balance === undefined || chat.balance === workspace.legacyBalance);
+      chat.workspace === ctx.workspace._id &&
+      (chat.balance === undefined || chat.balance === ctx.workspace.legacyBalance);
     for (const chat of ownChats) {
       if (belongsToWorkspace(chat)) chatsById.set(chat._id, chat);
     }
@@ -270,7 +257,7 @@ export const ListChats = query({
     for (const chat of legacyChats) {
       if (
         chat.workspace === undefined &&
-        chat.userId === identity._id &&
+        chat.userId === ctx.identity._id &&
         (chat.scope === undefined || chat.scope === "personal")
       ) {
         chatsById.set(chat._id, chat);
@@ -292,7 +279,7 @@ export const ListChats = query({
         pinnedAt: chat.pinnedAt,
         lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
         activeStream: chat.activeStream ?? false,
-        canManage: canManageChat(chat, workspace, identity._id),
+        canManage: canManageChat(chat, ctx.workspace, ctx.identity._id),
       }));
   },
 });
