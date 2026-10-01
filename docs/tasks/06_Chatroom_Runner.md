@@ -1,12 +1,18 @@
 # Chatroom And Runner Boundary
 
-Status: Not started. First session: execution protocol and security design.
+Status: Authentication/connectivity research completed 2026-10-01; implementation
+not started. Execution protocol and isolation design remain open. See
+[Runner authentication research](../Agent_Runner/Authentication.md) for the
+recommendation, component candidates, proposed boundaries, and verification gates.
+The [interactive connectivity follow-up](../Agent_Runner/Connectivity.md) supersedes
+idle polling with an external WSS data path and quiet Convex control subscriptions;
+ACP adaptation, resource measurements and relay admission are still proposed.
 Ownership persistence depends on task 03; boundary research can proceed now.
 
 ## Entry Points
 
 `packages/agent-runner/src/index.ts`, `packages/agent-runner-client/src/index.ts`,
-`packages/backend/src/http/aisdk.chat.ts`, `packages/website/convex/chatroom.ts`,
+`packages/backend/src/http/aisdk.chat.ts`, `packages/backend/convex/chatroom.ts`,
 and Chatroom tools/approvals UI. Runner and client currently implement health only.
 
 ## Work

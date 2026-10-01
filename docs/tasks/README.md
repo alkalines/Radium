@@ -2,7 +2,8 @@
 
 These are separate handoffs, not authorization to execute the entire roadmap in
 one session. Task 01 has an implemented extraction with verification gaps recorded
-in its handoff; other tasks below are **not started**. The minimal operational logging
+in its handoff; task 06 has authentication/connectivity research with implementation
+still **not started**, and other tasks below are **not started**. The minimal operational logging
 foundation is implemented separately; see [logging](../logging.md).
 
 Give an agent one task file, ask it to inspect current source and `AGENTS.md`, and
