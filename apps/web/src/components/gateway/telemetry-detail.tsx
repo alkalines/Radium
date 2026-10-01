@@ -37,7 +37,7 @@ import { api } from "backend/convex/_generated/api";
 import { ProviderLogo } from "./provider-logo";
 import { formatTelemetryDate, formatTelemetryDuration, formatTokenCount } from "./telemetry-utils";
 
-type TraceResult = Exclude<FunctionReturnType<typeof api.telemetry.getTrace>, null>;
+type TraceResult = Exclude<FunctionReturnType<typeof api.observability.aiTraces.getTrace>, null>;
 type Span = TraceResult["spans"][number];
 type Step = {
   model?: Span;
@@ -46,7 +46,7 @@ type Step = {
 };
 
 export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }) {
-  const { data, error } = useQuery(convexQuery(api.telemetry.getTrace, { traceId }));
+  const { data, error } = useQuery(convexQuery(api.observability.aiTraces.getTrace, { traceId }));
 
   if (error) {
     return (

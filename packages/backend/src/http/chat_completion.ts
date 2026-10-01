@@ -69,9 +69,12 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
     }
 
     const provider = await AIBalancer(ctx, workspaceId, reqData);
-    const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForWorkspace, {
-      workspace: workspaceId,
-    });
+    const telemetrySettings = await ctx.runQuery(
+      internal.observability.aiTraces.getSettingsForWorkspace,
+      {
+        workspace: workspaceId,
+      },
+    );
     // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
     return CreateCompletion(reqData, provider, {
       ctx,

@@ -85,9 +85,12 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
   const workspaceId = workspace._id;
 
   const previousPerformance = getLastAssistantPerformance(body.messages);
-  const telemetrySettings = await ctx.runQuery(internal.telemetry.getSettingsForWorkspace, {
-    workspace: workspaceId,
-  });
+  const telemetrySettings = await ctx.runQuery(
+    internal.observability.aiTraces.getSettingsForWorkspace,
+    {
+      workspace: workspaceId,
+    },
+  );
   const telemetrySettingsForRequest =
     (chat.scope ?? "personal") === "personal" && chat.userId !== workspace.ownerId
       ? { ...telemetrySettings, recordInputs: false, recordOutputs: false }

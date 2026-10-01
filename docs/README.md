@@ -10,6 +10,7 @@ start.
 - [Radium Chatroom](Radium_Chatroom.md)
 - [Gateway ownership](Radium_Gateway/Ownership.md)
 - [Gateway and Chatroom AI telemetry](Radium_Gateway/Telemetry.md)
+- [Observability and usage](observability.md)
 - [Gateway subscription providers](Radium_Gateway/Subscriptions.md)
 
 | Guide                                                        | Contents                                                                                |

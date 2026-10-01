@@ -13,7 +13,7 @@ export type FrontendLogInput = Omit<LoggingEventInput, "product" | "source">;
 
 /** Send an authenticated, bounded operational event without affecting UI behavior. */
 export function useFrontendLogger(): (input: FrontendLogInput) => void {
-  const ingest = useMutation(api.logging.ingest);
+  const ingest = useMutation(api.observability.events.ingest);
   const { isAuthenticated } = useConvexAuth();
 
   return (input) => {

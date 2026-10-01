@@ -107,7 +107,10 @@ export function ActivityPanel() {
   const since = useMemo(() => Date.now() - Number(range) * DAY, [range]);
   const { workspaceId } = useWorkspace();
   const { data: activity } = useQuery(
-    convexQuery(api.logs.getActivity, workspaceId ? { workspace: workspaceId, since } : "skip"),
+    convexQuery(
+      api.observability.usage.getActivity,
+      workspaceId ? { workspace: workspaceId, since } : "skip",
+    ),
   );
 
   const cacheHitRate = activity?.summary.promptTokens
