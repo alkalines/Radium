@@ -255,7 +255,7 @@ function deriveFeatures(model: ModelsDevModel): GlobalModelInput["features"] {
 /**
  * Convert a models.dev per-million-token cost into our stored per-token string.
  * Billing multiplies token counts by `parseFloat(pricing.input)` directly (see
- * `convex/key.ts`), so the unit must be per token. Avoids exponent notation.
+ * `convex/keys.ts`), so the unit must be per token. Avoids exponent notation.
  */
 function perToken(costPerMillion: number | undefined): string | undefined {
   if (costPerMillion === undefined) return undefined;

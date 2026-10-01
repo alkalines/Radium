@@ -15,7 +15,7 @@ export async function handleOpenAIModels(ctx: ActionCtx, req: Request): Promise<
       { status: 401 },
     );
   const checkKey = await ctx
-    .runQuery(api.key.getKeyInfo, {
+    .runQuery(api.keys.getKeyInfo, {
       key: authBearer,
     })
     .catch(() => {});

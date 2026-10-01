@@ -40,6 +40,13 @@ Auth organization. This is direct membership, not an invitation flow.
   preview are persisted; the `rad-sk-...` value is returned once.
 - Gateway requests resolve a workspace from the new API key. Legacy balance keys
   remain readable while their workspace mapping is created or backfilled.
+  `packages/backend/convex/keys.ts` owns key management, bearer-key resolution
+  (`api.keys.getKeyInfo`), and completion recording (`internal.keys.recordCompletion`).
+  The former `key` module's registered function paths have moved to `keys`; direct
+  Convex callers must update their references alongside deployment.
+  Shared completion usage/pricing contracts live in
+  `packages/backend/src/usage/completion.ts`, allowing the schema to use them
+  without importing registered functions or workspace authorization.
 - Usage and upstream cost are retained as operational data. New completion
   recording does not require or debit prepaid credits.
 - General Gateway usage, logs, activity, and telemetry reads are owner-only and

@@ -43,7 +43,7 @@ describe("moved HTTP handlers", () => {
         );
         expect(response.status).toBe(401);
       }
-      expect(runQuery).toHaveBeenCalledExactlyOnceWith(api.key.getKeyInfo, { key: "invalid-key" });
+      expect(runQuery).toHaveBeenCalledExactlyOnceWith(api.keys.getKeyInfo, { key: "invalid-key" });
       expect(runMutation).not.toHaveBeenCalled();
     },
   );

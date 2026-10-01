@@ -6,7 +6,7 @@ verification, and narrowing are not complete.
 ## Entry Points
 
 Under `packages/website/`: `convex/schema.ts`, `convex/auth.ts`, `convex/workspaces.ts`,
-`convex/migrations.ts`, `convex/key.ts`, `convex/keys.ts`, `convex/usage.ts`,
+`convex/migrations.ts`, `convex/keys.ts`, `convex/usage.ts`,
 `convex/secrets.ts`, `convex/providers.ts`, `convex/aisdk.ts`, `convex/logs.ts`,
 telemetry functions, `src/http/chat_completion.ts`, `convex/provider_records.ts`,
 and Gateway/Chatroom UI

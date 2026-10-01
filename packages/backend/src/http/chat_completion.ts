@@ -37,7 +37,7 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
         { status: 401 },
       );
     const checkKey = await ctx
-      .runQuery(api.key.getKeyInfo, {
+      .runQuery(api.keys.getKeyInfo, {
         key: authBearer,
       })
       .catch((E) => {});
@@ -171,7 +171,7 @@ const CreateCompletion = async (
       async (genCompletion) => {
         // End of the stream
         info.onGeneration?.(genCompletion);
-        await info.ctx.runMutation(internal.key.recordCompletion, {
+        await info.ctx.runMutation(internal.keys.recordCompletion, {
           bill: completionBill(info),
           ...completionActor(info),
           request: {
@@ -257,7 +257,7 @@ const CreateCompletion = async (
       async (genCompletion) => {
         // End of the stream
         info.onGeneration?.(genCompletion);
-        await info.ctx.runMutation(internal.key.recordCompletion, {
+        await info.ctx.runMutation(internal.keys.recordCompletion, {
           bill: completionBill(info),
           ...completionActor(info),
           request: {

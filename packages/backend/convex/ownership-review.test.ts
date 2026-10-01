@@ -7,7 +7,7 @@ import { convexTest } from "convex-test";
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api } from "./_generated/api";
-import { hashText } from "./key";
+import { hashText } from "./keys";
 import {
   MCP_SECRET_NAME,
   mcpSecretNamespace,
@@ -201,7 +201,7 @@ test("lists unmigrated legacy keys and revokes a legacy mapping atomically", asy
   });
   expect(revocations.legacy).toBeDefined();
   expect(revocations.workspace).toBe(revocations.legacy);
-  await expect(t.query(anyApi.key.getKeyInfo, { key: "mapped-secret" })).rejects.toThrow(
+  await expect(t.query(anyApi.keys.getKeyInfo, { key: "mapped-secret" })).rejects.toThrow(
     "This key is invalid!",
   );
 });
