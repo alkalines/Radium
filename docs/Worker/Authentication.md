@@ -1,6 +1,10 @@
 # Worker Authentication And Connectivity Research
 
 Research snapshot: **2026-10-01**. Status: **proposal, not implemented**.
+Transport follow-up: the 2026-10-02 [Convex Client plan](Convex_Transport.md)
+supersedes the WSS/Tailscale recommendation and transport-specific verification
+slice below. Enrollment/key identity research remains relevant; all interactive
+traffic is now planned through Convex, with machine JWTs and app authorization.
 Naming follow-up: the service is now **Worker**. This research snapshot uses
 "Runner" in its original protocol discussion. The standalone HTTP client was
 removed in favor of app-owned Convex queries/mutations and authenticated wrappers.

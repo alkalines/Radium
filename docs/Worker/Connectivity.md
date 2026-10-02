@@ -1,6 +1,9 @@
 # Interactive Worker Connectivity And ACP
 
-Research snapshot: **2026-10-01**. Status: **proposal, not implemented**.
+Research snapshot: **2026-10-01**. Status: **superseded transport proposal, not implemented**.
+The 2026-10-02 [Convex Client transport decision](Convex_Transport.md) replaces
+the Worker-hosted WSS/Tailscale recommendation below. This document preserves the
+earlier research and tradeoffs; use the new guide for the current plan.
 This refines the [authentication research](Authentication.md) for cloud-resource
 limits and interactive Agent Client Protocol (ACP) traffic. Runner and client
 service still implements health only; the Worker component now owns identity

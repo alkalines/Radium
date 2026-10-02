@@ -84,10 +84,12 @@ minor; evaluate a narrow compatible range in the auth task, not a blind upgrade.
 The 2026-10-01 [Worker authentication research](../Worker/Authentication.md)
 evaluates API-key components, an external-worker orchestrator, OAuth provider,
 and existing official components. It recommends a per-runner proof-of-possession
-design; the [interactive follow-up](../Worker/Connectivity.md) moves ACP frames
-to Runner-hosted WSS through operator-configured Tailscale and keeps quiet Convex
-subscriptions for control. The custom relay proposal was superseded; no component
-was installed or adopted, and the preferred network profile is not integrated yet.
+design. The 2026-10-02 [Convex Client decision](../Worker/Convex_Transport.md)
+supersedes the [WSS/Tailscale follow-up](../Worker/Connectivity.md): commands,
+approvals and batched output now target Convex queries/mutations and subscriptions.
+Orchestrator is a claims/leases reference, not an adopted workflow runtime. The
+local Worker identity persistence package is implemented; machine authentication,
+transport and execution integration remain planned.
 
 Search the [official directory](https://www.convex.dev/components),
 [official catalog](https://www.convex.dev/components/get-convex-llms.txt), and

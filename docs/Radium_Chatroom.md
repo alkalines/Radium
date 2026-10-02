@@ -120,9 +120,10 @@ require prepaid credits and do not debit a Radium balance.
 - Worker identity persistence is implemented; enrollment endpoints, machine
   authentication, and execution coordination are future work. See the
   [Worker overview](Worker.md) and [authentication research](Worker/Authentication.md)
-  for the proposed outbound control-plane boundary, and
-  [interactive connectivity](Worker/Connectivity.md) for the proposed
-  Tailscale-reachable Worker WSS endpoint and local stdio ACP adapter.
+  for the identity foundation, and the selected
+  [Convex Client transport plan](Worker/Convex_Transport.md) for commands,
+  approvals, batched output and results through Convex with a local stdio ACP
+  adapter. This supersedes the earlier browser-to-Worker WSS proposal.
 - Better Auth organization ownership, invitations, organization-derived
   membership, and broader workspace roles are not implemented. Direct membership
   of existing users is the only sharing policy.

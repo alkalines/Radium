@@ -38,10 +38,11 @@ this component does not implement those endpoints or machine identity validation
 Public wrappers and transport routes have not been added yet.
 
 `packages/worker/src/index.ts` remains the external health-only service. Its future
-WSS endpoint and ACP/process work are separate from durable Convex coordination.
+Convex Client connection and ACP/process work are separate from identity persistence.
 The component declares no environment variables and requires no hosted identity
-provider, collector or network service. See [connectivity](Connectivity.md) for
-optional Tailscale and ordinary HTTPS/WSS deployment profiles.
+provider, collector or network service. See the selected
+[Convex Client transport plan](Convex_Transport.md) for the proposed authenticated
+control and batched output integration.
 
 ## Isolated State
 
@@ -186,7 +187,7 @@ migration was run.
 ## Planned And Known Limitations
 
 - App wrappers, challenges/replay, rotation, grants, machine JWT issuer,
-  subscriptions, WSS/ACP and execution integration remain future work.
+  subscriptions, Convex-mediated output, ACP and execution integration remain future work.
 - Completed receipts and worker/key records are retained indefinitely. Cleanup of
   unused tokens is explicit; no cron or lifecycle deletion policy is installed.
 - Revocation persists authority but does not propagate to sockets or processes yet.

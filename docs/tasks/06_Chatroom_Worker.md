@@ -5,12 +5,12 @@ persistence package and backend mount implemented. App authentication and transp
 integration, execution protocol and isolation design remain open. See
 [Worker authentication research](../Worker/Authentication.md) for the
 recommendation, component candidates, proposed boundaries, and verification gates.
-The [interactive connectivity follow-up](../Worker/Connectivity.md) supersedes
-idle polling with Worker-hosted WSS through operator-configured Tailscale
-Serve/optional Funnel and quiet Convex control subscriptions. A custom Radium relay
-is no longer planned for the first slice; ACP adaptation, resource measurements,
-endpoint admission and replay are still proposed. Tailscale is not a required
-hosted dependency for all installations.
+The selected 2026-10-02 [Convex Client transport plan](../Worker/Convex_Transport.md)
+supersedes the earlier WSS/Tailscale connectivity proposal. Worker and Chatroom
+connect outbound to Convex; commands, approvals, batched output and results use
+authorized app queries/mutations and subscriptions. ACP adaptation, machine JWT
+authentication, bounded output storage and recovery remain proposed. Orchestrator
+is a claims/leases reference, not an adopted workflow runtime.
 Ownership persistence depends on task 03; boundary research can proceed now.
 
 ## Entry Points
@@ -38,8 +38,25 @@ Worker subscriptions/transport remain follow-up work.
 4. Produce a minimal safe vertical-slice plan and separate implementation tasks. No arbitrary shell endpoint before the security contract is approved.
 5. Write `docs/Radium_Chatroom.md`, `docs/Worker.md`, and `docs/Worker/Execution.md`, clearly marking design versus health-only reality.
 
+## Next Implementation Slice
+
+Design recorded; implementation remains open. Build authenticated Worker Convex
+Client access with a stdio ACP test agent, bounded batched output visible in
+Chatroom, and a durable permission round trip. Use the transport guide's initial
+500 ms text batching candidate plus byte caps; tune from measurements. Separate
+control from output, define idempotent batch ingestion and catch-up, and specify
+retention before introducing output tables. Real execution capabilities depend
+on the isolation contract; packaging depends on task 09. No dependency adoption
+or remote deployment is authorized by this plan.
+
 ## Acceptance
 
 - The design covers offline workers, duplicate dispatch, crash/restart, cancellation, unauthorized jobs, and output backpressure.
 - Verification plan includes isolation/authorization tests and a local integration path without Convex-hosted OS execution.
 - No claim that Convex components replace the external Worker or that root dev starts it today.
+- Machine JWT refresh/revocation and app wrappers preserve workspace, assignment
+  and private-chat authorization; Worker has no human/admin credential authority.
+- Load verification records writes, read/return bytes, subscription fan-out,
+  conflicts, queue bounds and latency across idle, streaming and reconnect cases.
+- Batch retries, lost acknowledgments, retention gaps and ambiguous commands have
+  explicit recovery behavior; no growing full-transcript live query or per-token writes.

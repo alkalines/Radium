@@ -21,18 +21,18 @@ boundary. No app auth wrappers or transport endpoints call it yet.
 
 ## Proposed
 
-The [authentication and connectivity research](Worker/Authentication.md)
-recommends single-use enrollment tokens and per-worker proof-of-possession
-identities. The [interactive connectivity research](Worker/Connectivity.md)
-refines transport to a Worker-hosted WSS endpoint through operator-configured
-Tailscale Serve or optional Funnel, replacing the proposed custom Radium relay.
-Convex handles low-frequency control and checkpoints. Tailscale remains an optional
-deployment profile; standard HTTPS/WSS contracts support other networks. The guide
-covers a stdio ACP adapter and cloud
-resource tradeoffs. The research compares existing Convex Components
-and proposes an identity component boundary. The persistence subset is now in the
-workspace package above; cryptographic authentication and transport remain design
-recommendations, not an implemented protocol.
+The selected [Convex Client transport plan](Worker/Convex_Transport.md) routes
+commands, approvals, batched output and results through Convex. Worker and Chatroom
+connect outbound to Convex; Worker adapts a local stdio ACP agent. Local batching,
+bounded output chunks, separate control/output subscriptions and retention limit
+database load. Machine JWT authentication and app authorization wrappers remain
+planned; the identity persistence subset above does not implement them.
+
+The [authentication research](Worker/Authentication.md) supplies the enrollment
+and per-worker proof-of-possession foundation. Its transport recommendation and
+the [WSS/Tailscale connectivity research](Worker/Connectivity.md) are historical,
+superseded by the 2026-10-02 Convex Client decision. Convex Orchestrator remains a
+claims/leases reference rather than an adopted Worker workflow runtime.
 
 The [Chatroom and Worker task](tasks/06_Chatroom_Worker.md) tracks the remaining
 execution, isolation, approval, and verification design. Authenticating a worker
