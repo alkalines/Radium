@@ -129,7 +129,9 @@
       "name": "worker-component",
       "version": "0.0.0",
       "devDependencies": {
+        "convex-test": "^0.0.59",
         "typescript": "^7",
+        "vite": "^8.0.0",
       },
       "peerDependencies": {
         "convex": "^1.46.0",

@@ -2,19 +2,41 @@
   "name": "worker-component",
   "version": "0.0.0",
   "private": true,
+  "files": [
+    "dist",
+    "src"
+  ],
   "type": "module",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./convex.config.js": "./src/component/convex.config.ts",
-    "./_generated/component.js": "./src/component-api.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./convex.config.js": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./_generated/component.js": {
+      "types": "./dist/component/_generated/component.d.ts"
+    },
+    "./test": {
+      "types": "./dist/test.d.ts",
+      "default": "./dist/test.js"
+    },
+    "./package.json": "./package.json"
   },
   "scripts": {
     "codegen": "bun run --cwd ../backend codegen --component-dir ../worker-component/src/component",
-    "codegen:offline": "node --require ../../apps/web/scripts/convex-offline-network-guard.cjs --experimental-loader ../../apps/web/scripts/convex-offline-bindings-loader.mjs scripts/codegen.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "build:codegen": "bun run codegen && bun run build",
+    "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "typescript": "^7"
+    "convex-test": "^0.0.59",
+    "typescript": "^7",
+    "vite": "^8.0.0"
   },
   "peerDependencies": {
     "convex": "^1.46.0"

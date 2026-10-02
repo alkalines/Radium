@@ -16,9 +16,11 @@
     "apps/*"
   ],
   "scripts": {
-    "codegen": "bun run --cwd packages/worker-component codegen && bun run --cwd packages/backend codegen",
-    "dev": "concurrently -c magenta,yellow --names vite-dev,convex-dev \"bun --cwd=apps/web dev --clearScreen false\" \"bun --cwd=packages/backend run dev\"",
-    "test": "bun run --cwd packages/backend test",
+    "build:components": "bun run --cwd packages/worker-component build",
+    "codegen": "bun run build:components && bun run --cwd packages/worker-component build:codegen && bun run --cwd packages/backend codegen",
+    "predev": "bun run build:components",
+    "dev": "concurrently -c cyan,magenta,yellow --names component-build,vite-dev,convex-dev \"bun --cwd=packages/worker-component run dev\" \"bun --cwd=apps/web dev --clearScreen false\" \"bun --cwd=packages/backend run dev\"",
+    "test": "bun run build:components && bun run --cwd packages/backend test",
     "lint": "eslint",
     "format": "oxfmt",
     "format:check": "oxfmt --check"

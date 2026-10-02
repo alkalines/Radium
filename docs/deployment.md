@@ -110,18 +110,27 @@ local test run is not migration-readiness evidence.
 
 ### Standard Binding Codegen
 
-Run from the repository root to generate Worker component bindings first, then
-backend bindings with the standard Convex CLI:
+Run from the repository root to generate Worker component bindings, build the
+package, then generate backend bindings with the standard Convex CLI:
 
 ```bash
 bun run codegen
 ```
 
-Both steps run in `packages/backend` using its configured deployment. The Worker
-step passes `--component-dir ../worker-component/src/component`; the backend step
-runs `convex codegen`. The second step runs only if the first succeeds. Standard
-codegen requires deployment access for component analysis and does not deploy the
-generated functions. Review the generated diff before committing.
+The command first builds from checked-in bindings so the app's package import is
+resolvable during component codegen. Both codegen steps run in `packages/backend`
+using its configured deployment. The Worker step passes
+`--component-dir ../worker-component/src/component`, then rebuilds the package;
+the backend step runs `convex codegen`. Each step requires the previous one to
+succeed. Standard codegen requires deployment access for component analysis and
+does not deploy the generated functions. Review the generated diff before committing.
+
+For a fresh checkout without deployment access, `bun run build:components` builds
+the local workspace package from checked-in bindings. `bun run dev` builds it
+first and runs a TypeScript build watcher alongside Vite and Convex. Source API
+or schema changes still require the explicit codegen sequence above. Tests use
+the built package too; `bun run test` builds before running backend tests. See the
+[Worker component guide](Worker/Component.md) for package exports and scope.
 
 ### Offline API Binding Codegen
 

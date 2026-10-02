@@ -4,10 +4,9 @@ import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import { components } from "./_generated/api";
 import schema from "./schema";
-import workerSchema from "../../worker-component/src/component/schema";
+import { register } from "worker-component/test";
 
 const modules = import.meta.glob("./**/*.ts");
-const workerModules = import.meta.glob("../../worker-component/src/component/**/*.ts");
 const enrollment = components.workerIdentity.enrollment;
 const identities = components.workerIdentity.identities;
 const tokenHash = "a".repeat(64);
@@ -15,7 +14,7 @@ const publicKey = { algorithm: "test-only", material: "public-key-fixture", thum
 
 function setup() {
   const t = convexTest(schema, modules);
-  t.registerComponent("workerIdentity", workerSchema, workerModules);
+  register(t);
   return t;
 }
 

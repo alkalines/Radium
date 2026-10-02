@@ -5,10 +5,19 @@ authentication, app authorization wrappers, transport, and execution remain plan
 
 ## Packages And Integration Boundary
 
-`packages/worker-component` is a private, source-only Bun workspace package.
+`packages/worker-component` is a private, built Bun workspace package following
+the [Convex package-authoring pattern](https://docs.convex.dev/components/authoring#building-and-publishing-npm-package-components).
 `packages/backend/package.json` declares `worker-component: workspace:*`;
 `packages/backend/convex/convex.config.ts` mounts its `convex.config.js` export
 with `app.use(workerIdentity)`.
+
+TypeScript emits JavaScript, declarations and source maps into `dist/`. Package
+exports point to this output, so the backend mounts the same files that a packaged
+consumer would use. The root exports shared validators and Convex's generated
+`ComponentApi` type; `/_generated/component.js` is a type-only entry point to
+`dist/component/_generated/component.d.ts`. There is no custom API type mapping.
+The `/test` entry point registers the built schema and JavaScript modules with
+`convex-test`, including when the app chooses a custom mount name.
 
 The separate HTTP client package has been removed. Durable control operations
 belong in Convex queries/mutations, called through authenticated app wrappers.
@@ -131,27 +140,29 @@ From the repository root:
 
 ```bash
 bun install --frozen-lockfile
-bun run codegen
+bun run build:components
 bun run --cwd packages/worker-component typecheck
 bun run --cwd packages/backend test convex/worker-component.test.ts
 ```
 
-The root `codegen` command runs standard Convex codegen for this component first,
-then the backend. Both steps use the backend's configured deployment; the component
-step selects `src/component` with `--component-dir`. See
+Local builds use the checked-in generated bindings. `bun run dev` builds before
+starting the component TypeScript watcher, Vite and Convex. The watcher rebuilds
+implementation changes; it does not regenerate API bindings. After changing the
+schema or function signatures, run `bun run codegen`: it bootstraps the package
+output, runs standard component codegen, rebuilds, then generates backend bindings.
+Both codegen steps use the backend's configured deployment; the component step
+selects `src/component` with `--component-dir`. See
 [standard binding codegen](../deployment.md#standard-binding-codegen).
 
-For offline-only refreshes, `bun run --cwd packages/worker-component codegen:offline`
-writes the package's `src/component/_generated/server.ts`,
-`dataModel.ts`, and `api.ts` using installed Convex **1.46.0** templates. It reuses
-the repository's network guard/loader and fails closed on other versions. The API
-type under `src/component-api.ts` derives from these references and is exported as
-`worker-component/_generated/component.js`. No build output is required to mount
-this private source package. Never hand-edit generated files.
+The custom component offline generator and source-derived API mapping have been
+removed. Convex owns `src/component/_generated/component.ts` and the other generated
+files; regenerate them through the standard CLI when deployment access is
+authorized. Never hand-edit generated files.
 
 Refresh backend references with the existing
 [offline API binding command](../deployment.md#offline-api-binding-codegen).
-Neither generator uploads functions or verifies deployment/component analysis.
+That offline backend command does not refresh the component's generated contract
+or verify deployment/component analysis.
 
 Worker naming covers the packages, `workerIdentity` mount, `workers` table,
 `workerId` fields, metadata/revocation methods and `WORKER_*` error codes. This
@@ -163,12 +174,14 @@ expiry, scoped/revoked denial, key uniqueness, recovery after expiry, bounded
 cleanup and parent transaction rollback. Deployed OCC races, cryptography,
 network transport and owner/machine authorization remain unverified.
 
-The naming/client-removal follow-up passed `bun install --frozen-lockfile`,
-`bun run --cwd packages/worker-component typecheck`,
-`apps/web/node_modules/.bin/tsc --noEmit -p packages/worker/tsconfig.json`, and
-`bun run test` (**113 tests in 23 files**). Component and backend bindings were
-refreshed offline. Scoped formatting and local documentation links were checked;
-no remote generation, deployment or migration was run.
+The packaged-component follow-up passed `bun run build:components`,
+`bun run --cwd packages/worker-component typecheck`, and
+`bun run --cwd packages/backend test convex/worker-component.test.ts` (**8 tests**).
+`bun run test` also passed **113 tests in 23 files**, including the initial package
+build. Frozen-lockfile installation and runtime package-export resolution passed.
+The handler regressions now load the package's built `/test` entry point rather
+than importing component source paths. No remote generation, deployment or
+migration was run.
 
 ## Planned And Known Limitations
 
