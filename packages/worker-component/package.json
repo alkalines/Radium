@@ -1,0 +1,22 @@
+{
+  "name": "worker-component",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./convex.config.js": "./src/component/convex.config.ts",
+    "./_generated/component.js": "./src/component-api.ts"
+  },
+  "scripts": {
+    "codegen": "bun run --cwd ../backend codegen --component-dir ../worker-component/src/component",
+    "codegen:offline": "node --require ../../apps/web/scripts/convex-offline-network-guard.cjs --experimental-loader ../../apps/web/scripts/convex-offline-bindings-loader.mjs scripts/codegen.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^7"
+  },
+  "peerDependencies": {
+    "convex": "^1.46.0"
+  }
+}

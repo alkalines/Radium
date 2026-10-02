@@ -81,10 +81,10 @@ minor; evaluate a narrow compatible range in the auth task, not a blind upgrade.
 
 ## Components Before Custom Infrastructure
 
-The 2026-10-01 [Runner authentication research](../Agent_Runner/Authentication.md)
+The 2026-10-01 [Worker authentication research](../Worker/Authentication.md)
 evaluates API-key components, an external-worker orchestrator, OAuth provider,
 and existing official components. It recommends a per-runner proof-of-possession
-design; the [interactive follow-up](../Agent_Runner/Connectivity.md) moves ACP frames
+design; the [interactive follow-up](../Worker/Connectivity.md) moves ACP frames
 to Runner-hosted WSS through operator-configured Tailscale and keeps quiet Convex
 subscriptions for control. The custom relay proposal was superseded; no component
 was installed or adopted, and the preferred network profile is not integrated yet.

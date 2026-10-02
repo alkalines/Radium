@@ -68,8 +68,8 @@ workspace tools in chats, subject to the chat's effective selection.
 
 The Chatroom currently supports HTTP MCP servers, web search when configured,
 and approval UI for tool calls. Filesystem, command, and coding execution belong
-to the external Agent Runner; the checked-in Runner packages are health-check
-skeletons and are not an execution platform.
+to the external Worker; the checked-in service is a health-check skeleton. Its
+Convex component owns identity persistence, not an execution platform.
 
 `packages/backend/convex/aisdk_tools.ts` owns workspace-authorized MCP server
 management and Exa credential operations. The web UI calls its public functions;
@@ -117,11 +117,12 @@ require prepaid credits and do not debit a Radium balance.
 
 ## Planned And Limited
 
-- Runner enrollment, machine authentication, and execution coordination are future
-  work. See the [Runner overview](Agent_Runner.md) and
-  [authentication research](Agent_Runner/Authentication.md) for the proposed
-  outbound control-plane boundary, and [interactive connectivity](Agent_Runner/Connectivity.md)
-  for the proposed Tailscale-reachable Runner WSS endpoint and local stdio ACP adapter.
+- Worker identity persistence is implemented; enrollment endpoints, machine
+  authentication, and execution coordination are future work. See the
+  [Worker overview](Worker.md) and [authentication research](Worker/Authentication.md)
+  for the proposed outbound control-plane boundary, and
+  [interactive connectivity](Worker/Connectivity.md) for the proposed
+  Tailscale-reachable Worker WSS endpoint and local stdio ACP adapter.
 - Better Auth organization ownership, invitations, organization-derived
   membership, and broader workspace roles are not implemented. Direct membership
   of existing users is the only sharing policy.

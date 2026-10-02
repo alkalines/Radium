@@ -1,18 +1,22 @@
 {
   "name": "radium",
-  "author": "alkalines",
   "version": "dev",
   "private": true,
-  "workspaces": ["packages/*", "apps/*"],
   "homepage": "https://github.com/alkalines/Radium#readme",
   "bugs": {
     "url": "https://github.com/alkalines/Radium/issues"
   },
+  "author": "alkalines",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alkalines/Radium.git"
   },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
+    "codegen": "bun run --cwd packages/worker-component codegen && bun run --cwd packages/backend codegen",
     "dev": "concurrently -c magenta,yellow --names vite-dev,convex-dev \"bun --cwd=apps/web dev --clearScreen false\" \"bun --cwd=packages/backend run dev\"",
     "test": "bun run --cwd packages/backend test",
     "lint": "eslint",

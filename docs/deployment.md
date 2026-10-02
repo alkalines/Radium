@@ -108,6 +108,21 @@ ready until every paginated verification query is exhausted with zero issues and
 the deployment readiness evidence is recorded. A successful component status or
 local test run is not migration-readiness evidence.
 
+### Standard Binding Codegen
+
+Run from the repository root to generate Worker component bindings first, then
+backend bindings with the standard Convex CLI:
+
+```bash
+bun run codegen
+```
+
+Both steps run in `packages/backend` using its configured deployment. The Worker
+step passes `--component-dir ../worker-component/src/component`; the backend step
+runs `convex codegen`. The second step runs only if the first succeeds. Standard
+codegen requires deployment access for component analysis and does not deploy the
+generated functions. Review the generated diff before committing.
+
 ### Offline API Binding Codegen
 
 The checked-in root API declaration can be refreshed without a deployment or

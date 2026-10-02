@@ -34,6 +34,7 @@ yarn-error.log*
 
 # convex
 _generated/
+!/packages/worker-component/src/component/_generated/
 
 # tanstack
 .tanstack/
