@@ -68,8 +68,8 @@ workspace tools in chats, subject to the chat's effective selection.
 
 The Chatroom currently supports HTTP MCP servers, web search when configured,
 and approval UI for tool calls. Filesystem, command, and coding execution belong
-to the external Agent Runner; the checked-in Runner packages are health-check
-skeletons and are not an execution platform.
+to the external Worker; the checked-in service is a health-check skeleton. Its
+Convex component owns identity persistence, not an execution platform.
 
 `packages/backend/convex/aisdk_tools.ts` owns workspace-authorized MCP server
 management and Exa credential operations. The web UI calls its public functions;
@@ -117,6 +117,13 @@ require prepaid credits and do not debit a Radium balance.
 
 ## Planned And Limited
 
+- Worker identity persistence is implemented; enrollment endpoints, machine
+  authentication, and execution coordination are future work. See the
+  [Worker overview](Worker.md) and [authentication research](Worker/Authentication.md)
+  for the identity foundation, and the selected
+  [Convex Client transport plan](Worker/Convex_Transport.md) for commands,
+  approvals, batched output and results through Convex with a local stdio ACP
+  adapter. This supersedes the earlier browser-to-Worker WSS proposal.
 - Better Auth organization ownership, invitations, organization-derived
   membership, and broader workspace roles are not implemented. Direct membership
   of existing users is the only sharing policy.

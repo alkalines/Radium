@@ -1,8 +1,0 @@
-{
-  "name": "agent-runner-client",
-  "module": "src/index.ts",
-  "type": "module",
-  "peerDependencies": {
-    "typescript": "^7"
-  }
-}

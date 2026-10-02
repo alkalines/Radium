@@ -8,6 +8,11 @@ start.
 
 - [Radium Gateway](Radium_Gateway.md)
 - [Radium Chatroom](Radium_Chatroom.md)
+- [Worker](Worker.md) — health service, identity persistence, and proposed transport
+- [Worker identity component](Worker/Component.md) — workspace package, internal enrollment/recovery/revocation API, and integration boundary
+- [Worker authentication research](Worker/Authentication.md) — cross-network transport, machine identity, and component evaluation
+- [Worker Convex Client transport](Worker/Convex_Transport.md) — selected design for machine authentication, batched output, bounded subscriptions, recovery and retention (not implemented)
+- [Earlier Worker connectivity research](Worker/Connectivity.md) — superseded WSS/Tailscale proposal and tradeoffs
 - [Gateway ownership](Radium_Gateway/Ownership.md)
 - [Gateway and Chatroom AI telemetry](Radium_Gateway/Telemetry.md)
 - [Observability and usage](observability.md)
@@ -27,7 +32,7 @@ start.
 
 Document meaningful changes as they are implemented, in the same change as code.
 Use product overviews such as `Radium_Gateway.md`, `Radium_Chatroom.md`, and
-`Agent_Runner.md`, with focused guides such as `Radium_Gateway/LoadBalancer.md`.
+`Worker.md`, with focused guides such as `Radium_Gateway/LoadBalancer.md`.
 Link implemented guides here and from the owning product overview, and
 distinguish implemented behavior from proposals and rollout work.
 

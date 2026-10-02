@@ -33,6 +33,7 @@
     "convex-test": "^0.0.59",
     "hono": "^4.13.7",
     "vitest": "^5.0.1",
+    "worker-component": "workspace:*",
     "zod": "^4.6.5"
   },
   "devDependencies": {
