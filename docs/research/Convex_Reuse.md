@@ -85,8 +85,9 @@ The 2026-10-01 [Runner authentication research](../Agent_Runner/Authentication.m
 evaluates API-key components, an external-worker orchestrator, OAuth provider,
 and existing official components. It recommends a per-runner proof-of-possession
 design; the [interactive follow-up](../Agent_Runner/Connectivity.md) moves ACP frames
-to an external WSS relay and keeps quiet Convex subscriptions for control. No
-candidate was installed or adopted.
+to Runner-hosted WSS through operator-configured Tailscale and keeps quiet Convex
+subscriptions for control. The custom relay proposal was superseded; no component
+was installed or adopted, and the preferred network profile is not integrated yet.
 
 Search the [official directory](https://www.convex.dev/components),
 [official catalog](https://www.convex.dev/components/get-convex-llms.txt), and

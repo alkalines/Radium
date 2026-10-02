@@ -7,58 +7,69 @@ packages still implement health only.
 
 ## Recommended Split
 
-Use **Convex for durable control**, and **an external WSS relay for live traffic**.
-Both Runner and browser initiate outbound connections to the relay. The relay can
-be an independently deployable mode of the Runner product, possibly on the same
-host as other self-hosted services; it is not a persistent socket inside Convex.
-No particular hosted relay provider is required.
+Use **Convex for durable control**, and **a Runner-hosted WSS endpoint reached
+through operator-configured Tailscale** for live traffic. This replaces the proposed
+custom Radium relay with existing network infrastructure. Tailscale handles peer
+connectivity, NAT traversal and network relay fallback; Radium does not implement
+its own networking relay or embed a Tailscale SDK in the first slice.
 
 ```text
-Chatroom browser ── WSS ──▶ Radium relay ◀── outbound WSS ── Runner supervisor
-       │                       │                               │
-       └── Better Auth / ──────┴── authorized control ──▶ Convex │
-           session access                                  ACP adapter
-                                                               │
-                                                         local stdio
-                                                               │
-                                                         ACP CLI agent
+Chatroom browser ── WSS via Tailscale Serve / optional Funnel ──▶ Runner supervisor
+       │                                                          │
+       └── Better Auth / session access ──▶ Convex ◀── quiet control subscription
+                                                                  │
+                                                              ACP adapter
+                                                                  │ stdio
+                                                              CLI agent
 ```
 
 Convex owns workspace/chat authorization, enrollment/revocation, session grants,
-durable approvals, lifecycle transitions and selected checkpoints. The relay owns
-connection routing, live delivery, bounded buffers, backpressure and transport
-liveness. The Runner owns the subprocess, local filesystem/terminal operations,
+durable approvals, lifecycle transitions and selected checkpoints. Tailscale owns
+the network path; the Runner endpoint owns authenticated session attachment,
+live delivery, bounded buffers, backpressure and application connection liveness.
+The Runner also owns the subprocess, local filesystem/terminal operations,
 ACP adaptation and local recovery journal. Chatroom remains responsible for agent
 UX, configuration and human approvals. Gateway retains model routing.
 
-There must be a reachable WSS endpoint for both participants. A private-only
-installation can expose it over a VPN. An HTTPS browser must use a trusted secure
-endpoint; adding a direct socket to an arbitrary private address is not a universal
-cross-network solution. This proposal adds an externally hosted process and its
-resource costs, not a zero-infrastructure feature.
+Tailscale is the preferred **operator-selected connectivity profile**, not a required
+hosted dependency for all Radium installations. Keep the application contract as
+ordinary authenticated HTTPS/WSS, so operators can use another VPN, direct ingress
+or reverse proxy. Tailscale's managed coordination/DERP/Funnel infrastructure is an
+external service choice, not a claim that all infrastructure becomes self-hosted.
+Configuration and an installed Tailscale daemon replace our custom relay service;
+the Runner application endpoint and recovery protocol still need implementation.
 
 ### Who Connects To What
 
-The relay has a stable operator-configured address, for example
-`wss://relay.example.com`. Runner initiates a connection from its current network
-to that address, and the browser independently does the same. The relay pairs
-authenticated channels by runner/session identity. It replies over the Runner's
-already established socket; it never needs to initiate a connection to the Runner's
-private or cellular IP. Ordinary NAT/CGNAT can accommodate this outbound pattern,
-provided the network permits WSS and the proxy supports long-lived connections.
+Run the Runner's HTTP/WSS service locally and configure Tailscale on that machine.
+Use its stable tailnet DNS endpoint rather than the current cellular/public IP.
+Tailnet peers can establish direct encrypted connections where possible, with
+DERP relay fallback where NAT/network conditions prevent direct connectivity.
+DERP forwards encrypted network traffic; it is not an ACP message queue or session
+router. No public router port forwarding is required for this profile.
 
-Convex does **not** maintain an outbound WebSocket to the relay. The long-running
-relay subscribes to narrow Convex control queries. A browser operation or backend
-job commits authorized session/dispatch state in Convex; the relay observes that
-state and delivers a wakeup/command over the existing Runner connection. A short
-authenticated HTTPS call can optionally accelerate a wakeup, but persisted intent
-and reconciliation remain authoritative if the notification is lost.
+There are two distinct access modes:
 
-If the relay itself is behind an unreachable home router, outbound Runner traffic
-cannot reach it just because the Runner uses WebSockets. Host the relay at a
-reachable address, deliberately configure ingress/port forwarding where possible,
-or use operator-managed VPN/tunneling. Neither Convex nor the socket protocol
-automatically supplies that public routing. The Runner does not need public ingress.
+| Mode | Who can connect | Integration |
+| --- | --- | --- |
+| Tailscale Serve (private default) | Browser device joined to the tailnet or otherwise explicitly granted tailnet reachability | Serve proxies HTTPS/WSS to the local Runner endpoint. Tailnet grants/ACLs constrain network access; Radium grants still constrain workspace/chat access. |
+| Tailscale Funnel (operator-enabled public access) | Ordinary internet browsers without Tailscale | Funnel publishes the configured Runner service through a public TLS endpoint. Network access is public, so Radium application authentication remains essential. |
+
+A browser does not join Tailscale because the Radium web server does. Serve requires
+connectivity on the browser's device. Funnel avoids that requirement but has its
+own prerequisites and non-configurable bandwidth limits; official docs currently
+label it beta. Serve and Funnel cannot share one port as private/public modes at
+the same time. Test WSS upgrade, browser Origin handling and chosen proxy settings
+before presenting this as an operational setup.
+
+Convex does **not** maintain a WebSocket to the Runner, and managed Convex does
+not automatically have tailnet access. The Runner initiates a narrowly scoped,
+authenticated Convex control subscription. Browser/backend operations commit
+authorized session/dispatch intent in Convex; the Runner observes and reconciles
+that intent. Interactive frames travel between browser and Runner through Tailscale,
+without entering Convex. This also supports backend jobs while no browser is open.
+Do not require Funnel just so Convex can reach the Runner; outbound subscription
+is the control path.
 
 ## Why Polling And Database Streaming Are Different Costs
 
@@ -81,7 +92,7 @@ and retained bytes. Current Cloud limits count subscription updates as function
 calls. CPU/compute charging differs by function type and deployment class, so do
 not describe every database write as a separately billed action CPU interval.
 
-Use a narrow indexed control subscription, scoped to runner/session or relay-owned
+Use a narrow indexed control subscription, scoped to runner/session-owned
 sessions. Keep its dependencies separate from output/checkpoint data: a heartbeat
 or transcript update must not wake every runner. No global event-table scan or
 changing timestamp argument to force refresh. Notifications are hints; a durable
@@ -108,7 +119,7 @@ Radium can bridge an existing stdio-only agent today in a future implementation:
    just agent-output text. Scope routing by the authorized session/channel, not
    arbitrary IDs supplied inside messages.
 4. Stdio uses newline-delimited UTF-8 JSON; stdout is protocol-only, stderr is
-   separate bounded diagnostic output. The relay transport is Radium-specific;
+   separate bounded diagnostic output. The application WSS transport is Radium-specific;
    supporting it does not make the CLI a native remote-ACP server.
 5. Pin tested ACP/SDK versions and advertised capabilities. Reconnect to a living
    Runner session where possible; after agent restart, use `session/load` or
@@ -125,8 +136,8 @@ the two must not be treated as interchangeable credentials.
 
 | Traffic/state | Default location | Persistence policy |
 | --- | --- | --- |
-| WebSocket ping/pong, live presence | Relay memory | No Convex write per heartbeat. Persist coarse transitions only if useful; do not oscillate online/offline on every transient reconnect. |
-| ACP text/thought deltas, terminal output, progress | WSS and bounded Runner/relay buffers | No database write per frame. Persist only authorized content under the applicable retention policy. |
+| WebSocket ping/pong, live presence | Runner connection state | No Convex write per heartbeat. Persist coarse transitions only if useful; do not oscillate online/offline on every transient reconnect. |
+| ACP text/thought deltas, terminal output, progress | WSS through Tailscale and bounded Runner buffers | No database write per frame. Persist only authorized content under the applicable retention policy. |
 | Session admission, controller assignment, start/end/failure | Convex | Transactional, idempotent lifecycle records. |
 | Permission request/decision | Convex plus live notification | Persist the minimum bound decision before releasing privileged work; the UI socket alone is not approval authority. |
 | Completed messages and tool summaries | Convex under chat authorization | Bounded per-turn/domain writes, not each transport update. Final save is acknowledged before reporting durable completion. |
@@ -147,19 +158,22 @@ implicitly capture reasoning, prompts or terminal transcripts as operational log
 
 ## Connection Security And Revocation
 
-Retain one-use setup and per-runner keys from the authentication proposal. On WSS
-connect, a fresh relay challenge proves key possession. An app-issued signed grant
-binds deployment/issuer, relay audience, runner/user identity, public-key thumbprint,
-workspace/chat/session, controller or viewer role, capabilities, expiry and policy
-epoch. The Runner also trusts the configured relay endpoint/issuer. Key verification
-and scoped routing stay outside the per-frame Convex hot path.
+Retain one-use Radium setup and per-runner keys from the authentication proposal.
+Tailnet enrollment keys are separate operator credentials; they do not replace
+Radium enrollment and must not enter browser state or Radium logs. On WSS connect,
+an app-issued signed grant binds deployment/issuer, Runner endpoint audience,
+user identity, client public-key thumbprint, workspace/chat/session, controller or
+viewer role, capabilities, expiry and policy epoch. A fresh Runner challenge proves
+client key possession. The browser verifies the configured Runner HTTPS endpoint;
+the Runner trusts the configured Radium issuer. Key verification and scoped routing
+stay outside the per-frame Convex hot path.
 
 Human grants are issued only after Better Auth session validation and current chat
 access checks; a workspace owner is not automatically allowed to attach to another
-user's personal chat. A relay authenticates as its own narrowly scoped service,
-not as that user or with a Convex admin key. Initial admission checks authoritative
-policy; the relay subscribes to authorized control changes and uses bounded-lived
-grants/revalidation for existing sockets. Expiry must be enforced on an already open
+user's personal chat. The Runner authenticates to Convex as its own narrowly scoped
+machine identity, not as that user or with a Convex admin key. Initial admission
+checks authoritative policy; the Runner subscribes to authorized control changes
+and uses bounded-lived grants/revalidation for existing sockets. Expiry must be enforced on an already open
 socket, not only at handshake. Closing a revoked connection is best effort, not
 proof that a previously executed tool has been undone.
 
@@ -171,30 +185,36 @@ without querying for every output frame. Socket transport ping and authority/lea
 renewal are separate cadences, never one database write per ping.
 
 Browser WebSocket APIs cannot generally set arbitrary `Authorization` headers.
-Use a secure appropriately scoped cookie on a compatible relay origin, or a short
+Use a secure appropriately scoped cookie on a compatible Runner origin, or a short
 unauthenticated admission phase with a grant and fresh key proof in the first
 protocol messages. Bound its timeout/size/concurrency and route no data before
 authentication. Avoid reusable credentials in query strings; validate browser
 Origin as an additional control, not proof of identity. Browser ephemeral keys must
 not expose the Runner's long-lived private key.
 
-For a trusted relay, WSS plus authenticated, scoped channels does not require a
-database nonce or HTTP signature for each frame. RFC 9421 remains useful for HTTPS
-control operations; it is not a WebSocket frame protocol. If the relay must be
-untrusted with respect to payloads, add an explicitly designed end-to-end encryption
-and command-authentication layer; TLS terminated at the relay alone is insufficient.
+WSS plus authenticated, scoped channels does not require a database nonce or HTTP
+signature for each frame. RFC 9421 remains useful for HTTPS control operations;
+it is not a WebSocket frame protocol. Tailscale network identity/grants do not imply
+Better Auth workspace membership. Serve identity headers are not a replacement for
+Radium policy; trust proxy-derived headers only through a configured local proxy.
+Funnel does not supply Serve user identity headers. Bind a proxied local service
+to loopback when relying on that proxy boundary.
 
 ## Reliability Without Persisting Every Frame
 
 ### Cellular/IP Failover And Resume
 
-Switching internet connections generally destroys the current TCP/WebSocket
-connection. Stable DNS points to the relay; the Runner reconnects from its new
-source IP, re-authenticates, and presents its existing runner/session identity.
+Tailscale keeps a stable virtual endpoint and can switch underlying paths without
+breaking application connections during a sufficiently short network transition.
+This improves roaming but does not guarantee socket survival for every outage,
+daemon restart or Funnel connection. If the socket fails, the browser reconnects
+to the same Runner endpoint, re-authenticates and reattaches its existing session;
+the Runner separately reconnects its Convex control subscription when necessary.
 Do not use IP address as identity or require a fixed source-IP allowlist by default.
 Detect half-open connections with bounded ping timeouts and network-change signals
 where available, then reconnect with jittered backoff. No session traffic is routed
 until fresh admission succeeds. Resume must reject revoked/expired authority.
+Tailscale/DERP does not retain or replay ACP output during a prolonged disconnect.
 
 Transport recovery is an application contract, not a WebSocket feature. Proposed
 logical stream records carry a session/stream epoch and monotonically increasing
@@ -214,16 +234,17 @@ privileged work still follows authority freshness/controller-loss policy.
 
 There are distinct acknowledgments:
 
-- **Transport receipt:** relay has received bytes, possibly only in RAM. This is
-  insufficient evidence to delete the Runner's sole durable copy.
+- **Transport receipt:** the application peer has received bytes, possibly only
+  in RAM. A TCP/network ACK or DERP delivery is also insufficient evidence to
+  delete the Runner's sole durable copy.
 - **Consumer delivery:** a browser has received/rendered data. Browser memory is
   not a durable conversation checkpoint.
 - **Durable checkpoint:** the authorized persistence destination has committed a
   contiguous output range. The Runner can prune that range under retention policy.
 
 Batch durable checkpoint acknowledgments to Convex instead of writing one ACK per
-delta. If an optional relay disk spool takes ownership, its ACK must explicitly
-mean a durable commit with a defined retention/recovery policy. Crash-durable local
+delta. Tailscale infrastructure does not take durable ownership of this stream.
+Crash-durable local
 journal records require durable storage before promising that guarantee; buffered
 writes alone are not proof of disk persistence. Group commits can amortize I/O.
 
@@ -244,8 +265,8 @@ corresponding cost. Test WAN switching, lost ACKs and replay in both directions.
 - Ordered delivery holds on one live WebSocket, not across reconnects. Use channel
   generation, sequence/cursor acknowledgments and bounded replay windows in the
   Radium envelope. Keep ACP JSON-RPC semantics distinct from transport sequence IDs.
-- Keep the authoritative recovery journal on the Runner. A relay restart can drop
-  ephemeral routing; Runner reconnect re-registers active sessions. Old connection
+- Keep the authoritative recovery journal on the Runner. An endpoint or Tailscale
+  daemon restart can drop connections; reattachment reconciles active sessions. Old connection
   generations cannot control the session. A gap beyond retained history requires
   explicit resync rather than pretending that every missing notification is recoverable.
 - Do not automatically resend `session/prompt` or approve a tool after disconnect.
@@ -263,11 +284,10 @@ corresponding cost. Test WAN switching, lost ACKs and replay in both directions.
 | Candidate | Fit / tradeoff |
 | --- | --- |
 | Convex Orchestrator | Useful for discrete durable background workflows. Leasing/state replay is different from full-duplex ACP permission and stream delivery; it does not remove per-event persistence costs. Optional coordination, not the interactive transport. |
-| Convex reactive client | Appropriate for quiet runner/relay control subscriptions and revocation changes. Requires dedicated machine auth and wrapper policies; no per-delta writes. |
-| Bun native WebSocket relay | Recommended first topology to evaluate: fits the repository runtime and offers connection handlers, ping/idle settings and backpressure/drain support. Radium must supply scoped admission, multiplexing and recovery. Not implemented or benchmarked. |
-| NATS Core with WSS | Applicable optional broker for a fleet: ephemeral pub/sub, request/reply, TLS and subject ACLs. Core delivery is at-most-once; offline consumers miss messages. Subject permissions and session grants need integration; it is not a raw ACP WebSocket endpoint. |
-| NATS JetStream | Optional external persistence for selected events. Persisting all deltas here moves storage costs rather than eliminating them. Do not duplicate Convex job/approval authority or assume broker deduplication makes execution exactly-once. |
-| WebRTC data channel | Possible future direct browser/Runner route with signaling and ICE/STUN/TURN. NAT traversal may still require a relay, and recovery/ACL complexity rises; not the first topology. |
+| Tailscale daemon + Serve / optional Funnel | Preferred operator-selected network profile. Supplies connectivity/proxying/relay fallback without custom Radium networking relay code. Private/public browser access and provider limits must be explicit. |
+| Convex reactive client | Appropriate for quiet Runner control subscriptions and revocation changes. Requires dedicated machine auth and wrapper policies; no per-delta writes. |
+| Bun native WebSocket endpoint | Runner application endpoint, not a separate relay service. Radium still supplies scoped admission, ACP adaptation, backpressure and recovery. Not implemented or benchmarked. |
+| Ordinary HTTPS/WSS via other VPN or ingress | Preserves provider-independent self-hosted operation. Same Radium application contracts; operator supplies network reachability. |
 
 The Convex catalog was rechecked for relay, WebSocket, NATS and pub/sub candidates;
 no matching raw interactive relay was identified. Persistent Text Streaming and
@@ -275,17 +295,22 @@ Presence are database-backed facilities for different purposes, not evidence of
 an ephemeral ACP channel. `convex-helpers` provides app wrapper/HTTP conveniences,
 not a persistent socket host. The local identity component remains justified for
 durable identity state; no Convex component can host the external connection loop
-just by wrapping it in registered functions. No dependency was selected here.
+just by wrapping it in registered functions. Tailscale was selected as a preferred
+deployment profile, not installed or integrated in this research. A custom Radium
+relay and NATS broker are no longer first-slice deliverables.
 
 ## Next Verification Slice
 
-Prototype **authorized WSS echo + stdio ACP test agent + permission round trip**,
+Prototype **Tailscale-reachable authorized Runner WSS + stdio ACP test agent + permission round trip**,
 with a quiet scoped control subscription and measured lifecycle writes. Compare
 idle, streaming, slow-viewer and reconnect operation counts/bytes. Test cross-chat
-denial, expired open sockets, revocation/control outage, relay restart, stdout/stderr
+denial, expired open sockets, revocation/control outage, Tailscale/Runner restart, stdout/stderr
 separation and an ambiguous prompt acknowledgment. Execution isolation remains a
 prerequisite for real subprocess capabilities. Deployment packaging belongs to the
 workspace operations task; this proposal is not a working container quickstart.
+Verify private Serve from a tailnet browser and separately optional Funnel from
+a non-tailnet browser. Measure direct and DERP paths, WAN failover, bandwidth and
+browser local-network restrictions; do not claim seamless recovery before testing.
 
 ## Sources
 
@@ -299,7 +324,9 @@ workspace operations task; this proposal is not a working container quickstart.
 - [Bun WebSockets](https://bun.sh/docs/runtime/http/websockets), checked through
   current official documentation via Context7. Exact runtime compatibility remains
   an implementation check.
-- [NATS Core delivery](https://docs.nats.io/learn/core-nats/),
-  [NATS WebSocket](https://docs.nats.io/learn/websocket/), plus current official
-  NATS permission/persistence docs via Context7.
+- [Tailscale connection types](https://tailscale.com/docs/reference/connection-types),
+  [Serve](https://tailscale.com/docs/features/tailscale-serve),
+  [Funnel](https://tailscale.com/docs/features/tailscale-funnel), and
+  [network roaming](https://tailscale.com/docs/reference/ssh-over-tailscale).
+  Current official documentation checked through Context7 and direct pages.
 - [Convex component catalog](https://www.convex.dev/components/llms.txt).

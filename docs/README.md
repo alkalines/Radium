@@ -10,7 +10,7 @@ start.
 - [Radium Chatroom](Radium_Chatroom.md)
 - [Agent Runner](Agent_Runner.md) — health-only implementation and proposed boundary
 - [Runner authentication research](Agent_Runner/Authentication.md) — cross-network transport, machine identity, and component evaluation
-- [Interactive Runner connectivity](Agent_Runner/Connectivity.md) — WSS relay, ACP stdio bridge, and bounded Convex persistence (proposal)
+- [Interactive Runner connectivity](Agent_Runner/Connectivity.md) — Tailscale-reachable Runner WSS, ACP stdio bridge, and bounded Convex persistence (proposal)
 - [Gateway ownership](Radium_Gateway/Ownership.md)
 - [Gateway and Chatroom AI telemetry](Radium_Gateway/Telemetry.md)
 - [Observability and usage](observability.md)

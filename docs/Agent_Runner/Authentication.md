@@ -8,8 +8,9 @@ and [task 06](../tasks/06_Chatroom_Runner.md) for the wider execution boundary.
 
 Keep token-based setup, but make the token a **single-use enrollment credential**,
 not a permanent shared execution password. Enroll a **separate asymmetric identity
-for each runner**. For interactive ACP sessions, use an **outbound WSS connection
-to an external Radium relay**, with Convex owning low-frequency authorization,
+for each runner**. For interactive ACP sessions, use a **Runner-hosted WSS endpoint
+reached through operator-configured Tailscale Serve or optional Funnel**, with
+Convex owning low-frequency authorization,
 session coordination and durable checkpoints. See
 [interactive connectivity](Connectivity.md) for the revised transport recommendation.
 The original short-polling baseline was superseded by the cloud-cost and ACP
@@ -18,10 +19,12 @@ Prefer proof-of-possession for connection admission and signed HTTPS control
 requests. Use transactional job leases and a durable local journal independently
 of authentication.
 
-This works with runners behind NAT or on another network without opening a runner
-execution port. It requires a route from the runner to the control API: if both
-networks are unreachable, configure a VPN or a self-hosted relay. Authentication
-cannot create connectivity.
+Tailscale supplies NAT traversal and network relay fallback without a custom Radium
+relay. The Runner application endpoint still needs implementation. Private Serve
+requires browser tailnet reachability; optional Funnel exposes a public endpoint.
+Keep ordinary authenticated HTTPS/WSS usable over other operator-configured networks
+so Tailscale is not a required hosted dependency. Authentication cannot create
+connectivity by itself.
 
 Connect to the **application's control plane** hosted on Convex for durable state,
 not for every live frame. Never give the Runner deployment/admin credentials or
@@ -51,13 +54,13 @@ deliver control changes without idle polling; it is not a raw ACP message bus.
 | Convex pushes HTTPS to Runner | Runner has a reachable endpoint or VPN | Simple request/response, but requires inbound exposure, endpoint/egress policy, and two-direction authentication. Poor default for NAT. |
 | Runner polls Radium HTTP API | Runner can reach Convex HTTP surface | Optional sparse-work fallback, not the interactive default. Idle polling adds calls even with no work. |
 | Runner uses Convex reactive client | Outbound WebSocket allowed | Good low-latency option with a dedicated machine JWT issuer and tightly authorized wrapper functions. Notifications are hints; a mutation must still claim work. |
-| Self-hosted relay/broker | Interactive ACP traffic or private runners | Recommended interactive data path: browser and Runner dial the relay. Live frames bypass Convex; only control transitions/checkpoints use it. Adds a service, trust boundary, recovery, and backpressure design. |
+| Tailscale Serve / optional Funnel | Private tailnet clients / ordinary internet browsers respectively | Preferred deployment profile. Browser connects to Runner WSS through existing infrastructure; live frames bypass Convex. Tailscale supplies network relay fallback, not ACP storage or Radium authorization. |
 | VPN plus HTTPS/mTLS | Operator controls both networks | Useful optional transport, not a substitute for per-runner/workspace permissions. No required hosted VPN provider. |
 
 Convex HTTP actions accept Fetch `Request`/`Response` and call mutations for
 database work. They are not an application-owned indefinitely running WebSocket
-server. Use the supported reactive client protocol for subscriptions or an external
-relay for custom persistent channels. Keep interactive ACP traffic on that external
+server. Use the supported reactive client protocol for control subscriptions and a
+Runner-hosted WSS endpoint for custom persistent channels. Keep interactive ACP traffic on that external
 data path, not a polling loop inside a long-running action. Bound request sizes and batch output; validate actual
 self-hosted backend/proxy timeouts rather than assuming Cloud limits apply.
 
@@ -115,10 +118,10 @@ immediate revocation. Do not mint a Convex deployment key for a runner.
    is compromised/lost, the owner revokes and re-enrolls instead. Revocation advances
    an identity epoch and invalidates sessions/leases as policy requires.
 
-A live relay connection authenticates once using a fresh challenge and an
-identity-bound, audience-scoped connection grant. Check scoped permissions locally
+A live Runner connection authenticates the client using a fresh challenge and an
+identity-bound, Runner-audience-scoped connection grant. Check scoped permissions locally
 for every frame; do not persist a Convex nonce or re-read Convex for each frame.
-The relay watches revocation/control state and bounds stale authority with expiring
+The Runner watches revocation/control state and bounds stale authority with expiring
 grants and fail-closed revalidation. This is bounded revocation propagation, not
 an assertion of instantaneous revocation during a partition. Signed HTTPS control
 operations still check current runner/key status transactionally. See
@@ -284,7 +287,8 @@ API, record that mismatch and keep enrollment in the local identity component.
    Specify URL/proxy handling, clock skew, retry windows and retention bounds.
 2. Implement **enrollment + authorized WSS connection only**, with a Runner-generated
    key, transactional single-use consumption, lost-response recovery and owner
-   revoke. Keep heartbeat/liveness frames in the relay rather than persisting each
+   revoke. Use the Tailscale connectivity profile and keep heartbeat/liveness frames
+   in Runner connection state rather than persisting each
    one in Convex. No arbitrary shell endpoint in this slice.
 3. Tests: non-owner creation/revoke; cross-workspace and archived-workspace denial;
    expired/consumed token; concurrent enrollment/replay; wrong key/body/URI/audience;

@@ -5,8 +5,11 @@ not started. Execution protocol and isolation design remain open. See
 [Runner authentication research](../Agent_Runner/Authentication.md) for the
 recommendation, component candidates, proposed boundaries, and verification gates.
 The [interactive connectivity follow-up](../Agent_Runner/Connectivity.md) supersedes
-idle polling with an external WSS data path and quiet Convex control subscriptions;
-ACP adaptation, resource measurements and relay admission are still proposed.
+idle polling with Runner-hosted WSS through operator-configured Tailscale
+Serve/optional Funnel and quiet Convex control subscriptions. A custom Radium relay
+is no longer planned for the first slice; ACP adaptation, resource measurements,
+endpoint admission and replay are still proposed. Tailscale is not a required
+hosted dependency for all installations.
 Ownership persistence depends on task 03; boundary research can proceed now.
 
 ## Entry Points

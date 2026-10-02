@@ -17,8 +17,11 @@ does not start the Runner.
 The [authentication and connectivity research](Agent_Runner/Authentication.md)
 recommends single-use enrollment tokens and per-runner proof-of-possession
 identities. The [interactive connectivity research](Agent_Runner/Connectivity.md)
-refines transport to outbound WSS through an external relay, with Convex handling
-low-frequency control and checkpoints. It covers a stdio ACP adapter and cloud
+refines transport to a Runner-hosted WSS endpoint through operator-configured
+Tailscale Serve or optional Funnel, replacing the proposed custom Radium relay.
+Convex handles low-frequency control and checkpoints. Tailscale remains an optional
+deployment profile; standard HTTPS/WSS contracts support other networks. The guide
+covers a stdio ACP adapter and cloud
 resource tradeoffs. The research compares existing Convex Components
 and proposes a local component boundary. This is a design recommendation, not an
 implemented protocol or a dependency selection.
