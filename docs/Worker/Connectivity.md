@@ -1,9 +1,12 @@
-# Interactive Runner Connectivity And ACP
+# Interactive Worker Connectivity And ACP
 
 Research snapshot: **2026-10-01**. Status: **proposal, not implemented**.
 This refines the [authentication research](Authentication.md) for cloud-resource
 limits and interactive Agent Client Protocol (ACP) traffic. Runner and client
-packages still implement health only.
+service still implements health only; the Worker component now owns identity
+persistence. This snapshot uses "Runner" for the service now named **Worker**.
+The separate HTTP client was removed; control-plane integration targets app-owned
+Convex queries/mutations and authenticated subscriptions.
 
 ## Recommended Split
 
@@ -50,10 +53,10 @@ router. No public router port forwarding is required for this profile.
 
 There are two distinct access modes:
 
-| Mode | Who can connect | Integration |
-| --- | --- | --- |
-| Tailscale Serve (private default) | Browser device joined to the tailnet or otherwise explicitly granted tailnet reachability | Serve proxies HTTPS/WSS to the local Runner endpoint. Tailnet grants/ACLs constrain network access; Radium grants still constrain workspace/chat access. |
-| Tailscale Funnel (operator-enabled public access) | Ordinary internet browsers without Tailscale | Funnel publishes the configured Runner service through a public TLS endpoint. Network access is public, so Radium application authentication remains essential. |
+| Mode                                              | Who can connect                                                                           | Integration                                                                                                                                                     |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tailscale Serve (private default)                 | Browser device joined to the tailnet or otherwise explicitly granted tailnet reachability | Serve proxies HTTPS/WSS to the local Runner endpoint. Tailnet grants/ACLs constrain network access; Radium grants still constrain workspace/chat access.        |
+| Tailscale Funnel (operator-enabled public access) | Ordinary internet browsers without Tailscale                                              | Funnel publishes the configured Runner service through a public TLS endpoint. Network access is public, so Radium application authentication remains essential. |
 
 A browser does not join Tailscale because the Radium web server does. Serve requires
 connectivity on the browser's device. Funnel avoids that requirement but has its
@@ -134,14 +137,14 @@ the two must not be treated as interchangeable credentials.
 
 ## What Goes Through Convex
 
-| Traffic/state | Default location | Persistence policy |
-| --- | --- | --- |
-| WebSocket ping/pong, live presence | Runner connection state | No Convex write per heartbeat. Persist coarse transitions only if useful; do not oscillate online/offline on every transient reconnect. |
-| ACP text/thought deltas, terminal output, progress | WSS through Tailscale and bounded Runner buffers | No database write per frame. Persist only authorized content under the applicable retention policy. |
-| Session admission, controller assignment, start/end/failure | Convex | Transactional, idempotent lifecycle records. |
-| Permission request/decision | Convex plus live notification | Persist the minimum bound decision before releasing privileged work; the UI socket alone is not approval authority. |
-| Completed messages and tool summaries | Convex under chat authorization | Bounded per-turn/domain writes, not each transport update. Final save is acknowledged before reporting durable completion. |
-| Recovery checkpoint | Runner journal, optionally batched Convex delta | Configurable time/byte thresholds and retention. Avoid repeatedly rewriting a growing full transcript. |
+| Traffic/state                                               | Default location                                 | Persistence policy                                                                                                                      |
+| ----------------------------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| WebSocket ping/pong, live presence                          | Runner connection state                          | No Convex write per heartbeat. Persist coarse transitions only if useful; do not oscillate online/offline on every transient reconnect. |
+| ACP text/thought deltas, terminal output, progress          | WSS through Tailscale and bounded Runner buffers | No database write per frame. Persist only authorized content under the applicable retention policy.                                     |
+| Session admission, controller assignment, start/end/failure | Convex                                           | Transactional, idempotent lifecycle records.                                                                                            |
+| Permission request/decision                                 | Convex plus live notification                    | Persist the minimum bound decision before releasing privileged work; the UI socket alone is not approval authority.                     |
+| Completed messages and tool summaries                       | Convex under chat authorization                  | Bounded per-turn/domain writes, not each transport update. Final save is acknowledged before reporting durable completion.              |
+| Recovery checkpoint                                         | Runner journal, optionally batched Convex delta  | Configurable time/byte thresholds and retention. Avoid repeatedly rewriting a growing full transcript.                                  |
 
 For illustration, 100 updates/second over a 60-second turn means 6,000 live updates.
 A 15-second checkpoint policy can mean roughly four incremental checkpoint batches
@@ -281,13 +284,13 @@ corresponding cost. Test WAN switching, lost ACKs and replay in both directions.
 
 ## Reuse And Deployment Choices
 
-| Candidate | Fit / tradeoff |
-| --- | --- |
-| Convex Orchestrator | Useful for discrete durable background workflows. Leasing/state replay is different from full-duplex ACP permission and stream delivery; it does not remove per-event persistence costs. Optional coordination, not the interactive transport. |
-| Tailscale daemon + Serve / optional Funnel | Preferred operator-selected network profile. Supplies connectivity/proxying/relay fallback without custom Radium networking relay code. Private/public browser access and provider limits must be explicit. |
-| Convex reactive client | Appropriate for quiet Runner control subscriptions and revocation changes. Requires dedicated machine auth and wrapper policies; no per-delta writes. |
-| Bun native WebSocket endpoint | Runner application endpoint, not a separate relay service. Radium still supplies scoped admission, ACP adaptation, backpressure and recovery. Not implemented or benchmarked. |
-| Ordinary HTTPS/WSS via other VPN or ingress | Preserves provider-independent self-hosted operation. Same Radium application contracts; operator supplies network reachability. |
+| Candidate                                   | Fit / tradeoff                                                                                                                                                                                                                                 |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Convex Orchestrator                         | Useful for discrete durable background workflows. Leasing/state replay is different from full-duplex ACP permission and stream delivery; it does not remove per-event persistence costs. Optional coordination, not the interactive transport. |
+| Tailscale daemon + Serve / optional Funnel  | Preferred operator-selected network profile. Supplies connectivity/proxying/relay fallback without custom Radium networking relay code. Private/public browser access and provider limits must be explicit.                                    |
+| Convex reactive client                      | Appropriate for quiet Runner control subscriptions and revocation changes. Requires dedicated machine auth and wrapper policies; no per-delta writes.                                                                                          |
+| Bun native WebSocket endpoint               | Runner application endpoint, not a separate relay service. Radium still supplies scoped admission, ACP adaptation, backpressure and recovery. Not implemented or benchmarked.                                                                  |
+| Ordinary HTTPS/WSS via other VPN or ingress | Preserves provider-independent self-hosted operation. Same Radium application contracts; operator supplies network reachability.                                                                                                               |
 
 The Convex catalog was rechecked for relay, WebSocket, NATS and pub/sub candidates;
 no matching raw interactive relay was identified. Persistent Text Streaming and

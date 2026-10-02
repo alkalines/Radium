@@ -1,8 +1,14 @@
-# Runner Authentication And Connectivity Research
+# Worker Authentication And Connectivity Research
 
 Research snapshot: **2026-10-01**. Status: **proposal, not implemented**.
-See the [Runner overview](../Agent_Runner.md) for the health-only implementation
-and [task 06](../tasks/06_Chatroom_Runner.md) for the wider execution boundary.
+Naming follow-up: the service is now **Worker**. This research snapshot uses
+"Runner" in its original protocol discussion. The standalone HTTP client was
+removed in favor of app-owned Convex queries/mutations and authenticated wrappers.
+Implementation follow-up: the [Worker identity component](Component.md) now owns
+the enrollment/identity persistence subset in `packages/worker-component`.
+The protocol, app authorization and cryptographic verification below remain proposed.
+See the [Worker overview](../Worker.md) for the health service and identity component
+and [task 06](../tasks/06_Chatroom_Worker.md) for the wider execution boundary.
 
 ## Recommendation
 
@@ -33,9 +39,9 @@ deliver control changes without idle polling; it is not a raw ACP message bus.
 
 ## Current Source And Constraints
 
-- `packages/agent-runner/src/index.ts`: public health endpoint only.
-- `packages/agent-runner-client/src/index.ts`: backend-to-runner HTTP client with
-  a token header; no token validation on the server.
+- `packages/worker/src/index.ts`: public health endpoint only.
+- `packages/worker-component/src/component/`: enrollment/identity persistence;
+  no standalone HTTP client or app authentication wrappers.
 - `packages/backend/convex/http.ts` and `packages/backend/src/http/router.ts`:
   existing Hono/Convex HTTP bridge, with Better Auth registered separately.
 - `packages/backend/convex/convex.config.ts`: Better Auth, rate limiter,
@@ -49,13 +55,13 @@ deliver control changes without idle polling; it is not a raw ACP message bus.
 
 ## Connectivity Options
 
-| Pattern | Applicability | Assessment |
-| --- | --- | --- |
-| Convex pushes HTTPS to Runner | Runner has a reachable endpoint or VPN | Simple request/response, but requires inbound exposure, endpoint/egress policy, and two-direction authentication. Poor default for NAT. |
-| Runner polls Radium HTTP API | Runner can reach Convex HTTP surface | Optional sparse-work fallback, not the interactive default. Idle polling adds calls even with no work. |
-| Runner uses Convex reactive client | Outbound WebSocket allowed | Good low-latency option with a dedicated machine JWT issuer and tightly authorized wrapper functions. Notifications are hints; a mutation must still claim work. |
-| Tailscale Serve / optional Funnel | Private tailnet clients / ordinary internet browsers respectively | Preferred deployment profile. Browser connects to Runner WSS through existing infrastructure; live frames bypass Convex. Tailscale supplies network relay fallback, not ACP storage or Radium authorization. |
-| VPN plus HTTPS/mTLS | Operator controls both networks | Useful optional transport, not a substitute for per-runner/workspace permissions. No required hosted VPN provider. |
+| Pattern                            | Applicability                                                     | Assessment                                                                                                                                                                                                   |
+| ---------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Convex pushes HTTPS to Runner      | Runner has a reachable endpoint or VPN                            | Simple request/response, but requires inbound exposure, endpoint/egress policy, and two-direction authentication. Poor default for NAT.                                                                      |
+| Runner polls Radium HTTP API       | Runner can reach Convex HTTP surface                              | Optional sparse-work fallback, not the interactive default. Idle polling adds calls even with no work.                                                                                                       |
+| Runner uses Convex reactive client | Outbound WebSocket allowed                                        | Good low-latency option with a dedicated machine JWT issuer and tightly authorized wrapper functions. Notifications are hints; a mutation must still claim work.                                             |
+| Tailscale Serve / optional Funnel  | Private tailnet clients / ordinary internet browsers respectively | Preferred deployment profile. Browser connects to Runner WSS through existing infrastructure; live frames bypass Convex. Tailscale supplies network relay fallback, not ACP storage or Radium authorization. |
+| VPN plus HTTPS/mTLS                | Operator controls both networks                                   | Useful optional transport, not a substitute for per-runner/workspace permissions. No required hosted VPN provider.                                                                                           |
 
 Convex HTTP actions accept Fetch `Request`/`Response` and call mutations for
 database work. They are not an application-owned indefinitely running WebSocket
@@ -66,15 +72,15 @@ self-hosted backend/proxy timeouts rather than assuming Cloud limits apply.
 
 ## Authentication Concepts
 
-| Concept | What it solves | Cost / decision |
-| --- | --- | --- |
-| Unique opaque bearer per runner over TLS | Straightforward machine identity; hashed storage, expiry, revocation, scopes | Viable simpler profile. A copied token works without the original machine; rotating it does not prevent current-token theft. Avoid one global Runner token. |
-| HMAC-signed requests | Integrity and replay controls without bearer transmission | Both sides hold the same secret; a verifier compromise can mint valid messages. Requires canonicalization and nonce storage. Less attractive than public-key verification for this boundary. |
-| RFC 9421 HTTP Message Signatures | Possession of a runner private key and binding to exact request | Preferred hardened HTTP profile. Needs a reviewed implementation, explicit covered fields, replay policy, and transactional enforcement. It is not an enrollment or authorization system by itself. |
-| OAuth client credentials / `private_key_jwt` | Standard service token issuance and client authentication | Useful with an existing self-hosted issuer. `private_key_jwt` authenticates the token request; ordinary issued bearer tokens remain stealable. Adds issuer/rotation/availability dependencies. |
-| DPoP (RFC 9449) | Binds OAuth access tokens to a client key | Strong option if OAuth interoperability is needed. Per-request proof, `ath`, `jti`, nonce and audience validation still required; DPoP does not sign the request body. |
-| mTLS / certificate-bound OAuth tokens (RFC 8705) | Mutual transport identity; optionally token-to-certificate binding | Excellent for operator-managed infrastructure. Usually terminates at a self-hosted proxy; do not assume a Convex HTTP handler receives a trusted client certificate. PKI issuance/renewal and proxy trust are additional work. |
-| SPIFFE/SPIRE | Automated short-lived workload identities and attestation | Suitable for a managed fleet. Too much mandatory infrastructure for a single self-hosted Runner; keep optional. |
+| Concept                                          | What it solves                                                               | Cost / decision                                                                                                                                                                                                                |
+| ------------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Unique opaque bearer per runner over TLS         | Straightforward machine identity; hashed storage, expiry, revocation, scopes | Viable simpler profile. A copied token works without the original machine; rotating it does not prevent current-token theft. Avoid one global Runner token.                                                                    |
+| HMAC-signed requests                             | Integrity and replay controls without bearer transmission                    | Both sides hold the same secret; a verifier compromise can mint valid messages. Requires canonicalization and nonce storage. Less attractive than public-key verification for this boundary.                                   |
+| RFC 9421 HTTP Message Signatures                 | Possession of a runner private key and binding to exact request              | Preferred hardened HTTP profile. Needs a reviewed implementation, explicit covered fields, replay policy, and transactional enforcement. It is not an enrollment or authorization system by itself.                            |
+| OAuth client credentials / `private_key_jwt`     | Standard service token issuance and client authentication                    | Useful with an existing self-hosted issuer. `private_key_jwt` authenticates the token request; ordinary issued bearer tokens remain stealable. Adds issuer/rotation/availability dependencies.                                 |
+| DPoP (RFC 9449)                                  | Binds OAuth access tokens to a client key                                    | Strong option if OAuth interoperability is needed. Per-request proof, `ath`, `jti`, nonce and audience validation still required; DPoP does not sign the request body.                                                         |
+| mTLS / certificate-bound OAuth tokens (RFC 8705) | Mutual transport identity; optionally token-to-certificate binding           | Excellent for operator-managed infrastructure. Usually terminates at a self-hosted proxy; do not assume a Convex HTTP handler receives a trusted client certificate. PKI issuance/renewal and proxy trust are additional work. |
+| SPIFFE/SPIRE                                     | Automated short-lived workload identities and attestation                    | Suitable for a managed fleet. Too much mandatory infrastructure for a single self-hosted Runner; keep optional.                                                                                                                |
 
 Do not combine every mechanism. For Radium's standalone baseline, choose one
 versioned proof-of-possession HTTP profile. Add OAuth/DPoP or mTLS integration only
@@ -190,17 +196,17 @@ a runner signature only authenticates the runner-to-control direction.
 The full [catalog](https://www.convex.dev/components/llms.txt) was fetched on the
 research date. These are candidates, not audited/adopted dependencies.
 
-| Candidate | Evidence and fit | Decision |
-| --- | --- | --- |
-| [`convex-invite`](https://www.convex.dev/components/convex-invite) | 0.1.1; Apache-2.0; inspected package and integration README. Peer `convex >=1.43.0`, direct helpers `0.1.124`, test export/script. Documents 256-bit hash-only tokens, audience binding, single-use acceptance, transactional host grants, idempotent acceptance results and bounded pruning. | Strongest enrollment-lifecycle candidate. Evaluate a machine-key thumbprint as the verified audience and runner ID as the acceptance result. No machine proof verification, key rotation or request authentication. This is runner enrollment, not a change to workspace membership. |
-| [`@vllnt/convex-api-keys`](https://www.convex.dev/components/vllnt/convex-api-keys) | Catalog 0.2.0; repository main 0.2.1. MIT; inspected main package, hashing and mutations. Main peer `convex ^1.45.0` accommodates this app's range; sharded-counter subcomponent; test files and test export exist. Has SHA-256 storage, finite-use keys, revoke, overlap rotation. | Best focused candidate for an opaque bearer/bootstrap profile. Does not supply proof-of-possession, enrollment recovery, runner authorization or jobs. Audit the exact release before adoption. |
-| [`@00akshatsinha00/convex-api-keys`](https://www.convex.dev/components/00akshatsinha00/convex-api-keys) | Catalog 0.1.0; documents hashing, RBAC, rotation, quotas, analytics and verification logging. | Broader coupled scope than needed, including credits. Not selected; license/peers/source and tests not independently audited in this research. |
-| [`@akshatgiri/convex-orchestrator`](https://www.convex.dev/components/akshatgiri/convex-orchestrator) | 0.1.5, Apache-2.0; main package peer `convex ^1.31.6` and React peer, test script. External workers pull with leases/heartbeats; README says side effects are at-least-once. | Closest connectivity/coordination reference. Explicitly lacks built-in worker auth, cancellations and production hardening; not the secure Runner solution. Do not copy unprotected `exposeApi` examples. |
-| [`@codefox-inc/oauth-provider`](https://www.convex.dev/components/codefox-inc/oauth-provider) | Catalog 0.4.2 beta; documents authorization-code + PKCE, refresh rotation and Better Auth integration. | Consider for third-party OAuth/MCP needs. Documented grants do not establish client credentials, RFC 8705 or DPoP support. Not evidence of a machine-identity solution; license/peers/tests not audited here. |
-| Existing Better Auth component | Supported-plugin docs omit API Key and Device Authorization from the out-of-box list; schema-changing plugins may need local install. | Retain for human owner enrollment/revocation. Do not assume runner/device plugins are drop-in with the installed adapter. |
-| Official Rate Limiter | Already installed; transactional application quotas. | Reuse for enrollment/challenge/authenticated control. Add proxy/network limits for unauthenticated floods; not a DDoS shield. |
-| Official Workpool / Workflow / Action Retrier | Durable Convex-side orchestration and retries. | Optional later orchestration. They neither authenticate external workers nor make arbitrary execution exactly-once. No automatic retry of side-effecting dispatch. |
-| `convex-helpers` Hono / customFunctions | Direct dependency; existing HTTP bridge and app auth wrappers. | Reuse adapter and appropriate wrappers. Stateless convenience, not runner credential persistence or identity verification. |
+| Candidate                                                                                               | Evidence and fit                                                                                                                                                                                                                                                                              | Decision                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`convex-invite`](https://www.convex.dev/components/convex-invite)                                      | 0.1.1; Apache-2.0; inspected package and integration README. Peer `convex >=1.43.0`, direct helpers `0.1.124`, test export/script. Documents 256-bit hash-only tokens, audience binding, single-use acceptance, transactional host grants, idempotent acceptance results and bounded pruning. | Strongest enrollment-lifecycle candidate. Evaluate a machine-key thumbprint as the verified audience and runner ID as the acceptance result. No machine proof verification, key rotation or request authentication. This is runner enrollment, not a change to workspace membership. |
+| [`@vllnt/convex-api-keys`](https://www.convex.dev/components/vllnt/convex-api-keys)                     | Catalog 0.2.0; repository main 0.2.1. MIT; inspected main package, hashing and mutations. Main peer `convex ^1.45.0` accommodates this app's range; sharded-counter subcomponent; test files and test export exist. Has SHA-256 storage, finite-use keys, revoke, overlap rotation.           | Best focused candidate for an opaque bearer/bootstrap profile. Does not supply proof-of-possession, enrollment recovery, runner authorization or jobs. Audit the exact release before adoption.                                                                                      |
+| [`@00akshatsinha00/convex-api-keys`](https://www.convex.dev/components/00akshatsinha00/convex-api-keys) | Catalog 0.1.0; documents hashing, RBAC, rotation, quotas, analytics and verification logging.                                                                                                                                                                                                 | Broader coupled scope than needed, including credits. Not selected; license/peers/source and tests not independently audited in this research.                                                                                                                                       |
+| [`@akshatgiri/convex-orchestrator`](https://www.convex.dev/components/akshatgiri/convex-orchestrator)   | 0.1.5, Apache-2.0; main package peer `convex ^1.31.6` and React peer, test script. External workers pull with leases/heartbeats; README says side effects are at-least-once.                                                                                                                  | Closest connectivity/coordination reference. Explicitly lacks built-in worker auth, cancellations and production hardening; not the secure Runner solution. Do not copy unprotected `exposeApi` examples.                                                                            |
+| [`@codefox-inc/oauth-provider`](https://www.convex.dev/components/codefox-inc/oauth-provider)           | Catalog 0.4.2 beta; documents authorization-code + PKCE, refresh rotation and Better Auth integration.                                                                                                                                                                                        | Consider for third-party OAuth/MCP needs. Documented grants do not establish client credentials, RFC 8705 or DPoP support. Not evidence of a machine-identity solution; license/peers/tests not audited here.                                                                        |
+| Existing Better Auth component                                                                          | Supported-plugin docs omit API Key and Device Authorization from the out-of-box list; schema-changing plugins may need local install.                                                                                                                                                         | Retain for human owner enrollment/revocation. Do not assume runner/device plugins are drop-in with the installed adapter.                                                                                                                                                            |
+| Official Rate Limiter                                                                                   | Already installed; transactional application quotas.                                                                                                                                                                                                                                          | Reuse for enrollment/challenge/authenticated control. Add proxy/network limits for unauthenticated floods; not a DDoS shield.                                                                                                                                                        |
+| Official Workpool / Workflow / Action Retrier                                                           | Durable Convex-side orchestration and retries.                                                                                                                                                                                                                                                | Optional later orchestration. They neither authenticate external workers nor make arbitrary execution exactly-once. No automatic retry of side-effecting dispatch.                                                                                                                   |
+| `convex-helpers` Hono / customFunctions                                                                 | Direct dependency; existing HTTP bridge and app auth wrappers.                                                                                                                                                                                                                                | Reuse adapter and appropriate wrappers. Stateless convenience, not runner credential persistence or identity verification.                                                                                                                                                           |
 
 The inspected VLLNT main at commit
 [`9b260a848958c75e80fe6684899f33af538a6865`](https://github.com/vllnt/convex-api-keys/tree/9b260a848958c75e80fe6684899f33af538a6865)
@@ -221,37 +227,40 @@ None of the inspected candidates covers the complete proposed hardened protocol.
 ## Proposed Local Component Shape
 
 A component is justified for **reusable isolated enrollment/identity/replay state**,
-not merely as a place to put HTTP middleware. Start with a local `runnerIdentity`
+not merely as a place to put HTTP middleware. Start with a `workerIdentity`
 component; keep execution/job persistence separate until task 06 defines that
 contract. Avoid a generic auth framework or an abstraction supporting every scheme.
 
+The initial persistence implementation uses the workspace package below. The app
+wrappers and Worker execution pieces remain proposed. Challenges, request admission
+and rotation are deferred; see the [implemented component contract](Component.md).
+
 ```text
-packages/backend/src/runner/                 runtime-neutral versioned wire contracts
-packages/backend/src/http/runner.ts          parsing, signature verification, Hono routes
-packages/backend/convex/runners.ts           owner policy and internal transaction wrappers
-packages/backend/convex/components/runnerIdentity/
+packages/backend/src/worker/                 runtime-neutral versioned wire contracts (planned)
+packages/backend/src/http/worker.ts          optional HTTP parsing/signature verification (planned)
+packages/backend/convex/workers.ts           app policy and authenticated query/mutation wrappers (planned)
+packages/worker-component/src/component/
   convex.config.ts
   schema.ts
   enrollment.ts                             enroll/recover/revoke
   identities.ts                             key lifecycle and current status
   requests.ts                               transactional replay/idempotency admission
-packages/agent-runner-client/src/            shared transport/signature client
-packages/agent-runner/src/                   key store, outbound loop, local execution journal
+packages/worker/src/                         key store, Convex subscriptions, local execution journal (planned)
 ```
 
 Proposed component tables (app IDs cross the boundary as strings):
 
-| Table | Records / indexes |
-| --- | --- |
-| `enrollments` | Workspace, token hash, capabilities, expiry, consumed key thumbprint/request ID and runner ID. Index token selector/hash and expiry. |
-| `runners` | Workspace, status, identity epoch, allowed capabilities, coarse last-seen. Index workspace/status; runner ID lookup. |
-| `keys` | Runner, public key, algorithm, thumbprint, validity, retirement/revocation. Index runner/status and thumbprint. No private keys. |
-| `challenges` | Enrollment/key context, nonce, expiry, consumption. Indexed bounded expiry cleanup. |
-| `requests` | Runner, operation ID, request digest, nonce, expiry and bounded committed receipt. Index runner/operation and runner/nonce, expiry cleanup. |
+| Table         | Records / indexes                                                                                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enrollments` | Workspace, token hash, capabilities, expiry, consumed key thumbprint/request ID and runner ID. Index token selector/hash and expiry.        |
+| `runners`     | Workspace, status, identity epoch, allowed capabilities, coarse last-seen. Index workspace/status; runner ID lookup.                        |
+| `keys`        | Runner, public key, algorithm, thumbprint, validity, retirement/revocation. Index runner/status and thumbprint. No private keys.            |
+| `challenges`  | Enrollment/key context, nonce, expiry, consumption. Indexed bounded expiry cleanup.                                                         |
+| `requests`    | Runner, operation ID, request digest, nonce, expiry and bounded committed receipt. Index runner/operation and runner/nonce, expiry cleanup. |
 
 App-facing internal operations: `createEnrollment`, `completeEnrollment`,
 `recoverEnrollment`, `getVerificationKey`, `admitRequest`, `registerRotation`,
-`retireKey`, `revokeRunner`, and bounded metadata listing/cleanup. Precise names,
+`retireKey`, `revokeWorker`, and bounded metadata listing/cleanup. Precise names,
 schemas and return validators are implementation deliverables, not existing APIs.
 `admitRequest` participates in the same parent mutation as the authorized operation;
 do not commit a replay record and then lose the job transition in another transaction.
@@ -274,7 +283,7 @@ parallel credential stores for the same identity.
 Before implementing the proposed `enrollments` table, evaluate `convex-invite`
 against machine audiences and lost-response recovery. If it fits, compose a
 separate named mount for enrollment and let it own token lifecycle/acceptance
-receipts, while `runnerIdentity` owns keys and request admission. Its documented
+receipts, while `workerIdentity` owns keys and request admission. Its documented
 host-grant transaction can register the runner atomically. The app must verify
 key possession before supplying `acceptedBy`/`audienceRef`; the package's user/email
 examples are not machine authentication. If proof-bound recovery cannot fit its

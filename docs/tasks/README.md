@@ -2,8 +2,9 @@
 
 These are separate handoffs, not authorization to execute the entire roadmap in
 one session. Task 01 has an implemented extraction with verification gaps recorded
-in its handoff; task 06 has authentication/connectivity research with implementation
-still **not started**, and other tasks below are **not started**. The minimal operational logging
+in its handoff; task 06 has authentication/connectivity research and Worker identity
+persistence, with transport/execution integration still planned. Other tasks below
+are **not started**. The minimal operational logging
 foundation is implemented separately; see [logging](../logging.md).
 
 Give an agent one task file, ask it to inspect current source and `AGENTS.md`, and
@@ -19,7 +20,7 @@ without approval. Use subagents only for bounded, non-overlapping work.
 | [03 Self-hosted ownership](03_Self_Hosted_Ownership.md)  | Design first; prerequisite for new persisted ownership contracts.              |
 | [04 Upstream instances](04_Upstream_Instances.md)        | Depends on 03's agreed ownership contract, not necessarily completed backfill. |
 | [05 Gateway load balancing](05_Gateway_Load_Balancer.md) | Depends on 04; do not build a second routing path.                             |
-| [06 Chatroom and Runner](06_Chatroom_Runner.md)          | Security/protocol design can proceed independently; persistence follows 03.    |
+| [06 Chatroom and Worker](06_Chatroom_Worker.md)          | Security/protocol design can proceed independently; persistence follows 03.    |
 | [07 Authors cleanup](07_Authors_Cleanup.md)              | Independent, but coordinate model/import changes with 04.                      |
 | [08 Local observability](08_Local_Observability.md)      | Builds on logging foundation; coordinate with 01 and 03.                       |
 | [09 Workspace operations](09_Workspace_Operations.md)    | Independent; fixes existing docs/build/check drift.                            |
