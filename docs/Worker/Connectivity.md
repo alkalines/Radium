@@ -19,14 +19,13 @@ custom Radium relay with existing network infrastructure. Tailscale handles peer
 connectivity, NAT traversal and network relay fallback; Radium does not implement
 its own networking relay or embed a Tailscale SDK in the first slice.
 
-```text
-Chatroom browser ── WSS via Tailscale Serve / optional Funnel ──▶ Runner supervisor
-       │                                                          │
-       └── Better Auth / session access ──▶ Convex ◀── quiet control subscription
-                                                                  │
-                                                              ACP adapter
-                                                                  │ stdio
-                                                              CLI agent
+```mermaid
+flowchart LR
+    Browser[Chatroom browser] <-->|WSS via Tailscale Serve / optional Funnel| Runner[Runner supervisor]
+    Browser <-->|Better Auth / session access| Convex
+    Runner <-->|Quiet control subscription| Convex
+    Runner <--> Adapter[ACP adapter]
+    Adapter <-->|stdio| Agent[CLI agent]
 ```
 
 Convex owns workspace/chat authorization, enrollment/revocation, session grants,

@@ -8,11 +8,11 @@ through Convex. Direct browser-to-Worker connectivity is not part of this plan.
 
 ## Responsibility And Flow
 
-```text
-CLI agent ◀── stdio ACP ──▶ Worker ── Convex Client ──▶ Convex
-                                                       ▲
-                                                       │ Convex Client
-                                                   Chatroom
+```mermaid
+flowchart LR
+    Agent[CLI agent] <-->|stdio ACP| Worker
+    Worker <-->|Convex Client| Convex
+    Chatroom <-->|Convex Client| Convex
 ```
 
 - **Worker** owns subprocesses, local filesystem/terminal capabilities, ACP
