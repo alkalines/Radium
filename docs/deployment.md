@@ -9,18 +9,24 @@ container and release paths are currently blocked and unverified pending the
 
 ### Application And Convex
 
-| Variable               | Required          | Scope         | Purpose                                                                |
-| ---------------------- | ----------------- | ------------- | ---------------------------------------------------------------------- |
-| `CONVEX_DEPLOYMENT`    | Cloud development | Local CLI     | Convex deployment selected by `convex dev`                             |
-| `VITE_CONVEX_URL`      | Yes               | Build/public  | Convex client URL, normally `https://<deployment>.convex.cloud`        |
-| `VITE_CONVEX_SITE_URL` | Yes               | Build/public  | Convex HTTP action origin, normally `https://<deployment>.convex.site` |
-| `SITE_URL`             | Yes               | Convex        | Public web origin used by Better Auth, such as `http://localhost:3000` |
-| `SECRET_STORE_KEYS`    | Yes               | Deploy/Convex | Versioned key material used by Convex Secret Store                     |
-| `AISDK_MaxRetries`     | No                | Convex        | AI SDK retry count; defaults to `0`                                    |
-| `LWC_SECRET`           | Feature-specific  | Convex        | Signs ChatGPT Subscription sessions                                    |
+| Variable                  | Required          | Scope              | Purpose                                                                |
+| ------------------------- | ----------------- | ------------------ | ---------------------------------------------------------------------- |
+| `CONVEX_DEPLOYMENT`       | Cloud development | Local CLI          | Convex deployment selected by `convex dev`                             |
+| `VITE_CONVEX_URL`         | Yes               | Build/public       | Convex client URL, normally `https://<deployment>.convex.cloud`        |
+| `VITE_CONVEX_SITE_URL`    | Yes               | Build/public       | Convex HTTP action origin, normally `https://<deployment>.convex.site` |
+| `SITE_URL`                | Yes               | Convex             | Public web origin used by Better Auth, such as `http://localhost:3000` |
+| `SECRET_STORE_KEYS`       | Yes               | Deploy/Convex      | Versioned key material used by Convex Secret Store                     |
+| `AISDK_MaxRetries`        | No                | Convex             | AI SDK retry count; defaults to `0`                                    |
+| `LWC_SECRET`              | Feature-specific  | Convex             | Signs ChatGPT Subscription sessions                                    |
+| `WORKER_AUTH_PRIVATE_JWK` | Worker auth       | Convex secret      | Private ES256 machine-token issuer JWK with `kid`                      |
+| `WORKER_AUTH_JWKS`        | Worker auth       | Convex/auth config | Matching public JWKS for the optional custom JWT verifier              |
 
 `VITE_*` values are public and embedded at build time. Never put provider API
 keys or other secrets in a `VITE_*` variable.
+
+Worker setup uses the backend's built-in `CONVEX_SITE_URL` and `CONVEX_CLOUD_URL`
+for reachable HTTP/client origins. See [Worker machine authentication](Worker/Machine_Authentication.md)
+for issuer-key generation, configuration application, setup codes and verification limits.
 
 The frontend server also reads `VITE_CONVEX_SITE_URL` for its generic
 `/api/backend/*` proxy, forwarding to the Convex site's `/api/*` routes. See the

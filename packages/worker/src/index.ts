@@ -1,10 +1,1 @@
-import { Hono } from 'hono'
-const app = new Hono()
-
-app.get('/health', (c) => {
-  return c.json({
-    health: 'ok'
-  })
-})
-
-export default app
+export { app, app as default } from "./service.js";

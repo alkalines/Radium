@@ -1,15 +1,16 @@
 # Chatroom And Worker Boundary
 
 Status: Authentication/connectivity research completed 2026-10-01; identity
-persistence package and backend mount implemented. App authentication and transport
-integration, execution protocol and isolation design remain open. See
+persistence package, owner setup-code UI, JOSE proof admission and Worker Convex
+machine authentication implemented locally. Deployment auth verification, command/output
+transport, execution protocol and isolation design remain open. See
 [Worker authentication research](../Worker/Authentication.md) for the
 recommendation, component candidates, proposed boundaries, and verification gates.
 The selected 2026-10-02 [Convex Client transport plan](../Worker/Convex_Transport.md)
 supersedes the earlier WSS/Tailscale connectivity proposal. Worker and Chatroom
 connect outbound to Convex; commands, approvals, batched output and results use
-authorized app queries/mutations and subscriptions. ACP adaptation, machine JWT
-authentication, bounded output storage and recovery remain proposed. Orchestrator
+authorized app queries/mutations and subscriptions. Machine JWT authentication
+is implemented; ACP adaptation, bounded output storage and execution recovery remain proposed. Orchestrator
 is a claims/leases reference, not an adopted workflow runtime.
 Ownership persistence depends on task 03; boundary research can proceed now.
 
@@ -17,7 +18,8 @@ Ownership persistence depends on task 03; boundary research can proceed now.
 
 `packages/worker/src/index.ts`,
 `packages/backend/src/http/aisdk.chat.ts`, `packages/backend/convex/chatroom.ts`,
-and Chatroom tools/approvals UI. The Worker service currently implements health only;
+and Chatroom tools/approvals UI. The Worker service implements health, key enrollment,
+JWT refresh and an authorized identity subscription;
 the separate HTTP client was removed in favor of app-owned Convex queries/mutations.
 `packages/worker-component/src/component/` owns the initial enrollment,
 identity and revocation state and is mounted in
@@ -29,8 +31,9 @@ identity and revocation state and is mounted in
 Completed foundation: `worker` and `worker-component` package naming, internal
 `workerIdentity` query/mutation API, enrollment/identity persistence, and removal
 of the standalone HTTP client. Component regressions and package/service
-typechecks pass. Authenticated app wrappers, machine identity validation and
-Worker subscriptions/transport remain follow-up work.
+typechecks pass. [Machine authentication](../Worker/Machine_Authentication.md) adds
+owner-management wrappers, machine identity validation and the Worker identity
+subscription. Deployed verifier/transport checks and execution remain follow-up work.
 
 1. Define responsibility: Chatroom owns conversations/agent approvals, Convex owns durable coordination through app wrappers and the Worker component, Worker owns filesystem/process execution and its external transport.
 2. Design versioned job, event, result, cancellation, and reconnect contracts with capability negotiation, correlation, and idempotency. Keep Gateway model routing separate.
@@ -40,8 +43,29 @@ Worker subscriptions/transport remain follow-up work.
 
 ## Next Implementation Slice
 
-Design recorded; implementation remains open. Build authenticated Worker Convex
-Client access with a stdio ACP test agent, bounded batched output visible in
+### Authentication Slice Verification (2026-10-04)
+
+- `bun install --frozen-lockfile` passed after adding direct Worker/issuer dependencies.
+- `bun run test` passed **122 tests in 24 backend files**, including nine app-auth
+  regressions and a real Worker-client/app-handler enrollment, refresh and revoke round trip.
+- `bun run --cwd packages/worker test` passed **10 tests in two files**.
+- `bun run --cwd packages/worker typecheck` passed.
+- `bun run --cwd apps/web vite:build` passed with existing chunk-size/WASM fallback warnings.
+- Scoped formatting and `git diff --check` passed. The issuer generator produced
+  a `0700` directory and `0600` files without printing keys; temporary test keys were removed.
+- The explicit backend TypeScript check using an external scoped tsconfig is
+  blocked by existing type-only import and unchecked-index diagnostics in
+  `models.ts`, `ai_balancer.ts`, `chat_completion.ts`, `translators/openai.ts` and
+  `types/ai_provider.ts`; it reported no diagnostics in the new production auth files.
+  Frontend typechecking likewise has existing unrelated diagnostics, and scoped
+  ESLint remains blocked by root configuration's `eslint` resolution issue.
+- Only the audited offline root API generator ran. The identity component's schema
+  and public contract were reused unchanged. No deployment, remote codegen,
+  auth-config upload or migration was run. Live verifier, socket revocation and
+  separately deployed TLS/reconnect checks remain open.
+
+Execution-transport implementation remains open. Extend the authenticated Worker Convex
+Client with a stdio ACP test agent, bounded batched output visible in
 Chatroom, and a durable permission round trip. Use the transport guide's initial
 500 ms text batching candidate plus byte caps; tune from measurements. Separate
 control from output, define idempotent batch ingestion and catch-up, and specify

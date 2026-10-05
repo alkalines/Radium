@@ -10,7 +10,9 @@ Naming follow-up: the service is now **Worker**. This research snapshot uses
 removed in favor of app-owned Convex queries/mutations and authenticated wrappers.
 Implementation follow-up: the [Worker identity component](Component.md) now owns
 the enrollment/identity persistence subset in `packages/worker-component`.
-The protocol, app authorization and cryptographic verification below remain proposed.
+The research below is historical. The selected JOSE challenge protocol, owner/machine
+app authorization and cryptographic verification are now implemented locally; see
+[machine authentication](Machine_Authentication.md) for the current contract and limits.
 See the [Worker overview](../Worker.md) for the health service and identity component
 and [task 06](../tasks/06_Chatroom_Worker.md) for the wider execution boundary.
 

@@ -8,10 +8,11 @@ start.
 
 - [Radium Gateway](Radium_Gateway.md)
 - [Radium Chatroom](Radium_Chatroom.md)
-- [Worker](Worker.md) — health service, identity persistence, and proposed transport
+- [Worker](Worker.md) — health service, machine authentication, identity persistence, and proposed execution transport
+- [Worker machine authentication](Worker/Machine_Authentication.md) — setup codes, key proofs, JWT refresh, owner management and configuration
 - [Worker identity component](Worker/Component.md) — workspace package, internal enrollment/recovery/revocation API, and integration boundary
 - [Worker authentication research](Worker/Authentication.md) — cross-network transport, machine identity, and component evaluation
-- [Worker Convex Client transport](Worker/Convex_Transport.md) — selected design for machine authentication, batched output, bounded subscriptions, recovery and retention (not implemented)
+- [Worker Convex Client transport](Worker/Convex_Transport.md) — authenticated identity subscription implemented; batched output, commands, recovery and retention planned
 - [Earlier Worker connectivity research](Worker/Connectivity.md) — superseded WSS/Tailscale proposal and tradeoffs
 - [Gateway ownership](Radium_Gateway/Ownership.md)
 - [Gateway and Chatroom AI telemetry](Radium_Gateway/Telemetry.md)

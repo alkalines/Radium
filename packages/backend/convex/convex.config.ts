@@ -11,6 +11,10 @@ app.use(betterAuth);
 app.use(rateLimiter);
 app.use(migrations);
 app.use(logging);
+// This component persists enrollment hashes and Worker public keys only.
+// WORKER_AUTH_PRIVATE_JWK / WORKER_AUTH_JWKS belong to the parent app:
+// src/worker/auth.ts signs tokens; auth.config.ts configures their verification.
+// Set those deployment variables; do not pass issuer keys into this component.
 app.use(workerIdentity);
 app.use(secretStore, {
   env: {

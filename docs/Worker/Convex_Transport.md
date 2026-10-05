@@ -1,6 +1,7 @@
 # Worker Transport Through Convex
 
-Decision date: **2026-10-02**. Status: **selected design, not implemented**.
+Decision date: **2026-10-02**. Status: **selected design; machine authentication and
+identity subscription implemented locally**, command/approval/output transport remains planned.
 This supersedes the Worker-hosted WSS/Tailscale transport recommendation in
 [connectivity research](Connectivity.md). Worker and Chatroom both connect
 outbound through Convex clients; commands, approvals, output and results pass
@@ -29,14 +30,15 @@ update frequency, bytes, query dependencies and subscriber fan-out.
 
 ## Implemented Foundation And Entry Points
 
-`packages/worker/src/index.ts` is still a health-only service.
+`packages/worker/src/index.ts` serves health and an authenticated Convex-client
+identity subscription. See [machine authentication](Machine_Authentication.md).
 `packages/worker-component/src/component/` implements enrollment/public-key
 identity persistence, retry recovery and revocation, mounted as `workerIdentity`
 in `packages/backend/convex/convex.config.ts`. See the
 [component contract](Component.md).
 
-Machine authentication, app wrappers, Worker subscriptions, output persistence,
-ACP execution and Chatroom integration are not implemented. Future app-owned
+Owner/machine identity wrappers and the Worker identity subscription are implemented.
+Output persistence, ACP execution and interactive Chatroom integration remain planned. App-owned
 queries/mutations authorize callers before accessing the component; clients do
 not call component functions directly. Runtime-neutral wire contracts belong in
 `packages/backend/src/worker/` when introduced. Current Chatroom entry points
@@ -51,8 +53,8 @@ Workers. The proposed connection flow is:
 
 1. Worker proves possession of its enrolled private key at a narrowly scoped
    authentication boundary. The app issues a short-lived machine JWT accepted by
-   its configured Convex verifier. Issuer, audience, algorithm, challenge/replay
-   policy and refresh protocol remain implementation decisions.
+   its configured Convex verifier. The selected issuer/audience, ES256 profile,
+   challenge admission and refresh protocol are in the machine-authentication guide.
 2. One `ConvexClient` per Worker process uses `setAuth()` to obtain and refresh
    tokens. Enrollment keys stay outside executed workloads; no deployment/admin
    credentials or upstream provider secrets are granted to Worker.

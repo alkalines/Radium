@@ -7,9 +7,13 @@ import { handleAISDKChat } from "./aisdk.chat";
 import { handleChatCompletion } from "./chat_completion";
 import { handleOpenAIModels } from "./models";
 import { allowedSiteOrigin } from "./cors";
+import { handleWorkerAuth } from "./worker";
 
 /** Application HTTP routes; the adapter supplies the Convex action context as c.env. */
 export const app: HonoWithConvex<ActionCtx> = new Hono();
+
+app.post("/api/worker/auth/challenge", (c) => handleWorkerAuth(c.env, c.req.raw, "challenge"));
+app.post("/api/worker/auth/complete", (c) => handleWorkerAuth(c.env, c.req.raw, "complete"));
 
 app.post("/api/openai/v1/chat/completions", (c) => handleChatCompletion(c.env, c.req.raw));
 app.get("/api/openai/v1/models", (c) => handleOpenAIModels(c.env, c.req.raw));

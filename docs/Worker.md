@@ -6,18 +6,23 @@ authorization, and coordination, and Chatroom owns conversations and approvals.
 
 ## Implemented
 
-`packages/worker/src/index.ts` exposes an unauthenticated `GET /health`.
+`packages/worker/src/index.ts` exposes an unauthenticated `GET /health` and now
+connects outbound with an enrolled machine identity. Owners generate a ten-minute
+setup code in **Settings > Workspace > Workers**. The Worker persists its own
+P-256 key, completes enrollment/recovery, obtains short-lived JWTs and authenticates
+a Convex subscription. See [machine authentication](Worker/Machine_Authentication.md)
+for the implemented protocol, configuration and local verification boundary.
 The standalone HTTP client package has been removed. Control-plane integration
 is intended to use app-owned Convex queries and mutations calling the Worker component; future
 Worker subscriptions use narrowly authenticated app wrappers. The Worker service
-does not yet implement enrollment, authenticated execution, job dispatch, or
-reconnect behavior. Root development does not start the Worker.
+does not yet implement authenticated execution or job dispatch. Root development
+does not start the Worker.
 
 `packages/worker-component` implements isolated Convex enrollment and
 public-key identity persistence, exact-retry/token-free recovery, and revocation.
 It is mounted as `workerIdentity` in the backend. See the
 [component guide](Worker/Component.md) for the internal API and trusted app
-boundary. No app auth wrappers or transport endpoints call it yet.
+boundary. App owner-management and narrowly scoped machine-auth wrappers now call it.
 
 ## Proposed
 
@@ -25,8 +30,8 @@ The selected [Convex Client transport plan](Worker/Convex_Transport.md) routes
 commands, approvals, batched output and results through Convex. Worker and Chatroom
 connect outbound to Convex; Worker adapts a local stdio ACP agent. Local batching,
 bounded output chunks, separate control/output subscriptions and retention limit
-database load. Machine JWT authentication and app authorization wrappers remain
-planned; the identity persistence subset above does not implement them.
+database load. Machine JWT authentication and identity-management wrappers are now
+implemented; command, approval and output transport remain planned.
 
 The [authentication research](Worker/Authentication.md) supplies the enrollment
 and per-worker proof-of-possession foundation. Its transport recommendation and

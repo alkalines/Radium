@@ -1,7 +1,8 @@
 # Worker Identity Component
 
-Status: **implemented persistence package and backend mount**. Worker machine
-authentication, app authorization wrappers, transport, and execution remain planned.
+Status: **implemented persistence package and backend mount**. App owner/machine
+authentication now integrates this component; see [machine authentication](Machine_Authentication.md).
+Execution and command/output transport remain planned.
 
 ## Packages And Integration Boundary
 
@@ -33,12 +34,12 @@ const workers = await ctx.runQuery(components.workerIdentity.identities.listWork
 
 Components are internal and do not inherit the app's Better Auth sessions.
 The browser and Worker process cannot call component functions directly. Future
-Worker control subscriptions target narrowly authenticated app queries; mounting
-this component does not implement those endpoints or machine identity validation.
-Public wrappers and transport routes have not been added yet.
+Worker control subscriptions target narrowly authenticated app queries. The app now
+owns `workers.ts` and `/api/worker/auth/*`; the component itself does not authenticate
+machine signatures or inherit app sessions.
 
-`packages/worker/src/index.ts` remains the external health-only service. Its future
-Convex Client connection and ACP/process work are separate from identity persistence.
+`packages/worker/src/index.ts` is the external health and authenticated Convex-client
+service. Its machine authentication and future ACP/process work are separate from identity persistence.
 The component declares no environment variables and requires no hosted identity
 provider, collector or network service. See the selected
 [Convex Client transport plan](Convex_Transport.md) for the proposed authenticated
@@ -92,7 +93,7 @@ Creation bounds workspace/name strings to 256 characters and capabilities to 32
 distinct strings of at most 128 characters. Public algorithm/material/thumbprint
 strings are bounded to 32/4096/256 characters. They are **not cryptographically
 validated** here: the app's selected verifier must restrict algorithms, normalize
-keys and recompute thumbprints. No signature profile has been selected.
+keys and recompute thumbprints. The app now selects P-256/ES256 JOSE challenge proofs.
 
 Failures use `ConvexError({ code })`, including `ENROLLMENT_EXPIRED`,
 `ENROLLMENT_ALREADY_USED`, `KEY_MISMATCH`, `WORKER_REVOKED`, and `WORKER_NOT_FOUND`.
@@ -172,8 +173,9 @@ were migrated or remote deployment changed.
 
 Eight handler regressions cover exact retries, changed key/request rejection,
 expiry, scoped/revoked denial, key uniqueness, recovery after expiry, bounded
-cleanup and parent transaction rollback. Deployed OCC races, cryptography,
-network transport and owner/machine authorization remain unverified.
+cleanup and parent transaction rollback. App-level cryptography and owner/machine
+authorization regressions are documented in the machine-authentication guide;
+deployed OCC races and network transport remain unverified.
 
 The packaged-component follow-up passed `bun run build:components`,
 `bun run --cwd packages/worker-component typecheck`, and
@@ -186,11 +188,12 @@ migration was run.
 
 ## Planned And Known Limitations
 
-- App wrappers, challenges/replay, rotation, grants, machine JWT issuer,
-  subscriptions, Convex-mediated output, ACP and execution integration remain future work.
+- App wrappers, challenge/replay admission, the machine JWT issuer and identity
+  subscription are implemented outside this package. Rotation, execution grants,
+  Convex-mediated output, ACP and execution integration remain future work.
 - Completed receipts and worker/key records are retained indefinitely. Cleanup of
   unused tokens is explicit; no cron or lifecycle deletion policy is installed.
-- Revocation persists authority but does not propagate to sockets or processes yet.
+- App subscriptions check current revocation/epoch; process termination is not implemented.
 - Listing provides a bounded first page; management pagination is future work.
 - The existing root formatter/linter workspace-resolution issues are separate:
   use the web package's installed formatter for scoped checks. Root ESLint config

@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { publicKey as workerPublicKey } from "worker-component";
 import { completionPricingSchema, completionUsageSchema } from "../src/usage/completion";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import {
@@ -16,6 +17,23 @@ import {
 } from "../src/workspaces/provider";
 
 export default defineSchema({
+  /** App authorization scope for a component-owned enrollment receipt; no setup secret. */
+  worker_enrollments: defineTable({
+    workspace: v.id("workspaces"),
+    componentEnrollmentId: v.string(),
+  }).index("by_workspace", ["workspace"]),
+  /** Immutable one-use proof contexts, removed transactionally on admission. */
+  worker_auth_challenges: defineTable({
+    kind: v.union(v.literal("enroll"), v.literal("recover"), v.literal("token")),
+    workspace: v.id("workspaces"),
+    enrollmentId: v.optional(v.id("worker_enrollments")),
+    requestId: v.optional(v.string()),
+    workerId: v.optional(v.string()),
+    keyId: v.optional(v.string()),
+    identityEpoch: v.optional(v.number()),
+    publicKey: workerPublicKey,
+    expiresAt: v.number(),
+  }).index("by_expiry", ["expiresAt"]),
   /**
    * A workspace is the ownership and credential boundary for Gateway resources.
    * Ownership is currently personal-user only. Explicit members are represented
