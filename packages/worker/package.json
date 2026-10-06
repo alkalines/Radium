@@ -4,12 +4,21 @@
   "type": "module",
   "module": "src/index.ts",
   "scripts": {
+    "cli": "bun src/cli.ts",
+    "dev": "bun --watch src/cli.ts start",
     "setup": "bun src/cli.ts setup",
+    "add-token": "bun src/cli.ts add-token",
     "start": "bun src/cli.ts start",
+    "status": "bun src/cli.ts status",
+    "refresh": "bun src/cli.ts refresh",
+    "forget": "bun src/cli.ts forget",
+    "forget-token": "bun src/cli.ts forget-token",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "@napi-rs/keyring": "^2.1.0",
     "convex": "^1.46.0",
     "hono": "^4.13.7",
     "jose": "^6.1.3"

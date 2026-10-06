@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useWorkspace } from "./workspace-provider";
@@ -212,85 +213,116 @@ export function WorkerManagement() {
   }
 
   const visibleEnrollmentCode =
-    enrollmentCode?.workspace === workspaceId && enrollmentCode.expiresAt > Date.now()
+    enrollmentCode !== null &&
+    enrollmentCode.workspace === workspaceId &&
+    enrollmentCode.expiresAt > Date.now()
       ? enrollmentCode
       : null;
 
   return (
     <>
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between gap-4">
-          <div className="flex flex-col gap-1">
-            <CardTitle className="flex items-center gap-2">
-              <BotIcon className="size-4 text-muted-foreground" />
-              Workers
-            </CardTitle>
-            <CardDescription>
-              {workspace
-                ? `Enroll and manage Worker identities for ${workspace.name}.`
-                : "Select an active workspace to manage its Workers."}
-            </CardDescription>
+      <div className="flex flex-col gap-6">
+        <header className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+          <div className="flex items-start gap-4">
+            <div className="mt-1 flex size-11 shrink-0 items-center justify-center rounded-xl border bg-muted/40 text-muted-foreground">
+              <BotIcon className="size-5" />
+            </div>
+            <div className="flex min-w-0 flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                  Chatroom / Infrastructure
+                </p>
+                <Badge variant="outline">Workspace scoped</Badge>
+              </div>
+              <h1 className="text-2xl font-semibold tracking-tight">Workers</h1>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                {workspace?.role === "owner"
+                  ? `Enroll and manage machine identities for ${workspace.name}.`
+                  : workspace
+                    ? `Worker identities for ${workspace.name} are managed by its owner.`
+                    : "Select an active workspace to manage its Worker identities."}
+              </p>
+            </div>
           </div>
           {isOwner ? (
             <Button
               size="sm"
+              className="self-start sm:self-auto"
               onClick={openEnrollmentDialog}
               disabled={!workspaceId || pendingAction !== null}
             >
               <FingerprintIcon data-icon="inline-start" />
-              Enroll worker
+              Enroll a Worker
             </Button>
           ) : null}
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          {!workspace ? (
-            <Alert>
-              <AlertTitle>Workspace unavailable</AlertTitle>
-              <AlertDescription>
-                Select an active workspace to manage Worker identities.
-              </AlertDescription>
-            </Alert>
-          ) : !isOwner ? (
-            <Alert>
-              <AlertTitle>Owner access required</AlertTitle>
-              <AlertDescription>
-                Only the workspace owner can enroll or revoke Workers.
-              </AlertDescription>
-            </Alert>
-          ) : error ? (
-            <Alert variant="destructive">
-              <AlertTitle>Workers unavailable</AlertTitle>
-              <AlertDescription>
-                Radium could not load Worker identities. Try refreshing the page.
-              </AlertDescription>
-            </Alert>
-          ) : data === undefined ? (
-            <div className="flex flex-col gap-2">
-              <Skeleton className="h-14" />
-              <Skeleton className="h-14" />
-            </div>
-          ) : workers.length === 0 ? (
-            <Empty className="border">
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <BotIcon />
-                </EmptyMedia>
-                <EmptyTitle>No Workers enrolled</EmptyTitle>
-                <EmptyDescription>
-                  Enroll a Worker to create its workspace-scoped identity.
-                </EmptyDescription>
-              </EmptyHeader>
-              <Button variant="outline" onClick={openEnrollmentDialog}>
-                <FingerprintIcon data-icon="inline-start" />
-                Create setup code
-              </Button>
-            </Empty>
-          ) : (
-            <>
-              <p className="text-xs text-muted-foreground">
-                Status shows whether an identity is active or revoked. It does not report whether a
-                Worker is currently connected.
-              </p>
+        </header>
+
+        <Separator />
+
+        <Alert>
+          <FingerprintIcon />
+          <AlertTitle>Identity status is not connection status</AlertTitle>
+          <AlertDescription>
+            Active or revoked describes whether a Worker identity is authorized. It does not show
+            whether a Worker process is currently connected.
+          </AlertDescription>
+        </Alert>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Worker identities</CardTitle>
+            <CardDescription>
+              {workspace?.role === "owner"
+                ? `Machine identities enrolled in ${workspace.name}.`
+                : workspace
+                  ? "Only the workspace owner can view or manage these identities."
+                  : "Identities enrolled in the active workspace."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {!workspace ? (
+              <Alert>
+                <AlertTitle>Workspace unavailable</AlertTitle>
+                <AlertDescription>
+                  Select an active workspace to manage Worker identities.
+                </AlertDescription>
+              </Alert>
+            ) : !isOwner ? (
+              <Alert>
+                <AlertTitle>Owner access required</AlertTitle>
+                <AlertDescription>
+                  Only the workspace owner can view, enroll, or revoke Worker identities.
+                </AlertDescription>
+              </Alert>
+            ) : error ? (
+              <Alert variant="destructive">
+                <AlertTitle>Workers unavailable</AlertTitle>
+                <AlertDescription>
+                  Radium could not load Worker identities. Try refreshing the page.
+                </AlertDescription>
+              </Alert>
+            ) : data === undefined ? (
+              <div className="flex flex-col gap-2">
+                <Skeleton className="h-14" />
+                <Skeleton className="h-14" />
+              </div>
+            ) : workers.length === 0 ? (
+              <Empty className="border">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <BotIcon />
+                  </EmptyMedia>
+                  <EmptyTitle>No Workers enrolled</EmptyTitle>
+                  <EmptyDescription>
+                    Create a setup code to establish a workspace-scoped Worker identity.
+                  </EmptyDescription>
+                </EmptyHeader>
+                <Button variant="outline" onClick={openEnrollmentDialog}>
+                  <FingerprintIcon data-icon="inline-start" />
+                  Create setup code
+                </Button>
+              </Empty>
+            ) : (
               <div className="flex flex-col divide-y rounded-lg border">
                 {workers.map((worker) => (
                   <div key={worker.workerId} className="flex flex-wrap items-center gap-3 p-3">
@@ -342,10 +374,10 @@ export function WorkerManagement() {
                   </div>
                 ))}
               </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
         <DialogContent className="sm:max-w-lg">

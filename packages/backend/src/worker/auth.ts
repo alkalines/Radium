@@ -76,7 +76,10 @@ export function workerIssuer(backendUrl: string) {
   return `${backendUrl}/api/worker`;
 }
 
-/** Validate an explicit backend/client origin without rewriting its hostname. */
+/**
+ * Accept an HTTPS origin, or HTTP loopback for local development, and reject
+ * credentials, paths, queries, and fragments. URL.origin removes a trailing slash.
+ */
 export function backendOrigin(value: string | undefined) {
   if (!value) throw new Error("Worker authentication is not configured");
   const url = new URL(value);
@@ -131,7 +134,10 @@ export async function verifyWorkerProof(
     throw new Error("Invalid proof");
 }
 
-/** Parse the deployment's public issuer-key set, rejecting private key material. */
+/**
+ * Parse the public issuer key set, rejecting private material, duplicate key IDs,
+ * and sets larger than five keys so operators can rotate issuer keys safely.
+ */
 export function publicWorkerJwks(raw: string) {
   let jwks: { keys?: JWK[] };
   try {

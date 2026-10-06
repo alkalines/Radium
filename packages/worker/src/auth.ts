@@ -37,7 +37,7 @@ interface ChallengeResponse {
   audience: string;
 }
 
-interface MachineTokenResponse {
+export interface MachineTokenResponse {
   token: string;
   expiresAt: number;
 }
@@ -218,10 +218,14 @@ async function recoverIdentity(state: WorkerState, options: AuthOptions): Promis
   return validateIdentity(result);
 }
 
-/** Exchange a fresh key-possession proof for the backend-issued JWT used by Convex. */
-async function requestMachineToken(
+/**
+ * Exchange a fresh key-possession proof for the backend-issued JWT used by Convex.
+ * Unlike the SDK auth callback, this diagnostic entry point propagates failures.
+ * Callers must keep the returned token in memory and never print it in CLI output.
+ */
+export async function requestMachineToken(
   state: WorkerState,
-  options: AuthOptions,
+  options: AuthOptions = {},
 ): Promise<MachineTokenResponse> {
   if (!state.identity) throw new WorkerProtocolError("Worker identity is not enrolled");
   const challenge = await requestChallenge(

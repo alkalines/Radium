@@ -1,3 +1,4 @@
 import { defineComponent } from "convex/server";
 
-export default defineComponent("workerIdentity");
+// Explicitly declares that isolated identity persistence needs no app env inputs.
+export default defineComponent("workerIdentity", { env: {} });

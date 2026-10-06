@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { importJWK, jwtVerify } from "jose";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMachineTokenFetcher, recoverPendingIdentity, setupWorker } from "./auth.js";
 import { readSetupCodeFromFile } from "./input.js";
 import { app } from "./service.js";
@@ -24,7 +24,12 @@ import {
 const directories: string[] = [];
 const proofType = "radium-worker-proof+jwt";
 
+beforeEach(() => {
+  vi.stubEnv("RADIUM_WORKER_CREDENTIAL_STORE", "file");
+});
+
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   );

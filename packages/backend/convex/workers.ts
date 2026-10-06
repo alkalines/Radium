@@ -32,9 +32,10 @@ const limiter = new RateLimiter(components.rateLimiter, {
   setup: { kind: "fixed window", rate: 10, period: 60_000 },
   challenge: { kind: "fixed window", rate: 120, period: 60_000 },
 });
-const denied = () => {
+/** Keep all machine-auth denials indistinguishable at the HTTP boundary. */
+function denied(): never {
   throw new ConvexError({ code: "WORKER_AUTH_DENIED" });
-};
+}
 const kind = v.union(v.literal("enroll"), v.literal("recover"), v.literal("token"));
 
 /** Owner-only, bounded identity listing; active status does not mean online. */
@@ -68,7 +69,9 @@ export const revokeEnrollment = ownedWorkspaceMutation({
   handler: async (ctx, args) => {
     const id = ctx.db.normalizeId("worker_enrollments", args.enrollmentId);
     const enrollment = id ? await ctx.db.get(id) : null;
-    if (!enrollment || enrollment.workspace !== ctx.workspace._id) return denied();
+    if (!enrollment || enrollment.workspace !== ctx.workspace._id) {
+      return denied();
+    }
     await ctx.runMutation(components.workerIdentity.enrollment.revokeEnrollment, {
       workspaceId: ctx.workspace._id,
       enrollmentId: enrollment.componentEnrollmentId,
@@ -124,8 +127,11 @@ export const createEnrollmentRecord = internalMutation({
   handler: async (ctx, args) => {
     const user = await authComponent.getAuthUser(ctx);
     await requireWorkspaceOwnedByUser(ctx, args.workspace, user._id);
+
     const name = args.name.trim();
-    if (!name || name.length > 80) return denied();
+    if (!name || name.length > 80) {
+      return denied();
+    }
     await limiter.limit(ctx, "setup", { key: args.workspace, throws: true });
     const componentEnrollmentId = await ctx.runMutation(
       components.workerIdentity.enrollment.createEnrollment,
@@ -166,18 +172,22 @@ export const createChallenge = internalMutation({
   handler: async (ctx, args) => {
     await limiter.limit(ctx, "challenge", { throws: true });
     const expiresAt = Date.now() + CHALLENGE_TTL;
+
     if (args.kind === "token") {
       // Client-supplied IDs are lookup selectors. The stored key/worker relation
       // determines the public key and epoch that this challenge actually binds.
       const workspace = ctx.db.normalizeId("workspaces", args.workspaceId ?? "");
       const record = workspace ? await ctx.db.get(workspace) : null;
-      if (!record || record.archivedAt !== undefined || !args.keyId || !args.workerId)
+      if (!record || record.archivedAt !== undefined || !args.keyId || !args.workerId) {
         return denied();
+      }
       const key = await ctx.runQuery(components.workerIdentity.identities.getVerificationKey, {
         workspaceId: record._id,
         keyId: args.keyId,
       });
-      if (!key || key.workerId !== args.workerId) return denied();
+      if (!key || key.workerId !== args.workerId) {
+        return denied();
+      }
       const challengeId = await ctx.db.insert("worker_auth_challenges", {
         kind: args.kind,
         workspace: record._id,
@@ -189,12 +199,17 @@ export const createChallenge = internalMutation({
       });
       return { challengeId, expiresAt };
     }
+    // Enrollment and receipt recovery use the app-owned selector from the setup
+    // bundle; the component selector is resolved here, never supplied by the client.
     const id = ctx.db.normalizeId("worker_enrollments", args.enrollmentId ?? "");
     const enrollment = id ? await ctx.db.get(id) : null;
-    if (!enrollment || !args.publicKey || !args.requestId || args.requestId.length > 128)
+    if (!enrollment || !args.publicKey || !args.requestId || args.requestId.length > 128) {
       return denied();
+    }
     const workspace = await ctx.db.get(enrollment.workspace);
-    if (!workspace || workspace.archivedAt !== undefined) return denied();
+    if (!workspace || workspace.archivedAt !== undefined) {
+      return denied();
+    }
     const challengeId = await ctx.db.insert("worker_auth_challenges", {
       kind: args.kind,
       workspace: workspace._id,
@@ -221,7 +236,9 @@ export const getChallenge = internalQuery({
   handler: async (ctx, args) => {
     const id = ctx.db.normalizeId("worker_auth_challenges", args.challengeId);
     const challenge = id ? await ctx.db.get(id) : null;
-    if (!challenge || challenge.expiresAt <= Date.now()) return null;
+    if (!challenge || challenge.expiresAt <= Date.now()) {
+      return null;
+    }
     return {
       material: challenge.publicKey.material,
       expiresAt: challenge.expiresAt,
@@ -243,11 +260,17 @@ export const admitProof = internalMutation({
   handler: async (ctx, args) => {
     const id = ctx.db.normalizeId("worker_auth_challenges", args.challengeId);
     const challenge = id ? await ctx.db.get(id) : null;
-    if (!challenge || challenge.expiresAt <= Date.now()) return denied();
+    if (!challenge || challenge.expiresAt <= Date.now()) {
+      return denied();
+    }
     const workspace = await ctx.db.get(challenge.workspace);
-    if (!workspace || workspace.archivedAt !== undefined) return denied();
+    if (!workspace || workspace.archivedAt !== undefined) {
+      return denied();
+    }
+
     // Tentatively consume before the operation; a thrown denial rolls this back.
     await ctx.db.delete(challenge._id);
+
     if (challenge.kind === "token") {
       const key = await ctx.runQuery(components.workerIdentity.identities.getVerificationKey, {
         workspaceId: workspace._id,
@@ -258,8 +281,9 @@ export const admitProof = internalMutation({
         key.workerId !== challenge.workerId ||
         key.identityEpoch !== challenge.identityEpoch ||
         key.publicKey.material !== challenge.publicKey.material
-      )
+      ) {
         return denied();
+      }
       return {
         workerId: key.workerId,
         keyId: challenge.keyId!,
@@ -268,7 +292,9 @@ export const admitProof = internalMutation({
       };
     }
     const enrollment = await ctx.db.get(challenge.enrollmentId!);
-    if (!enrollment || enrollment.workspace !== workspace._id) return denied();
+    if (!enrollment || enrollment.workspace !== workspace._id) {
+      return denied();
+    }
     if (challenge.kind === "recover") {
       // Recovery requires the original key's thumbprint, not the expired token.
       return await ctx.runQuery(components.workerIdentity.enrollment.recoverEnrollment, {
@@ -277,7 +303,9 @@ export const admitProof = internalMutation({
         thumbprint: challenge.publicKey.thumbprint,
       });
     }
-    if (!args.tokenHash) return denied();
+    if (!args.tokenHash) {
+      return denied();
+    }
     const identity = await ctx.runMutation(
       components.workerIdentity.enrollment.completeEnrollment,
       {
@@ -295,7 +323,9 @@ export const admitProof = internalMutation({
       enrollmentId: enrollment.componentEnrollmentId,
       thumbprint: challenge.publicKey.thumbprint,
     });
-    if (identity.workerId !== receipt.workerId) return denied();
+    if (identity.workerId !== receipt.workerId) {
+      return denied();
+    }
     return identity;
   },
 });
@@ -316,17 +346,21 @@ export async function requireWorker(ctx: QueryCtx) {
     typeof identity.workspaceId !== "string" ||
     typeof identity.keyId !== "string" ||
     typeof identity.identityEpoch !== "number"
-  )
+  ) {
     return denied();
+  }
   const workspaceId = ctx.db.normalizeId("workspaces", identity.workspaceId);
   const workspace = workspaceId ? await ctx.db.get(workspaceId) : null;
-  if (!workspace || workspace.archivedAt !== undefined) return denied();
+  if (!workspace || workspace.archivedAt !== undefined) {
+    return denied();
+  }
   const key = await ctx.runQuery(components.workerIdentity.identities.getVerificationKey, {
     workspaceId: workspace._id,
     keyId: identity.keyId,
   });
-  if (!key || key.workerId !== identity.subject || key.identityEpoch !== identity.identityEpoch)
+  if (!key || key.workerId !== identity.subject || key.identityEpoch !== identity.identityEpoch) {
     return denied();
+  }
   return {
     workerId: key.workerId,
     keyId: identity.keyId,
@@ -357,7 +391,9 @@ export const pruneChallenges = internalMutation({
       .query("worker_auth_challenges")
       .withIndex("by_expiry", (q) => q.lte("expiresAt", Date.now()))
       .take(200);
-    for (const record of records) await ctx.db.delete(record._id);
+    for (const record of records) {
+      await ctx.db.delete(record._id);
+    }
     return records.length;
   },
 });

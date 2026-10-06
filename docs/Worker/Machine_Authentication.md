@@ -53,11 +53,12 @@ For reading the code, start at:
 - `packages/backend/src/worker/auth.ts`: key parsing, signatures and token issuance.
 - `packages/backend/convex/auth.config.ts`: how Convex verifies issued tokens.
 - `packages/worker/src/auth.ts`: the machine's setup, recovery and token refresh.
+- `packages/worker/src/cli.ts`: interactive setup and local lifecycle commands.
 - `packages/worker/src/control.ts`: the Convex connection and auth retry lifecycle.
 
 ## Linking And Normal Authentication
 
-1. In **Settings > Workspace > Workers**, a workspace owner generates a setup code.
+1. In **Chatroom → Workers**, a workspace owner generates a setup code.
    Better Auth session validation and current owner/archived-workspace policy apply.
    Members cannot create, list or revoke Worker identities.
 2. The displayed `radium-worker-v1.` code encodes a versioned JSON bundle with the
@@ -67,7 +68,8 @@ For reading the code, start at:
    on dismissal, expiry or workspace change; copying is an explicit user action.
 3. The Worker persists a new P-256 private key, public key, stable enrollment
    request ID and non-secret recovery context **before** contacting the backend.
-   Setup is read through stdin or a protected file, rather than a token argument.
+   Setup is read through a masked terminal prompt, stdin or a protected file,
+   rather than a token argument.
 4. An outbound HTTPS challenge request binds the enrollment selector, request ID,
    canonical public key, workspace and operation in an immutable app record.
    The Worker signs the challenge with its private key using ES256 JOSE.
@@ -88,6 +90,13 @@ For reading the code, start at:
 The private key and recovery state must remain outside future executed workloads.
 See [`packages/worker/README.md`](../../packages/worker/README.md) for CLI commands,
 state-file permissions, retries and local service behavior.
+
+The Worker's private JWK defaults to OS credential storage through
+`@napi-rs/keyring`. Headless operators can explicitly permit `auto` fallback or
+select `file` with `RADIUM_WORKER_CREDENTIAL_STORE`. Version-1 local state migrates
+without changing the key or recovery selector; version-2 metadata omits the private
+JWK and records the selected backend. Missing saved credentials fail closed.
+This local setting is separate from the parent app's Convex issuer variables.
 
 ## Protocol And Authorization
 
@@ -179,18 +188,28 @@ environment configuration; no hosted issuer is involved.
 
 ### Where The Variables Are Used
 
-- `convex/convex.config.ts` mounts components. The `workerIdentity` component does
-  not read these issuer variables, so there is no `app.use(..., { env: ... })`
-  mapping for them. Its persistence functions receive already-verified data.
+- `convex/convex.config.ts` declares `WORKER_AUTH_PRIVATE_JWK` and
+  `WORKER_AUTH_JWKS` as optional parent-app environment variables. The
+  `workerIdentity` component does not read issuer material, so neither key is
+  mapped to it. Its persistence functions receive already-verified data.
 - `src/worker/auth.ts` reads deployment variables via `process.env` when the parent
   app creates setup codes or signs access tokens.
 - `convex/auth.config.ts` reads `WORKER_AUTH_JWKS` to configure the public JWT
   verifier. Without it, only the existing human Better Auth verifier is configured.
 
-The current app uses direct `process.env` reads, rather than optional typed root
-`defineApp({ env: ... })` declarations. A component env mapping is a different
-mechanism: it grants variables to that component, and is not required for these
-parent-app reads. Neither declaring nor mapping a variable generates its value.
+The root app now declares its custom runtime variables with Convex validators in
+`defineApp({ env: ... })`. These declarations type the app environment contract;
+they do not set deployment values. Convex-provided `CONVEX_SITE_URL` and
+`CONVEX_CLOUD_URL` remain system variables. Component env mappings are separate:
+only variables a component consumes are passed to it (`SECRET_STORE_KEYS` goes
+to Secret Store, not `workerIdentity`).
+
+The checked-in `_generated/server` bindings have not been refreshed, so these
+functions continue reading `process.env`; authorized standard Convex codegen is
+needed before the generated `env` export includes the new declarations. The
+offline API-only binding generator now parses the typed app declarations and
+literal `app.env` component references, but only refreshes `_generated/api.d.ts`,
+not server environment typings.
 
 Keep the generated files outside the repository. Changing the public verifier requires
 applying Convex auth configuration through your normal authorized deployment;
@@ -253,5 +272,5 @@ bun run --cwd apps/web vite:build
 No functions, auth configuration or migrations were uploaded in this slice.
 Actual Convex JWT verification, reactive revocation, TLS/proxy routing and recovery
 across separately deployed processes still require deployment integration testing.
-Commands, ACP, approvals, filesystem/process execution, output and isolation remain
+Agent job commands, ACP, approvals, filesystem/process execution, output and isolation remain
 the next [task 06](../tasks/06_Chatroom_Worker.md) slice.

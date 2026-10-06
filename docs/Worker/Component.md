@@ -40,8 +40,10 @@ machine signatures or inherit app sessions.
 
 `packages/worker/src/index.ts` is the external health and authenticated Convex-client
 service. Its machine authentication and future ACP/process work are separate from identity persistence.
-The component declares no environment variables and requires no hosted identity
-provider, collector or network service. See the selected
+The component explicitly declares an empty environment contract and receives no
+Worker issuer keys. The parent app declares its runtime settings; only the Secret
+Store component receives `SECRET_STORE_KEYS`. The Worker identity component
+requires no hosted identity provider, collector or network service. See the selected
 [Convex Client transport plan](Convex_Transport.md) for the proposed authenticated
 control and batched output integration.
 

@@ -6,9 +6,9 @@ authorization, and coordination, and Chatroom owns conversations and approvals.
 
 ## Implemented
 
-`packages/worker/src/index.ts` exposes an unauthenticated `GET /health` and now
+`packages/worker/src/cli.ts` starts the unauthenticated `GET /health` service and
 connects outbound with an enrolled machine identity. Owners generate a ten-minute
-setup code in **Settings > Workspace > Workers**. The Worker persists its own
+setup code in **Chatroom → Workers**. The Worker persists its own
 P-256 key, completes enrollment/recovery, obtains short-lived JWTs and authenticates
 a Convex subscription. See [machine authentication](Worker/Machine_Authentication.md)
 for the implemented protocol, configuration and local verification boundary.
@@ -16,7 +16,9 @@ The standalone HTTP client package has been removed. Control-plane integration
 is intended to use app-owned Convex queries and mutations calling the Worker component; future
 Worker subscriptions use narrowly authenticated app wrappers. The Worker service
 does not yet implement authenticated execution or job dispatch. Root development
-does not start the Worker.
+does not start the Worker; `bun run dev:worker` watches and restarts an enrolled
+Worker alongside it. The [Worker CLI guide](../packages/worker/README.md) covers
+masked interactive setup, local status, authentication refresh and forgetting credentials.
 
 `packages/worker-component` implements isolated Convex enrollment and
 public-key identity persistence, exact-retry/token-free recovery, and revocation.

@@ -16,7 +16,7 @@ Ownership persistence depends on task 03; boundary research can proceed now.
 
 ## Entry Points
 
-`packages/worker/src/index.ts`,
+`packages/worker/src/cli.ts`, `packages/worker/src/index.ts`,
 `packages/backend/src/http/aisdk.chat.ts`, `packages/backend/convex/chatroom.ts`,
 and Chatroom tools/approvals UI. The Worker service implements health, key enrollment,
 JWT refresh and an authorized identity subscription;
@@ -42,6 +42,49 @@ subscription. Deployed verifier/transport checks and execution remain follow-up 
 5. Write `docs/Radium_Chatroom.md`, `docs/Worker.md`, and `docs/Worker/Execution.md`, clearly marking design versus health-only reality.
 
 ## Next Implementation Slice
+
+### Authentication Usability Follow-up (2026-10-05)
+
+The authentication lifecycle now has a dedicated **Chatroom → Workers** management
+page and a masked terminal setup flow. Worker CLI commands cover local status,
+proof-based authentication refresh, and forgetting the local identity; aliases
+`add-token` and `forget-token` refer to enrollment/removal, not a persisted bearer
+refresh token. `bun run dev:worker` supplies an independent watch/restart loop.
+The app declares typed deployment variables in `defineApp`; the identity component
+declares an empty env contract. Public frontend examples and backend runtime
+examples now live in their owning packages. The audited offline API parser accepts
+these declarations; generated server `env` accessors await standard authorized codegen.
+See the [CLI guide](../../packages/worker/README.md) for credential storage policy
+and headless operation. These changes retain the existing enrollment, recovery
+and owner-revocation protocol; live deployment verification remains open.
+The durable key defaults to OS credential storage; `auto`/`file` explicitly permit
+the protected-file fallback. Local version-1 state migrates while preserving the
+identity and recovery selectors, and version-2 metadata omits the private key.
+
+Follow-up checks:
+
+- `bun install --frozen-lockfile`: passed.
+- `bun run --cwd packages/worker test`: 28 checks passed, including credential
+  migration, explicit fallback, missing-key refusal, interrupted-write recovery,
+  and preserving unsupported state formats.
+- `bun run --cwd packages/worker typecheck`: passed.
+- `bun run --cwd packages/backend test convex/workers.test.ts`: nine handler
+  regressions passed, including the real Worker proof exchange and revocation.
+- `bun run --cwd packages/worker test src/cli.test.ts`: nine lifecycle checks
+  passed, including secret-free output, redirected-terminal handling and failed
+  control shutdown cleanup.
+- `node --test apps/web/scripts/convex-config-parser.test.mjs`: five parser
+  regressions passed. The audited offline generator passed with the network guard;
+  its API-only write produced no generated-file diff.
+- `bun run --cwd packages/worker-component typecheck` and
+  `bun run --cwd packages/worker-component build`: passed. The app config check
+  passed from `packages/backend` with
+  `bunx tsc --ignoreConfig --noEmit --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --types node convex/convex.config.ts`.
+- `bun run --cwd apps/web vite:build`: passed with existing chunk-size and Shiki
+  WASM fallback warnings. The changed UI files had no TypeScript diagnostics;
+  the full frontend check still reports unrelated existing errors.
+- Scoped ESLint remains blocked by the root configuration's `eslint` resolution.
+  No remote deployment, migration, or auth-config upload was performed.
 
 ### Authentication Slice Verification (2026-10-04)
 

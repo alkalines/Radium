@@ -14,6 +14,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
+import { cn } from "@/lib/utils";
 import { api } from "backend/convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
@@ -57,21 +58,34 @@ export const Route = createFileRoute("/chatroom/$section")({
 function ChatroomPage() {
   const { section } = Route.useParams();
   const { workspace, isLoading } = useWorkspace();
+  const isWorkersPage = section === "workers";
+  const contentWidth = isWorkersPage ? "max-w-5xl" : "max-w-3xl";
 
   if (isLoading) {
-    return <Skeleton className="mx-auto h-32 w-full max-w-3xl" />;
+    if (!isWorkersPage) return <Skeleton className="mx-auto h-32 w-full max-w-3xl" />;
+
+    return (
+      <div className={cn("mx-auto flex w-full flex-col gap-6 p-4 md:p-6", contentWidth)}>
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    );
   }
 
   if (!workspace) {
     return (
       <WorkspaceNotice
         title="Workspace unavailable"
-        description="Select an active workspace to view Chatroom settings."
+        description={
+          isWorkersPage
+            ? "Select an active workspace to manage its Worker identities."
+            : "Select an active workspace to view Chatroom settings."
+        }
       />
     );
   }
 
-  if (workspace.role === "member") {
+  if (workspace.role === "member" && !isWorkersPage) {
     return (
       <WorkspaceNotice
         title="Chatroom settings are owner-only"
@@ -81,7 +95,7 @@ function ChatroomPage() {
   }
 
   return (
-    <div className="w-full max-w-3xl mx-auto p-4 md:p-6">
+    <div className={cn("mx-auto w-full p-4 md:p-6", contentWidth)}>
       <ChatroomSettings section={section as ChatroomSection} hideNav />
     </div>
   );

@@ -113,27 +113,29 @@ Tailwind CSS, shadcn/ui, and Bun.
 
 ### Quick Start
 
-1. Install dependencies and create a local environment file.
+1. Install dependencies and create the frontend environment file.
 
    ```bash
    bun install
-   cp packages/website/.env.example packages/website/.env.local
+   cp apps/web/.env.example apps/web/.env.local
    ```
 
-2. Set the secret placeholders in `packages/website/.env.local`, then link or
-   create a Convex development deployment.
+2. Link or create a Convex development deployment from the backend package.
 
    ```bash
-    bun run --cwd packages/website convex:dev
+   bun run --cwd packages/backend dev
    ```
 
-3. Configure the required Convex runtime values described in the
-   [deployment guide](docs/deployment.md#convex-cloud-development).
+3. Configure the required Convex runtime values from
+   `packages/backend/.env.example` using the
+   [deployment guide](docs/deployment.md#convex-cloud-development). Set
+   `VITE_CONVEX_URL` and `VITE_CONVEX_SITE_URL` in `apps/web/.env.local` to this
+   deployment's client and HTTP origins.
 
 4. In another terminal, start the web application.
 
    ```bash
-    bun run --cwd packages/website vite:dev
+   bun run --cwd apps/web vite:dev
    ```
 
 5. Open <http://localhost:3000> and create an account.
@@ -173,19 +175,20 @@ curl "$VITE_CONVEX_SITE_URL/api/openai/v1/chat/completions" \
 
 ## Commands
 
-| Command                              | Purpose                                                                     |
-| ------------------------------------ | --------------------------------------------------------------------------- |
-| `bun run dev`                        | Build and watch components, start Vite and Convex                           |
-| `bun run build:components`           | Build local Convex component packages from checked-in bindings              |
-| `bun run codegen`                    | Generate Worker bindings, build the package, then generate backend bindings |
-| `bun run --cwd apps/web vite:dev`    | Start only the web app on port 3000                                         |
-| `bun run --cwd packages/backend dev` | Start and develop against Convex                                            |
-| `bun run --cwd apps/web vite:build`  | Build the production application                                            |
-| `bun run --cwd apps/web vite:start`  | Run the built application                                                   |
-| `bun run lint`                       | Run ESLint                                                                  |
-| `bun run format`                     | Format supported files with oxfmt                                           |
-| `bun run format:check`               | Check formatting without writing changes                                    |
-| `bun run test`                       | Run backend unit and Convex handler tests with Vitest                       |
+| Command                              | Purpose                                                                             |
+| ------------------------------------ | ----------------------------------------------------------------------------------- |
+| `bun run dev`                        | Build and watch components, start Vite and Convex                                   |
+| `bun run dev:worker`                 | Watch and restart an enrolled Worker; see [Worker setup](packages/worker/README.md) |
+| `bun run build:components`           | Build local Convex component packages from checked-in bindings                      |
+| `bun run codegen`                    | Generate Worker bindings, build the package, then generate backend bindings         |
+| `bun run --cwd apps/web vite:dev`    | Start only the web app on port 3000                                                 |
+| `bun run --cwd packages/backend dev` | Start and develop against Convex                                                    |
+| `bun run --cwd apps/web vite:build`  | Build the production application                                                    |
+| `bun run --cwd apps/web vite:start`  | Run the built application                                                           |
+| `bun run lint`                       | Run ESLint                                                                          |
+| `bun run format`                     | Format supported files with oxfmt                                                   |
+| `bun run format:check`               | Check formatting without writing changes                                            |
+| `bun run test`                       | Run backend unit and Convex handler tests with Vitest                               |
 
 ## Contributing
 

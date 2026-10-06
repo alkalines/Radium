@@ -5,7 +5,6 @@ import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
 
 import { WorkspaceManagement } from "@/components/workspaces/workspace-management";
-import { WorkerManagement } from "@/components/workspaces/worker-management";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
 
@@ -41,10 +40,7 @@ export const Route = createFileRoute("/settings/workspace")({
 function WorkspaceSettingsPage() {
   return (
     <div className="mx-auto w-full max-w-3xl p-4 md:p-6">
-      <div className="flex flex-col gap-8">
-        <WorkspaceManagement />
-        <WorkerManagement />
-      </div>
+      <WorkspaceManagement />
     </div>
   );
 }

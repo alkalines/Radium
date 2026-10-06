@@ -53,19 +53,29 @@ const completionRequest = z
   })
   .strict();
 
-async function readBody(request: Request) {
-  if (!request.headers.get("content-type")?.startsWith("application/json"))
+const MAX_AUTH_BODY_BYTES = 8 * 1024;
+
+/** Bound actual streamed input independently of Content-Length before parsing credentials. */
+async function readBody(request: Request): Promise<unknown> {
+  if (!request.headers.get("content-type")?.startsWith("application/json")) {
     throw new Error("Invalid body");
+  }
   const reader = request.body?.getReader();
-  if (!reader) throw new Error("Missing body");
+  if (!reader) {
+    throw new Error("Missing body");
+  }
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        break;
+      }
       size += value.byteLength;
-      if (size > 8192) throw new Error("Body too large");
+      if (size > MAX_AUTH_BODY_BYTES) {
+        throw new Error("Body too large");
+      }
       chunks.push(value);
     }
   } finally {
@@ -93,8 +103,10 @@ export async function handleWorkerAuth(
   const headers = { "Cache-Control": "no-store", Pragma: "no-cache" };
   try {
     const audience = backendOrigin(process.env.CONVEX_SITE_URL);
+    // Check issuer configuration before creating a challenge that cannot be completed.
     await machineSigningKey();
     const body = await readBody(request);
+
     if (operation === "challenge") {
       const parsed = challengeRequest.parse(body);
       const args =
@@ -108,11 +120,15 @@ export async function handleWorkerAuth(
     const challenge = await ctx.runQuery(internal.workers.getChallenge, {
       challengeId: parsed.challengeId,
     });
-    if (!challenge) throw new Error("Invalid challenge");
+    if (!challenge) {
+      throw new Error("Invalid challenge");
+    }
+
     // Verify against the key stored in the challenge, not a completion-body key.
     await verifyWorkerProof(parsed.proof, parsed.challengeId, challenge.material, audience);
-    if ((challenge.kind === "enroll") !== (parsed.token !== undefined))
+    if ((challenge.kind === "enroll") !== (parsed.token !== undefined)) {
       throw new Error("Invalid token context");
+    }
     const identity = await ctx.runMutation(internal.workers.admitProof, {
       challengeId: parsed.challengeId,
       ...(parsed.token !== undefined ? { tokenHash: await tokenDigest(parsed.token) } : {}),

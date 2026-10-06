@@ -32,6 +32,9 @@ afterEach(() => {
 });
 
 async function setup() {
+  // The real Worker client persists a key in temporary state during roundtrip
+  // coverage; force its protected-file test backend, never a desktop keyring.
+  vi.stubEnv("RADIUM_WORKER_CREDENTIAL_STORE", "file");
   const t = convexTest(schema, modules);
   register(t);
   rateLimiterTest.register(t);
