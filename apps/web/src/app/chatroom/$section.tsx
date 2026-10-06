@@ -14,7 +14,6 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
-import { cn } from "@/lib/utils";
 import { api } from "backend/convex/_generated/api";
 import { auth } from "@/lib/auth";
 import { authClient } from "@/lib/auth-client";
@@ -59,17 +58,9 @@ function ChatroomPage() {
   const { section } = Route.useParams();
   const { workspace, isLoading } = useWorkspace();
   const isWorkersPage = section === "workers";
-  const contentWidth = isWorkersPage ? "max-w-5xl" : "max-w-3xl";
 
   if (isLoading) {
-    if (!isWorkersPage) return <Skeleton className="mx-auto h-32 w-full max-w-3xl" />;
-
-    return (
-      <div className={cn("mx-auto flex w-full flex-col gap-6 p-4 md:p-6", contentWidth)}>
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-32 w-full" />
-      </div>
-    );
+    return <Skeleton className="mx-auto h-32 w-full max-w-3xl" />;
   }
 
   if (!workspace) {
@@ -95,7 +86,7 @@ function ChatroomPage() {
   }
 
   return (
-    <div className={cn("mx-auto w-full p-4 md:p-6", contentWidth)}>
+    <div className="mx-auto w-full max-w-3xl p-4 md:p-6">
       <ChatroomSettings section={section as ChatroomSection} hideNav />
     </div>
   );

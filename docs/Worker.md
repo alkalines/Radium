@@ -20,6 +20,12 @@ does not start the Worker; `bun run dev:worker` watches and restarts an enrolled
 Worker alongside it. The [Worker CLI guide](../packages/worker/README.md) covers
 masked interactive setup, local status, authentication refresh and forgetting credentials.
 
+The **Chatroom → Workers** page follows the compact Tools settings layout: an
+Add Worker button and a list with name, ID, identity authorization status, and a
+revoke action. Setup uses a name/code dialog. Worker rows accept optional content
+below their controls so future machine alerts can be added in place. Disk I/O,
+CPU, temperature, and RAM alert reporting is **planned**, not implemented.
+
 `packages/worker-component` implements isolated Convex enrollment and
 public-key identity persistence, exact-retry/token-free recovery, and revocation.
 It is mounted as `workerIdentity` in the backend. See the

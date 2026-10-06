@@ -1,18 +1,9 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useAction, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import {
-  BotIcon,
-  CheckIcon,
-  Clock3Icon,
-  CopyIcon,
-  FingerprintIcon,
-  ShieldAlertIcon,
-  TerminalIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { BotIcon, CheckIcon, CopyIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
@@ -28,7 +19,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -46,9 +36,9 @@ import {
 } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { Textarea } from "@/components/ui/textarea";
 import { useWorkspace } from "./workspace-provider";
 
 type WorkerList = Exclude<FunctionReturnType<typeof api.workers.list>, string>;
@@ -221,203 +211,93 @@ export function WorkerManagement() {
 
   return (
     <>
-      <div className="flex flex-col gap-6">
-        <header className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex items-start gap-4">
-            <div className="mt-1 flex size-11 shrink-0 items-center justify-center rounded-xl border bg-muted/40 text-muted-foreground">
-              <BotIcon className="size-5" />
-            </div>
-            <div className="flex min-w-0 flex-col gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                  Chatroom / Infrastructure
-                </p>
-                <Badge variant="outline">Workspace scoped</Badge>
-              </div>
-              <h1 className="text-2xl font-semibold tracking-tight">Workers</h1>
-              <p className="max-w-2xl text-sm text-muted-foreground">
-                {workspace?.role === "owner"
-                  ? `Enroll and manage machine identities for ${workspace.name}.`
-                  : workspace
-                    ? `Worker identities for ${workspace.name} are managed by its owner.`
-                    : "Select an active workspace to manage its Worker identities."}
-              </p>
-            </div>
+      <section className="flex flex-col gap-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-lg font-semibold tracking-tight">Workers</h2>
+            <p className="text-sm text-muted-foreground">
+              Add and manage your workspace's Workers.
+            </p>
           </div>
           {isOwner ? (
             <Button
-              size="sm"
-              className="self-start sm:self-auto"
               onClick={openEnrollmentDialog}
               disabled={!workspaceId || pendingAction !== null}
             >
-              <FingerprintIcon data-icon="inline-start" />
-              Enroll a Worker
+              <PlusIcon data-icon="inline-start" />
+              Add Worker
             </Button>
           ) : null}
-        </header>
+        </div>
 
-        <Separator />
-
-        <Alert>
-          <FingerprintIcon />
-          <AlertTitle>Identity status is not connection status</AlertTitle>
-          <AlertDescription>
-            Active or revoked describes whether a Worker identity is authorized. It does not show
-            whether a Worker process is currently connected.
-          </AlertDescription>
-        </Alert>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Worker identities</CardTitle>
-            <CardDescription>
-              {workspace?.role === "owner"
-                ? `Machine identities enrolled in ${workspace.name}.`
-                : workspace
-                  ? "Only the workspace owner can view or manage these identities."
-                  : "Identities enrolled in the active workspace."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            {!workspace ? (
-              <Alert>
-                <AlertTitle>Workspace unavailable</AlertTitle>
-                <AlertDescription>
-                  Select an active workspace to manage Worker identities.
-                </AlertDescription>
-              </Alert>
-            ) : !isOwner ? (
-              <Alert>
-                <AlertTitle>Owner access required</AlertTitle>
-                <AlertDescription>
-                  Only the workspace owner can view, enroll, or revoke Worker identities.
-                </AlertDescription>
-              </Alert>
-            ) : error ? (
-              <Alert variant="destructive">
-                <AlertTitle>Workers unavailable</AlertTitle>
-                <AlertDescription>
-                  Radium could not load Worker identities. Try refreshing the page.
-                </AlertDescription>
-              </Alert>
-            ) : data === undefined ? (
-              <div className="flex flex-col gap-2">
-                <Skeleton className="h-14" />
-                <Skeleton className="h-14" />
-              </div>
-            ) : workers.length === 0 ? (
-              <Empty className="border">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <BotIcon />
-                  </EmptyMedia>
-                  <EmptyTitle>No Workers enrolled</EmptyTitle>
-                  <EmptyDescription>
-                    Create a setup code to establish a workspace-scoped Worker identity.
-                  </EmptyDescription>
-                </EmptyHeader>
-                <Button variant="outline" onClick={openEnrollmentDialog}>
-                  <FingerprintIcon data-icon="inline-start" />
-                  Create setup code
-                </Button>
-              </Empty>
-            ) : (
-              <div className="flex flex-col divide-y rounded-lg border">
-                {workers.map((worker) => (
-                  <div key={worker.workerId} className="flex flex-wrap items-center gap-3 p-3">
-                    <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
-                      <BotIcon className="size-4" />
-                    </div>
-                    <div className="flex min-w-40 flex-1 flex-col gap-1">
-                      <span className="truncate font-medium">{worker.name}</span>
-                      <code className="truncate text-xs text-muted-foreground">
-                        {worker.workerId}
-                      </code>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Badge variant={worker.status === "active" ? "secondary" : "outline"}>
-                          {worker.status === "active" ? "Active identity" : "Revoked"}
-                        </Badge>
-                        <Badge variant="outline">Identity epoch {worker.identityEpoch}</Badge>
-                      </div>
-                    </div>
-                    <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
-                      {worker.capabilities.length > 0 ? (
-                        worker.capabilities.map((capability) => (
-                          <Badge key={capability} variant="outline">
-                            {capability}
-                          </Badge>
-                        ))
-                      ) : (
-                        <span className="text-xs text-muted-foreground">
-                          No capabilities reported
-                        </span>
-                      )}
-                    </div>
-                    {worker.status === "active" ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-muted-foreground hover:text-destructive"
-                        disabled={pendingAction !== null}
-                        onClick={() => setRevokeTarget(worker)}
-                        aria-label={`Revoke ${worker.name}`}
-                      >
-                        {pendingAction === `revoke-worker:${worker.workerId}` ? (
-                          <Spinner data-icon="inline-start" />
-                        ) : (
-                          <Trash2Icon data-icon="inline-start" />
-                        )}
-                        Revoke
-                      </Button>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+        {!workspace || !isOwner ? (
+          <Alert>
+            <AlertTitle>Owner access required</AlertTitle>
+            <AlertDescription>Only the workspace owner can manage Workers.</AlertDescription>
+          </Alert>
+        ) : error ? (
+          <Alert variant="destructive">
+            <AlertTitle>Workers unavailable</AlertTitle>
+            <AlertDescription>Could not load Workers. Try refreshing the page.</AlertDescription>
+          </Alert>
+        ) : data === undefined ? (
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-16" />
+            <Skeleton className="h-16" />
+          </div>
+        ) : workers.length === 0 ? (
+          <Empty className="border border-dashed">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <BotIcon />
+              </EmptyMedia>
+              <EmptyTitle>No Workers</EmptyTitle>
+              <EmptyDescription>
+                Add a Worker to connect a machine to this workspace.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <div className="flex flex-col divide-y rounded-lg border">
+            {workers.map((worker) => (
+              <WorkerRow
+                key={worker.workerId}
+                worker={worker}
+                disabled={pendingAction !== null}
+                onRevoke={() => setRevokeTarget(worker)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
 
       <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-md">
           {visibleEnrollmentCode ? (
             <>
               <DialogHeader>
                 <DialogTitle>Worker setup code</DialogTitle>
                 <DialogDescription>
-                  This opaque code contains a secret enrollment credential. It is shown only now and
-                  expires {formatExpiry(visibleEnrollmentCode.expiresAt)}.
+                  Keep this code private. It expires {formatExpiry(visibleEnrollmentCode.expiresAt)}
+                  .
                 </DialogDescription>
               </DialogHeader>
-              <Alert>
-                <ShieldAlertIcon />
-                <AlertTitle>Keep this code private</AlertTitle>
-                <AlertDescription>
-                  Anyone with the code may enroll a Worker in this workspace. Share it only with the
-                  device you intend to enroll.
-                </AlertDescription>
-              </Alert>
-              <div className="flex flex-col gap-2">
-                <span className="text-sm font-medium">Setup code</span>
-                <pre className="max-h-40 overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs break-all whitespace-pre-wrap select-all">
-                  {visibleEnrollmentCode.code}
-                </pre>
-              </div>
-              <div className="flex flex-col gap-2 rounded-lg border p-3">
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <TerminalIcon className="size-4 text-muted-foreground" />
-                  Enroll from the Worker host
-                </div>
-                <code className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-xs">
-                  bun run --cwd packages/worker setup -- --setup-file /secure/path/worker-setup-code
-                </code>
-                <p className="text-xs text-muted-foreground">
-                  Save the code in a file owned by you with permissions 0600, then run this from the
-                  Radium checkout using that file's path. The code itself stays out of command-line
-                  arguments.
-                </p>
-              </div>
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="worker-setup-code">Setup code</FieldLabel>
+                  <Textarea
+                    id="worker-setup-code"
+                    readOnly
+                    rows={4}
+                    className="max-h-40"
+                    value={visibleEnrollmentCode.code}
+                  />
+                  <FieldDescription>
+                    Run <code>bun run --cwd packages/worker setup</code> on the machine and paste
+                    this code into the prompt.
+                  </FieldDescription>
+                </Field>
+              </FieldGroup>
               <DialogFooter className="flex-col-reverse sm:flex-row sm:justify-between">
                 <Button
                   type="button"
@@ -460,40 +340,28 @@ export function WorkerManagement() {
           ) : (
             <form onSubmit={issueEnrollment}>
               <DialogHeader>
-                <DialogTitle>{expired ? "Create a new setup code" : "Enroll a Worker"}</DialogTitle>
+                <DialogTitle>Add Worker</DialogTitle>
                 <DialogDescription>
-                  Create a short-lived, workspace-scoped code to register a Worker identity.
+                  {expired
+                    ? "The setup code expired. Generate another to continue."
+                    : "Name the Worker to generate its setup code."}
                 </DialogDescription>
               </DialogHeader>
-              <div className="flex flex-col gap-4 py-2">
-                {expired ? (
-                  <Alert>
-                    <Clock3Icon />
-                    <AlertTitle>Setup code expired</AlertTitle>
-                    <AlertDescription>
-                      The previous code has been cleared. Create another code to continue.
-                    </AlertDescription>
-                  </Alert>
-                ) : null}
-                <FieldGroup>
-                  <Field>
-                    <FieldLabel htmlFor="worker-enrollment-name">Worker name</FieldLabel>
-                    <Input
-                      id="worker-enrollment-name"
-                      autoFocus
-                      autoComplete="off"
-                      maxLength={80}
-                      placeholder="Build machine"
-                      value={name}
-                      disabled={pendingAction !== null}
-                      onChange={(event) => setName(event.target.value)}
-                    />
-                    <FieldDescription>
-                      A label to recognize this Worker in the workspace.
-                    </FieldDescription>
-                  </Field>
-                </FieldGroup>
-              </div>
+              <FieldGroup className="py-4">
+                <Field>
+                  <FieldLabel htmlFor="worker-enrollment-name">Worker name</FieldLabel>
+                  <Input
+                    id="worker-enrollment-name"
+                    autoFocus
+                    autoComplete="off"
+                    maxLength={80}
+                    placeholder="Build machine"
+                    value={name}
+                    disabled={pendingAction !== null}
+                    onChange={(event) => setName(event.target.value)}
+                  />
+                </Field>
+              </FieldGroup>
               <DialogFooter>
                 <Button
                   type="button"
@@ -507,7 +375,7 @@ export function WorkerManagement() {
                   {pendingAction === "create-enrollment" ? (
                     <Spinner data-icon="inline-start" />
                   ) : (
-                    <FingerprintIcon data-icon="inline-start" />
+                    <PlusIcon data-icon="inline-start" />
                   )}
                   Create setup code
                 </Button>
@@ -528,8 +396,7 @@ export function WorkerManagement() {
           <AlertDialogHeader>
             <AlertDialogTitle>Revoke {revokeTarget?.name ?? "this Worker"}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This disables the Worker identity for this workspace. It does not indicate or control
-              whether a Worker process is currently connected.
+              This Worker will no longer be authorized to access the workspace.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -558,6 +425,56 @@ export function WorkerManagement() {
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+
+/** Keep optional details/alerts below the row's identity and action controls. */
+function WorkerRow({
+  worker,
+  disabled,
+  onRevoke,
+  children,
+}: {
+  worker: WorkerList[number];
+  disabled: boolean;
+  onRevoke: () => void;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-3 p-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
+          <BotIcon className="size-4" />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate font-medium">{worker.name}</span>
+          <span className="truncate font-mono text-xs text-muted-foreground">
+            {worker.workerId}
+          </span>
+        </div>
+        <Badge
+          variant={worker.status === "active" ? "secondary" : "outline"}
+          title="Identity authorization status"
+          className="shrink-0"
+        >
+          {worker.status === "active" ? "Authorized" : "Revoked"}
+        </Badge>
+        {worker.status === "active" ? (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-muted-foreground hover:text-destructive"
+            onClick={onRevoke}
+            disabled={disabled}
+            aria-label={`Revoke ${worker.name}`}
+            title={`Revoke ${worker.name}`}
+          >
+            <Trash2Icon />
+          </Button>
+        ) : null}
+      </div>
+      {children ? <div className="px-3 pb-3">{children}</div> : null}
+    </div>
   );
 }
 
