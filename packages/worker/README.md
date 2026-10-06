@@ -86,7 +86,12 @@ JWTs remain in memory and are renewed through fresh signed challenges.
 `@napi-rs/keyring` stores the private key in the OS credential store. On Linux the
 Worker explicitly selects the durable Secret Service backend, requiring an
 available, unlocked Secret Service/keyring; macOS uses Keychain and Windows uses
-Credential Manager. Native OS integration has not been exercised on every platform.
+Credential Manager. Linux Secret Service save/read/forget/re-enrollment has been
+verified locally with isolated temporary credentials; macOS and Windows integration
+remains unverified.
+The adapter accepts both `null` and `undefined` for missing native entries; this
+allows initial setup and fresh enrollment after `forget` without treating an empty
+keyring entry as a conflicting key. A genuinely different saved key is still rejected.
 
 Set `RADIUM_WORKER_CREDENTIAL_STORE` before initial setup or legacy-state migration:
 

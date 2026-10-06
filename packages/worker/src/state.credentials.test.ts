@@ -20,6 +20,7 @@ import {
   credentialStorage,
   forgetWorkerState,
   readWorkerState,
+  saveWorkerIdentity,
   type WorkerState,
 } from "./state.js";
 
@@ -38,6 +39,66 @@ beforeEach(() => {
 });
 
 describe("Worker credential persistence", () => {
+  it.each([null, undefined])(
+    "can save, forget, and re-enroll when native missing entries return %s",
+    async (missing) => {
+      const directory = await newStateDirectory();
+      const values = new Map<string, string>();
+      const keyringEntryFactory: KeyringEntryFactory = async (account) => ({
+        async getPassword() {
+          return values.get(account) ?? missing;
+        },
+        async setPassword(password) {
+          values.set(account, password);
+        },
+        async deleteCredential() {
+          return values.delete(account);
+        },
+      });
+      const options = { credentialStoreMode: "keyring" as const, keyringEntryFactory };
+
+      const first = await createPendingState(directory, makeSetup(), options);
+      expect((await readWorkerState(directory, options))?.privateKey).toEqual(first.privateKey);
+      expect(values.size).toBe(1);
+
+      // Re-saving the same credential is idempotent; a genuine conflict remains denied.
+      const store = createWorkerCredentialStore(directory, {
+        mode: "keyring",
+        keyringEntryFactory,
+      });
+      await store.set(first.requestId, JSON.stringify(first.privateKey));
+      await expect(store.set(first.requestId, "different-private-key")).rejects.toThrow(
+        "A different Worker key already uses this credential entry",
+      );
+      expect(values.get(first.requestId)).toBe(JSON.stringify(first.privateKey));
+
+      await saveWorkerIdentity(
+        directory,
+        first,
+        {
+          workerId: "previous-worker-id",
+          keyId: "previous-key-id",
+          workspaceId: "workspace-id",
+          identityEpoch: 1,
+        },
+        options,
+      );
+
+      await forgetWorkerState(directory, options);
+      expect(values.size).toBe(0);
+      await expect(readWorkerState(directory, options)).resolves.toBeNull();
+
+      const second = await createPendingState(directory, makeSetup(), options);
+      expect(second.requestId).not.toBe(first.requestId);
+      expect(second.privateKey.d).not.toBe(first.privateKey.d);
+      expect((await readWorkerState(directory, options))?.privateKey).toEqual(second.privateKey);
+      expect(values.size).toBe(1);
+
+      await forgetWorkerState(directory, options);
+      expect(values.size).toBe(0);
+    },
+  );
+
   it("honors keyring mode under Vitest when a deterministic adapter is injected", async () => {
     vi.stubEnv("VITEST", "true");
     vi.stubEnv("VITEST_WORKER_ID", "1");

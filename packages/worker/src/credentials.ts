@@ -36,7 +36,8 @@ export interface WorkerCredentialStoreOptions {
 }
 
 export interface KeyringEntry {
-  getPassword(): Promise<string | undefined>;
+  // The native addon returns null for a missing entry despite its undefined-only typings.
+  getPassword(): Promise<string | null | undefined>;
   setPassword(password: string): Promise<void>;
   deleteCredential(): Promise<boolean>;
 }
@@ -129,11 +130,11 @@ class OsCredentialStore implements WorkerCredentialStore {
   async set(requestId: string, privateJwk: string): Promise<void> {
     try {
       const entry = await this.entryFactory(requestId);
-      const existing = await entry.getPassword();
-      if (existing !== undefined && existing !== privateJwk) {
+      const existing = (await entry.getPassword()) ?? null;
+      if (existing !== null && existing !== privateJwk) {
         throw new WorkerProtocolError("A different Worker key already uses this credential entry");
       }
-      if (existing === undefined) await entry.setPassword(privateJwk);
+      if (existing === null) await entry.setPassword(privateJwk);
     } catch (error) {
       if (error instanceof WorkerProtocolError) throw error;
       throw unavailableKeyringError("write");
