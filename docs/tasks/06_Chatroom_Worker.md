@@ -16,9 +16,9 @@ Ownership persistence depends on task 03; boundary research can proceed now.
 
 ## Entry Points
 
-`packages/worker/src/cli.ts`, `packages/worker/src/index.ts`,
+`packages/worker/src/cli.ts`, `packages/worker/src/control.ts`,
 `packages/backend/src/http/aisdk.chat.ts`, `packages/backend/convex/chatroom.ts`,
-and Chatroom tools/approvals UI. The Worker service implements health, key enrollment,
+and Chatroom tools/approvals UI. The Worker service implements key enrollment,
 JWT refresh and an authorized identity subscription;
 the separate HTTP client was removed in favor of app-owned Convex queries/mutations.
 `packages/worker-component/src/component/` owns the initial enrollment,
@@ -39,9 +39,22 @@ subscription. Deployed verifier/transport checks and execution remain follow-up 
 2. Design versioned job, event, result, cancellation, and reconnect contracts with capability negotiation, correlation, and idempotency. Keep Gateway model routing separate.
 3. Threat-model worker authentication, job ownership, workspace confinement, symlinks/path traversal, command approval, isolation, resource/time limits, secret access, and output bounds. Do not equate a workspace path with a sandbox.
 4. Produce a minimal safe vertical-slice plan and separate implementation tasks. No arbitrary shell endpoint before the security contract is approved.
-5. Write `docs/Radium_Chatroom.md`, `docs/Worker.md`, and `docs/Worker/Execution.md`, clearly marking design versus health-only reality.
+5. Write `docs/Radium_Chatroom.md`, `docs/Worker.md`, and `docs/Worker/Execution.md`, clearly marking design versus authentication-only reality.
 
 ## Next Implementation Slice
+
+### Outbound-only Worker Cleanup (2026-10-06)
+
+Removed the Worker-hosted health HTTP server, its `--port` option, health-only
+package entry point and direct Hono dependency. `start` and `dev` now run only
+the authenticated outbound Convex subscription. Signal shutdown still closes
+the control client. Enrollment/recovery and JWT exchange retain their outbound
+Convex-hosted HTTP auth boundary; execution transport remains planned.
+
+Verification: `bun run --cwd packages/worker test` passed all 30 tests, including
+outbound-only startup and successful/failed control shutdown;
+`bun run --cwd packages/worker typecheck` and `git diff --check` passed.
+The scoped formatter could not run because no installed `oxfmt` binary is available.
 
 ### Authentication Usability Follow-up (2026-10-05)
 

@@ -5,7 +5,6 @@ import { importJWK, jwtVerify } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMachineTokenFetcher, recoverPendingIdentity, setupWorker } from "./auth.js";
 import { readSetupCodeFromFile } from "./input.js";
-import { app } from "./service.js";
 import {
   parseSetupCode,
   postJson,
@@ -263,11 +262,6 @@ describe("Worker machine authentication", () => {
     ).rejects.toThrow("response is too large");
   });
 
-  it("keeps the public health response limited to process liveness", async () => {
-    const response = await app.request("http://localhost/health");
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ health: "ok" });
-  });
 });
 
 async function verifyProof(

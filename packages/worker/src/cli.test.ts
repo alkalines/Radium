@@ -91,7 +91,7 @@ describe("Worker CLI credential lifecycle", () => {
     await expect(runCli(["setup", "secret"])).rejects.toThrow("Unsupported");
     await expect(runCli(["start", "--setup-file", "/test/setup"])).rejects.toThrow("Unsupported");
     await expect(runCli(["status", "--yes"])).rejects.toThrow("Unsupported");
-    await expect(runCli(["start", "--port", "0"])).rejects.toThrow("Port");
+    await expect(runCli(["start", "--port", "3001"])).rejects.toThrow("Unsupported");
   });
 
   it("accepts a leading package-script separator without losing state options", async () => {
@@ -118,23 +118,34 @@ describe("Worker CLI credential lifecycle", () => {
     }
   });
 
-  it("stops the health server and handles control shutdown rejection", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const state = { identity: { workerId: "worker-id" } };
-    vi.mocked(readWorkerState).mockResolvedValue(state as never);
-    vi.mocked(recoverPendingIdentity).mockResolvedValue(state as never);
-    const stop = vi.fn();
-    vi.stubGlobal("Bun", { serve: vi.fn(() => ({ stop })) });
-    vi.mocked(connectWorkerControl).mockClear();
-    vi.mocked(connectWorkerControl).mockReturnValue({
-      close: vi.fn().mockRejectedValue(new Error("close failed")),
-      client: {} as never,
-    });
-    const running = runCli(["start"]);
-    const failure = expect(running).rejects.toThrow("close failed");
-    await vi.waitFor(() => expect(connectWorkerControl).toHaveBeenCalled());
-    process.emit("SIGTERM");
-    await failure;
-    expect(stop).toHaveBeenCalledWith(true);
-  });
+  it.each([false, true])(
+    "runs outbound-only and closes control on shutdown (failure: %s)",
+    async (fails) => {
+      vi.spyOn(console, "info").mockImplementation(() => undefined);
+      const state = { identity: { workerId: "worker-id" } };
+      vi.mocked(readWorkerState).mockResolvedValue(state as never);
+      vi.mocked(recoverPendingIdentity).mockResolvedValue(state as never);
+      const serve = vi.fn(() => {
+        throw new Error("Worker must not start an HTTP server");
+      });
+      vi.stubGlobal("Bun", { serve });
+      const close = fails
+        ? vi.fn().mockRejectedValue(new Error("close failed"))
+        : vi.fn().mockResolvedValue(undefined);
+      vi.mocked(connectWorkerControl).mockClear();
+      vi.mocked(connectWorkerControl).mockReturnValue({
+        close,
+        client: {} as never,
+      });
+      const running = runCli(["start"]);
+      const completion = fails
+        ? expect(running).rejects.toThrow("close failed")
+        : expect(running).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(connectWorkerControl).toHaveBeenCalled());
+      process.emit("SIGTERM");
+      await completion;
+      expect(close).toHaveBeenCalled();
+      expect(serve).not.toHaveBeenCalled();
+    },
+  );
 });

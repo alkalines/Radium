@@ -1,5 +1,4 @@
 import * as prompts from "@clack/prompts";
-import { app } from "./service.js";
 import { connectWorkerControl, type WorkerControlStatus } from "./control.js";
 import { recoverPendingIdentity, requestMachineToken, setupWorker } from "./auth.js";
 import { readSetupCodeFromFile, readSetupCodeFromStdin } from "./input.js";
@@ -16,7 +15,6 @@ type Command = "setup" | "start" | "status" | "refresh" | "forget";
 
 interface CliOptions {
   stateDirectory: string;
-  port: number;
   setupFile?: string;
   yes: boolean;
 }
@@ -25,7 +23,7 @@ const HELP = `Radium Worker
 
   setup        Enroll using a masked prompt, stdin, or --setup-file PATH
   add-token    Alias for setup (the one-time code is never saved)
-  start        Run the health server and authenticated control subscription
+  start        Run the authenticated outbound Convex control subscription
   status       Show local enrollment metadata, without making network requests
   refresh      Recover pending enrollment and verify a fresh access-token exchange
   forget       Delete this machine's saved identity (does not revoke it remotely)
@@ -34,7 +32,6 @@ const HELP = `Radium Worker
 Options:
   --state-dir PATH    State directory (default: ~/.radium-worker)
   --setup-file PATH   Protected setup-code file, setup only
-  --port NUMBER      Health port, start only (default: 3001)
   --yes              Confirm local removal, forget only
   --help             Show this help
 
@@ -181,11 +178,6 @@ async function startWorker(options: CliOptions): Promise<void> {
   state = await recoverPendingIdentity(options.stateDirectory, state);
   console.info(storageDescription(state.credentialStoreMode));
 
-  const server = Bun.serve({
-    hostname: "0.0.0.0",
-    port: options.port,
-    fetch: (request) => app.fetch(request),
-  });
   let control: ReturnType<typeof connectWorkerControl> | undefined;
   try {
     let previousStatus: WorkerControlStatus["status"] | undefined;
@@ -194,19 +186,14 @@ async function startWorker(options: CliOptions): Promise<void> {
       previousStatus = status.status;
       console.info(`Worker control ${status.status}.`);
     });
-    console.info(`Worker health endpoint listening on port ${options.port}.`);
-    await waitForShutdown(server, control);
+    await waitForShutdown(control);
   } catch (error) {
     await control?.close().catch(() => undefined);
-    server.stop(true);
     throw error;
   }
 }
 
-function waitForShutdown(
-  server: ReturnType<typeof Bun.serve>,
-  control: ReturnType<typeof connectWorkerControl>,
-): Promise<void> {
+function waitForShutdown(control: ReturnType<typeof connectWorkerControl>): Promise<void> {
   return new Promise((resolve, reject) => {
     let stopping = false;
     const onSignal = () => {
@@ -214,10 +201,7 @@ function waitForShutdown(
       stopping = true;
       process.off("SIGINT", onSignal);
       process.off("SIGTERM", onSignal);
-      void control
-        .close()
-        .finally(() => server.stop(true))
-        .then(resolve, reject);
+      void control.close().then(resolve, reject);
     };
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);
@@ -234,7 +218,7 @@ function normalizeCommand(command: string): Command {
 
 function parseOptions(args: string[], command: Command): CliOptions {
   if (args[0] === "--") args = args.slice(1);
-  const options: CliOptions = { stateDirectory: defaultStateDirectory(), port: 3001, yes: false };
+  const options: CliOptions = { stateDirectory: defaultStateDirectory(), yes: false };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
     const value = args[index + 1];
@@ -245,13 +229,6 @@ function parseOptions(args: string[], command: Command): CliOptions {
       index += 1;
     } else if (value && !value.startsWith("--") && flag === "--setup-file" && command === "setup") {
       options.setupFile = value;
-      index += 1;
-    } else if (value && flag === "--port" && command === "start") {
-      const port = Number(value);
-      if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
-        throw new WorkerProtocolError("Port must be an integer from 1 to 65535");
-      }
-      options.port = port;
       index += 1;
     } else {
       throw new WorkerProtocolError("Unsupported or missing option; use --help");

@@ -38,8 +38,9 @@ Worker control subscriptions target narrowly authenticated app queries. The app 
 owns `workers.ts` and `/api/worker/auth/*`; the component itself does not authenticate
 machine signatures or inherit app sessions.
 
-`packages/worker/src/index.ts` is the external health and authenticated Convex-client
-service. Its machine authentication and future ACP/process work are separate from identity persistence.
+`packages/worker/src/cli.ts` starts the external Worker's authenticated outbound
+Convex-client subscription, without an inbound HTTP listener. Its machine
+authentication and future ACP/process work are separate from identity persistence.
 The component explicitly declares an empty environment contract and receives no
 Worker issuer keys. The parent app declares its runtime settings; only the Secret
 Store component receives `SECRET_STORE_KEYS`. The Worker identity component

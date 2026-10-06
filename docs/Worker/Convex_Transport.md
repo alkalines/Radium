@@ -30,8 +30,10 @@ update frequency, bytes, query dependencies and subscriber fan-out.
 
 ## Implemented Foundation And Entry Points
 
-`packages/worker/src/index.ts` serves health and an authenticated Convex-client
-identity subscription. See [machine authentication](Machine_Authentication.md).
+`packages/worker/src/cli.ts` starts an authenticated outbound Convex-client
+identity subscription through `src/control.ts`. The Worker has no inbound HTTP
+listener; enrollment and JWT exchange use outbound requests to Convex-hosted auth
+endpoints. See [machine authentication](Machine_Authentication.md).
 `packages/worker-component/src/component/` implements enrollment/public-key
 identity persistence, retry recovery and revocation, mounted as `workerIdentity`
 in `packages/backend/convex/convex.config.ts`. See the

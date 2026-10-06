@@ -30,7 +30,7 @@ Run `bun run --cwd packages/worker cli` for an interactive command menu, or
 | Command                   | Purpose                                                                                                         |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `setup` / `add-token`     | Enroll with a one-time setup code; refuses to overwrite an identity.                                            |
-| `start`                   | Run health and the authenticated control subscription.                                                          |
+| `start`                   | Run the authenticated outbound Convex control subscription.                                                     |
 | `status`                  | Inspect local enrollment state and identifiers; no network access.                                              |
 | `refresh`                 | Recover pending identity if needed, then verify a fresh backend token exchange. Prints expiry, never the token. |
 | `forget` / `forget-token` | Remove local identity and credentials. Does not revoke the backend record.                                      |
@@ -69,10 +69,10 @@ query error, or Convex transport outage is disconnected. Failed token authentica
 re-arms the same client's auth callback with jittered exponential backoff, with a
 nominal delay increasing from 5 to 60 seconds; successful authentication resets the delay and shutdown
 cancels pending retries. Repeated denial remains disconnected, including after owner
-revocation. No privileged work is implemented in this package. The public `GET /health` endpoint returns only
-`{"health":"ok"}` and listens on port `3001` by default; change it with
-`bun run --cwd packages/worker start --port 3100`. Health reports process
-liveness, not backend authentication state.
+revocation. No privileged work is implemented in this package. The Worker opens
+no inbound HTTP listener; the former `/health` endpoint and `--port` option have
+been removed. Enrollment and token exchange still use outbound requests to the
+Convex-hosted authentication endpoints.
 
 The setup code's `backendUrl` and `convexUrl` are treated as explicit origins and
 are never rewritten. HTTP redirects are rejected, request timeouts are bounded,
@@ -137,8 +137,8 @@ bun run --cwd packages/worker typecheck
 
 `dev:worker` delegates to `bun run --cwd packages/worker dev` (`bun --watch`).
 Enroll first, then run it alongside root `bun run dev`. Enrollment state lives
-outside the watched source tree and survives process restarts. `--state-dir` and
-`--port` can be passed to the package's `dev` script just as with `start`.
+outside the watched source tree and survives process restarts. `--state-dir`
+can be passed to the package's `dev` script just as with `start`.
 
 `convex`, `jose`, `@clack/prompts`, and `@napi-rs/keyring` are direct Worker dependencies. Install them with
 `bun install --frozen-lockfile` from the repository root.
@@ -148,8 +148,7 @@ outside the watched source tree and survives process restarts. `--state-dir` and
 - **Implemented:** P-256 key persistence, enrollment and recovery over the
   `/api/worker/auth/challenge` and `/api/worker/auth/complete` endpoints, short-lived
   machine-token refresh, current-Worker subscription, OS credential storage with
-  explicit protected-file fallback, interactive lifecycle CLI, and
-  public liveness health.
+   explicit protected-file fallback, and interactive lifecycle CLI.
 - **Not implemented:** agent job commands, ACP, execution, approvals, filesystem access,
   output persistence, sandboxing, or privileged control mutations.
 - **Known limitation:** deployed JWT verifier configuration, TLS/proxy routing,

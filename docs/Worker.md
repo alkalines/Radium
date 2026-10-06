@@ -6,8 +6,9 @@ authorization, and coordination, and Chatroom owns conversations and approvals.
 
 ## Implemented
 
-`packages/worker/src/cli.ts` starts the unauthenticated `GET /health` service and
-connects outbound with an enrolled machine identity. Owners generate a ten-minute
+`packages/worker/src/cli.ts` connects outbound with an enrolled machine identity,
+without an inbound HTTP listener. The former health endpoint and `--port` option
+have been removed. Owners generate a ten-minute
 setup code in **Chatroom → Workers**. The Worker persists its own
 P-256 key, completes enrollment/recovery, obtains short-lived JWTs and authenticates
 a Convex subscription. See [machine authentication](Worker/Machine_Authentication.md)
