@@ -6,6 +6,8 @@ import {
   type WorkerControlStatus,
 } from "../control.js";
 import { WorkerProtocolError } from "../protocol.js";
+import { consumeEditTasks, type EditExecutor } from "../tasks.js";
+import { WorkerDirectoryEdits } from "../edit/directories.js";
 import type { CliOptions } from "./options.js";
 import { storageDescription } from "./prompt.js";
 
@@ -18,22 +20,39 @@ export async function startWorker(options: CliOptions): Promise<void> {
   console.info(storageDescription(state.credentialStoreMode));
 
   let control: WorkerControlConnection | undefined;
+  let editor: EditExecutor | undefined;
+  let tasks: ReturnType<typeof consumeEditTasks> | undefined;
+  const close = async () => {
+    try {
+      if (tasks) await tasks.close();
+      else await editor?.close();
+    } finally {
+      await control?.close();
+    }
+  };
   try {
+    editor = new WorkerDirectoryEdits();
     let previousStatus: WorkerControlStatus["status"] | undefined;
     control = connectWorkerControl(state, (status) => {
+      tasks?.setAvailable(status.status === "connected");
       if (previousStatus === status.status) return;
       previousStatus = status.status;
       console.info(`Worker control ${status.status}.`);
     });
-    await waitForShutdown(control);
+    if (editor) {
+      tasks = consumeEditTasks(control.client, editor);
+      tasks.setAvailable(previousStatus === "connected");
+      console.info("Worker edit task consumer enabled.");
+    }
+    await waitForShutdown(close);
   } catch (error) {
-    await control?.close().catch(() => undefined);
+    await close().catch(() => undefined);
     throw error;
   }
 }
 
 /** Close the same connection once and detach both signal handlers before awaiting it. */
-function waitForShutdown(control: WorkerControlConnection): Promise<void> {
+function waitForShutdown(close: () => Promise<void>): Promise<void> {
   return new Promise((resolve, reject) => {
     let stopping = false;
     const onSignal = () => {
@@ -41,7 +60,7 @@ function waitForShutdown(control: WorkerControlConnection): Promise<void> {
       stopping = true;
       process.off("SIGINT", onSignal);
       process.off("SIGTERM", onSignal);
-      void control.close().then(resolve, reject);
+      void close().then(resolve, reject);
     };
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);

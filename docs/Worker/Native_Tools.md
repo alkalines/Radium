@@ -2,21 +2,22 @@
 
 ## Decision and status
 
-Use Oh-My-Pi's own `@oh-my-pi/pi-natives` npm package as the intended native
-engine for Worker file editing, rather than implementing a reduced hashline
-editor in TypeScript. Integrate the full read/edit lifecycle, snapshot state,
-previews, application results, and stale-reference handling.
+Radium uses Oh-My-Pi's own `@oh-my-pi/pi-natives` npm package as the native
+engine for Worker file editing. The Worker adapter owns filesystem policy and the
+read/preview/apply lifecycle; it does not reimplement hashline parsing or editing.
 
-**Planned in Radium:** the dependency has not been installed, and no native tool
-adapter or execution integration is implemented. Worker authentication and task
-status coordination do not provide execution. See [Worker tasks](Tasks.md),
-[transport](Convex_Transport.md), and the
+**Implemented locally (2026-10-07):** pinned `@oh-my-pi/pi-natives@18.8.3`, native
+snapshot/provenance reads, staged previews, single-use application, and authorized
+edit task messaging. The actual native build reports `18.8.3` and was exercised on
+Linux x64 with Bun 1.4.2. Chatroom model-tool dispatch and approval UI, deployed
+transport verification, search adapters, and additional tools remain follow-up
+work. See [Worker tasks](Tasks.md), [transport](Convex_Transport.md), and the
 [Chatroom/Worker handoff](../tasks/06_Chatroom_Worker.md).
 
 Upstream observations below were checked against Oh-My-Pi's `main` source on
 2026-10-07. They are not a guarantee that a particular published version has the
-same API. Select and pin a published version and verify its declarations,
-runtime requirements, and native artifacts before adoption.
+same API. The installed 18.8.3 declarations and Linux x64 native artifact were
+checked for this integration; recheck them when updating the pin.
 
 ## Package and distribution
 
@@ -40,17 +41,113 @@ require a local Rust toolchain. Unsupported targets, system-library requirements
 and installs that omit optional dependencies still need explicit verification.
 The upstream source manifest currently requires Bun >= 1.3.14.
 
-Proposed installation from the Radium repository root, when implementation begins:
+The dependency and platform-package pins are checked into `bun.lock`. Install from
+the Radium repository root:
 
 ```sh
-bun add --cwd packages/worker @oh-my-pi/pi-natives
+bun install --frozen-lockfile
 ```
 
-Pin the validated version for the integration. Import native code only in the
+Import native code only in the
 Worker, not in frontend bundles or Convex functions. Upstream is MIT licensed;
 review its third-party notices and retain required attribution when distributing
 native artifacts. Consuming this package does not require adopting the whole
 Oh-My-Pi agent, its model routing, or its TUI.
+
+## Implemented Worker Adapter
+
+- `packages/worker/src/edit/index.ts` exports `WorkerEditService`.
+- `service.ts` owns native stores, read provenance, previews, result serialization,
+  and the host writer; `path-policy.ts` owns local root/path checks.
+- `directories.ts` binds backend-selected directories to sessions, loads native
+  services lazily, and enforces the aggregate session/preview-memory budget.
+- `packages/worker/src/tasks.ts` consumes owner-dispatched assignments through the
+  same machine-authenticated Convex client. Inputs/results live in short-lived
+  task records, not logs. The [task guide](Tasks.md#edit-messaging-and-execution)
+  owns authorization, exact endpoints, size limits and recovery behavior.
+
+Start an enrolled Worker normally; it consumes edit tasks without a directory
+option:
+
+```bash
+bun run --cwd packages/worker start
+```
+
+Startup always runs the identity/control path and consumes assigned edit tasks.
+The native service is loaded lazily on the first valid request whose backend-supplied
+`directory` is an absolute path on this Worker. The directory router canonicalizes
+that existing directory and confines edit paths to it; the backend's
+owner-authorized dispatch caller selects the directory. No local directory
+allowlist is required. Each native session has its own `EditStore` and is keyed by
+workspace, dispatching owner, chat and runner session ID, with a binding to its
+canonical directory. Changing directories within an active session fails with
+`SESSION_DIRECTORY_CHANGED`. Close the session with its bound directory to release
+that binding; a new directory under the same session ID starts with fresh snapshots.
+Service requests are serialized, including requests from different sessions.
+
+Stored legacy tasks may lack `request.directory`; the Worker fails those tasks with
+`DIRECTORY_REQUIRED` without falling back to its current working directory. The
+public `dispatchEdit` request always requires the directory field.
+
+1. **Read:** return the matching native file header, numbered text, and the pinned
+   engine's instructions/grammars. Record only displayed lines as seen. Optional
+   `startLine` (one-based) and `maxLines` (1–5,000) allow paged reads; a truncated
+   response includes `nextLine`. Pages are capped at 48 KiB of formatted content.
+2. **Preview:** inspect every authored source/destination path before entering the
+   native lifecycle. Native `EditSession.apply` uses an in-memory host writer:
+   it computes edits/diffs and updates native state without touching disk. Restore
+   actual filesystem snapshots after staging. Return a preview ID, diffs, warnings,
+   diagnostics, and native rejection/stale-reference text.
+   Each session has one pending preview: apply it or close the session before
+   staging another edit. The published native API exposes no store clone or
+   clipboard rollback, so this admission rule fences scratch-register changes
+   made during native staging. Expiration and failed staging/application clear
+   native scratch state; re-read before preparing the next edit.
+3. **Apply:** consume the preview ID once, recheck complete UTF-8 file preimages and
+   expected-absent destinations, and apply the staged host writes. Revalidate paths
+   at admission and before writes. Return outcomes and applied paths; failures
+   report potential partial application. A consumed or expired preview is never
+   replayed, even if the backend task receipt has already been cleaned up.
+4. **Close/restart:** dispose snapshots and pending previews. Restart cannot recover
+   native session state or reuse old preview IDs.
+
+Hashline is the default; its patch uses tagged file headers, optionally wrapped
+in `*** Begin Patch` / `*** End Patch` as in the exported grammar. An envelope with
+`*** Add File`, `*** Update File`, or `*** Delete File` headers selects the native
+**apply_patch** format, including file creation. Use the grammar returned by reads/previews rather than mixing the
+two envelopes. Real-engine regressions exercise syntax-block replacement and named
+cut/paste registers across calls, as well as range replacement/insertion, moves,
+deletes, file creation, stale recovery and session separation.
+
+## Bounds And Known Limitations
+
+- UTF-8 text files up to 4 MiB are supported; binary/non-UTF-8 files are rejected.
+  UTF-8 BOMs are preserved. A single line exceeding the read page budget returns
+  `READ_LINE_TOO_LARGE`. Tool responses are at most 128 KiB.
+- At most 64 live edit sessions across all directories and one preview per session
+  are retained. A failed initial request releases its session slot. Staged writes
+  and preimages have an 8 MiB per-preview and 32 MiB service-wide budget. Preview
+  TTL is ten minutes; expiration is checked on subsequent requests. Close unused
+  sessions explicitly; there is no idle session eviction.
+- Root traversal, root replacement with an external symlink, and existing symlink
+  escapes are rejected for reads, updates, creates, deletes and both move ends.
+  Path-based checks are not an OS sandbox: an adversarial local process racing
+  symlink changes between checks/syscalls remains a TOCTOU limitation.
+- Multi-file writes are **not transactional**. An I/O failure after earlier writes
+  can leave partial application; inspect the returned applied paths and actual
+  files before preparing a new edit. Moves preserve ordinary POSIX permission bits
+  subject to the host's umask; full file metadata/ACL preservation is not implemented.
+- Only Linux x64 native runtime behavior was exercised. Other platform artifacts,
+  system-library requirements and distribution/container paths remain unverified.
+
+Verification uses Vitest for auth/control/consumer tests and Bun for the real native
+engine, matching the Worker host:
+
+```bash
+bun run --cwd packages/worker test
+bun run --cwd packages/worker test:unit tasks.test.ts
+bun run --cwd packages/worker test:edit
+```
 
 ## Full file editing integration
 

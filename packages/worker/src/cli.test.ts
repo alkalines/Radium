@@ -6,6 +6,8 @@ import { requestMachineToken } from "./auth/token.js";
 import { readSetupCode } from "./cli/prompt.js";
 import { connectWorkerControl } from "./control.js";
 import { password } from "@clack/prompts";
+import { consumeEditTasks } from "./tasks.js";
+import { WorkerDirectoryEdits } from "./edit/directories.js";
 
 vi.mock("./auth/state.js", () => ({
   defaultStateDirectory: () => "/test/worker",
@@ -21,6 +23,12 @@ vi.mock("./auth/token.js", () => ({
   requestMachineToken: vi.fn(),
 }));
 vi.mock("./control.js", () => ({ connectWorkerControl: vi.fn() }));
+vi.mock("./tasks.js", () => ({
+  consumeEditTasks: vi.fn(() => ({
+    setAvailable: vi.fn(),
+    close: vi.fn().mockResolvedValue(undefined),
+  })),
+}));
 vi.mock("@clack/prompts", () => ({
   password: vi.fn(),
   isCancel: vi.fn(() => false),
@@ -134,6 +142,8 @@ describe("Worker CLI credential lifecycle", () => {
     await expect(runCli(["start", "--setup-file", "/test/setup"])).rejects.toThrow("Unsupported");
     await expect(runCli(["status", "--yes"])).rejects.toThrow("Unsupported");
     await expect(runCli(["start", "--port", "3001"])).rejects.toThrow("Unsupported");
+    await expect(runCli(["setup", "--edit-root", "/project"])).rejects.toThrow("Unsupported");
+    await expect(runCli(["start", "--edit-root", "/project"])).rejects.toThrow("Unsupported");
   });
 
   it("accepts a leading package-script separator without losing state options", async () => {
@@ -190,4 +200,29 @@ describe("Worker CLI credential lifecycle", () => {
       expect(serve).not.toHaveBeenCalled();
     },
   );
+
+  it("consumes backend-directory tasks on start and drains tasks before closing control", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const state = { identity: { workerId: "worker-id" } };
+    vi.mocked(readWorkerState).mockResolvedValue(state as never);
+    vi.mocked(recoverPendingIdentity).mockResolvedValue(state as never);
+    const tasks = { setAvailable: vi.fn(), close: vi.fn().mockResolvedValue(undefined) };
+    vi.mocked(consumeEditTasks).mockReturnValue(tasks);
+    vi.mocked(consumeEditTasks).mockClear();
+    const close = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(connectWorkerControl).mockImplementation((_state, onStatus) => {
+      onStatus({ status: "connected", worker: {} as never });
+      return { client: {} as never, close };
+    });
+    const running = runCli(["start"]);
+    await vi.waitFor(() => expect(consumeEditTasks).toHaveBeenCalled());
+    expect(vi.mocked(consumeEditTasks).mock.calls[0]?.[1]).toBeInstanceOf(WorkerDirectoryEdits);
+    expect(tasks.setAvailable).toHaveBeenLastCalledWith(true);
+    process.emit("SIGTERM");
+    await running;
+    expect(tasks.close).toHaveBeenCalledTimes(1);
+    expect(tasks.close.mock.invocationCallOrder[0]).toBeLessThan(
+      close.mock.invocationCallOrder[0]!,
+    );
+  });
 });

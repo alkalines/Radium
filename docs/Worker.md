@@ -15,8 +15,12 @@ a Convex subscription. See [machine authentication](Worker/Machine_Authenticatio
 for the implemented protocol, configuration and local verification boundary.
 The standalone HTTP client package has been removed. Control-plane integration
 is intended to use app-owned Convex queries and mutations calling the Worker component; future
-Worker subscriptions use narrowly authenticated app wrappers. The Worker service
-does not yet implement authenticated execution or job dispatch. Root development
+Worker subscriptions use narrowly authenticated app wrappers. The Worker now
+implements owner-dispatched, machine-claimed edit tasks and short-lived results.
+`start` consumes edit tasks without a directory CLI option; the owner-authorized
+backend dispatch supplies an absolute directory on the target Worker, and native
+editing is loaded lazily for a valid request. See [Worker tasks](Worker/Tasks.md)
+for directory selection, result subscriptions and crash behavior. Root development
 does not start the Worker; `bun run dev:worker` watches and restarts an enrolled
 Worker alongside it. The [Worker CLI guide](../packages/worker/README.md) covers
 masked interactive setup, local status, authentication refresh and forgetting credentials.
@@ -43,15 +47,15 @@ with tools or Chatroom coordination.
 
 [Worker tasks](Worker/Tasks.md) persist `sent`, `processing`, `failed`, `retrying`
 and `success`, with optional chat/tool-call correlation. Every five minutes,
-cleanup removes terminal task records aged at least five minutes. Tool execution
-and Chatroom dispatch integration remain planned.
+cleanup removes terminal task records aged at least five minutes, including edit
+inputs/results. Chatroom model-tool wiring, durable conversation outcomes and
+approval presentation remain planned.
+
+The [native tools guide](Worker/Native_Tools.md) describes Oh-My-Pi's own
+`@oh-my-pi/pi-natives` package and the edit adapter's read/preview/apply lifecycle,
+as well as the planned shell, background-job, and PTY primitives.
 
 ## Proposed
-
-The [native tools plan](Worker/Native_Tools.md) selects Oh-My-Pi's own
-`@oh-my-pi/pi-natives` package for full file-editing integration and documents
-its shell, background-job, and PTY primitives. Package adoption and Worker tool
-execution remain planned.
 
 The [Bash tool reference](Worker/Bash_Tool.md) details shell execution,
 background jobs, interactive terminals, and the required Worker adapter. The
@@ -63,7 +67,8 @@ commands, approvals, batched output and results through Convex. Worker and Chatr
 connect outbound to Convex; Worker adapts a local stdio ACP agent. Local batching,
 bounded output chunks, separate control/output subscriptions and retention limit
 database load. Machine JWT authentication and identity-management wrappers are now
-implemented; command, approval and output transport remain planned.
+implemented; the edit-only request/result path is implemented locally. ACP,
+streaming/batched output and approval transport remain planned.
 
 The [authentication research](Worker/Authentication.md) supplies the enrollment
 and per-worker proof-of-possession foundation. Its transport recommendation and

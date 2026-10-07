@@ -294,3 +294,210 @@ test("cleanup bounds each terminal batch and subsequent ticks drain the backlog"
   expect(await f.t.mutation(internal.worker_tasks.prune, {})).toBe(2 * WORKER_TASK_CLEANUP_BATCH);
   expect(await f.t.mutation(internal.worker_tasks.prune, {})).toBe(2);
 });
+
+test("edit dispatch and output preserve owner, private-chat and assignment boundaries", async () => {
+  const f = await fixture();
+  const args = {
+    workspace: f.workspace,
+    workerId: f.first.identity.workerId,
+    requestId: "edit-read",
+    request: {
+      directory: "/worker/project",
+      sessionId: "session",
+      action: { kind: "read" as const, path: "src/file.ts" },
+    },
+    chatId: f.chatId,
+  };
+  const taskId = await f.owner.mutation(api.worker_tasks.dispatchEdit, args);
+  expect(await f.owner.mutation(api.worker_tasks.dispatchEdit, args)).toBe(taskId);
+  await expect(
+    f.owner.mutation(api.worker_tasks.dispatchEdit, {
+      ...args,
+      request: { ...args.request, directory: "/worker/another-project" },
+    }),
+  ).rejects.toThrow();
+  const { directory: _directory, ...legacyRequest } = args.request;
+  await expect(
+    f.owner.mutation(api.worker_tasks.dispatchEdit, { ...args, request: legacyRequest } as never),
+  ).rejects.toThrow();
+  await expect(
+    f.owner.mutation(api.worker_tasks.dispatchEdit, {
+      ...args,
+      request: { ...args.request, action: { kind: "read", path: "other.ts" } },
+    }),
+  ).rejects.toThrow();
+  await expect(f.t.mutation(api.worker_tasks.dispatchEdit, args)).rejects.toThrow();
+  await f.t.run((ctx) =>
+    ctx.db.insert("workspace_members", {
+      workspace: f.workspace,
+      userId: "member",
+      role: "member",
+    }),
+  );
+  const member = f.t.withIdentity({ subject: "member" });
+  await expect(member.mutation(api.worker_tasks.dispatchEdit, args)).rejects.toThrow();
+  await expect(
+    member.query(api.worker_tasks.outcome, { workspace: f.workspace, taskId }),
+  ).rejects.toThrow();
+  const privateChat = await f.t.run((ctx) =>
+    ctx.db.insert("aisdk_chats", {
+      workspace: f.workspace,
+      userId: "member",
+      scope: "personal",
+      messages: [],
+      chat_completions: [],
+    }),
+  );
+  await expect(
+    f.owner.mutation(api.worker_tasks.dispatchEdit, {
+      ...args,
+      chatId: privateChat,
+      requestId: "private-edit",
+    }),
+  ).rejects.toThrow();
+  await expect(
+    f.second.machine.mutation(api.worker_tasks.claimEdit, { taskId, claimId: "other" }),
+  ).rejects.toThrow();
+  expect(
+    (
+      await f.first.machine.query(api.worker_tasks.assigned, { status: "sent", operation: "edit" })
+    ).map((task) => task._id),
+  ).toEqual([taskId]);
+  await expect(
+    f.owner.mutation(api.worker_tasks.dispatchEdit, {
+      ...args,
+      requestId: "large",
+      request: {
+        directory: "/worker/project",
+        sessionId: "session",
+        action: { kind: "preview", patch: "a".repeat(33 * 1024) },
+      },
+    }),
+  ).rejects.toThrow();
+  expect(
+    (await f.owner.query(api.worker_tasks.outcome, { workspace: f.workspace, taskId }))
+      ?.editRequest,
+  ).toEqual(args.request);
+  await f.t.run((ctx) => ctx.db.patch(f.chatId, { userId: "member" }));
+  await expect(
+    f.owner.query(api.worker_tasks.outcome, { workspace: f.workspace, taskId }),
+  ).rejects.toThrow();
+});
+
+test("edit claims exclude competing connections and completion retries never reopen execution", async () => {
+  const f = await fixture();
+  const taskId = await f.owner.mutation(api.worker_tasks.dispatchEdit, {
+    workspace: f.workspace,
+    workerId: f.first.identity.workerId,
+    requestId: "apply",
+    request: {
+      directory: "/worker/project",
+      sessionId: "session",
+      action: { kind: "apply", previewId: "preview" },
+    },
+  });
+  const claim = { taskId, claimId: "process-1" };
+  const task = await f.first.machine.mutation(api.worker_tasks.claimEdit, claim);
+  expect(task?.status).toBe("processing");
+  expect(await f.first.machine.mutation(api.worker_tasks.claimEdit, claim)).toEqual(task);
+  expect(
+    await f.first.machine.mutation(api.worker_tasks.claimEdit, { ...claim, claimId: "process-2" }),
+  ).toBeNull();
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.updateStatus, {
+      taskId,
+      expectedRevision: 1,
+      status: "retrying",
+    }),
+  ).rejects.toThrow();
+  const completion = {
+    ...claim,
+    expectedRevision: 1,
+    result: { ok: true as const, output: "changed" },
+  };
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.completeEdit, {
+      ...completion,
+      claimId: "process-2",
+    }),
+  ).rejects.toThrow();
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.completeEdit, {
+      ...completion,
+      result: { ok: true, output: "a".repeat(129 * 1024) },
+    }),
+  ).rejects.toThrow();
+  const done = await f.first.machine.mutation(api.worker_tasks.completeEdit, completion);
+  expect(done.status).toBe("success");
+  expect(await f.first.machine.mutation(api.worker_tasks.completeEdit, completion)).toEqual(done);
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.completeEdit, {
+      ...completion,
+      result: { ok: true, output: "different" },
+    }),
+  ).rejects.toThrow();
+  expect(await f.first.machine.mutation(api.worker_tasks.claimEdit, claim)).toBeNull();
+  await f.owner.mutation(api.workers.revoke, {
+    workspace: f.workspace,
+    workerId: f.first.identity.workerId,
+  });
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.completeEdit, completion),
+  ).rejects.toThrow();
+});
+
+test("native error context is bounded, idempotent and expires with the failed task", async () => {
+  const f = await fixture();
+  const args = {
+    workspace: f.workspace,
+    workerId: f.first.identity.workerId,
+    requestId: "rejected",
+    request: {
+      sessionId: "session",
+      directory: "/worker/project",
+      action: { kind: "read" as const, path: "file.ts", startLine: 10, maxLines: 20 },
+    },
+  };
+  await expect(
+    f.owner.mutation(api.worker_tasks.dispatchEdit, {
+      ...args,
+      request: { ...args.request, action: { ...args.request.action, startLine: 0 } },
+    }),
+  ).rejects.toThrow();
+  const taskId = await f.owner.mutation(api.worker_tasks.dispatchEdit, args);
+  await expect(
+    f.owner.mutation(api.worker_tasks.dispatchEdit, {
+      ...args,
+      request: { ...args.request, action: { ...args.request.action, startLine: 11 } },
+    }),
+  ).rejects.toThrow();
+  await f.first.machine.mutation(api.worker_tasks.claimEdit, { taskId, claimId: "process" });
+  const receipt = {
+    taskId,
+    claimId: "process",
+    expectedRevision: 1,
+    result: { ok: false as const, code: "EDIT_REJECTED", output: "stale reference context" },
+  };
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.completeEdit, {
+      ...receipt,
+      result: { ...receipt.result, output: "x".repeat(129 * 1024) },
+    }),
+  ).rejects.toThrow();
+  const failed = await f.first.machine.mutation(api.worker_tasks.completeEdit, receipt);
+  expect(failed.status).toBe("failed");
+  expect(await f.first.machine.mutation(api.worker_tasks.completeEdit, receipt)).toEqual(failed);
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.completeEdit, {
+      ...receipt,
+      result: { ...receipt.result, output: "different context" },
+    }),
+  ).rejects.toThrow();
+  await f.t.run((ctx) =>
+    ctx.db.patch(taskId, { terminalAt: Date.now() - WORKER_TASK_RETENTION_MS }),
+  );
+  expect(await f.t.mutation(internal.worker_tasks.prune, {})).toBe(1);
+  expect(
+    await f.owner.query(api.worker_tasks.outcome, { workspace: f.workspace, taskId }),
+  ).toBeNull();
+});

@@ -1,7 +1,9 @@
 # Worker Transport Through Convex
 
 Decision date: **2026-10-02**. Status: **selected design; machine authentication and
-identity subscription implemented locally**, command/approval/output transport remains planned.
+identity subscription and edit-only request/result transport implemented locally**;
+ACP, approvals and streaming output transport remain planned. Deployed transport
+verification remains open.
 This supersedes the Worker-hosted WSS/Tailscale transport recommendation in
 [connectivity research](Connectivity.md). Worker and Chatroom both connect
 outbound through Convex clients; commands, approvals, output and results pass
@@ -40,7 +42,15 @@ in `packages/backend/convex/convex.config.ts`. See the
 [component contract](Component.md).
 
 Owner/machine identity wrappers and the Worker identity subscription are implemented.
-Output persistence, ACP execution and interactive Chatroom integration remain planned. App-owned
+An edit-only path adds owner-dispatched bounded task requests, exclusive machine
+claims, serialized Worker-local execution, and short-lived completion results.
+See [task messaging](Tasks.md) for exact endpoints, retention and crash boundaries.
+The Worker always consumes assigned edit tasks over the same outbound client.
+The owner-authorized, backend-only dispatch caller supplies the absolute
+`request.directory` on the target Worker; the Worker canonicalizes it and lazily
+loads the native editor for a valid request. No directory CLI option or local
+allowlist selects the execution folder. This path does not adapt an ACP agent.
+Batched output, ACP execution and interactive Chatroom integration remain planned. App-owned
 queries/mutations authorize callers before accessing the component; clients do
 not call component functions directly. Runtime-neutral wire contracts belong in
 `packages/backend/src/worker/` when introduced. Current Chatroom entry points
@@ -63,7 +73,9 @@ Workers. The proposed connection flow is:
 3. App queries/mutations derive Worker identity and workspace server-side and
    enforce active identity/epoch, capabilities and session/attempt assignment.
    JWT validity alone does not establish current authorization. Mutations check
-   authority in the same transaction as the state transition.
+   authority in the same transaction as the state transition. For edit dispatch,
+   the authenticated workspace owner selects the Worker-local directory in the
+   request; the Worker canonicalizes it and confines edit paths to that directory.
 4. Human operations retain Better Auth session validation and current workspace
    and chat checks. Managing a Worker does not grant access to another user's
    personal chat. Initial session policy is one controller plus authorized viewers.

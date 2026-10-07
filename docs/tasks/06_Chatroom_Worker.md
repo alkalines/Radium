@@ -2,8 +2,9 @@
 
 Status: Authentication/connectivity research completed 2026-10-01; identity
 persistence package, owner setup-code UI, JOSE proof admission and Worker Convex
-machine authentication implemented locally. Deployment auth verification, command/output
-transport, execution protocol and isolation design remain open. See
+machine authentication and edit-only request/result execution implemented locally.
+Deployment auth verification, broader command/output transport, Chatroom integration
+and execution isolation design remain open. See
 [Worker authentication research](../Worker/Authentication.md) for the
 recommendation, component candidates, proposed boundaries, and verification gates.
 The selected 2026-10-02 [Convex Client transport plan](../Worker/Convex_Transport.md)
@@ -42,6 +43,48 @@ subscription. Deployed verifier/transport checks and execution remain follow-up 
 5. Write `docs/Radium_Chatroom.md`, `docs/Worker.md`, and `docs/Worker/Execution.md`, clearly marking design versus authentication-only reality.
 
 ## Next Implementation Slice
+
+### Edit-Only Execution And Messaging (2026-10-07)
+
+Implemented an initial native read/preview/apply/close path where the owner-only
+`dispatchEdit` caller supplies the target Worker's execution directory, plus
+machine-authorized exclusive claims/completions. Edit tasks carry bounded,
+short-lived requests/results; the assignment query returns at most four records and
+supports an indexed edit filter. The consumer serializes local work and retries
+completion receipts without re-executing filesystem changes. Restart discards native
+session state and leaves claimed unknown outcomes in `processing`. See
+[tasks](../Worker/Tasks.md) and
+[native editing](../Worker/Native_Tools.md).
+
+This does not complete task 06. Next: wire model tools and approved previews into
+Chatroom, persist durable chat outcomes before task cleanup, define cancellation
+and ambiguous-outcome recovery, then verify separately deployed machine transport.
+ACP, Bash and eval remain separate slices. Do not use terminal task receipts as
+permanent execution deduplication. No deployment or migration was performed.
+
+Verification: `bun install --frozen-lockfile` passed. `bun run test` passed all 130
+backend tests, including seven edit/task regressions. `bun run --cwd packages/worker test`
+passed 39 Vitest tests and 20 real-native-engine Bun tests on Linux x64 / Bun 1.4.2
+with native build 18.8.3.
+The guarded offline API generator ran without remote analysis or upload.
+`bun run --cwd packages/worker typecheck` remains blocked by the previously recorded
+Gateway routing/translator/type-import errors; scoped lint remains blocked by the
+missing ESLint dependency. Scoped formatting and `git diff --check` passed.
+
+Correction follow-up: the execution-directory contract is backend-selected, not a
+Worker startup option. Worker `start` always consumes edit tasks, and public
+`dispatchEdit` requires an absolute `request.directory` on the target Worker; the
+owner-authorized backend caller selects it, and the Worker canonicalizes it. Stored
+requests may omit the directory only for legacy compatibility; queued tasks missing
+it fail with `DIRECTORY_REQUIRED` and do not use the current working directory.
+Native editing loads lazily for a valid directory request. A live runner session is
+bound to its canonical directory and rejects a switch with
+`SESSION_DIRECTORY_CHANGED`; closing releases the binding and a new directory under
+the reused session ID starts with fresh snapshots. The 64-session cap is across
+directories. Existing verification records above are unchanged; this correction
+does not claim deployment. Correction verification: backend Worker/task tests
+passed 17 checks; Worker checks passed 40 Vitest tests and 21 native-engine tests.
+Worker typechecking still reports only the previously recorded Gateway errors.
 
 ### Domain Placement, Task Status And Stdin Setup (2026-10-06)
 

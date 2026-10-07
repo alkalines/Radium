@@ -1,4 +1,5 @@
 import { v, type Infer } from "convex/values";
+import { workerEditRequest, workerEditResult } from "./edit-contract";
 
 /** Short-lived coordination state; chats remain the owner of tool-call history. */
 export const workerTaskStatus = v.union(
@@ -18,7 +19,8 @@ export const WORKER_TASK_RETENTION_MS = 5 * 60_000;
 export const WORKER_TASK_CLEANUP_BATCH = 100;
 
 /**
- * Persist only coordination metadata, not tool input/output or chat transcripts.
+ * Legacy tasks persist coordination metadata. Edit tasks additionally carry bounded,
+ * short-lived tool requests/results; chats remain the durable history owner.
  * `requestId` deduplicates dispatch to one Worker; `revision` fences stale status
  * updates and `attempt` counts starts, including explicitly requested retries.
  */
@@ -34,6 +36,10 @@ export const workerTaskFields = {
   attempt: v.number(),
   updatedAt: v.number(),
   terminalAt: v.optional(v.number()),
+  editRequest: v.optional(workerEditRequest),
+  editOwnerId: v.optional(v.string()),
+  claimId: v.optional(v.string()),
+  result: v.optional(workerEditResult),
 };
 
 export const workerTaskRecord = v.object({

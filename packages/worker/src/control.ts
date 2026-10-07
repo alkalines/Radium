@@ -40,6 +40,15 @@ export function connectWorkerControl(
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let retryDelay = INITIAL_AUTH_RETRY_MS;
+  let lastWorker: WorkerMetadata | undefined;
+  let authenticated = false;
+  let socketConnected = false;
+
+  const reportRestored = () => {
+    if (!closed && authenticated && socketConnected && lastWorker) {
+      onStatus({ status: "connected", worker: lastWorker });
+    }
+  };
 
   const disconnected = () => {
     if (!closed) onStatus({ status: "disconnected" });
@@ -47,10 +56,12 @@ export function connectWorkerControl(
 
   const authChanged = (isAuthenticated: boolean) => {
     if (closed) return;
+    authenticated = isAuthenticated;
     if (isAuthenticated) {
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = undefined;
       retryDelay = INITIAL_AUTH_RETRY_MS;
+      reportRestored();
       return;
     }
     disconnected();
@@ -67,7 +78,9 @@ export function connectWorkerControl(
   client.setAuth(fetchToken, authChanged);
 
   const unsubscribeConnection = client.subscribeToConnectionState(({ isWebSocketConnected }) => {
+    socketConnected = isWebSocketConnected;
     if (!isWebSocketConnected) disconnected();
+    else reportRestored();
   });
   const unsubscribeWorker = client.onUpdate(
     api.workers.current,
@@ -80,12 +93,17 @@ export function connectWorkerControl(
         worker.workspaceId !== identity.workspaceId ||
         worker.identityEpoch !== identity.identityEpoch
       ) {
+        lastWorker = undefined;
         disconnected();
       } else if (!closed) {
+        lastWorker = worker;
         onStatus({ status: "connected", worker });
       }
     },
-    disconnected,
+    () => {
+      lastWorker = undefined;
+      disconnected();
+    },
   );
 
   return {

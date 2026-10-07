@@ -100,3 +100,19 @@ test("failed token auth re-arms the same client with backoff and shutdown cancel
   expect(mock.unsubscribeWorker).toHaveBeenCalledTimes(1);
   expect(mock.unsubscribeConnection).toHaveBeenCalledTimes(1);
 });
+
+test("transport restoration resumes cached control availability while denied metadata stays disconnected", async () => {
+  const onStatus = vi.fn();
+  const control = connectWorkerControl(state, onStatus);
+  mock.authChanged?.(true);
+  mock.connectionChanged?.({ isWebSocketConnected: true });
+  mock.workerChanged?.(worker);
+  mock.connectionChanged?.({ isWebSocketConnected: false });
+  expect(onStatus).toHaveBeenLastCalledWith({ status: "disconnected" });
+  mock.connectionChanged?.({ isWebSocketConnected: true });
+  expect(onStatus).toHaveBeenLastCalledWith({ status: "connected", worker });
+  mock.workerChanged?.(null);
+  mock.connectionChanged?.({ isWebSocketConnected: true });
+  expect(onStatus).toHaveBeenLastCalledWith({ status: "disconnected" });
+  await control.close();
+});

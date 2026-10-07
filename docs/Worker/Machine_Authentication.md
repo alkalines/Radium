@@ -138,7 +138,13 @@ archive state, active key and identity epoch before the handler runs. Handlers
 receive that scope as `ctx.worker`; they do not accept ownership from the machine.
 Future machine control mutations must use `workerMutation` so these checks run in
 their state-transition transaction, and add capability/assignment authorization.
-There is currently no execution authority: newly enrolled Workers have no capabilities.
+Newly enrolled Workers have no advertised capabilities. The initial
+[edit task path](Tasks.md#edit-messaging-and-execution) authorizes owner-dispatched
+assignments and machine claims. `start` always consumes edit tasks; the owner-only
+backend dispatch caller supplies the required `request.directory` as an absolute
+target-Worker path, and the Worker loads native editing lazily for a valid request.
+Enrollment alone does not authorize a task or select its directory. Capability
+negotiation for other tools remains planned.
 
 Owner revocation advances the component epoch. Existing JWT signatures remain valid
 until expiry, but `workers.current` and later authorized reads/writes reject the

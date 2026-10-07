@@ -1,8 +1,9 @@
 # Radium Worker
 
-The Worker package implements local machine identity setup and a narrowly scoped
-authenticated Convex subscription. It does not execute commands, expose an agent
-protocol, or receive deployment/admin credentials.
+The Worker package implements local machine identity setup, a narrowly scoped
+authenticated Convex subscription, and an edit-task consumer that lazily loads its
+native file-editing service for valid requests. It does not expose an agent protocol
+or receive deployment/admin credentials.
 
 ## Setup and run
 
@@ -27,7 +28,7 @@ Run `bun run --cwd packages/worker cli` for an interactive command menu, or
 | Command                   | Purpose                                                                                                         |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `setup` / `add-token`     | Enroll with a one-time setup code; refuses to overwrite an identity.                                            |
-| `start`                   | Run the authenticated outbound Convex control subscription.                                                     |
+| `start`                   | Run the authenticated outbound Convex control subscription and consume assigned edit tasks.                     |
 | `status`                  | Inspect local enrollment state and identifiers; no network access.                                              |
 | `refresh`                 | Recover pending identity if needed, then verify a fresh backend token exchange. Prints expiry, never the token. |
 | `forget` / `forget-token` | Remove local identity and credentials. Does not revoke the backend record.                                      |
@@ -66,7 +67,9 @@ query error, or Convex transport outage is disconnected. Failed token authentica
 re-arms the same client's auth callback with jittered exponential backoff, with a
 nominal delay increasing from 5 to 60 seconds; successful authentication resets the delay and shutdown
 cancels pending retries. Repeated denial remains disconnected, including after owner
-revocation. No privileged work is implemented in this package. The Worker opens
+revocation. The same client always consumes authenticated edit assignments and
+sends bounded results. Native editing is loaded lazily when a valid request supplies
+its backend-selected directory. Filesystem operations stay local. The Worker opens
 no inbound HTTP listener; the former `/health` endpoint and `--port` option have
 been removed. Enrollment and token exchange still use outbound requests to the
 Convex-hosted authentication endpoints.
@@ -75,6 +78,38 @@ The setup code's `backendUrl` and `convexUrl` are treated as explicit origins an
 are never rewritten. HTTP redirects are rejected, request timeouts are bounded,
 and response bodies are size-limited. Setup codes, proofs, machine JWTs, private
 keys, and response bodies are not logged.
+
+## Edit Tasks
+
+`start` always consumes edit tasks; the execution directory comes from the
+owner-authorized backend dispatch, not a CLI option. Public `dispatchEdit` requests
+require `request.directory`, an absolute path on the target Worker. The Worker
+canonicalizes the selected directory and confines edit paths to it; no local
+directory allowlist is part of the contract. The native service is loaded only for
+the first valid directory request. The edit tool supports reads that record native
+snapshot provenance, staged patch previews, explicit application of a preview ID,
+and session disposal. See
+[native editing](../../docs/Worker/Native_Tools.md) and
+[backend messaging](../../docs/Worker/Tasks.md) for contracts, bounds and limitations.
+
+Owners dispatch via `api.worker_tasks.dispatchEdit` and subscribe to
+`api.worker_tasks.outcome`; model-tool/Chatroom UI wiring is follow-up work. Sessions
+are bound to a canonical directory and isolated by workspace, owner, chat and
+runner session ID. A directory change during a live session fails with
+`SESSION_DIRECTORY_CHANGED`; close it with its bound directory before reusing the
+session ID elsewhere, which starts with fresh snapshots. At most 64 live edit
+sessions are retained across all directories. Stored legacy tasks may omit
+`request.directory`; those tasks fail with `DIRECTORY_REQUIRED` and never fall back
+to the Worker current directory. Results may contain file
+contents and diffs and are retained only in short-lived task records. No tool input
+or output is printed to the terminal. Worker claims each task before touching files,
+serializes edits, and retries only completion delivery. Process restart discards
+snapshots/previews. Claimed tasks with unknown outcomes are never automatically
+rerun; inspect the files and issue new read/preview requests.
+
+The path policy is not an OS sandbox or a lock against other local processes changing
+files. Deployed request/result transport remains unverified; local native, consumer
+and backend authorization tests are separate.
 
 ## Credential storage
 
@@ -138,6 +173,8 @@ or copy-on-write storage. It does not revoke the remote identity.
 | `src/auth/token.ts`                                                         | Access-token exchange, cache and concurrent-refresh deduplication.          |
 | `src/auth/state.ts`, `src/auth/credentials.ts`, `src/auth/private-files.ts` | Recovery metadata, credential adapters and protected local file operations. |
 | `src/control.ts`                                                            | Typed Convex subscription, auth retry and connection cleanup.               |
+| `src/tasks.ts`                                                              | Serialized edit claims, local execution and completion receipts.            |
+| `src/edit/`                                                                 | Directory routing, native snapshot/preview sessions and local path policy.  |
 | `src/protocol.ts`                                                           | Setup/HTTP boundary validation and shared wire types.                       |
 
 `src/auth.ts` and `src/state.ts` retain small export facades for existing callers.
@@ -146,9 +183,10 @@ control connection for coordination. Keep machine credentials and auth lifecycle
 owned by `auth/`, outside executed workloads.
 
 The backend's [task coordination contract](../../docs/Worker/Tasks.md) provides
-assignment/status persistence and terminal cleanup for the next integration.
-The Worker client currently subscribes only to its identity; task consumption and
-tool execution remain follow-up work.
+assignment/status persistence, edit request/result transport and terminal cleanup.
+Task consumption runs on every `start`; the backend dispatch selects each
+target-Worker directory. Chatroom integration and additional tools remain follow-up
+work.
 
 ### Commands
 
@@ -157,6 +195,8 @@ tool execution remain follow-up work.
 bun run dev:worker
 
 bun run --cwd packages/worker test
+bun run --cwd packages/worker test:unit tasks.test.ts
+bun run --cwd packages/worker test:edit
 bun run --cwd packages/worker typecheck
 ```
 
@@ -168,7 +208,9 @@ can be passed to the package's `dev` script just as with `start`.
 The Worker depends on `backend` through `workspace:*` for generated Convex API
 references and return types. `control.ts` subscribes using `api.workers.current`;
 changes to that backend contract are checked against the Worker at compile time.
-`convex`, `jose`, `@clack/prompts`, and `@napi-rs/keyring` are direct Worker dependencies. Install them with
+`convex`, `jose`, `@clack/prompts`, `@napi-rs/keyring`, and pinned
+`@oh-my-pi/pi-natives@18.8.3` are direct Worker dependencies. Native engine tests
+run in Bun; auth/control/consumer tests run in Vitest. Install them with
 `bun install --frozen-lockfile` from the repository root.
 
 ## Implemented and not implemented
@@ -176,9 +218,10 @@ changes to that backend contract are checked against the Worker at compile time.
 - **Implemented:** P-256 key persistence, enrollment and recovery over the
   `/api/worker/auth/challenge` and `/api/worker/auth/complete` endpoints, short-lived
   machine-token refresh, current-Worker subscription, OS credential storage with
-  explicit protected-file fallback, and interactive lifecycle CLI.
-- **Not implemented:** agent job commands, ACP, execution, approvals, filesystem access,
-  output persistence, sandboxing, or privileged control mutations.
+  explicit protected-file fallback, interactive lifecycle CLI, and locally scoped
+  native edit sessions with authenticated task/result messaging.
+- **Not implemented:** shell/eval execution, ACP, Chatroom model-tool dispatch,
+  approval UI, durable chat outcomes, execution recovery, or OS sandboxing.
 - **Known limitation:** deployed JWT verifier configuration, TLS/proxy routing,
   and recovery across separately deployed processes require deployment integration
   testing. See the [machine-authentication contract](../../docs/Worker/Machine_Authentication.md)

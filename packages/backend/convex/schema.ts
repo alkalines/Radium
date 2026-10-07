@@ -21,7 +21,7 @@ export default defineSchema({
   /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
   worker_tasks: defineTable(workerTaskFields)
     .index("by_worker_request", ["workspace", "workerId", "requestId"])
-    .index("by_worker_status", ["workspace", "workerId", "status"])
+    .index("by_worker_status", ["workspace", "workerId", "status", "operation"])
     .index("by_status_terminalAt", ["status", "terminalAt"]),
   /** App authorization scope for a component-owned enrollment receipt; no setup secret. */
   worker_enrollments: defineTable({

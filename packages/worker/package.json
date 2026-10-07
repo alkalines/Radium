@@ -12,12 +12,15 @@
     "refresh": "bun src/cli.ts refresh",
     "forget": "bun src/cli.ts forget",
     "forget-token": "bun src/cli.ts forget-token",
-    "test": "vitest run",
+    "test": "bun run test:unit && bun run test:edit",
+    "test:unit": "vitest run",
+    "test:edit": "bun test ./src/edit/service.engine.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@clack/prompts": "^1.8.1",
     "@napi-rs/keyring": "^2.1.0",
+    "@oh-my-pi/pi-natives": "18.8.3",
     "backend": "workspace:*",
     "convex": "^1.46.0",
     "jose": "^6.1.3"
