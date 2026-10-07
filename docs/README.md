@@ -12,6 +12,9 @@ start.
 - [Worker machine authentication](Worker/Machine_Authentication.md) — setup codes, key proofs, JWT refresh, owner management and configuration
 - [Worker identity component](Worker/Component.md) — workspace package, internal enrollment/recovery/revocation API, and integration boundary
 - [Worker task coordination](Worker/Tasks.md) — assignment/status boundaries, chat correlation and five-minute terminal cleanup
+- [Worker native tools plan](Worker/Native_Tools.md) — Oh-My-Pi package reuse for full file editing and upstream shell/background-terminal architecture
+- [Worker Bash tool reference](Worker/Bash_Tool.md) — embedded Rust shell, managed jobs, PTYs, service modes, and Worker integration requirements
+- [Worker eval tool reference](Worker/Eval_Tool.md) — retained JavaScript/Python execution, tool callbacks, output, and runtime lifecycle
 - [Worker authentication research](Worker/Authentication.md) — cross-network transport, machine identity, and component evaluation
 - [Worker Convex Client transport](Worker/Convex_Transport.md) — authenticated identity subscription implemented; batched output, commands, recovery and retention planned
 - [Earlier Worker connectivity research](Worker/Connectivity.md) — superseded WSS/Tailscale proposal and tradeoffs

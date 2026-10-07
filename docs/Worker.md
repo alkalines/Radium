@@ -48,6 +48,16 @@ and Chatroom dispatch integration remain planned.
 
 ## Proposed
 
+The [native tools plan](Worker/Native_Tools.md) selects Oh-My-Pi's own
+`@oh-my-pi/pi-natives` package for full file-editing integration and documents
+its shell, background-job, and PTY primitives. Package adoption and Worker tool
+execution remain planned.
+
+The [Bash tool reference](Worker/Bash_Tool.md) details shell execution,
+background jobs, interactive terminals, and the required Worker adapter. The
+[eval reference](Worker/Eval_Tool.md) covers upstream's separate persistent
+JavaScript/Python code-execution stack; Radium adoption is not yet selected.
+
 The selected [Convex Client transport plan](Worker/Convex_Transport.md) routes
 commands, approvals, batched output and results through Convex. Worker and Chatroom
 connect outbound to Convex; Worker adapts a local stdio ACP agent. Local batching,
