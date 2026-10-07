@@ -33,6 +33,19 @@ It is mounted as `workerIdentity` in the backend. See the
 [component guide](Worker/Component.md) for the internal API and trusted app
 boundary. App owner-management and narrowly scoped machine-auth wrappers now call it.
 
+Machine endpoints use the `convex-helpers` custom builders `workerQuery` and
+`workerMutation` in `packages/backend/src/worker/machine.ts`. Both inject
+verified scope as `ctx.worker` after rechecking workspace/key/epoch authority.
+The Worker imports the backend's generated API through a workspace dependency;
+CLI and authentication code have dedicated folders. See the
+[source map](../packages/worker/README.md#source-organization) before extending it
+with tools or Chatroom coordination.
+
+[Worker tasks](Worker/Tasks.md) persist `sent`, `processing`, `failed`, `retrying`
+and `success`, with optional chat/tool-call correlation. Every five minutes,
+cleanup removes terminal task records aged at least five minutes. Tool execution
+and Chatroom dispatch integration remain planned.
+
 ## Proposed
 
 The selected [Convex Client transport plan](Worker/Convex_Transport.md) routes

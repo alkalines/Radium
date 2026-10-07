@@ -46,14 +46,23 @@ sequenceDiagram
 
 For reading the code, start at:
 
-- `packages/backend/convex/workers.ts`: owner management and transactional
-  enrollment/challenge/authorization policy.
+- `packages/backend/convex/workers.ts`: thin registered exports for owner management,
+  current-machine subscription and internal proof admission.
+- `packages/backend/src/worker/management.ts`: owner management and current-machine
+  subscription policy.
+- `packages/backend/src/worker/identity.ts`: internal enrollment records, immutable
+  challenges, transactional proof admission and expiry cleanup.
+- `packages/backend/src/worker/machine.ts`: machine-only `workerQuery` and
+  `workerMutation` builders, injecting verified scope as `ctx.worker`.
 - `packages/backend/src/http/worker.ts`: the two HTTP exchanges, with signature
   verification before internal admission.
 - `packages/backend/src/worker/auth.ts`: key parsing, signatures and token issuance.
 - `packages/backend/convex/auth.config.ts`: how Convex verifies issued tokens.
-- `packages/worker/src/auth.ts`: the machine's setup, recovery and token refresh.
-- `packages/worker/src/cli.ts`: interactive setup and local lifecycle commands.
+- `packages/worker/src/auth/`: enrollment/recovery, proof exchanges, token refresh
+  and local credential persistence (`src/auth.ts` is an export facade).
+- `packages/worker/src/cli.ts` and `src/cli/`: executable entry point, interactive
+  setup, option parsing and local lifecycle commands. See the
+  [source map](../../packages/worker/README.md#source-organization).
 - `packages/worker/src/control.ts`: the Convex connection and auth retry lifecycle.
 
 ## Linking And Normal Authentication
@@ -68,7 +77,7 @@ For reading the code, start at:
    on dismissal, expiry or workspace change; copying is an explicit user action.
 3. The Worker persists a new P-256 private key, public key, stable enrollment
    request ID and non-secret recovery context **before** contacting the backend.
-   Setup is read through a masked terminal prompt, stdin or a protected file,
+   Setup is read through a masked terminal prompt or bounded stdin,
    rather than a token argument.
 4. An outbound HTTPS challenge request binds the enrollment selector, request ID,
    canonical public key, workspace and operation in an immutable app record.
@@ -103,7 +112,7 @@ This local setting is separate from the parent app's Convex issuer variables.
 Both HTTP endpoints live on the **Convex site origin**, not Vite:
 
 - `POST /api/worker/auth/challenge`: `{kind:"enroll"|"recover", enrollmentId,
-requestId, publicKey}` or `{kind:"token", workspaceId, workerId, keyId}`.
+  requestId, publicKey}` or `{kind:"token", workspaceId, workerId, keyId}`.
   Response: `{challengeId, expiresAt, audience}`. The token form resolves current
   verification material from the component; asserted workspace/key IDs are selectors,
   not authentication.
@@ -122,10 +131,13 @@ This is a challenge-response JOSE profile, not RFC 9421 HTTP Message Signatures 
 
 JWTs have issuer `<CONVEX_SITE_URL>/api/worker`, audience `radium-worker`, Worker
 subject, and `kind`, `workspaceId`, `keyId`, `identityEpoch` claims. Convex's custom
-ES256 verifier uses the configured public JWKS. `workers.requireWorker` derives
-scope from authenticated claims and re-reads workspace archive state, active key
-and identity epoch. Future machine control mutations must call this helper in
-their state-transition transaction and add capability/assignment authorization.
+ES256 verifier uses the configured public JWKS. The `workerQuery` and
+`workerMutation` builders in `src/worker/machine.ts` use `convex-helpers`
+custom functions to derive scope from authenticated claims and re-read workspace
+archive state, active key and identity epoch before the handler runs. Handlers
+receive that scope as `ctx.worker`; they do not accept ownership from the machine.
+Future machine control mutations must use `workerMutation` so these checks run in
+their state-transition transaction, and add capability/assignment authorization.
 There is currently no execution authority: newly enrolled Workers have no capabilities.
 
 Owner revocation advances the component epoch. Existing JWT signatures remain valid
@@ -250,7 +262,11 @@ The current Convex Components catalog and `convex-helpers` index were reviewed.
 Bearer API-key components and OAuth-provider components do not replace the existing
 public-key enrollment/recovery boundary. Reuse the existing identity component,
 Rate Limiter and `ownedWorkspaceQuery`/`ownedWorkspaceMutation` helpers, which retain
-Better Auth validation. Challenge records are app-specific authorization context;
+Better Auth validation. Machine reads/writes use the already installed
+`convex-helpers/server/customFunctions` builders: this is stateless app policy
+around existing identity persistence, so another component would not own the
+workspace/claim authorization it needs. Challenge records are app-specific
+authorization context;
 they do not extend the identity component's public API. `jose` is the only new
 cryptographic dependency; no handwritten signing or JWT verifier was introduced.
 

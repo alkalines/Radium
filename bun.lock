@@ -119,6 +119,7 @@
       "dependencies": {
         "@clack/prompts": "^1.8.1",
         "@napi-rs/keyring": "^2.1.0",
+        "backend": "workspace:*",
         "convex": "^1.46.0",
         "jose": "^6.1.3",
       },

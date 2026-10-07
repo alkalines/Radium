@@ -1,10 +1,10 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { importJWK, jwtVerify } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMachineTokenFetcher, recoverPendingIdentity, setupWorker } from "./auth.js";
-import { readSetupCodeFromFile } from "./input.js";
+import { recoverPendingIdentity, setupWorker } from "./auth/enrollment.js";
+import { createMachineTokenFetcher } from "./auth/token.js";
 import {
   parseSetupCode,
   postJson,
@@ -18,7 +18,7 @@ import {
   readWorkerState,
   saveWorkerIdentity,
   type WorkerState,
-} from "./state.js";
+} from "./auth/state.js";
 
 const directories: string[] = [];
 const proofType = "radium-worker-proof+jwt";
@@ -227,15 +227,6 @@ describe("Worker machine authentication", () => {
     expect(completeCount).toBe(2);
   });
 
-  it("accepts only a protected setup file", async () => {
-    const directory = await newStateDirectory();
-    await mkdir(directory, { mode: 0o700 });
-    const path = join(directory, "setup-code");
-    await writeFile(path, "radium-worker-v1.test", { mode: 0o600 });
-    await chmod(path, 0o644);
-    await expect(readSetupCodeFromFile(path)).rejects.toThrow("mode 0600");
-  });
-
   it("does not replace a completed identity", async () => {
     const now = 2_000_000_000_000;
     const directory = await newStateDirectory();
@@ -261,7 +252,6 @@ describe("Worker machine authentication", () => {
       postJson("https://radium.example/api/worker/auth/challenge", {}, { fetchImpl }),
     ).rejects.toThrow("response is too large");
   });
-
 });
 
 async function verifyProof(

@@ -1,5 +1,5 @@
 import { chmod, lstat, mkdir, open, unlink } from "node:fs/promises";
-import { WorkerProtocolError } from "./protocol.js";
+import { WorkerProtocolError } from "../protocol.js";
 
 const PRIVATE_FILE_MODE = 0o600;
 const PRIVATE_DIRECTORY_MODE = 0o700;

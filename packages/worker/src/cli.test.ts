@@ -1,26 +1,35 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "./cli.js";
-import { readWorkerState, forgetWorkerState } from "./state.js";
-import { recoverPendingIdentity, requestMachineToken, setupWorker } from "./auth.js";
-import { readSetupCodeFromFile } from "./input.js";
+import { readWorkerState, forgetWorkerState } from "./auth/state.js";
+import { recoverPendingIdentity, setupWorker } from "./auth/enrollment.js";
+import { requestMachineToken } from "./auth/token.js";
+import { readSetupCode } from "./cli/prompt.js";
 import { connectWorkerControl } from "./control.js";
+import { password } from "@clack/prompts";
 
-vi.mock("./state.js", () => ({
+vi.mock("./auth/state.js", () => ({
   defaultStateDirectory: () => "/test/worker",
   credentialStorage: vi.fn().mockResolvedValue("keyring"),
   readWorkerState: vi.fn(),
   forgetWorkerState: vi.fn(),
 }));
-vi.mock("./auth.js", () => ({
+vi.mock("./auth/enrollment.js", () => ({
   setupWorker: vi.fn(),
   recoverPendingIdentity: vi.fn(),
+}));
+vi.mock("./auth/token.js", () => ({
   requestMachineToken: vi.fn(),
 }));
-vi.mock("./input.js", () => ({
-  readSetupCodeFromFile: vi.fn(),
-  readSetupCodeFromStdin: vi.fn(),
-}));
 vi.mock("./control.js", () => ({ connectWorkerControl: vi.fn() }));
+vi.mock("@clack/prompts", () => ({
+  password: vi.fn(),
+  isCancel: vi.fn(() => false),
+  cancel: vi.fn(),
+  spinner: vi.fn(() => ({ start: vi.fn(), stop: vi.fn() })),
+  select: vi.fn(),
+  intro: vi.fn(),
+  confirm: vi.fn(),
+}));
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -28,12 +37,44 @@ afterEach(() => {
 });
 
 describe("Worker CLI credential lifecycle", () => {
-  it("adds a setup code from a protected source without logging it", async () => {
+  it("adds a setup code piped on stdin without logging it", async () => {
     const output = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    vi.mocked(readSetupCodeFromFile).mockResolvedValue("one-time-secret");
-    await runCli(["add-token", "--setup-file", "/test/setup", "--state-dir", "/test/custom"]);
+    const inputDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("one-time-secret\n"));
+        controller.close();
+      },
+    });
+    vi.stubGlobal("Bun", { stdin: { stream: vi.fn(() => stream) } });
+    try {
+      await runCli(["add-token", "--state-dir", "/test/custom"]);
+    } finally {
+      if (inputDescriptor) Object.defineProperty(process.stdin, "isTTY", inputDescriptor);
+      else Reflect.deleteProperty(process.stdin, "isTTY");
+    }
     expect(setupWorker).toHaveBeenCalledWith("/test/custom", "one-time-secret");
     expect(output.mock.calls.flat().join(" ")).not.toContain("one-time-secret");
+  });
+
+  it("uses the masked prompt for interactive setup", async () => {
+    const inputDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    const outputDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    vi.mocked(password).mockResolvedValue("one-time-secret");
+    try {
+      await expect(readSetupCode()).resolves.toBe("one-time-secret");
+    } finally {
+      if (inputDescriptor) Object.defineProperty(process.stdin, "isTTY", inputDescriptor);
+      else Reflect.deleteProperty(process.stdin, "isTTY");
+      if (outputDescriptor) Object.defineProperty(process.stdout, "isTTY", outputDescriptor);
+      else Reflect.deleteProperty(process.stdout, "isTTY");
+    }
+    expect(password).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Paste the setup code from Chatroom → Workers" }),
+    );
   });
 
   it("refreshes pending identity without printing the access token", async () => {
@@ -89,6 +130,7 @@ describe("Worker CLI credential lifecycle", () => {
 
   it("rejects secrets as CLI arguments and flags for the wrong command", async () => {
     await expect(runCli(["setup", "secret"])).rejects.toThrow("Unsupported");
+    await expect(runCli(["setup", "--setup-file", "/test/setup"])).rejects.toThrow("Unsupported");
     await expect(runCli(["start", "--setup-file", "/test/setup"])).rejects.toThrow("Unsupported");
     await expect(runCli(["status", "--yes"])).rejects.toThrow("Unsupported");
     await expect(runCli(["start", "--port", "3001"])).rejects.toThrow("Unsupported");

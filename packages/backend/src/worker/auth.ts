@@ -11,7 +11,8 @@ import { calculateJwkThumbprint, exportJWK, importJWK, jwtVerify, SignJWT, type 
  *
  * A JWK is a key encoded as JSON; a JWKS is `{ keys: [publicJwk, ...] }`.
  * These helpers do not authorize database operations or consume challenges:
- * workers.admitProof and workers.requireWorker own those transactional checks.
+ * `identity.ts` admits proofs transactionally; the `workerQuery` and
+ * `workerMutation` builders in `machine.ts` authorize machine access.
  */
 
 /** The JWT audience identifies which service may accept a machine access token. */

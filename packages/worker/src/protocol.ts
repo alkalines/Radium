@@ -1,4 +1,6 @@
 import type { JWK } from "jose";
+import type { FunctionReturnType } from "convex/server";
+import type { api } from "backend/convex/_generated/api";
 
 const SETUP_PREFIX = "radium-worker-v1.";
 const MAX_SETUP_BYTES = 16 * 1024;
@@ -32,14 +34,8 @@ export interface WorkerIdentity {
   identityEpoch: number;
 }
 
-export interface WorkerMetadata {
-  workerId: string;
-  workspaceId: string;
-  name: string;
-  capabilities: string[];
-  status: "active" | "revoked";
-  identityEpoch: number;
-}
+/** Shared machine metadata derived from the app's generated subscription contract. */
+export type WorkerMetadata = NonNullable<FunctionReturnType<typeof api.workers.current>>;
 
 export type WorkerFetch = (input: string | URL, init: RequestInit) => Promise<Response>;
 

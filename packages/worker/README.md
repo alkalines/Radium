@@ -8,18 +8,15 @@ protocol, or receive deployment/admin credentials.
 
 Obtain a `radium-worker-v1.` setup code from **Chatroom → Workers** in the website.
 The whole code is a one-time secret. Run setup in a terminal to paste it into a
-masked `@clack/prompts` input, or use stdin/a protected file for automation.
-It is never accepted as a command-line value or environment variable:
+masked `@clack/prompts` input, or pipe it on stdin for automation. It is never
+accepted as a command-line value or read from the Worker's environment:
 
 ```bash
 # Interactive setup (masked input)
 bun run --cwd packages/worker setup
 
-# The input file must be owned by the current user and mode 0600 (or stricter).
-bun run --cwd packages/worker setup --setup-file /secure/path/worker-setup-code
-
-# Or provide the code on stdin from a protected source.
-bun run --cwd packages/worker setup < /secure/path/worker-setup-code
+# Pipe the code from a protected source; it is not echoed or logged.
+printf '%s\n' "$SETUP_CODE" | bun run --cwd packages/worker setup
 
 bun run --cwd packages/worker start
 ```
@@ -127,6 +124,34 @@ or copy-on-write storage. It does not revoke the remote identity.
 
 ## Development checks
 
+### Source organization
+
+| Path                                                                        | Responsibility                                                              |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `src/cli.ts`                                                                | Executable entry point and sanitized command-error output.                  |
+| `src/cli/run.ts`                                                            | Lifecycle command dispatch and interactive menu.                            |
+| `src/cli/options.ts`                                                        | Command aliases, option validation and help text.                           |
+| `src/cli/input.ts`, `src/cli/prompt.ts`                                     | Protected setup input and terminal presentation.                            |
+| `src/cli/start.ts`                                                          | Startup, status reporting and signal-driven shutdown.                       |
+| `src/auth/enrollment.ts`                                                    | Initial enrollment and restart recovery using persisted keys.               |
+| `src/auth/proof.ts`                                                         | Challenge validation and Worker-key proof signing.                          |
+| `src/auth/token.ts`                                                         | Access-token exchange, cache and concurrent-refresh deduplication.          |
+| `src/auth/state.ts`, `src/auth/credentials.ts`, `src/auth/private-files.ts` | Recovery metadata, credential adapters and protected local file operations. |
+| `src/control.ts`                                                            | Typed Convex subscription, auth retry and connection cleanup.               |
+| `src/protocol.ts`                                                           | Setup/HTTP boundary validation and shared wire types.                       |
+
+`src/auth.ts` and `src/state.ts` retain small export facades for existing callers.
+Future tool implementations should have their own domain modules and use the
+control connection for coordination. Keep machine credentials and auth lifecycle
+owned by `auth/`, outside executed workloads.
+
+The backend's [task coordination contract](../../docs/Worker/Tasks.md) provides
+assignment/status persistence and terminal cleanup for the next integration.
+The Worker client currently subscribes only to its identity; task consumption and
+tool execution remain follow-up work.
+
+### Commands
+
 ```bash
 # Watch/restart the enrolled Worker independently of Vite and Convex
 bun run dev:worker
@@ -140,6 +165,9 @@ Enroll first, then run it alongside root `bun run dev`. Enrollment state lives
 outside the watched source tree and survives process restarts. `--state-dir`
 can be passed to the package's `dev` script just as with `start`.
 
+The Worker depends on `backend` through `workspace:*` for generated Convex API
+references and return types. `control.ts` subscribes using `api.workers.current`;
+changes to that backend contract are checked against the Worker at compile time.
 `convex`, `jose`, `@clack/prompts`, and `@napi-rs/keyring` are direct Worker dependencies. Install them with
 `bun install --frozen-lockfile` from the repository root.
 
@@ -148,7 +176,7 @@ can be passed to the package's `dev` script just as with `start`.
 - **Implemented:** P-256 key persistence, enrollment and recovery over the
   `/api/worker/auth/challenge` and `/api/worker/auth/complete` endpoints, short-lived
   machine-token refresh, current-Worker subscription, OS credential storage with
-   explicit protected-file fallback, and interactive lifecycle CLI.
+  explicit protected-file fallback, and interactive lifecycle CLI.
 - **Not implemented:** agent job commands, ACP, execution, approvals, filesystem access,
   output persistence, sandboxing, or privileged control mutations.
 - **Known limitation:** deployed JWT verifier configuration, TLS/proxy routing,

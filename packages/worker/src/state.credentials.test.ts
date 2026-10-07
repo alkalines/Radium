@@ -8,7 +8,7 @@ import {
   createWorkerCredentialStore,
   type KeyringEntryFactory,
   type WorkerCredentialStore,
-} from "./credentials.js";
+} from "./auth/credentials.js";
 import {
   WorkerProtocolError,
   type PrivateP256Jwk,
@@ -22,7 +22,7 @@ import {
   readWorkerState,
   saveWorkerIdentity,
   type WorkerState,
-} from "./state.js";
+} from "./auth/state.js";
 
 const directories: string[] = [];
 const requestId = "2f1dd46c-d9ee-4614-8f12-1ce8c9bec056";

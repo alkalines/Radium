@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { connectWorkerControl } from "./control.js";
 import type { WorkerMetadata } from "./protocol.js";
 import type { WorkerState } from "./state.js";
+import { api } from "backend/convex/_generated/api";
 
 const mock = vi.hoisted(() => ({
   authChanged: undefined as ((authenticated: boolean) => void) | undefined,
@@ -10,6 +11,7 @@ const mock = vi.hoisted(() => ({
   queryFailed: undefined as (() => void) | undefined,
   construct: vi.fn(),
   setAuth: vi.fn(),
+  subscribe: vi.fn(),
   close: vi.fn(),
   unsubscribeWorker: vi.fn(),
   unsubscribeConnection: vi.fn(),
@@ -29,11 +31,12 @@ vi.mock("convex/browser", () => ({
       return mock.unsubscribeConnection;
     }
     onUpdate(
-      _query: unknown,
+      query: unknown,
       _args: unknown,
       callback: typeof mock.workerChanged,
       onError: typeof mock.queryFailed,
     ) {
+      mock.subscribe(query, _args);
       mock.workerChanged = callback;
       mock.queryFailed = onError;
       return mock.unsubscribeWorker;
@@ -56,6 +59,7 @@ afterEach(() => {
 test("control fails closed on revoked, foreign, stale and missing metadata and transport/query loss", async () => {
   const onStatus = vi.fn();
   const control = connectWorkerControl(state, onStatus);
+  expect(mock.subscribe).toHaveBeenCalledWith(api.workers.current, {});
   mock.workerChanged?.(worker);
   expect(onStatus).toHaveBeenLastCalledWith({ status: "connected", worker });
   for (const invalid of [

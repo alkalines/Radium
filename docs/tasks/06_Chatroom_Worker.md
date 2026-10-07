@@ -43,6 +43,91 @@ subscription. Deployed verifier/transport checks and execution remain follow-up 
 
 ## Next Implementation Slice
 
+### Domain Placement, Task Status And Stdin Setup (2026-10-06)
+
+Worker backend policy now lives under `packages/backend/src/worker/`: machine
+builders in `machine.ts`, enrollment/proof policy in `identity.ts`, task
+coordination in `tasks.ts` and its contract in `task-contract.ts`. Registered
+entry points remain thin exports in `convex/workers.ts` and `convex/worker_tasks.ts`.
+Owner-management definitions live in `src/worker/management.ts`.
+The earlier `convex/workers/` folder was removed; internal auth callers use
+`internal.workers.*`.
+
+Added `worker_tasks` with `sent`, `processing`, `failed`, `retrying` and `success`.
+Owner-authorized internal creation validates chat visibility and assignment;
+machine status updates check assignment and expected revision. The five-minute
+cron deletes failed/successful records at least five minutes after their terminal
+transition in indexed, bounded batches. It preserves active tasks and chat data.
+See [task coordination](../Worker/Tasks.md) for transitions, ephemeral deduplication
+and remaining execution/Chatroom integration work.
+
+Setup accepts masked prompting or piped stdin. `--setup-file` and its setup-code
+file reader were removed; local credential persistence is separate and retained.
+
+Verification for this follow-up:
+
+- `bun run --cwd packages/backend test`: 127 tests passed, including four new
+  task regressions and ten Worker auth/wrapper regressions. Existing migration
+  denial tests intentionally print rejected-document diagnostics.
+- `bun run --cwd packages/worker test`: all 30 tests passed.
+- Local inspection of the serialized cron registration confirms
+  `worker_tasks:prune` runs at a five-minute interval.
+- The guarded offline API generator refreshed local declarations after removing
+  the nested auth namespace and adding `worker_tasks`.
+- `bun run --cwd packages/worker typecheck`: still blocked by existing Gateway
+  routing/translator/type-import errors; no Worker domain or CLI diagnostics.
+- Scoped `bunx oxfmt` checks pass except for a trailing space already present in
+  the user's machine helper, preserved when moving it to `src/worker/machine.ts`.
+- No deployment, remote migration or deployment-data mutation was performed.
+
+### Worker Organization And Typed Control Foundation (2026-10-06)
+
+Implemented the preparation for tool/Chatroom work:
+
+- `packages/backend/src/worker/machine.ts` provides `workerQuery` and
+  `workerMutation` using `convex-helpers` custom functions. Both inject verified
+  `ctx.worker` scope and recheck active workspace/key/epoch authority before the
+  handler; `workers.current` uses the query builder.
+- Public owner management and current-machine subscription are registered in
+  `workers.ts`; implementation now lives in `src/worker/management.ts`. Internal
+  enrollment, challenge, proof admission and cleanup live in `src/worker/identity.ts`
+  and are exported through the same `internal.workers.*` namespace.
+- Worker `cli/` separates dispatch, options, protected input, presentation and
+  startup/shutdown. Worker `auth/` separates enrollment/recovery, proof exchange,
+  token caching and credential persistence. Small entry/export facades retain
+  existing imports. See the [source map](../../packages/worker/README.md#source-organization).
+- Worker declares `backend: workspace:*` and subscribes with the generated
+  `api.workers.current`; metadata types derive from its generated return contract.
+
+Next agents should use `workerMutation` for machine state transitions and add
+capability/job-assignment policy within the same transaction. Put external tool
+execution in Worker-owned modules, with Chatroom retaining agent state and approval
+UX. Identity authentication alone grants no tool execution or job authority.
+
+The generated API import brings backend sources into the Worker TypeScript
+program. Its tsconfig resolves backend aliases and includes web API types; existing
+Gateway routing/translator diagnostics now surface in the Worker typecheck. This
+remains an explicit check blocker rather than weakening strictness or changing
+unrelated Gateway logic.
+
+Verification:
+
+- `bun install --frozen-lockfile`: passed after adding the workspace dependency;
+  the lockfile retains the existing external package versions.
+- `bun run --cwd packages/worker test`: all 30 tests passed.
+- `bun run --cwd packages/backend test workers.test.ts`: all 10 regressions
+  passed, including the test-only machine mutation's revocation denial.
+- `bun run --cwd packages/worker test src/control.test.ts`: both tests passed
+  after switching control imports to the organized auth modules.
+- `bun run --cwd packages/worker typecheck`: blocked by existing backend routing,
+  translator and type-only-import diagnostics loaded through the generated API.
+- Scoped `bun run lint` for the machine helper, control client and protocol file
+  could not run because the `eslint` binary is not installed. The root
+  `format:check` script also lacks a local `oxfmt` binary; formatting was completed
+  and checked with `bunx oxfmt` on the changed Worker/backend sources and guides.
+- `git diff --check`: passed. API declarations were refreshed using the documented
+  offline generator with its network guard. No deployment or data mutation was run.
+
 ### Outbound-only Worker Cleanup (2026-10-06)
 
 Removed the Worker-hosted health HTTP server, its `--port` option, health-only

@@ -8,7 +8,7 @@ import {
   validatePrivateFile,
   wipeAndUnlinkPrivateFile,
 } from "./private-files.js";
-import { WorkerProtocolError } from "./protocol.js";
+import { WorkerProtocolError } from "../protocol.js";
 
 const KEYRING_SERVICE = "Radium Worker";
 const CREDENTIAL_FILE_MODE = 0o600;

@@ -8,4 +8,5 @@ crons.interval(
   internal.workers.pruneChallenges,
   {},
 );
+crons.interval("terminal worker tasks", { minutes: 5 }, internal.worker_tasks.prune, {});
 export default crons;

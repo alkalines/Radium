@@ -14,6 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupWorker, createMachineTokenFetcher } from "../../worker/src/auth";
 import { readWorkerState } from "../../worker/src/state";
+import { workerMutation } from "../src/worker/machine";
+import { makeFunctionReference } from "convex/server";
+import { v } from "convex/values";
 
 vi.mock("./auth", () => ({
   authComponent: {
@@ -26,6 +29,22 @@ vi.mock("./auth", () => ({
   createAuth: vi.fn(),
 }));
 const modules = import.meta.glob("./**/*.ts");
+
+// Test-only endpoint: exercise the writer wrapper without adding a production
+// machine mutation before job/capability policy has been implemented.
+const renameWorkspace = makeFunctionReference<"mutation", { name: string }, null>(
+  "workerPolicyTest:renameWorkspace",
+);
+modules["./workerPolicyTest.ts"] = async () => ({
+  renameWorkspace: workerMutation({
+    args: { name: v.string() },
+    returns: v.null(),
+    handler: async (ctx, args) => {
+      await ctx.db.patch(ctx.worker.workspaceId, { name: args.name });
+      return null;
+    },
+  }),
+});
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.useRealTimers();
@@ -276,6 +295,30 @@ test("JWT issuance uses machine audience/issuer and challenge expiry is authorit
     f.t.mutation(internal.workers.admitProof, { challengeId: expiring.challengeId }),
   ).rejects.toThrow();
   expect(await f.t.mutation(internal.workers.pruneChallenges, {})).toBeGreaterThan(0);
+});
+
+test("machine mutation wrapper derives scope and denies writes after revocation", async () => {
+  const f = await setup();
+  const { identity } = await enroll(f);
+  const machine = f.t.withIdentity({
+    ...identity,
+    issuer: workerIssuer(f.bundle.backendUrl),
+    subject: identity.workerId,
+    kind: "worker",
+  });
+
+  await machine.mutation(renameWorkspace, { name: "Machine-authorized test write" });
+  await expect(f.owner.mutation(renameWorkspace, { name: "Human write" })).rejects.toThrow();
+  await expect(f.t.mutation(renameWorkspace, { name: "Anonymous write" })).rejects.toThrow();
+
+  await f.owner.mutation(api.workers.revoke, {
+    workspace: f.workspace,
+    workerId: identity.workerId,
+  });
+  await expect(machine.mutation(renameWorkspace, { name: "Revoked write" })).rejects.toThrow();
+  expect((await f.t.run((ctx) => ctx.db.get(f.workspace)))?.name).toBe(
+    "Machine-authorized test write",
+  );
 });
 
 test("bad tokens and long-lived proofs cannot enroll; revoked/expired codes and private keys are denied", async () => {
