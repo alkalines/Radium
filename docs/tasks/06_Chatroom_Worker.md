@@ -44,6 +44,63 @@ subscription. Deployed verifier/transport checks and execution remain follow-up 
 
 ## Next Implementation Slice
 
+### Executable Chatroom File Tools And Disconnect Diagnostics (2026-10-07)
+
+The previous composer slice saved configuration without exposing Worker tools to
+the model. This follow-up connects enabled Read/Edit/Create tools to the existing
+HTTP chat/model loop and Worker task transport, adds an explicit absolute-directory
+input, and uses signed owner/chat/Worker/directory-scoped write approvals before
+native staging/application. Backend dispatch rechecks current configuration at
+every stage, and Worker write modes prevent Edit/Create toggle bypasses. Durable
+`worker_chat_calls` receipts preserve idempotency after five-minute task pruning;
+chat deletion schedules indexed bounded receipt cleanup. Control status now
+reports fixed, actionable disconnect reason codes and requires authenticated
+transport plus active matching identity before reporting connected.
+
+See [Worker tools in Chatroom](../Worker/Chatroom.md) for contracts, data retention,
+configuration and failure behavior. The existing Worker identity component and
+app authorization are reused; no new infrastructure dependency was added. The
+new receipt table and optional directory/write-mode fields widen the schema and
+need no existing-data backfill. This does not complete task 06: live deployment
+verification, cancellation, ambiguous-outcome recovery, shell/eval and OS isolation
+remain open.
+
+Verification: `bun run test` passed the backend suite, including HTTP tool exposure,
+signed approval/replay checks, owner/member/private-chat isolation, durable stage
+receipts and deletion cleanup. `bun run --cwd packages/worker test` passed control,
+CLI and native checks. `bun run --cwd apps/web vite:build` passed with existing
+chunk-size/Shiki WASM fallback warnings. The guarded offline API generator ran
+locally. Typechecks remain blocked by existing dependency, test typing, routing,
+auth and alias errors; scoped ESLint is blocked by the missing root `eslint`
+dependency. No real credentials, remote data, deployment configuration or migrations
+were changed, and live browser/deployment behavior was not verified.
+
+### Composer Worker Configuration (2026-10-07)
+
+Implemented a minimal Worker menu inside the home and conversation prompt inputs,
+with independent Read/Edit/Create preferences persisted per chat. Selection is
+owner-only, checks chat visibility, and validates an active Worker in the exact
+chat workspace on the server. Members and cross-workspace identities are denied.
+Changing the home workspace resets its selection; existing chats stay scoped to
+their own workspace. Root `bun run dev` also starts the Worker source watcher.
+
+This slice configures preferences only. Next: define target-directory selection,
+model-tool dispatch and approval enforcement, persist durable outcomes, and verify
+deployed transport. See the [Chatroom guide](../Radium_Chatroom.md) for UI and
+permission behavior. Existing chats need no backfill; the Worker field is optional.
+
+Verification: `bun run --cwd packages/backend test convex/workers.test.ts convex/workspaces.test.ts`
+passed 22 checks, including configuration authorization and workspace isolation.
+`bun run --cwd apps/web vite:build` passed with chunk-size and Shiki WASM fallback
+warnings. Scoped formatting and `git diff --check` passed. The guarded offline
+API generator ran locally; no deployment or remote migration was run. Scoped
+ESLint is blocked by the missing root `eslint` dependency; frontend TypeScript
+checking remains blocked by AI SDK version mismatches, auth component errors,
+and backend `@/` alias resolution, with no Worker configuration diagnostics.
+Browser interaction verification was unavailable because no desktop browser was
+connected. Root `bun run dev` was not launched during checks because it starts
+the deployment-connected Convex process and enrolled Worker.
+
 ### Edit-Only Execution And Messaging (2026-10-07)
 
 Implemented an initial native read/preview/apply/close path where the owner-only

@@ -1,7 +1,8 @@
 import { v, type Infer } from "convex/values";
 import { workerEditRequest, workerEditResult } from "./edit-contract";
+import { chatWorkerToolValidator } from "./chat-config";
 
-/** Short-lived coordination state; chats remain the owner of tool-call history. */
+/** Short-lived coordination state; durable chat-call receipts are stored separately. */
 export const workerTaskStatus = v.union(
   v.literal("sent"),
   v.literal("processing"),
@@ -12,15 +13,24 @@ export const workerTaskStatus = v.union(
 
 export type WorkerTaskStatus = Infer<typeof workerTaskStatus>;
 
+export const workerChatTool = chatWorkerToolValidator;
+export type WorkerChatTool = Infer<typeof workerChatTool>;
+
+export const workerChatStage = v.union(v.literal("read"), v.literal("preview"), v.literal("apply"));
+export type WorkerChatStage = Infer<typeof workerChatStage>;
+
 /** Terminal records become eligible for deletion five minutes after completion. */
 export const WORKER_TASK_RETENTION_MS = 5 * 60_000;
 
 /** A cleanup transaction deletes at most this many records of each terminal status. */
 export const WORKER_TASK_CLEANUP_BATCH = 100;
 
+/** A chat deletion drains durable tool-call receipts in bounded batches. */
+export const WORKER_CHAT_CALL_CLEANUP_BATCH = 100;
+
 /**
  * Legacy tasks persist coordination metadata. Edit tasks additionally carry bounded,
- * short-lived tool requests/results; chats remain the durable history owner.
+ * short-lived tool requests/results; chat-call receipts persist chat dispatch outcomes.
  * `requestId` deduplicates dispatch to one Worker; `revision` fences stale status
  * updates and `attempt` counts starts, including explicitly requested retries.
  */
@@ -47,6 +57,21 @@ export const workerTaskRecord = v.object({
   _creationTime: v.number(),
   ...workerTaskFields,
 });
+
+/** Durable idempotency receipts outlive the short-lived Worker coordination tasks. */
+export const workerChatCallFields = {
+  workspace: v.id("workspaces"),
+  chatId: v.id("aisdk_chats"),
+  userId: v.string(),
+  workerId: v.string(),
+  directory: v.string(),
+  tool: workerChatTool,
+  toolCallId: v.string(),
+  stage: workerChatStage,
+  requestKey: v.string(),
+  taskId: v.id("worker_tasks"),
+  result: v.optional(workerEditResult),
+};
 
 /**
  * Retries are explicit state changes, never automatic execution retries.

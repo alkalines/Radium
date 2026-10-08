@@ -4,7 +4,7 @@ import { readWorkerState, forgetWorkerState } from "./auth/state.js";
 import { recoverPendingIdentity, setupWorker } from "./auth/enrollment.js";
 import { requestMachineToken } from "./auth/token.js";
 import { readSetupCode } from "./cli/prompt.js";
-import { connectWorkerControl } from "./control.js";
+import { connectWorkerControl, type WorkerControlStatus } from "./control.js";
 import { password } from "@clack/prompts";
 import { consumeEditTasks } from "./tasks.js";
 import { WorkerDirectoryEdits } from "./edit/directories.js";
@@ -40,8 +40,17 @@ vi.mock("@clack/prompts", () => ({
 }));
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+const diagnostics = () => ({
+  socketConnected: false,
+  authenticated: false,
+  identityAvailable: false,
+  tokenExchangePending: false,
+  connectionRetries: 0,
 });
 
 describe("Worker CLI credential lifecycle", () => {
@@ -115,13 +124,18 @@ describe("Worker CLI credential lifecycle", () => {
     const output = vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.mocked(readWorkerState).mockResolvedValue({
       credentialStoreMode: "file",
-      setup: { backendUrl: "https://backend.example" },
+      setup: {
+        backendUrl: "https://test-deployment.convex.site",
+        convexUrl: "https://test-deployment.convex.cloud",
+      },
       identity: { workerId: "worker-id", workspaceId: "workspace-id" },
       privateKey: { d: "private-secret" },
     } as never);
     await runCli(["status"]);
     const messages = output.mock.calls.flat().join(" ");
     expect(messages).toContain("protected file (not encrypted at rest)");
+    expect(output).toHaveBeenCalledWith("Backend: https://test-deployment.convex.site");
+    expect(output).toHaveBeenCalledWith("Convex client: https://test-deployment.convex.cloud");
     expect(messages).not.toContain("private-secret");
   });
 
@@ -188,6 +202,7 @@ describe("Worker CLI credential lifecycle", () => {
       vi.mocked(connectWorkerControl).mockReturnValue({
         close,
         client: {} as never,
+        diagnostics,
       });
       const running = runCli(["start"]);
       const completion = fails
@@ -212,7 +227,7 @@ describe("Worker CLI credential lifecycle", () => {
     const close = vi.fn().mockResolvedValue(undefined);
     vi.mocked(connectWorkerControl).mockImplementation((_state, onStatus) => {
       onStatus({ status: "connected", worker: {} as never });
-      return { client: {} as never, close };
+      return { client: {} as never, close, diagnostics };
     });
     const running = runCli(["start"]);
     await vi.waitFor(() => expect(consumeEditTasks).toHaveBeenCalled());
@@ -224,5 +239,66 @@ describe("Worker CLI credential lifecycle", () => {
     expect(tasks.close.mock.invocationCallOrder[0]).toBeLessThan(
       close.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it("prints deduplicated, actionable disconnect reasons without exposing auth details", async () => {
+    const output = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const state = { identity: { workerId: "worker-id" } };
+    vi.mocked(readWorkerState).mockResolvedValue(state as never);
+    vi.mocked(recoverPendingIdentity).mockResolvedValue(state as never);
+    let reportStatus: ((status: WorkerControlStatus) => void) | undefined;
+    vi.mocked(connectWorkerControl).mockImplementation((_state, onStatus) => {
+      reportStatus = onStatus;
+      return { client: {} as never, close: vi.fn().mockResolvedValue(undefined), diagnostics };
+    });
+
+    const running = runCli(["start"]);
+    await vi.waitFor(() => expect(consumeEditTasks).toHaveBeenCalled());
+    reportStatus?.({ status: "disconnected", reason: "token_http_failed" });
+    reportStatus?.({ status: "disconnected", reason: "token_http_failed" });
+    reportStatus?.({ status: "disconnected", reason: "verifier_auth_rejected" });
+    reportStatus?.({ status: "disconnected", reason: "identity_unavailable" });
+    reportStatus?.({ status: "disconnected", reason: "transport" });
+
+    process.emit("SIGTERM");
+    await running;
+
+    const messages = output.mock.calls.flat().join("\n");
+    expect(
+      output.mock.calls.flat().filter((message) => String(message).includes("token_http_failed")),
+    ).toHaveLength(1);
+    expect(messages).toContain("run `refresh` to test token issuance");
+    expect(messages).toContain("backend issuer, Convex JWT verifier issuer/audience");
+    expect(messages).toContain("Chatroom → Workers");
+    expect(messages).toContain("network, proxy, or firewall");
+    expect(messages).not.toContain("access-token-value");
+  });
+
+  it("reports stalled startup stages and stops diagnostics after shutdown", async () => {
+    vi.useFakeTimers();
+    const output = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const state = { identity: { workerId: "worker-id" } };
+    vi.mocked(readWorkerState).mockResolvedValue(state as never);
+    vi.mocked(recoverPendingIdentity).mockResolvedValue(state as never);
+    const snapshot = vi.fn(diagnostics);
+    vi.mocked(connectWorkerControl).mockImplementation((_state, report) => {
+      report({ status: "disconnected", reason: "connecting" });
+      return {
+        client: {} as never,
+        diagnostics: snapshot,
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+    });
+    const running = runCli(["start"]);
+    await vi.waitFor(() => expect(output).toHaveBeenCalledWith("Worker control connecting."));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(output.mock.calls.flat().join("\n")).toContain(
+      "socket=closed, auth=pending, identity=pending, tokenExchange=idle, socketRetries=0",
+    );
+    process.emit("SIGTERM");
+    await running;
+    const calls = snapshot.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(snapshot).toHaveBeenCalledTimes(calls);
   });
 });

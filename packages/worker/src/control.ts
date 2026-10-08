@@ -6,13 +6,28 @@ import type { WorkerState } from "./auth/state.js";
 import { WorkerProtocolError, type WorkerMetadata } from "./protocol.js";
 
 /** Identity availability, with metadata derived from the generated backend contract. */
+export type WorkerControlDisconnectReason =
+  | "connecting"
+  | "token_http_failed"
+  | "verifier_auth_rejected"
+  | "identity_unavailable"
+  | "transport"
+  | "shutdown";
+
 export type WorkerControlStatus =
   | { status: "connected"; worker: WorkerMetadata }
-  | { status: "disconnected" };
+  | { status: "disconnected"; reason: WorkerControlDisconnectReason };
 
 /** One outbound connection and its idempotent lifecycle cleanup. */
 export interface WorkerControlConnection {
   client: ConvexClient;
+  diagnostics: () => {
+    socketConnected: boolean;
+    authenticated: boolean;
+    identityAvailable: boolean;
+    tokenExchangePending: boolean;
+    connectionRetries: number;
+  };
   close: () => Promise<void>;
 }
 
@@ -36,13 +51,29 @@ export function connectWorkerControl(
   if (!identity) throw new WorkerProtocolError("Worker identity is not enrolled");
 
   const client = new ConvexClient(state.setup.convexUrl);
-  const fetchToken = createMachineTokenFetcher(state, options);
+  const fetchMachineToken = createMachineTokenFetcher(state, options);
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let retryDelay = INITIAL_AUTH_RETRY_MS;
   let lastWorker: WorkerMetadata | undefined;
   let authenticated = false;
   let socketConnected = false;
+  let hasConnectedSocket = false;
+  let tokenExchangePending = false;
+  // Convex's auth callback is boolean-only, so retain the latest fetch result to
+  // distinguish a failed issuer exchange from a token rejected by the verifier.
+  let tokenFetchFailed = false;
+
+  const fetchToken = async (args: { forceRefreshToken: boolean }) => {
+    tokenExchangePending = true;
+    try {
+      const token = await fetchMachineToken(args);
+      tokenFetchFailed = token === null;
+      return token;
+    } finally {
+      tokenExchangePending = false;
+    }
+  };
 
   const reportRestored = () => {
     if (!closed && authenticated && socketConnected && lastWorker) {
@@ -50,8 +81,8 @@ export function connectWorkerControl(
     }
   };
 
-  const disconnected = () => {
-    if (!closed) onStatus({ status: "disconnected" });
+  const disconnected = (reason: WorkerControlDisconnectReason) => {
+    if (!closed) onStatus({ status: "disconnected", reason });
   };
 
   const authChanged = (isAuthenticated: boolean) => {
@@ -64,7 +95,7 @@ export function connectWorkerControl(
       reportRestored();
       return;
     }
-    disconnected();
+    disconnected(tokenFetchFailed ? "token_http_failed" : "verifier_auth_rejected");
     // A null token stops Convex's own refresh cycle. Re-arm auth after a bounded,
     // jittered delay so an HTTP outage does not permanently strand this process.
     if (retryTimer) return;
@@ -77,11 +108,19 @@ export function connectWorkerControl(
   };
   client.setAuth(fetchToken, authChanged);
 
-  const unsubscribeConnection = client.subscribeToConnectionState(({ isWebSocketConnected }) => {
-    socketConnected = isWebSocketConnected;
-    if (!isWebSocketConnected) disconnected();
-    else reportRestored();
-  });
+  const unsubscribeConnection = client.subscribeToConnectionState(
+    ({ isWebSocketConnected, connectionRetries }) => {
+      socketConnected = isWebSocketConnected;
+      if (!isWebSocketConnected) {
+        disconnected(
+          !hasConnectedSocket && (connectionRetries ?? 0) === 0 ? "connecting" : "transport",
+        );
+      } else {
+        hasConnectedSocket = true;
+        reportRestored();
+      }
+    },
+  );
   const unsubscribeWorker = client.onUpdate(
     api.workers.current,
     {},
@@ -94,27 +133,37 @@ export function connectWorkerControl(
         worker.identityEpoch !== identity.identityEpoch
       ) {
         lastWorker = undefined;
-        disconnected();
+        disconnected("identity_unavailable");
       } else if (!closed) {
         lastWorker = worker;
-        onStatus({ status: "connected", worker });
+        reportRestored();
       }
     },
     () => {
       lastWorker = undefined;
-      disconnected();
+      disconnected("identity_unavailable");
     },
   );
 
   return {
     client,
+    diagnostics: () => {
+      const connection = client.connectionState();
+      return {
+        socketConnected: connection.isWebSocketConnected,
+        authenticated,
+        identityAvailable: Boolean(lastWorker),
+        tokenExchangePending,
+        connectionRetries: connection.connectionRetries,
+      };
+    },
     close: async () => {
       if (closed) return;
       closed = true;
       if (retryTimer) clearTimeout(retryTimer);
       unsubscribeWorker();
       unsubscribeConnection();
-      onStatus({ status: "disconnected" });
+      onStatus({ status: "disconnected", reason: "shutdown" });
       await client.close();
     },
   };

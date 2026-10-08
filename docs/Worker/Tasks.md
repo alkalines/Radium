@@ -1,7 +1,8 @@
 # Worker Task Coordination
 
 Status: **status persistence, cleanup, and edit-only dispatch/results implemented
-and tested locally; deployed transport and Chatroom integration remain unverified/planned** (2026-10-07).
+and tested locally; Chatroom model-tool integration is implemented locally,
+with deployed transport still unverified** (2026-10-07).
 
 Worker tasks are short-lived handoff records assigned to one enrolled Worker in
 one workspace. Chats retain conversation/tool-call history; tasks keep coordination
@@ -51,12 +52,13 @@ explicitly retried before cleanup.
 Legacy metadata updates require `expectedRevision`. Repeating the immediately preceding update
 is idempotent; stale revisions cannot finish a later attempt. These checks fence
 status updates, not filesystem/process effects. Automatic retries, leases,
-timeouts and cancellation remain planned. Other tools still need execution
-idempotency, capabilities, approvals and durable chat outcomes.
+timeouts and cancellation remain planned. Other execution tools still need
+their own idempotency, capabilities, and approvals.
 
 `(workspace, workerId, requestId)` deduplicates dispatch while the task exists.
 Different metadata with the same selector fails. After cleanup this receipt is
-gone; future Chatroom dispatch must consult durable tool-call outcomes when needed.
+gone. Chatroom dispatch additionally uses durable `worker_chat_calls` stage receipts,
+which preserve request identity and outputs across terminal-task cleanup.
 
 ## Cleanup
 
@@ -69,7 +71,7 @@ five to ten minutes, depending on the next tick.
 `sent`, `processing` and `retrying` records are retained. Stuck-task recovery is
 future work. Cleanup touches only task records, preserving chats, tool-call history,
 identities and credentials. Optional chat/tool-call links support correlation;
-writing execution outcomes into chats is part of future integration. Edit request
+Chatroom outputs are also copied into durable stage receipts on completion. Edit request
 and result fields are deleted with their terminal task.
 
 ## Edit Messaging And Execution
@@ -153,8 +155,20 @@ unknown outcome. Edit tasks cannot enter the generic retry path. Inspect the fil
 and issue a new read/preview/request ID deliberately. Restart discards native
 snapshots/previews, so old preview IDs cannot be applied. An already-running local
 operation cannot be rolled back by revocation or transport loss; new claims and
-result writes recheck machine authority. Automatic recovery, cancellation, durable
-chat outcomes, model tool wiring, and approval UI remain follow-up work.
+result writes recheck machine authority. Automatic recovery and cancellation
+remain follow-up work. Chatroom model file tools, signed write
+approvals, and durable stage receipts are documented in [Chatroom integration](Chatroom.md).
+
+### Chatroom Dispatch
+
+`internal.worker_tasks.dispatchChatEdit` accepts only server-derived session
+identity and persisted chat selection. It rechecks owner and chat visibility,
+the active Worker in that workspace, exact configured directory, enabled tool,
+and stage/action compatibility. It derives the native session and write mode.
+Apply must select a successful preview from that same tool call. Internal
+`chatEditOutcome` uses the same authorization and reads durable receipts even
+after the transient task is pruned. Chat deletion schedules `cleanupChatCalls`
+in indexed batches. These internal paths are not browser or machine APIs.
 
 Enrollment alone does not authorize a task: the owner-only backend dispatch selects
 the directory and the machine claim authorizes its assigned task. Task claims do

@@ -3,7 +3,8 @@ import { v } from "convex/values";
 import { publicKey as workerPublicKey } from "worker-component";
 import { completionPricingSchema, completionUsageSchema } from "../src/usage/completion";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
-import { workerTaskFields } from "../src/worker/task-contract";
+import { workerChatCallFields, workerTaskFields } from "../src/worker/task-contract";
+import { chatWorkerSelectionValidator } from "../src/worker/chat-config";
 import {
   telemetrySettingsSchema,
   telemetrySourceSchema,
@@ -23,6 +24,10 @@ export default defineSchema({
     .index("by_worker_request", ["workspace", "workerId", "requestId"])
     .index("by_worker_status", ["workspace", "workerId", "status", "operation"])
     .index("by_status_terminalAt", ["status", "terminalAt"]),
+  /** Durable chat tool-call idempotency and output receipts; internal-only access. */
+  worker_chat_calls: defineTable(workerChatCallFields)
+    .index("by_chat_call_stage", ["chatId", "toolCallId", "stage"])
+    .index("by_task", ["taskId"]),
   /** App authorization scope for a component-owned enrollment receipt; no setup secret. */
   worker_enrollments: defineTable({
     workspace: v.id("workspaces"),
@@ -325,6 +330,8 @@ export default defineSchema({
         mcpServers: v.array(v.id("mcp_servers")),
       }),
     ),
+    /** Owner-selected Worker and enabled Worker tools; execution wiring is future work. */
+    worker: v.optional(chatWorkerSelectionValidator),
   })
     .index("by_userId", ["userId"])
     .index("by_userId_and_lastInteractionAt", ["userId", "lastInteractionAt"])

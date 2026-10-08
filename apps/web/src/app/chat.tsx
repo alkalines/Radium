@@ -12,6 +12,10 @@ import { LockKeyholeIcon, UsersIcon } from "lucide-react";
 import { ChatPromptInput, type ReasoningEffort } from "@/components/chat/chat-prompt-input";
 import { ChatToolsMenu } from "@/components/chat/chat-tools-menu";
 import {
+  ChatWorkerSelector,
+  type ChatWorkerSelection,
+} from "@/components/chat/chat-worker-selector";
+import {
   chatComposerViewTransitionName,
   rememberChatHandoff,
 } from "@/components/chat/chat-loading";
@@ -164,6 +168,14 @@ function ChatHomePage() {
   const [reasoningBudget, setReasoningBudget] = useState<number>();
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [scope, setScope] = useState<ChatScope>("personal");
+  const [workerChoice, setWorkerChoice] = useState<{
+    workspace: typeof workspaceId;
+    selection: ChatWorkerSelection | null;
+  }>();
+  const workerSelection =
+    workerChoice?.workspace === workspaceId && workspace?.role === "owner"
+      ? workerChoice?.selection
+      : null;
   const [welcomeIndex] = useState(() => Math.floor(Math.random() * welcomeTextCount));
 
   useEffect(() => {
@@ -171,6 +183,7 @@ function ChatHomePage() {
     setModelWorkspaceId(workspaceId);
     setModel(undefined);
     setProvider(undefined);
+    setWorkerChoice(undefined);
   }, [modelWorkspaceId, workspaceId]);
 
   const userName = typeof userInfo === "string" ? undefined : userInfo?.name;
@@ -290,6 +303,7 @@ function ChatHomePage() {
               const chatId = await createChat({
                 workspace: workspaceId,
                 scope,
+                ...(workerSelection ? { worker: workerSelection } : {}),
                 messages_queue: {
                   text: trimmedText,
                   files,
@@ -325,6 +339,15 @@ function ChatHomePage() {
           selectedModel={selectedModel}
           selectedProvider={selectedProvider}
           status={isSubmitting ? "submitted" : "ready"}
+          workerSelector={
+            <ChatWorkerSelector
+              key={workspaceId}
+              workspace={workspaceId}
+              selection={workerSelection}
+              disabled={isSubmitting}
+              onChange={(selection) => setWorkerChoice({ workspace: workspaceId, selection })}
+            />
+          }
           toolsMenu={
             <>
               <ChatScopeMenu scope={scope} onChange={setScope} />

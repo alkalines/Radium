@@ -1,8 +1,9 @@
 import { v, type Infer } from "convex/values";
 
-/** The edit tool's snapshot/preview lifecycle within a backend-selected Worker directory. */
+/** Worker file-tool request; writable requests use a snapshot/preview lifecycle. */
 const workerEditRequestFields = {
   sessionId: v.string(),
+  writeMode: v.optional(v.union(v.literal("edit"), v.literal("create"))),
   action: v.union(
     v.object({
       kind: v.literal("read"),
@@ -31,7 +32,7 @@ export type WorkerEditRequest = Infer<typeof workerEditRequest>;
 export const WORKER_EDIT_INPUT_BYTES = 32 * 1024;
 export const WORKER_EDIT_OUTPUT_BYTES = 128 * 1024;
 
-/** Explicit tool output, never operational logging. Terminal task retention applies. */
+/** Explicit tool output, never operational logging; chat receipts may outlive the task. */
 export const workerEditResult = v.union(
   v.object({ ok: v.literal(true), output: v.string() }),
   v.object({ ok: v.literal(false), code: v.string(), output: v.optional(v.string()) }),
@@ -44,6 +45,7 @@ export function workerEditRequestKey(request: WorkerEditRequest): string {
   return JSON.stringify([
     request.sessionId,
     request.directory ?? null,
+    request.writeMode ?? null,
     action.kind,
     action.kind === "read"
       ? [action.path, action.startLine ?? 1, action.maxLines ?? null]

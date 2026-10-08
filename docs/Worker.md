@@ -20,9 +20,9 @@ implements owner-dispatched, machine-claimed edit tasks and short-lived results.
 `start` consumes edit tasks without a directory CLI option; the owner-authorized
 backend dispatch supplies an absolute directory on the target Worker, and native
 editing is loaded lazily for a valid request. See [Worker tasks](Worker/Tasks.md)
-for directory selection, result subscriptions and crash behavior. Root development
-does not start the Worker; `bun run dev:worker` watches and restarts an enrolled
-Worker alongside it. The [Worker CLI guide](../packages/worker/README.md) covers
+for directory selection, result subscriptions and crash behavior. Root `bun run dev`
+starts the enrolled Worker with a source watcher; `bun run dev:worker` runs the
+Worker watcher independently. The [Worker CLI guide](../packages/worker/README.md) covers
 masked interactive setup, local status, authentication refresh and forgetting credentials.
 
 The **Chatroom → Workers** page follows the compact Tools settings layout: an
@@ -30,6 +30,18 @@ Add Worker button and a list with name, ID, identity authorization status, and a
 revoke action. Setup uses a name/code dialog. Worker rows accept optional content
 below their controls so future machine alerts can be added in place. Disk I/O,
 CPU, temperature, and RAM alert reporting is **planned**, not implemented.
+
+Per-chat Worker configuration is persisted on `aisdk_chats.worker`. Owners can
+provide the selection when creating a chat or update/clear it with
+`aisdk.SetChatWorker`. A selection contains a Worker ID and unique `read`, `edit`,
+and/or `create` tool names; the Worker must be active in that chat's exact
+workspace. Members cannot configure it, and chat visibility rules still apply
+when reading or changing a chat. An absolute Worker directory enables the selected
+model tools; Edit/Create require signed approval before preview/application, and
+the Worker enforces operation-specific write permissions. The
+[Chatroom integration guide](Worker/Chatroom.md) documents execution, durable
+receipts, timeouts and verification limits. The compact composer selector is
+described in the [Chatroom guide](Radium_Chatroom.md#models-and-tools).
 
 `packages/worker-component` implements isolated Convex enrollment and
 public-key identity persistence, exact-retry/token-free recovery, and revocation.
@@ -48,8 +60,10 @@ with tools or Chatroom coordination.
 [Worker tasks](Worker/Tasks.md) persist `sent`, `processing`, `failed`, `retrying`
 and `success`, with optional chat/tool-call correlation. Every five minutes,
 cleanup removes terminal task records aged at least five minutes, including edit
-inputs/results. Chatroom model-tool wiring, durable conversation outcomes and
-approval presentation remain planned.
+inputs/results. Chatroom stage receipts are durable conversation data in
+`worker_chat_calls`; model tools and signed write approval presentation are
+implemented locally. Dispatched-task cancellation and ambiguous-outcome recovery
+remain planned.
 
 The [native tools guide](Worker/Native_Tools.md) describes Oh-My-Pi's own
 `@oh-my-pi/pi-natives` package and the edit adapter's read/preview/apply lifecycle,

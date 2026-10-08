@@ -20,7 +20,7 @@
     "codegen": "bun run build:components && bun run --cwd packages/worker-component build:codegen && bun run --cwd packages/backend codegen",
     "predev": "bun run build:components",
     "dev:worker": "bun run --cwd packages/worker dev",
-    "dev": "concurrently -c cyan,magenta,yellow --names component-build,vite-dev,convex-dev \"bun --cwd=packages/worker-component run dev\" \"bun --cwd=apps/web dev --clearScreen false\" \"bun --cwd=packages/backend run dev\"",
+    "dev": "concurrently -c cyan,magenta,yellow,green --names component-build,vite-dev,convex-dev,worker-dev \"bun --cwd=packages/worker-component run dev\" \"bun --cwd=apps/web dev --clearScreen false\" \"bun --cwd=packages/backend run dev\" \"bun run dev:worker\"",
     "test": "bun run build:components && bun run --cwd packages/backend test",
     "lint": "eslint",
     "format": "oxfmt",

@@ -146,7 +146,11 @@ owner can import a provider, configure its credentials, and issue API keys under
 operation. Owners can add existing Better Auth users directly as workspace
 members; there is no invitation-acceptance flow.
 
-After initial configuration, `bun run dev` starts Vite and Convex together.
+After initial configuration, `bun run dev` starts Vite, Convex, the component build
+watcher, and the Worker source watcher together. Enroll the local Worker first
+using [Worker setup](packages/worker/README.md). The Worker watcher restarts the
+process on imported file changes; without enrollment its startup reports an error
+while the other development processes continue.
 
 ## Try The API
 
@@ -177,7 +181,7 @@ curl "$VITE_CONVEX_SITE_URL/api/openai/v1/chat/completions" \
 
 | Command                              | Purpose                                                                             |
 | ------------------------------------ | ----------------------------------------------------------------------------------- |
-| `bun run dev`                        | Build and watch components, start Vite and Convex                                   |
+| `bun run dev`                        | Build/watch components, start Vite, Convex, and the restarting Worker watcher       |
 | `bun run dev:worker`                 | Watch and restart an enrolled Worker; see [Worker setup](packages/worker/README.md) |
 | `bun run build:components`           | Build local Convex component packages from checked-in bindings                      |
 | `bun run codegen`                    | Generate Worker bindings, build the package, then generate backend bindings         |

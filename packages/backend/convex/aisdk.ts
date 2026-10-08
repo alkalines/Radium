@@ -3,11 +3,15 @@ import { internalMutation, internalQuery, mutation, query } from "./_generated/s
 import type { Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
-import { internal } from "./_generated/api";
+import { components, internal } from "./_generated/api";
 import { requireAccessibleChat, requireChatManager } from "./workspaces";
 import { workspaceMutation, workspaceQuery } from "./helpers";
 import { firstUserMessageText } from "@/chatroom/titles";
 import { canManageChat } from "../src/workspaces/policy";
+import {
+  chatWorkerSelectionValidator,
+  validateChatWorkerSelection,
+} from "../src/worker/chat-config";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
 const MAX_CHAT_CANDIDATES = 100;
@@ -17,15 +21,30 @@ export const CreateChat = workspaceMutation({
   args: {
     scope: v.optional(chatScopeValidator),
     messages_queue: queuedMessageSchema,
+    worker: v.optional(chatWorkerSelectionValidator),
   },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args): Promise<Id<"aisdk_chats">> => {
+    if (args.worker) {
+      await validateChatWorkerSelection(
+        args.worker,
+        ctx.identity._id,
+        { id: ctx.workspace._id, ownerId: ctx.workspace.ownerId },
+        () =>
+          ctx.runQuery(components.workerIdentity.identities.getWorkerMetadata, {
+            workspaceId: ctx.workspace._id,
+            workerId: args.worker!.workerId,
+          }),
+      );
+    }
+
     const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
       messages: [],
       messages_queue: args.messages_queue,
       workspace: args.workspace,
       scope: args.scope ?? "personal",
+      worker: args.worker,
       userId: ctx.identity._id,
       activeStream: false,
       lastInteractionAt: Date.now(),
@@ -109,7 +128,38 @@ export const GetChat = query({
       title: chat?.title,
       activeStream: chat.activeStream,
       messages_queue: chat.messages_queue,
+      worker: chat.worker,
     };
+  },
+});
+
+/** Set (or clear) a chat's Worker configuration. Only the workspace owner may do so. */
+export const SetChatWorker = mutation({
+  args: {
+    chatId: v.id("aisdk_chats"),
+    selection: v.union(chatWorkerSelectionValidator, v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { chat, workspace, userId } = await requireChatManager(ctx, args.chatId);
+
+    if (args.selection) {
+      await validateChatWorkerSelection(
+        args.selection,
+        userId,
+        { id: workspace._id, ownerId: workspace.ownerId },
+        () =>
+          ctx.runQuery(components.workerIdentity.identities.getWorkerMetadata, {
+            workspaceId: workspace._id,
+            workerId: args.selection!.workerId,
+          }),
+      );
+    } else if (workspace.ownerId !== userId) {
+      throw new Error("Only the workspace owner can configure a Worker for chats.");
+    }
+
+    await ctx.db.patch("aisdk_chats", chat._id, { worker: args.selection ?? undefined });
+    return null;
   },
 });
 
@@ -201,6 +251,9 @@ export const DeleteChat = mutation({
     await requireChatManager(ctx, args.chatId);
 
     await ctx.db.delete("aisdk_chats", args.chatId);
+    await ctx.scheduler.runAfter(0, internal.worker_tasks.cleanupChatCalls, {
+      chatId: args.chatId,
+    });
     return null;
   },
 });

@@ -38,6 +38,7 @@ const EDIT_GRAMMAR = editGrammar("hashline") ?? "";
 const APPLY_PATCH_INSTRUCTIONS = WORKER_WORKFLOW + editDescription("apply_patch");
 const APPLY_PATCH_GRAMMAR = editGrammar("apply_patch") ?? "";
 type EditMode = "hashline" | "apply_patch";
+type WorkerWriteMode = "edit" | "create";
 
 interface SnapshotSeed {
   text: string;
@@ -54,6 +55,7 @@ interface StagedPreview {
   id: string;
   createdAt: number;
   bytes: number;
+  writeMode?: WorkerWriteMode;
   writes: EditWriteRequest[];
   expectations: ExpectedPath[];
   outcome: EditApplyOutcome;
@@ -150,6 +152,7 @@ export class WorkerEditService {
     if (activeContext.closed || this.closed)
       return encode({ ok: false, code: "SESSION_CLOSED" }).json;
     this.expirePreviews(activeContext);
+    const writeMode = request.writeMode;
     try {
       switch (request.action.kind) {
         case "read":
@@ -160,9 +163,9 @@ export class WorkerEditService {
             request.action.maxLines,
           );
         case "preview":
-          return await this.preview(activeContext, request.action.patch);
+          return await this.preview(activeContext, request.action.patch, writeMode);
         case "apply":
-          return await this.apply(activeContext, request.action.previewId);
+          return await this.apply(activeContext, request.action.previewId, writeMode);
         default:
           return encode({ ok: false, code: "INVALID_ACTION" }).json;
       }
@@ -231,7 +234,11 @@ export class WorkerEditService {
     return serialized.json;
   }
 
-  private async preview(context: EditContext, patch: string): Promise<string> {
+  private async preview(
+    context: EditContext,
+    patch: string,
+    writeMode?: WorkerWriteMode,
+  ): Promise<string> {
     if (new TextEncoder().encode(patch).byteLength > WORKER_EDIT_INPUT_BYTES) {
       return encode({ ok: false, code: "INPUT_TOO_LARGE" }).json;
     }
@@ -247,6 +254,7 @@ export class WorkerEditService {
     const inspection = editInspect(mode, JSON.stringify({ input: patch }));
     const authoredPaths = new Set<string>(inspection.paths);
     for (const operation of inspection.fileOps) {
+      assertWriteModeAllows(writeMode, operation.kind);
       authoredPaths.add(operation.path);
       if (operation.to) authoredPaths.add(operation.to);
     }
@@ -285,7 +293,7 @@ export class WorkerEditService {
       outcome = await nativeSession.apply({ lspFlush: false }, async (error, request) => {
         if (error) throw error;
         try {
-          await this.validateStagedWrite(request);
+          await this.validateStagedWrite(request, writeMode);
           await this.captureBaseline(request.path, baselines);
           if (request.moveTo) await this.captureBaseline(request.moveTo, baselines);
         } catch (validationError) {
@@ -345,6 +353,7 @@ export class WorkerEditService {
       id: randomUUID().replaceAll("-", ""),
       createdAt: Date.now(),
       bytes,
+      writeMode,
       writes,
       expectations,
       outcome,
@@ -376,9 +385,35 @@ export class WorkerEditService {
     return serialized.json;
   }
 
-  private async apply(context: EditContext, previewId: string): Promise<string> {
+  private async apply(
+    context: EditContext,
+    previewId: string,
+    writeMode?: WorkerWriteMode,
+  ): Promise<string> {
     const preview = context.previews.get(previewId);
     if (!preview) return encode({ ok: false, code: "UNKNOWN_PREVIEW" }).json;
+    if (preview.writeMode !== undefined && preview.writeMode !== writeMode) {
+      return encode({
+        ok: false,
+        action: "apply",
+        code: "WRITE_MODE_DENIED",
+        message: "Apply must use the write mode that was approved for this preview.",
+      }).json;
+    }
+    try {
+      // Validate the complete staged batch before the first filesystem write. This
+      // prevents a later incompatible operation from leaving an earlier write applied.
+      for (const request of preview.writes) {
+        assertWriteModeAllows(writeMode ?? preview.writeMode, request.op);
+      }
+    } catch (error) {
+      return encode({
+        ok: false,
+        action: "apply",
+        code: errorCode(error),
+        message: applyErrorMessage(error),
+      }).json;
+    }
     this.dropPreview(context, previewId);
 
     const applied: string[] = [];
@@ -435,10 +470,14 @@ export class WorkerEditService {
     }
   }
 
-  private async validateStagedWrite(request: EditWriteRequest): Promise<void> {
+  private async validateStagedWrite(
+    request: EditWriteRequest,
+    writeMode?: WorkerWriteMode,
+  ): Promise<void> {
     if (!["create", "update", "delete", "move"].includes(request.op)) {
       throw new WorkerEditPathError("UNSAFE_PATH");
     }
+    assertWriteModeAllows(writeMode, request.op);
     if (request.op !== "delete" && typeof request.content !== "string") {
       throw new EditServiceError("MISSING_EDIT_CONTENT");
     }
@@ -687,6 +726,15 @@ function editModeFor(patch: string): EditMode {
   return /^\*\*\* Begin Patch\s*\r?\n\s*\*\*\* (?:Add|Update|Delete) File:/u.test(patch.trimStart())
     ? "apply_patch"
     : "hashline";
+}
+
+function assertWriteModeAllows(writeMode: WorkerWriteMode | undefined, operation: string): void {
+  if (
+    writeMode !== undefined &&
+    (writeMode === "edit" ? operation !== "update" : operation !== "create")
+  ) {
+    throw new EditServiceError("WRITE_MODE_DENIED");
+  }
 }
 
 function instructionsFor(mode: EditMode): string {

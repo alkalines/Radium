@@ -111,6 +111,13 @@ public `dispatchEdit` request always requires the directory field.
 4. **Close/restart:** dispose snapshots and pending previews. Restart cannot recover
    native session state or reuse old preview IDs.
 
+When supplied, `writeMode: "edit"` permits only native `update` writes, while
+`writeMode: "create"` permits only `create` writes. Deletes, moves, incompatible
+operations in mixed patches, and applying a constrained preview with a different
+mode are rejected with `WRITE_MODE_DENIED`; the complete staged batch is rechecked
+before any disk write. Requests omitting `writeMode` retain the legacy native
+behavior.
+
 Hashline is the default; its patch uses tagged file headers, optionally wrapped
 in `*** Begin Patch` / `*** End Patch` as in the exported grammar. An envelope with
 `*** Add File`, `*** Update File`, or `*** Delete File` headers selects the native

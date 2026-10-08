@@ -16,6 +16,8 @@ import { WorkerEditService } from "./service.js";
 import type { WorkerEditRequest } from "backend/src/worker/edit-contract";
 import { WorkerDirectoryEdits } from "./directories.js";
 
+type WorkerWriteMode = "edit" | "create";
+
 const temporaryDirectories: string[] = [];
 const services: WorkerEditService[] = [];
 const directoryEditors: WorkerDirectoryEdits[] = [];
@@ -245,6 +247,176 @@ test("native apply_patch creates files through the guarded host writer", async (
   expect(await readFile(file, "utf8")).toBe("new file\n");
 });
 
+test("edit mode rejects native file creation before staging", async () => {
+  const { root, service } = await newService();
+  const file = join(root, "new.txt");
+  const patch = "*** Begin Patch\n*** Add File: new.txt\n+new file\n*** End Patch";
+
+  const preview = await request(service, { kind: "preview", patch }, "session-default", "edit");
+  expect(preview).toMatchObject({ ok: false, code: "WRITE_MODE_DENIED" });
+  await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("create mode rejects native file updates before staging", async () => {
+  const { root, service } = await newService();
+  const file = join(root, "existing.txt");
+  await writeFile(file, "original\n");
+  const patch =
+    "*** Begin Patch\n*** Update File: existing.txt\n@@\n-original\n+changed\n*** End Patch";
+
+  const preview = await request(service, { kind: "preview", patch }, "session-default", "create");
+  expect(preview).toMatchObject({ ok: false, code: "WRITE_MODE_DENIED" });
+  expect(await readFile(file, "utf8")).toBe("original\n");
+});
+
+test("a mixed native patch is rejected without accepting any staged writes", async () => {
+  const { root, service } = await newService();
+  const existing = join(root, "existing.txt");
+  const created = join(root, "created.txt");
+  await writeFile(existing, "original\n");
+  const patch =
+    "*** Begin Patch\n*** Update File: existing.txt\n@@\n-original\n+changed\n*** Add File: created.txt\n+new file\n*** End Patch";
+
+  const preview = await request(service, { kind: "preview", patch }, "session-default", "edit");
+  expect(preview).toMatchObject({ ok: false, code: "WRITE_MODE_DENIED" });
+  expect(await readFile(existing, "utf8")).toBe("original\n");
+  await expect(readFile(created)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("edit mode rejects native delete and move intents", async () => {
+  const { root, service } = await newService();
+  const deleted = join(root, "deleted.txt");
+  const source = join(root, "source.txt");
+  const destination = join(root, "destination.txt");
+  await writeFile(deleted, "keep deleted file\n");
+  await writeFile(source, "keep source file\n");
+
+  const deleteRead = await request(service, { kind: "read", path: "deleted.txt" }, "delete-mode");
+  const deletePreview = await request(
+    service,
+    {
+      kind: "preview",
+      patch: `${String(deleteRead.content).split("\n", 1)[0]}\nREM\n*** End Patch`,
+    },
+    "delete-mode",
+    "edit",
+  );
+  expect(deletePreview).toMatchObject({ ok: false, code: "WRITE_MODE_DENIED" });
+  expect(await readFile(deleted, "utf8")).toBe("keep deleted file\n");
+
+  const moveRead = await request(service, { kind: "read", path: "source.txt" }, "move-mode");
+  const movePreview = await request(
+    service,
+    {
+      kind: "preview",
+      patch: `${String(moveRead.content).split("\n", 1)[0]}\nMV destination.txt\n*** End Patch`,
+    },
+    "move-mode",
+    "edit",
+  );
+  expect(movePreview).toMatchObject({ ok: false, code: "WRITE_MODE_DENIED" });
+  expect(await readFile(source, "utf8")).toBe("keep source file\n");
+  await expect(readFile(destination)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("apply requires the preview's write mode and keeps a mismatched preview unapplied", async () => {
+  const { root, service } = await newService();
+  const file = join(root, "new.txt");
+  const patch = "*** Begin Patch\n*** Add File: new.txt\n+new file\n*** End Patch";
+  const preview = await request(service, { kind: "preview", patch }, "session-default", "create");
+  expect(preview.ok).toBe(true);
+
+  const mismatch = await request(
+    service,
+    { kind: "apply", previewId: String(preview.previewId) },
+    "session-default",
+    "edit",
+  );
+  expect(mismatch).toMatchObject({ ok: false, code: "WRITE_MODE_DENIED" });
+  await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
+
+  const applied = await request(
+    service,
+    { kind: "apply", previewId: String(preview.previewId) },
+    "session-default",
+    "create",
+  );
+  expect(applied.ok).toBe(true);
+  expect(await readFile(file, "utf8")).toBe("new file\n");
+});
+
+test("mode-constrained native creation and hashline updates apply when modes match", async () => {
+  const { root, service } = await newService();
+  const created = join(root, "created.txt");
+  const createPreview = await request(
+    service,
+    {
+      kind: "preview",
+      patch: "*** Begin Patch\n*** Add File: created.txt\n+created\n*** End Patch",
+    },
+    "create-session",
+    "create",
+  );
+  expect(createPreview.ok).toBe(true);
+  expect(
+    (
+      await request(
+        service,
+        { kind: "apply", previewId: String(createPreview.previewId) },
+        "create-session",
+        "create",
+      )
+    ).ok,
+  ).toBe(true);
+  expect(await readFile(created, "utf8")).toBe("created\n");
+
+  const edited = join(root, "edited.txt");
+  await writeFile(edited, "before\nafter\n");
+  const read = await request(service, { kind: "read", path: "edited.txt" }, "edit-session");
+  const editPreview = await request(
+    service,
+    {
+      kind: "preview",
+      patch: `${String(read.content).split("\n", 1)[0]}\nPUT 1.=1:\n+changed\n*** End Patch`,
+    },
+    "edit-session",
+    "edit",
+  );
+  expect(editPreview.ok).toBe(true);
+  expect(
+    (
+      await request(
+        service,
+        { kind: "apply", previewId: String(editPreview.previewId) },
+        "edit-session",
+        "edit",
+      )
+    ).ok,
+  ).toBe(true);
+  expect(await readFile(edited, "utf8")).toBe("changed\nafter\n");
+});
+
+test("a constrained apply also checks writes from a legacy unrestricted preview", async () => {
+  const { root, service } = await newService();
+  const file = join(root, "legacy.txt");
+  const preview = await request(service, {
+    kind: "preview",
+    patch: "*** Begin Patch\n*** Add File: legacy.txt\n+new file\n*** End Patch",
+  });
+  expect(preview.ok).toBe(true);
+  const denied = await request(
+    service,
+    {
+      kind: "apply",
+      previewId: String(preview.previewId),
+    },
+    "session-default",
+    "edit",
+  );
+  expect(denied).toMatchObject({ ok: false, code: "WRITE_MODE_DENIED" });
+  await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 test("rejects traversal and symlink escapes for reads, deletes, and new move destinations", async () => {
   const temp = await temporaryDirectory();
   temporaryDirectories.push(temp);
@@ -308,8 +480,14 @@ async function request(
   service: WorkerEditService,
   action: WorkerEditRequest["action"],
   sessionId = "session-default",
+  writeMode?: WorkerWriteMode,
 ): Promise<Record<string, any>> {
-  return JSON.parse(await service.execute({ sessionId, action })) as Record<string, any>;
+  const workerRequest: WorkerEditRequest = {
+    sessionId,
+    action,
+    ...(writeMode === undefined ? {} : { writeMode }),
+  };
+  return JSON.parse(await service.execute(workerRequest)) as Record<string, any>;
 }
 
 test("paged reads retain visible-line provenance across the beginning and end of a file", async () => {

@@ -76,6 +76,7 @@ export async function runCli(args: string[]): Promise<void> {
       console.info(`Enrollment: ${state.identity ? "complete" : "pending recovery"}`);
       console.info(storageDescription(state.credentialStoreMode));
       console.info(`Backend: ${state.setup.backendUrl}`);
+      console.info(`Convex client: ${state.setup.convexUrl}`);
       if (state.identity) {
         console.info(`Worker: ${state.identity.workerId}`);
         console.info(`Workspace: ${state.identity.workspaceId}`);

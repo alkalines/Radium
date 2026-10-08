@@ -43,6 +43,9 @@ values through `process.env`.
 Worker setup uses the backend's built-in `CONVEX_SITE_URL` and `CONVEX_CLOUD_URL`
 for reachable HTTP/client origins. See [Worker machine authentication](Worker/Machine_Authentication.md)
 for issuer-key generation, configuration application, setup codes and verification limits.
+Chatroom uses the existing private issuer configuration to derive scoped write
+approval signatures; no additional approval secret is required. Issuer-secret
+rotation invalidates pending Worker tool approvals. See [Worker tools in Chatroom](Worker/Chatroom.md).
 
 The frontend server also reads `VITE_CONVEX_SITE_URL` for its generic
 `/api/backend/*` proxy, forwarding to the Convex site's `/api/*` routes. See the
@@ -172,7 +175,12 @@ does not deploy the generated functions. Review the generated diff before commit
 
 For a fresh checkout without deployment access, `bun run build:components` builds
 the local workspace package from checked-in bindings. `bun run dev` builds it
-first and runs a TypeScript build watcher alongside Vite and Convex. Source API
+first and runs a TypeScript build watcher alongside Vite, Convex, and the Worker
+source watcher (`bun --watch src/cli.ts start` in `packages/worker`). Enroll the
+local Worker before starting it; see the [Worker setup guide](../packages/worker/README.md).
+Without enrollment the Worker reports a startup error while the other processes
+continue. Imported Worker file changes restart its process and discard in-memory
+edit sessions and previews; claimed tasks are not automatically rerun. Source API
 or schema changes still require the explicit codegen sequence above. Tests use
 the built package too; `bun run test` builds before running backend tests. See the
 [Worker component guide](Worker/Component.md) for package exports and scope.

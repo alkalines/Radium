@@ -7,6 +7,7 @@ import {
   streamText,
   toUIMessageStream,
   type ToolSet,
+  type ToolApprovalConfiguration,
   type UIMessage,
 } from "ai";
 import { toExaCountry } from "../chatroom/user-location";
@@ -17,7 +18,7 @@ import {
 } from "../chatroom/aisdk-tools";
 import type { Id } from "../../convex/_generated/dataModel";
 import { authComponent, createAuth } from "../../convex/auth";
-import { internal } from "../../convex/_generated/api";
+import { components, internal } from "../../convex/_generated/api";
 import type { ActionCtx } from "../../convex/_generated/server";
 import {
   MCP_SECRET_NAME,
@@ -27,6 +28,8 @@ import {
 } from "../../convex/secrets";
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { createTelemetryIntegrations } from "@/telemetry/convex";
+import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
+import { buildWorkerChatTools, workerChatApprovalSecret } from "../worker/chat-tools";
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
@@ -123,20 +126,40 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     { userId, chatId },
   );
 
+  let chatTools: Awaited<ReturnType<typeof buildChatTools>>;
+  try {
+    chatTools = await buildChatTools(ctx, chatId, {
+      userId,
+      workspaceId,
+      ownerId: workspace.ownerId,
+      selection: chat.worker,
+    });
+  } catch {
+    return Response.json(
+      {
+        error: {
+          message:
+            "Worker tools are unavailable. Check the selected Worker, its absolute directory, and backend Worker authentication configuration.",
+          code: 400,
+        },
+      },
+      { status: 400 },
+    );
+  }
+  const { tools, close: closeTools, toolApproval, approvalSecret } = chatTools;
+
   await ctx.runMutation(internal.aisdk.EditChat, {
     chatId,
     activeStream: true,
     messages_queue: null,
   });
 
-  // Resolve the chat's enabled tools. MCP servers contribute real, executable
-  // tools (HTTP transport); built-in tool sets are config-only for now.
-  const { tools, close: closeTools } = await buildChatTools(ctx, chatId);
-
   const result = streamText({
     model: provider(body.model),
     messages: await convertToModelMessages(body.messages, { tools }),
     tools,
+    toolApproval,
+    experimental_toolApprovalSecret: approvalSecret,
     // Allow follow-up turns so the model can act on executable tool results
     // (Exa web search, MCP tools) instead of stopping at the first tool call.
     stopWhen: isStepCount(5),
@@ -307,13 +330,49 @@ function aggregatePerformance(
 async function buildChatTools(
   ctx: ActionCtx,
   chatId: Id<"aisdk_chats">,
-): Promise<{ tools: ToolSet; close: () => Promise<void> }> {
+  worker: {
+    userId: string;
+    ownerId: string;
+    workspaceId: Id<"workspaces">;
+    selection?: ChatWorkerSelection;
+  },
+): Promise<{
+  tools: ToolSet;
+  close: () => Promise<void>;
+  toolApproval?: ToolApprovalConfiguration<ToolSet, unknown>;
+  approvalSecret?: Uint8Array;
+}> {
   const config = await ctx.runQuery(internal.chatroom.resolveChatTools, { chatId });
 
   const clients: Awaited<ReturnType<typeof createMCPClient>>[] = [];
   // MCP tools are typed with `unknown` inputs; collect them loosely and cast to
   // `ToolSet` once at the boundary to avoid the invariance friction.
   const tools: Record<string, ToolSet[string]> = {};
+  let toolApproval: ToolApprovalConfiguration<ToolSet, unknown> | undefined;
+  let approvalSecret: Uint8Array | undefined;
+  // Shared-chat membership never grants machine execution. Identity and directory
+  // come from the persisted chat; dispatch rechecks configuration on every stage.
+  if (worker.userId === worker.ownerId && worker.selection?.tools.length) {
+    const selection = await validateChatWorkerSelection(
+      worker.selection,
+      worker.userId,
+      { id: worker.workspaceId, ownerId: worker.ownerId },
+      () =>
+        ctx.runQuery(components.workerIdentity.identities.getWorkerMetadata, {
+          workspaceId: worker.workspaceId,
+          workerId: worker.selection!.workerId,
+        }),
+    );
+    const scope = { chatId, workspaceId: worker.workspaceId, userId: worker.userId, selection };
+    const workerTools = buildWorkerChatTools(ctx, scope);
+    Object.assign(tools, workerTools.tools);
+    toolApproval = workerTools.toolApproval;
+    if (selection.tools.some((name) => name === "edit" || name === "create")) {
+      const issuerSecret = process.env.WORKER_AUTH_PRIVATE_JWK;
+      if (!issuerSecret) throw new Error("Worker authentication is not configured");
+      approvalSecret = await workerChatApprovalSecret(issuerSecret, scope);
+    }
+  }
 
   const exaTool = await resolveExaWebSearch(ctx, chatId);
   if (exaTool) tools.web_search = exaTool;
@@ -351,7 +410,7 @@ async function buildChatTools(
     );
   };
 
-  return { tools: tools as ToolSet, close };
+  return { tools: tools as ToolSet, close, toolApproval, approvalSecret };
 }
 
 /**

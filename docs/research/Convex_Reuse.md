@@ -50,6 +50,18 @@ decode, so no new catalog candidate was evaluated or adopted.
 
 ## Recommended Evaluation
 
+### Worker Chat Tools (2026-10-07)
+
+Rechecked the official Components catalog and `convex-helpers`. Workpool and
+Action Retrier provide useful durable action retries, but they do not replace
+externally claimed Worker tasks or authorize machine filesystem operations.
+Automatically retrying ambiguous writes would violate this execution contract.
+The existing Worker identity component remains the isolated identity owner;
+chat-specific stage receipts stay with app-owned chat visibility and deletion
+policy. Existing `customFunctions` wrappers continue validating Better Auth
+sessions; HTTP orchestration passes only server-derived identities to internal
+dispatch. No new component or dependency was adopted for this slice.
+
 | Facility                                | Fit and caution                                                                                                                                          |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `customFunctions`                       | Adopted for workspace query/mutation builders, including internal variants. Retains Better Auth session validation and explicit workspace access policy. |

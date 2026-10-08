@@ -82,6 +82,10 @@ import {
 } from "@/components/chat/chat-loading";
 import { ChatMessageActions, type ForkPickerModel } from "@/components/chat/message-actions";
 import { ChatToolsMenu } from "@/components/chat/chat-tools-menu";
+import {
+  ChatWorkerSelector,
+  type ChatWorkerSelection,
+} from "@/components/chat/chat-worker-selector";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -154,6 +158,8 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const forkChat = useMutation(api.aisdk.ForkChat);
   const setChatScope = useMutation(api.aisdk.SetChatScope);
+  const setChatWorker = useMutation(api.aisdk.SetChatWorker);
+  const [workerSaving, setWorkerSaving] = useState(false);
   const [model, setModel] = useState<string | undefined>(search.model);
   const [provider, setProvider] = useState<string | undefined>(search.provider);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -235,6 +241,18 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const handleModelChange = useCallback((nextModel: string) => {
     setModel(nextModel);
   }, []);
+
+  async function updateWorker(selection: ChatWorkerSelection | null) {
+    if (workerSaving) return;
+    setWorkerSaving(true);
+    try {
+      await setChatWorker({ chatId: convexChatId, selection });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to update Worker.");
+    } finally {
+      setWorkerSaving(false);
+    }
+  }
 
   async function updateScope(scope: ChatScope) {
     if (typeof chat === "string" || !chat || !chat.canManageScope || scopeSaving) return;
@@ -773,6 +791,15 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
             selectedModel={selectedModel}
             selectedProvider={selectedProvider}
             status={status}
+            workerSelector={
+              <ChatWorkerSelector
+                key={convexChatId}
+                workspace={chatWorkspaceId}
+                selection={chat.worker}
+                disabled={workerSaving || status !== "ready" || !canManageChat}
+                onChange={(selection) => void updateWorker(selection)}
+              />
+            }
             toolsMenu={
               canManageChat ? (
                 <ChatToolsMenu workspace={settingsWorkspaceId} chatId={convexChatId} />

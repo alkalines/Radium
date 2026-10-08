@@ -16,6 +16,7 @@ import { setupWorker, createMachineTokenFetcher } from "../../worker/src/auth";
 import { readWorkerState } from "../../worker/src/state";
 import { workerMutation } from "../src/worker/machine";
 import { makeFunctionReference } from "convex/server";
+import type { ChatWorkerSelection } from "../src/worker/chat-config";
 import { v } from "convex/values";
 
 vi.mock("./auth", () => ({
@@ -160,6 +161,122 @@ test("owner-issued code contains separate origins; members and unauthenticated c
   ).rejects.toThrow();
   const stored = await f.t.run((ctx) => ctx.db.query("worker_enrollments").first());
   expect(JSON.stringify(stored)).not.toContain(f.bundle.token);
+});
+
+test("chat Worker configuration is owner-only, workspace-bound, and requires an active Worker", async () => {
+  const f = await setup();
+  const { identity } = await enroll(f);
+  const selection: ChatWorkerSelection = { workerId: identity.workerId, tools: ["read", "edit"] };
+  await f.t.run((ctx) =>
+    ctx.db.insert("workspace_members", {
+      workspace: f.workspace,
+      userId: "member",
+      role: "member",
+    }),
+  );
+  const member = f.t.withIdentity({ subject: "member" });
+
+  const chatId = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    scope: "workspace",
+    messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+    worker: selection,
+  });
+  await expect(f.owner.query(api.aisdk.GetChat, { chatId })).resolves.toMatchObject({
+    worker: selection,
+  });
+  await expect(member.query(api.aisdk.GetChat, { chatId })).resolves.toMatchObject({
+    worker: selection,
+  });
+
+  await expect(
+    member.mutation(api.aisdk.CreateChat, {
+      workspace: f.workspace,
+      messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+      worker: selection,
+    }),
+  ).rejects.toThrow("Only the workspace owner can configure a Worker for chats.");
+  await expect(member.mutation(api.aisdk.SetChatWorker, { chatId, selection })).rejects.toThrow(
+    "Chat not found.",
+  );
+
+  const outsider = f.t.withIdentity({ subject: "outsider" });
+  await expect(outsider.query(api.aisdk.GetChat, { chatId })).rejects.toThrow("Chat not found.");
+  await expect(outsider.mutation(api.aisdk.SetChatWorker, { chatId, selection })).rejects.toThrow(
+    "Chat not found.",
+  );
+
+  const personalChatId = await member.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+  });
+  await expect(
+    member.mutation(api.aisdk.SetChatWorker, { chatId: personalChatId, selection }),
+  ).rejects.toThrow("Only the workspace owner can configure a Worker for chats.");
+  await expect(
+    member.mutation(api.aisdk.SetChatWorker, { chatId: personalChatId, selection: null }),
+  ).rejects.toThrow("Only the workspace owner can configure a Worker for chats.");
+  await expect(
+    f.owner.mutation(api.aisdk.SetChatWorker, { chatId: personalChatId, selection }),
+  ).rejects.toThrow("Chat not found.");
+
+  await expect(
+    f.owner.mutation(api.aisdk.SetChatWorker, {
+      chatId,
+      selection: { ...selection, tools: ["read", "read"] },
+    }),
+  ).rejects.toThrow("Worker tools must be unique.");
+  await expect(
+    f.owner.mutation(api.aisdk.SetChatWorker, {
+      chatId,
+      selection: { ...selection, directory: "relative/path" },
+    }),
+  ).rejects.toThrow("Worker directory must be an absolute path on the Worker.");
+
+  await f.owner.mutation(api.aisdk.SetChatWorker, {
+    chatId,
+    selection: { workerId: identity.workerId, tools: [] },
+  });
+  await expect(f.owner.query(api.aisdk.GetChat, { chatId })).resolves.toMatchObject({
+    worker: { workerId: identity.workerId, tools: [] },
+  });
+
+  await f.owner.mutation(api.workers.revoke, {
+    workspace: f.workspace,
+    workerId: identity.workerId,
+  });
+  await expect(f.owner.mutation(api.aisdk.SetChatWorker, { chatId, selection })).rejects.toThrow(
+    "Worker must be active in this workspace.",
+  );
+  await expect(
+    f.owner.mutation(api.aisdk.SetChatWorker, { chatId, selection: null }),
+  ).resolves.toBeNull();
+  expect(await f.t.run((ctx) => ctx.db.get(chatId))).not.toHaveProperty("worker");
+});
+
+test("chat Worker selection rejects a Worker from a different workspace", async () => {
+  const f = await setup();
+  const { identity } = await enroll(f);
+  const otherWorkspace = await f.t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Other" }),
+  );
+  const selection: ChatWorkerSelection = { workerId: identity.workerId, tools: ["create"] };
+
+  await expect(
+    f.owner.mutation(api.aisdk.CreateChat, {
+      workspace: otherWorkspace,
+      messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+      worker: selection,
+    }),
+  ).rejects.toThrow("Worker must be active in this workspace.");
+
+  const chatId = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: otherWorkspace,
+    messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+  });
+  await expect(f.owner.mutation(api.aisdk.SetChatWorker, { chatId, selection })).rejects.toThrow(
+    "Worker must be active in this workspace.",
+  );
 });
 
 test("HTTP proofs reject wrong key/audience/context, consume once, and recover after setup expiry without token", async () => {

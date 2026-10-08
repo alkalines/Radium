@@ -151,7 +151,8 @@ bun run --cwd packages/backend test convex/worker-component.test.ts
 ```
 
 Local builds use the checked-in generated bindings. `bun run dev` builds before
-starting the component TypeScript watcher, Vite and Convex. The watcher rebuilds
+starting the component TypeScript watcher, Vite, Convex, and the Worker source
+watcher. The component watcher rebuilds
 implementation changes; it does not regenerate API bindings. After changing the
 schema or function signatures, run `bun run codegen`: it bootstraps the package
 output, runs standard component codegen, rebuilds, then generates backend bindings.

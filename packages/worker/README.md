@@ -22,6 +22,13 @@ printf '%s\n' "$SETUP_CODE" | bun run --cwd packages/worker setup
 bun run --cwd packages/worker start
 ```
 
+For development, root `bun run dev` also starts the Worker using Bun's `--watch`
+mode. Imported file changes restart the process. Use `bun run dev:worker` to run
+only this watcher after enrollment. Without local enrollment the Worker reports
+a startup error; the root command's Vite, Convex, and component watchers continue.
+Restarts discard in-memory edit snapshots and previews, and claimed tasks with
+unknown outcomes are not automatically rerun.
+
 Run `bun run --cwd packages/worker cli` for an interactive command menu, or
 `bun run --cwd packages/worker cli --help` for command/option help.
 
@@ -62,10 +69,22 @@ recovers a successful enrollment whose response was lost.
 
 `start` creates one `ConvexClient`, obtains short-lived machine JWTs through
 challenge/proof exchanges, and subscribes to the `workers:current` query. It
-reports only `connected` or `disconnected`; a null/revoked identity, auth failure,
-query error, or Convex transport outage is disconnected. Failed token authentication
-re-arms the same client's auth callback with jittered exponential backoff, with a
-nominal delay increasing from 5 to 60 seconds; successful authentication resets the delay and shutdown
+reports `connected` only when Convex authentication succeeds, the WebSocket is
+connected, and `workers:current` returns active metadata matching the saved Worker
+identity. Disconnected status includes a fixed, sanitized reason code:
+
+| Reason                   | Meaning and next check                                                                                  |
+| ------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `token_http_failed`      | The Worker could not obtain a machine token. Check backend availability and run `refresh`.              |
+| `verifier_auth_rejected` | Convex rejected an issued token. Check issuer, verifier audience/issuer, and signing-key configuration. |
+| `identity_unavailable`   | The current query did not provide an active matching Worker. Check its status in Chatroom → Workers.    |
+| `transport`              | The Convex WebSocket is disconnected. Check the configured URL and network/proxy/firewall connectivity. |
+| `shutdown`               | The local Worker control client was stopped.                                                            |
+
+The CLI prints these safe reasons and guidance; it never prints raw errors,
+response bodies, or tokens. Failed token authentication re-arms the same client's
+auth callback with jittered exponential backoff, with a nominal delay increasing
+from 5 to 60 seconds; successful authentication resets the delay and shutdown
 cancels pending retries. Repeated denial remains disconnected, including after owner
 revocation. The same client always consumes authenticated edit assignments and
 sends bounded results. Native editing is loaded lazily when a valid request supplies
@@ -73,6 +92,15 @@ its backend-selected directory. Filesystem operations stay local. The Worker ope
 no inbound HTTP listener; the former `/health` endpoint and `--port` option have
 been removed. Enrollment and token exchange still use outbound requests to the
 Convex-hosted authentication endpoints.
+
+`status` is a local, network-free inspection. For a completed identity, `refresh`
+performs a fresh backend challenge/token exchange without changing the saved key,
+identity, or remote Worker registration; it prints only the token expiry. A pending
+enrollment can be completed and saved during recovery, so that case can update local
+identity state. The backend is the JWT **issuer** and Convex is the JWT **verifier**:
+successful `refresh` confirms that the issuer accepted the Worker's proof and issued
+a token, but does not confirm Convex accepts that token. Only `start` exercises the
+configured Convex verifier and authenticated `workers:current` query.
 
 The setup code's `backendUrl` and `convexUrl` are treated as explicit origins and
 are never rewritten. HTTP redirects are rejected, request timeouts are bounded,
@@ -93,7 +121,11 @@ and session disposal. See
 [backend messaging](../../docs/Worker/Tasks.md) for contracts, bounds and limitations.
 
 Owners dispatch via `api.worker_tasks.dispatchEdit` and subscribe to
-`api.worker_tasks.outcome`; model-tool/Chatroom UI wiring is follow-up work. Sessions
+`api.worker_tasks.outcome`; the Chatroom composer can save an owner-only Worker
+selection, an absolute directory, and independent Read/Edit/Create preferences.
+Chatroom exposes those tools to the model for owner requests; Edit/Create require
+signed approval and operation-constrained staging/application. See
+[Chatroom integration](../../docs/Worker/Chatroom.md). Sessions
 are bound to a canonical directory and isolated by workspace, owner, chat and
 runner session ID. A directory change during a live session fails with
 `SESSION_DIRECTORY_CHANGED`; close it with its bound directory before reusing the
@@ -185,8 +217,8 @@ owned by `auth/`, outside executed workloads.
 The backend's [task coordination contract](../../docs/Worker/Tasks.md) provides
 assignment/status persistence, edit request/result transport and terminal cleanup.
 Task consumption runs on every `start`; the backend dispatch selects each
-target-Worker directory. Chatroom integration and additional tools remain follow-up
-work.
+target-Worker directory. Chatroom file tools and durable stage receipts are
+implemented locally; additional execution tools and recovery remain follow-up work.
 
 ### Commands
 
@@ -201,7 +233,8 @@ bun run --cwd packages/worker typecheck
 ```
 
 `dev:worker` delegates to `bun run --cwd packages/worker dev` (`bun --watch`).
-Enroll first, then run it alongside root `bun run dev`. Enrollment state lives
+Enroll first. Root `bun run dev` already includes this watcher; use `dev:worker`
+when starting the frontend/backend separately. Enrollment state lives
 outside the watched source tree and survives process restarts. `--state-dir`
 can be passed to the package's `dev` script just as with `start`.
 
@@ -215,13 +248,29 @@ run in Bun; auth/control/consumer tests run in Vitest. Install them with
 
 ## Implemented and not implemented
 
+Startup prints `Worker control connecting.` until an initial socket attempt finishes.
+A failed attempt or loss of an established socket prints the transport diagnostic.
+If startup remains incomplete, every 15 seconds the CLI checks the current socket,
+authentication, identity availability, token-exchange activity and socket retry
+count. These diagnostics contain no tokens, keys or task contents and stop after
+connection or shutdown. Compare `dev:worker` with standalone `start` if only the
+combined development command stalls.
+
+`status` prints both saved endpoint roles: `Backend` is the HTTP authentication
+origin (`.convex.site` on Convex Cloud), while `Convex client` is the deployment
+origin used for WebSocket subscriptions (`.convex.cloud`). Self-hosted deployments
+use their configured origins. Successful `refresh` checks the HTTP endpoint only;
+it does not prove the saved client endpoint is reachable.
+
 - **Implemented:** P-256 key persistence, enrollment and recovery over the
   `/api/worker/auth/challenge` and `/api/worker/auth/complete` endpoints, short-lived
   machine-token refresh, current-Worker subscription, OS credential storage with
   explicit protected-file fallback, interactive lifecycle CLI, and locally scoped
-  native edit sessions with authenticated task/result messaging.
-- **Not implemented:** shell/eval execution, ACP, Chatroom model-tool dispatch,
-  approval UI, durable chat outcomes, execution recovery, or OS sandboxing.
+  native edit sessions with authenticated task/result messaging, owner-only
+  Chatroom file tools, signed write approvals, durable stage receipts, and
+  sanitized control disconnect diagnostics.
+- **Not implemented:** shell/eval execution, ACP, dispatched-task cancellation,
+  ambiguous-outcome recovery, or OS sandboxing.
 - **Known limitation:** deployed JWT verifier configuration, TLS/proxy routing,
   and recovery across separately deployed processes require deployment integration
   testing. See the [machine-authentication contract](../../docs/Worker/Machine_Authentication.md)
