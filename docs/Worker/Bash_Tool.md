@@ -2,10 +2,84 @@
 
 ## Status and responsibility
 
-This is an implementation reference for a future Radium Worker Bash tool, based
-on Oh-My-Pi's `main` source checked on 2026-10-07. **Bash execution, background
-jobs, services, and interactive terminals are not implemented in Radium.**
-Worker currently provides machine authentication and task status coordination.
+Radium implements **foreground Bash execution locally** in Worker and Chatroom.
+The upstream reference below is based on Oh-My-Pi's `main` source checked on
+2026-10-07. Managed background jobs, services, and interactive terminals remain
+planned; upstream behavior is not an implemented Radium compatibility claim.
+
+## Implemented Radium foreground tool
+
+The owner enables **Bash commands** in the composer's Worker menu, selects an
+absolute Worker directory, and uses a tool-calling model. `worker_bash` accepts
+`command` and an optional `timeout` in seconds (default 30, range 1–30). Every
+command requires the existing signed Chatroom approval, bound to the exact tool
+input, owner, workspace, chat, Worker, directory and enabled tools. A changed
+selection or issuer secret invalidates pending approvals.
+
+`packages/backend/src/worker/chat-tools.ts` dispatches one `execute` stage through
+the existing `dispatchChatEdit` coordination entry point. Despite its historical
+name, it now validates both file and Bash requests. The backend rechecks current
+owner/private-chat access, active workspace Worker, directory and enabled tool.
+`bashRequest` is an optional widening of persisted task records; existing file
+tasks and chat selections need no backfill. Durable `worker_chat_calls` receipts
+prevent an approved call from running again after transient task cleanup. Shared
+claim/completion APIs retain their `claimEdit`/`completeEdit` names.
+The durable Bash request identity is a SHA-256 digest, not another retained copy
+of the command. Completion fencing allows an identical delivery retry to be
+acknowledged after the transient task has been pruned, preventing a lost
+acknowledgment from blocking the consumer after a long disconnect.
+If chat deletion removes the remaining receipt as well, the server explicitly
+discards obsolete delivery bookkeeping without recording or asserting an outcome.
+
+`packages/worker/src/bash/service.ts` owns native `Shell` execution. The Worker
+claims before execution, scopes sessions by workspace, owner and chat, and
+serializes task consumption. The configured directory is canonicalized on the
+Worker; it is an initial cwd, **not a filesystem or OS sandbox**. Commands run with
+the Worker's OS permissions and inherited environment, so file-tool path/write
+restrictions do not restrict Bash. Native shell state is process-local. Each run
+uses its configured cwd; shell state does not become Chatroom configuration.
+Shell variables survive successful calls in that session and are isolated from
+other sessions. Timeout/cancellation or background-child cleanup starts the next
+call with a fresh shell. OS environment is supplied from the Worker on each run.
+
+Output is collected locally and returned once as a bounded result, including
+`exitCode`, `timedOut`, output and truncation metadata. The complete JSON receipt
+is limited to 32 KiB UTF-8; no command/output is printed in Worker diagnostics.
+Nonzero exit, timeout and execution failure are failed task results. There is no
+artifact storage or live remote output stream in this slice. The model and
+Chatroom's existing tool/approval display receive the final output.
+
+The server waits up to 45 seconds for a receipt. Abort or missing delivery after
+dispatch returns `WORKER_OUTCOME_UNKNOWN` and the task ID, not proof of
+non-execution. A chat request abort stops waiting; it does not cancel an already
+dispatched command. Only result delivery retries after reconnect, never command
+execution. Restart loses shell state and pending local receipts, leaving claimed
+tasks ambiguous. Inspect effects before deliberately issuing a new call. Worker
+shutdown aborts native shell execution before a best-effort receipt flush.
+Shell-level background children are not managed jobs and are disposed rather than
+retained as services after a foreground call.
+The adapter appends a foreground `wait`, preserving the command's exit status.
+If `exit` or shell error behavior bypasses that wait, remaining native background
+jobs are aborted and the shell is removed rather than reused. At most 64 native
+shell sessions are retained; timeout/cancellation also removes the affected shell.
+
+PTY input/resize, explicit async, auto-background promotion, service supervision,
+user cancellation, reconnectable output, artifacts and restart reconciliation
+remain follow-ups in [task 06](../tasks/06_Chatroom_Worker.md). Live deployed
+browser-to-model-to-Worker execution remains unverified; local native tests and
+transport authorization tests verify separate boundaries.
+
+```bash
+bun run --cwd packages/worker test:bash
+bun run --cwd packages/backend test src/worker/chat-tools.test.ts convex/worker_chat.test.ts
+```
+
+Real native tests passed on Linux x64 with Bun 1.4.2 and pi-natives 18.8.3.
+Other Worker platforms and deployed browser interaction remain unverified.
+
+See [Chatroom tools](Chatroom.md) and [task coordination](Tasks.md) for retention,
+approval and failure contracts. The remainder of this guide describes upstream
+and the complete future adapter.
 
 The [native tools decision](Native_Tools.md) selects upstream's
 `@oh-my-pi/pi-natives` package for file editing. The same package exports `Shell`
@@ -54,14 +128,14 @@ cleanup rather than immediately reused.
 The upstream tool accepts `command`, optional `cwd`, `timeout` in seconds,
 `pty`, and dynamically enabled `async`, `name`, and readiness fields.
 
-| Route | Selection and behavior |
-| --- | --- |
-| Local foreground | Default non-PTY path; stream output and return final status |
-| Explicit async | `async: true` with async support; return a running job ID |
-| Auto-background | Enabled non-PTY local call with available job capacity; wait, then promote |
-| Interactive PTY | `pty: true` and available interactive UI; input/resize/kill |
-| Named service | Service support and `name`; supervised lifetime and readiness |
-| Client terminal | Editor advertises terminal capability; foreground non-PTY bridge |
+| Route            | Selection and behavior                                                     |
+| ---------------- | -------------------------------------------------------------------------- |
+| Local foreground | Default non-PTY path; stream output and return final status                |
+| Explicit async   | `async: true` with async support; return a running job ID                  |
+| Auto-background  | Enabled non-PTY local call with available job capacity; wait, then promote |
+| Interactive PTY  | `pty: true` and available interactive UI; input/resize/kill                |
+| Named service    | Service support and `name`; supervised lifetime and readiness              |
+| Client terminal  | Editor advertises terminal capability; foreground non-PTY bridge           |
 
 The current ordinary command timeout defaults to 300 seconds; `timeout: 0`
 disables its deadline. Nonzero deadlines are clamped by tool/global settings.

@@ -9,6 +9,7 @@ import {
   type ChatWorkerSelection,
 } from "./chat-config";
 import type { WorkerEditRequest, WorkerEditResult } from "./edit-contract";
+import { WORKER_BASH_TIMEOUT_SECONDS } from "./bash-contract";
 
 const WAIT_MS = 45_000;
 const POLL_MS = 500;
@@ -53,7 +54,7 @@ export function buildWorkerChatTools(
   const directory = selection.directory;
   if (!directory || !validChatWorkerDirectory(directory)) {
     throw new Error(
-      "Set an absolute Worker directory in the prompt's Worker menu before using file tools.",
+      "Set an absolute Worker directory in the prompt's Worker menu before using Worker tools.",
     );
   }
   const tools: ToolSet = {};
@@ -82,6 +83,13 @@ export function buildWorkerChatTools(
         action,
       },
     });
+    return waitForOutcome(taskId, signal);
+  }
+
+  async function waitForOutcome(
+    taskId: Id<"worker_tasks">,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
     const deadline = Date.now() + WAIT_MS;
     while (!signal?.aborted && Date.now() < deadline) {
       const result: WorkerEditResult | null = await ctx.runQuery(
@@ -125,7 +133,7 @@ export function buildWorkerChatTools(
       code: "WORKER_OUTCOME_UNKNOWN",
       taskId,
       message:
-        "The Worker did not return a result. It may be disconnected or the task may still run. Do not retry this write; inspect its outcome first.",
+        "The Worker did not return a result. It may be disconnected or the task may still run. Do not retry this operation; inspect its outcome first.",
     };
   }
 
@@ -214,6 +222,48 @@ export function buildWorkerChatTools(
       },
     });
     toolApproval.worker_create = "user-approval";
+  }
+  if (selection.tools.includes("bash")) {
+    tools.worker_bash = tool({
+      description:
+        "Run a foreground shell command on the selected Worker, starting in its configured directory. Requires user approval. Supports pipelines, redirection, builtins and installed executables. Runs with the Worker's OS permissions and environment; the directory is not a sandbox. Returns bounded combined output, exit status and timeout metadata. No managed background jobs, PTY or services. Never automatically retry an unknown outcome.",
+      inputSchema: z.object({
+        command: z
+          .string()
+          .min(1)
+          .max(16 * 1024)
+          .refine(
+            (value) => value.trim().length > 0 && !value.includes("\0"),
+            "Command must be nonempty and contain no NUL",
+          ),
+        timeout: z
+          .number()
+          .int()
+          .min(1)
+          .max(WORKER_BASH_TIMEOUT_SECONDS)
+          .default(WORKER_BASH_TIMEOUT_SECONDS),
+      }),
+      execute: async ({ command, timeout }, { toolCallId, abortSignal }) => {
+        if (abortSignal?.aborted) return { ok: false, code: "REQUEST_ABORTED" };
+        const { taskId } = await ctx.runMutation(internal.worker_tasks.dispatchChatEdit, {
+          chatId,
+          userId,
+          workerId: selection.workerId,
+          directory: directory!,
+          tool: "bash",
+          toolCallId,
+          stage: "execute",
+          request: {
+            directory: directory!,
+            sessionId: await chatWorkerSessionId(chatId, directory!),
+            command,
+            timeoutSeconds: timeout,
+          },
+        });
+        return waitForOutcome(taskId, abortSignal);
+      },
+    });
+    toolApproval.worker_bash = "user-approval";
   }
   return { tools, toolApproval };
 }

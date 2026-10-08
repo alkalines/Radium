@@ -73,8 +73,8 @@ external service consumes owner-dispatched file tasks. See the [Worker guide](Wo
 
 Workspace owners have a compact Worker selector inside the prompt input on the
 home page and in existing conversations. The menu lists active identities from
-that composer's workspace and provides independent Read/Edit/Create toggles.
-Choosing a Worker starts with all file tools disabled. New-chat selection is saved
+that composer's workspace and provides independent Read/Edit/Create/Bash toggles.
+Choosing a Worker starts with all Worker tools disabled. New-chat selection is saved
 when creating the chat; existing-chat changes are saved immediately. Switching
 the home composer's workspace clears its effective selection. Existing chats use
 their own workspace even if the sidebar points elsewhere.
@@ -86,7 +86,10 @@ revoked Worker selections. A previously saved revoked identity is displayed as
 unavailable and can be cleared. Active means enrolled and not revoked, not online.
 The menu also takes an absolute directory on the Worker. Enabled tools are now
 exposed to the model for owner requests. Read executes directly; Edit and Create
-require signed approval before staging and applying. Tool dispatch rechecks the
+require signed approval before staging and applying. Bash requires signed approval
+before running a foreground command, with bounded final output and a 30-second
+maximum deadline. Its directory is cwd, not a sandbox; see the
+[Bash guide](Worker/Bash_Tool.md#implemented-radium-foreground-tool). Tool dispatch rechecks the
 workspace and selection on every stage; Worker-side write modes enforce the
 individual toggles. See [Worker tools in Chatroom](Worker/Chatroom.md) for flow,
 durable receipts, timeouts, and verification limits.

@@ -428,7 +428,7 @@ test("edit claims exclude competing connections and completion retries never reo
     }),
   ).rejects.toThrow();
   const done = await f.first.machine.mutation(api.worker_tasks.completeEdit, completion);
-  expect(done.status).toBe("success");
+  expect(done).toMatchObject({ status: "success" });
   expect(await f.first.machine.mutation(api.worker_tasks.completeEdit, completion)).toEqual(done);
   await expect(
     f.first.machine.mutation(api.worker_tasks.completeEdit, {
@@ -485,7 +485,7 @@ test("native error context is bounded, idempotent and expires with the failed ta
     }),
   ).rejects.toThrow();
   const failed = await f.first.machine.mutation(api.worker_tasks.completeEdit, receipt);
-  expect(failed.status).toBe("failed");
+  expect(failed).toMatchObject({ status: "failed" });
   expect(await f.first.machine.mutation(api.worker_tasks.completeEdit, receipt)).toEqual(failed);
   await expect(
     f.first.machine.mutation(api.worker_tasks.completeEdit, {

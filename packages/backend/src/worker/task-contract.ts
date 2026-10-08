@@ -1,6 +1,7 @@
 import { v, type Infer } from "convex/values";
 import { workerEditRequest, workerEditResult } from "./edit-contract";
 import { chatWorkerToolValidator } from "./chat-config";
+import { workerBashRequest } from "./bash-contract";
 
 /** Short-lived coordination state; durable chat-call receipts are stored separately. */
 export const workerTaskStatus = v.union(
@@ -16,7 +17,12 @@ export type WorkerTaskStatus = Infer<typeof workerTaskStatus>;
 export const workerChatTool = chatWorkerToolValidator;
 export type WorkerChatTool = Infer<typeof workerChatTool>;
 
-export const workerChatStage = v.union(v.literal("read"), v.literal("preview"), v.literal("apply"));
+export const workerChatStage = v.union(
+  v.literal("read"),
+  v.literal("preview"),
+  v.literal("apply"),
+  v.literal("execute"),
+);
 export type WorkerChatStage = Infer<typeof workerChatStage>;
 
 /** Terminal records become eligible for deletion five minutes after completion. */
@@ -29,7 +35,7 @@ export const WORKER_TASK_CLEANUP_BATCH = 100;
 export const WORKER_CHAT_CALL_CLEANUP_BATCH = 100;
 
 /**
- * Legacy tasks persist coordination metadata. Edit tasks additionally carry bounded,
+ * Legacy tasks persist coordination metadata. File/Bash tasks additionally carry bounded,
  * short-lived tool requests/results; chat-call receipts persist chat dispatch outcomes.
  * `requestId` deduplicates dispatch to one Worker; `revision` fences stale status
  * updates and `attempt` counts starts, including explicitly requested retries.
@@ -47,6 +53,7 @@ export const workerTaskFields = {
   updatedAt: v.number(),
   terminalAt: v.optional(v.number()),
   editRequest: v.optional(workerEditRequest),
+  bashRequest: v.optional(workerBashRequest),
   editOwnerId: v.optional(v.string()),
   claimId: v.optional(v.string()),
   result: v.optional(workerEditResult),
@@ -71,6 +78,8 @@ export const workerChatCallFields = {
   requestKey: v.string(),
   taskId: v.id("worker_tasks"),
   result: v.optional(workerEditResult),
+  completionClaimId: v.optional(v.string()),
+  completionRevision: v.optional(v.number()),
 };
 
 /**

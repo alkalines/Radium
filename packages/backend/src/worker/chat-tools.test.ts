@@ -256,3 +256,100 @@ test("a disconnected Worker times out with an unknown outcome and never retries 
     vi.useRealTimers();
   }
 });
+
+test("Bash requires signed approval of the exact command and dispatches one foreground stage", async () => {
+  const f = fixture([{ ok: true, exitCode: 0, output: "done", truncated: false }]);
+  const enabledScope = { ...scope, selection: { ...scope.selection, tools: ["bash"] as "bash"[] } };
+  const { tools, toolApproval } = buildWorkerChatTools(f.ctx, enabledScope);
+  expect(Object.keys(tools)).toEqual(["worker_bash"]);
+  const secret = await workerChatApprovalSecret("test-only-issuer-secret", enabledScope);
+  const first = await generateText({
+    model: new MockLanguageModelV4({
+      doGenerate: {
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "bash-1",
+            toolName: "worker_bash",
+            input: '{"command":"printf done","timeout":5}',
+          },
+        ],
+        finishReason: { unified: "tool-calls", raw: undefined },
+        usage,
+        warnings: [],
+      },
+    }),
+    tools,
+    toolApproval,
+    experimental_toolApprovalSecret: secret,
+    prompt: "Run command",
+  });
+  expect(f.runMutation).not.toHaveBeenCalled();
+  const approval = first.content.find((part) => part.type === "tool-approval-request");
+  if (!approval) throw new Error("Missing Bash approval");
+  const messages: ModelMessage[] = [
+    { role: "user", content: "Run command" },
+    ...first.response.messages,
+    {
+      role: "tool",
+      content: [
+        { type: "tool-approval-response", approvalId: approval.approvalId, approved: false },
+      ],
+    },
+  ];
+  await generateText({
+    model: finalModel(),
+    tools,
+    toolApproval,
+    experimental_toolApprovalSecret: secret,
+    messages,
+  });
+  expect(f.runMutation).not.toHaveBeenCalled();
+  messages[messages.length - 1] = {
+    role: "tool",
+    content: [{ type: "tool-approval-response", approvalId: approval.approvalId, approved: true }],
+  };
+  const tampered = structuredClone(messages);
+  for (const message of tampered) {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part.type === "tool-call") part.input = { command: "printf tampered", timeout: 5 };
+    }
+  }
+  await expect(
+    generateText({
+      model: finalModel(),
+      tools,
+      toolApproval,
+      experimental_toolApprovalSecret: secret,
+      messages: tampered,
+    }),
+  ).rejects.toThrow();
+  expect(f.runMutation).not.toHaveBeenCalled();
+  await expect(
+    generateText({
+      model: finalModel(),
+      tools,
+      toolApproval,
+      experimental_toolApprovalSecret: await workerChatApprovalSecret(
+        "different-issuer",
+        enabledScope,
+      ),
+      messages,
+    }),
+  ).rejects.toThrow();
+  expect(f.runMutation).not.toHaveBeenCalled();
+  await generateText({
+    model: finalModel(),
+    tools,
+    toolApproval,
+    experimental_toolApprovalSecret: secret,
+    messages,
+  });
+  expect(f.runMutation).toHaveBeenCalledTimes(1);
+  expect(f.runMutation.mock.calls[0]![1]).toMatchObject({
+    tool: "bash",
+    stage: "execute",
+    request: { command: "printf done", timeoutSeconds: 5, directory: "/project" },
+  });
+});

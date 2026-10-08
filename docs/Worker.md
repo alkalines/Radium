@@ -17,7 +17,7 @@ The standalone HTTP client package has been removed. Control-plane integration
 is intended to use app-owned Convex queries and mutations calling the Worker component; future
 Worker subscriptions use narrowly authenticated app wrappers. The Worker now
 implements owner-dispatched, machine-claimed edit tasks and short-lived results.
-`start` consumes edit tasks without a directory CLI option; the owner-authorized
+`start` consumes edit and foreground Bash tasks without a directory CLI option; the owner-authorized
 backend dispatch supplies an absolute directory on the target Worker, and native
 editing is loaded lazily for a valid request. See [Worker tasks](Worker/Tasks.md)
 for directory selection, result subscriptions and crash behavior. Root `bun run dev`
@@ -34,11 +34,14 @@ CPU, temperature, and RAM alert reporting is **planned**, not implemented.
 Per-chat Worker configuration is persisted on `aisdk_chats.worker`. Owners can
 provide the selection when creating a chat or update/clear it with
 `aisdk.SetChatWorker`. A selection contains a Worker ID and unique `read`, `edit`,
-and/or `create` tool names; the Worker must be active in that chat's exact
+`create`, and/or `bash` tool names; the Worker must be active in that chat's exact
 workspace. Members cannot configure it, and chat visibility rules still apply
 when reading or changing a chat. An absolute Worker directory enables the selected
 model tools; Edit/Create require signed approval before preview/application, and
-the Worker enforces operation-specific write permissions. The
+the Worker enforces operation-specific file write permissions. Bash requires
+signed command approval and uses native Shell with bounded final output and a
+30-second maximum deadline; its cwd is not a sandbox. See the
+[Bash guide](Worker/Bash_Tool.md#implemented-radium-foreground-tool). The
 [Chatroom integration guide](Worker/Chatroom.md) documents execution, durable
 receipts, timeouts and verification limits. The compact composer selector is
 described in the [Chatroom guide](Radium_Chatroom.md#models-and-tools).
@@ -67,7 +70,7 @@ remain planned.
 
 The [native tools guide](Worker/Native_Tools.md) describes Oh-My-Pi's own
 `@oh-my-pi/pi-natives` package and the edit adapter's read/preview/apply lifecycle,
-as well as the planned shell, background-job, and PTY primitives.
+as well as foreground shell execution and planned background-job/PTY primitives.
 
 ## Proposed
 
@@ -81,7 +84,7 @@ commands, approvals, batched output and results through Convex. Worker and Chatr
 connect outbound to Convex; Worker adapts a local stdio ACP agent. Local batching,
 bounded output chunks, separate control/output subscriptions and retention limit
 database load. Machine JWT authentication and identity-management wrappers are now
-implemented; the edit-only request/result path is implemented locally. ACP,
+implemented; file and foreground Bash request/result paths are implemented locally. ACP,
 streaming/batched output and approval transport remain planned.
 
 The [authentication research](Worker/Authentication.md) supplies the enrollment

@@ -4,9 +4,10 @@ export const chatWorkerToolValidator = v.union(
   v.literal("read"),
   v.literal("edit"),
   v.literal("create"),
+  v.literal("bash"),
 );
 
-/** Owner-selected execution root and file tools for a chat. */
+/** Owner-selected execution root and Worker tools for a chat. */
 export const chatWorkerSelectionValidator = v.object({
   workerId: v.string(),
   directory: v.optional(v.string()),

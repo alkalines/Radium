@@ -29,6 +29,7 @@ const workerTools = [
   { id: "read", label: "Read files" },
   { id: "edit", label: "Edit files" },
   { id: "create", label: "Create files" },
+  { id: "bash", label: "Bash commands" },
 ] as const;
 
 /** Owner-only configuration for the composer's workspace, including existing chats. */
@@ -70,7 +71,7 @@ export function ChatWorkerSelector({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <PromptInputButton
-          aria-label="Select Worker and file tools"
+          aria-label="Select Worker and tools"
           disabled={disabled || loading || Boolean(error)}
           size="xs"
           className="max-w-28 gap-1.5 sm:max-w-40"
@@ -137,7 +138,7 @@ export function ChatWorkerSelector({
         </FieldGroup>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
-          <DropdownMenuLabel>File tools</DropdownMenuLabel>
+          <DropdownMenuLabel>Worker tools</DropdownMenuLabel>
           {workerTools.map((tool) => (
             <DropdownMenuCheckboxItem
               key={tool.id}
@@ -161,7 +162,7 @@ export function ChatWorkerSelector({
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuLabel className="whitespace-normal font-normal text-muted-foreground">
-          Edit and Create require approval. The Worker must be connected.
+          Edit, Create and Bash require approval. The Worker must be connected.
         </DropdownMenuLabel>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -35,7 +35,7 @@ Run `bun run --cwd packages/worker cli` for an interactive command menu, or
 | Command                   | Purpose                                                                                                         |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `setup` / `add-token`     | Enroll with a one-time setup code; refuses to overwrite an identity.                                            |
-| `start`                   | Run the authenticated outbound Convex control subscription and consume assigned edit tasks.                     |
+| `start`                   | Run the authenticated outbound Convex control subscription and consume assigned file/Bash tasks.                |
 | `status`                  | Inspect local enrollment state and identifiers; no network access.                                              |
 | `refresh`                 | Recover pending identity if needed, then verify a fresh backend token exchange. Prints expiry, never the token. |
 | `forget` / `forget-token` | Remove local identity and credentials. Does not revoke the backend record.                                      |
@@ -109,7 +109,7 @@ keys, and response bodies are not logged.
 
 ## Edit Tasks
 
-`start` always consumes edit tasks; the execution directory comes from the
+`start` always consumes file and foreground Bash tasks; the execution directory comes from the
 owner-authorized backend dispatch, not a CLI option. Public `dispatchEdit` requests
 require `request.directory`, an absolute path on the target Worker. The Worker
 canonicalizes the selected directory and confines edit paths to it; no local
@@ -142,6 +142,22 @@ rerun; inspect the files and issue new read/preview requests.
 The path policy is not an OS sandbox or a lock against other local processes changing
 files. Deployed request/result transport remains unverified; local native, consumer
 and backend authorization tests are separate.
+
+## Chatroom Bash commands
+
+Enable **Bash commands** in the prompt's Worker menu and set an absolute directory
+on this machine. Each model command needs signed user approval. `start` consumes
+foreground Bash and file tasks over the same authenticated control connection.
+Commands use native `Shell`, the Worker's OS permissions and inherited environment;
+the directory is cwd, not a sandbox. Timeout defaults to 30 seconds (range 1–30).
+Final output is bounded to a 32 KiB JSON receipt with exit/timeout/truncation
+metadata and appears in the existing Chatroom tool display.
+
+Only receipt delivery retries; an unknown command outcome must never be
+automatically rerun. Shutdown aborts shell execution. Restart discards shell state
+and pending local receipts. Background jobs, PTYs, services and user cancellation
+remain planned. See [Bash execution](../../docs/Worker/Bash_Tool.md) for the complete
+implemented contract and upstream reference.
 
 ## Credential storage
 
@@ -205,7 +221,8 @@ or copy-on-write storage. It does not revoke the remote identity.
 | `src/auth/token.ts`                                                         | Access-token exchange, cache and concurrent-refresh deduplication.          |
 | `src/auth/state.ts`, `src/auth/credentials.ts`, `src/auth/private-files.ts` | Recovery metadata, credential adapters and protected local file operations. |
 | `src/control.ts`                                                            | Typed Convex subscription, auth retry and connection cleanup.               |
-| `src/tasks.ts`                                                              | Serialized edit claims, local execution and completion receipts.            |
+| `src/tasks.ts`                                                              | Serialized file/Bash claims, local execution and completion receipts.       |
+| `src/bash/`                                                                 | Native foreground shell sessions, deadlines and bounded output.             |
 | `src/edit/`                                                                 | Directory routing, native snapshot/preview sessions and local path policy.  |
 | `src/protocol.ts`                                                           | Setup/HTTP boundary validation and shared wire types.                       |
 
@@ -218,7 +235,8 @@ The backend's [task coordination contract](../../docs/Worker/Tasks.md) provides
 assignment/status persistence, edit request/result transport and terminal cleanup.
 Task consumption runs on every `start`; the backend dispatch selects each
 target-Worker directory. Chatroom file tools and durable stage receipts are
-implemented locally; additional execution tools and recovery remain follow-up work.
+implemented locally, together with approved foreground Bash; managed jobs,
+terminals, additional execution tools and recovery remain follow-up work.
 
 ### Commands
 
@@ -229,6 +247,7 @@ bun run dev:worker
 bun run --cwd packages/worker test
 bun run --cwd packages/worker test:unit tasks.test.ts
 bun run --cwd packages/worker test:edit
+bun run --cwd packages/worker test:bash
 bun run --cwd packages/worker typecheck
 ```
 
@@ -269,7 +288,9 @@ it does not prove the saved client endpoint is reachable.
   native edit sessions with authenticated task/result messaging, owner-only
   Chatroom file tools, signed write approvals, durable stage receipts, and
   sanitized control disconnect diagnostics.
-- **Not implemented:** shell/eval execution, ACP, dispatched-task cancellation,
+- **Implemented locally:** approved foreground Bash commands, native shell sessions,
+  bounded final output and deadline/shutdown cleanup. See the Bash guide above.
+- **Not implemented:** background/PTY/service execution, eval, ACP, dispatched-task cancellation,
   ambiguous-outcome recovery, or OS sandboxing.
 - **Known limitation:** deployed JWT verifier configuration, TLS/proxy routing,
   and recovery across separately deployed processes require deployment integration

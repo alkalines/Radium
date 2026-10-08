@@ -7,6 +7,7 @@ import {
   type WorkerEditRequest,
   type WorkerEditResult,
 } from "backend/src/worker/edit-contract";
+import { WORKER_BASH_OUTPUT_BYTES, type WorkerBashRequest } from "backend/src/worker/bash-contract";
 
 type Task = FunctionReturnType<typeof api.worker_tasks.assigned>[number];
 
@@ -15,12 +16,24 @@ export interface EditExecutor {
   close(): Promise<void>;
 }
 
-/** Serialize edit work and retry only result delivery, never filesystem execution. */
-export function consumeEditTasks(client: ConvexClient, executor: EditExecutor) {
+export interface BashExecutor {
+  execute(request: WorkerBashRequest): Promise<string>;
+  close(): Promise<void>;
+}
+
+/** Serialize file/Bash work and retry only receipt delivery, never execution. */
+export function consumeEditTasks(
+  client: ConvexClient,
+  executor: EditExecutor,
+  bashExecutor?: BashExecutor,
+) {
   const claimId = crypto.randomUUID();
   let available = false;
   let stopped = false;
   let assignments: Task[] = [];
+  let editAssignments: Task[] = [];
+  let bashAssignments: Task[] = [];
+  const healthyOperations = new Set<string>();
   let running: Promise<void> | undefined;
   let changed = false;
   let cancel!: () => void;
@@ -55,7 +68,14 @@ export function consumeEditTasks(client: ConvexClient, executor: EditExecutor) {
       if (receipts.size) return;
       for (const assignment of assignments) {
         if (stopped || !available) return;
-        if (!assignment.editRequest || !assignment.editOwnerId || assignment.operation !== "edit")
+        if (!healthyOperations.has(assignment.operation)) continue;
+        if (
+          !assignment.editOwnerId ||
+          !(
+            (assignment.operation === "edit" && assignment.editRequest) ||
+            (assignment.operation === "bash" && assignment.bashRequest && bashExecutor)
+          )
+        )
           continue;
         let task: Task | null | undefined;
         try {
@@ -73,16 +93,22 @@ export function consumeEditTasks(client: ConvexClient, executor: EditExecutor) {
               task.workspace,
               task.editOwnerId,
               task.chatId ?? null,
-              task.editRequest!.sessionId,
+              (task.bashRequest ?? task.editRequest)!.sessionId,
             ]),
           )
           .digest("hex");
         let result: WorkerEditResult;
         try {
-          const output = await executor.execute({ ...task.editRequest!, sessionId });
-          result = editResult(output);
+          const output =
+            task.operation === "bash" && task.bashRequest && bashExecutor
+              ? await bashExecutor.execute({ ...task.bashRequest, sessionId })
+              : await executor.execute({ ...task.editRequest!, sessionId });
+          result = executionResult(output, task.operation);
         } catch {
-          result = { ok: false, code: "EDIT_EXECUTION_FAILED" };
+          result = {
+            ok: false,
+            code: task.operation === "bash" ? "BASH_EXECUTION_FAILED" : "EDIT_EXECUTION_FAILED",
+          };
         }
         receipts.set(task._id, { task, result });
         if (stopped || !available) return;
@@ -111,18 +137,33 @@ export function consumeEditTasks(client: ConvexClient, executor: EditExecutor) {
     await running;
   }
 
-  const unsubscribe = client.onUpdate(
-    api.worker_tasks.assigned,
-    { status: "sent", operation: "edit" },
-    (tasks) => {
-      assignments = tasks;
-      changed = true;
-      void pump();
-    },
-    () => {
-      available = false;
-    },
-  );
+  function subscribe(operation: "edit" | "bash") {
+    return client.onUpdate(
+      api.worker_tasks.assigned,
+      { status: "sent", operation },
+      (tasks) => {
+        healthyOperations.add(operation);
+        if (operation === "edit") editAssignments = tasks;
+        else bashAssignments = tasks;
+        assignments = [...editAssignments, ...bashAssignments];
+        changed = true;
+        void pump();
+      },
+      () => {
+        healthyOperations.delete(operation);
+        // Query health is independent of control authority and the other stream.
+        // Drop stale assignments for this operation until its subscription recovers.
+        if (operation === "edit") editAssignments = [];
+        else bashAssignments = [];
+        assignments = [...editAssignments, ...bashAssignments];
+        changed = true;
+        void pump();
+      },
+    );
+  }
+  // Keep both reads indexed: metadata-only legacy assignments must not starve execution.
+  const unsubscribe = subscribe("edit");
+  const unsubscribeBash = bashExecutor ? subscribe("bash") : undefined;
   const retry = setInterval(() => {
     void pump();
   }, 5_000);
@@ -139,6 +180,8 @@ export function consumeEditTasks(client: ConvexClient, executor: EditExecutor) {
       cancel();
       clearInterval(retry);
       unsubscribe();
+      unsubscribeBash?.();
+      await bashExecutor?.close();
       await running;
       // Finish an already-running local edit before closing the transport. This is
       // a bounded best-effort flush; a crash/partition still has an unknown outcome.
@@ -169,9 +212,13 @@ export function consumeEditTasks(client: ConvexClient, executor: EditExecutor) {
   };
 }
 
-function editResult(output: string): WorkerEditResult {
-  if (new TextEncoder().encode(output).length > WORKER_EDIT_OUTPUT_BYTES)
-    return { ok: false, code: "EDIT_OUTPUT_TOO_LARGE" };
+function executionResult(output: string, operation: string): WorkerEditResult {
+  const bash = operation === "bash";
+  if (
+    new TextEncoder().encode(output).length >
+    (bash ? WORKER_BASH_OUTPUT_BYTES : WORKER_EDIT_OUTPUT_BYTES)
+  )
+    return { ok: false, code: bash ? "BASH_OUTPUT_TOO_LARGE" : "EDIT_OUTPUT_TOO_LARGE" };
   try {
     const response: unknown = JSON.parse(output);
     if (response && typeof response === "object" && "ok" in response && response.ok === false) {
@@ -180,7 +227,9 @@ function editResult(output: string): WorkerEditResult {
         typeof response.code === "string" &&
         /^[A-Z0-9_]{1,80}$/.test(response.code)
           ? response.code
-          : "EDIT_EXECUTION_FAILED";
+          : bash
+            ? "BASH_EXECUTION_FAILED"
+            : "EDIT_EXECUTION_FAILED";
       return { ok: false, code, output };
     }
   } catch {

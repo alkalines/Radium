@@ -9,6 +9,7 @@ import {
 import { WorkerProtocolError } from "../protocol.js";
 import { consumeEditTasks, type EditExecutor } from "../tasks.js";
 import { WorkerDirectoryEdits } from "../edit/directories.js";
+import { createBashExecutor } from "../bash/service.js";
 import type { CliOptions } from "./options.js";
 import { storageDescription } from "./prompt.js";
 
@@ -36,18 +37,23 @@ export async function startWorker(options: CliOptions): Promise<void> {
   let control: WorkerControlConnection | undefined;
   let editor: EditExecutor | undefined;
   let tasks: ReturnType<typeof consumeEditTasks> | undefined;
+  let bash: ReturnType<typeof createBashExecutor> | undefined;
   let diagnosticsTimer: ReturnType<typeof setInterval> | undefined;
   const close = async () => {
     if (diagnosticsTimer) clearInterval(diagnosticsTimer);
     try {
       if (tasks) await tasks.close();
-      else await editor?.close();
+      else {
+        await bash?.close();
+        await editor?.close();
+      }
     } finally {
       await control?.close();
     }
   };
   try {
     editor = new WorkerDirectoryEdits();
+    bash = createBashExecutor();
     let previousStatusKey: string | undefined;
     control = connectWorkerControl(state, (status) => {
       tasks?.setAvailable(status.status === "connected");
@@ -65,9 +71,9 @@ export async function startWorker(options: CliOptions): Promise<void> {
       );
     }, 15_000);
     if (editor) {
-      tasks = consumeEditTasks(control.client, editor);
+      tasks = consumeEditTasks(control.client, editor, bash);
       tasks.setAvailable(previousStatusKey === "connected");
-      console.info("Worker edit task consumer enabled.");
+      console.info("Worker edit and Bash task consumer enabled.");
     }
     await waitForShutdown(close);
   } catch (error) {

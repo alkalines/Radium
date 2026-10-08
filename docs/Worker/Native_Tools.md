@@ -202,6 +202,12 @@ PTY, service, output, and lifecycle explanation. `Shell` and `PtySession` are
 native-package primitives; upstream's TypeScript agent layer owns background
 registration, result delivery, and terminal presentation. Radium needs its own
 Worker adapter and transport for that lifecycle.
+Radium now implements the approved foreground Shell path described in
+[Bash execution](Bash_Tool.md#implemented-radium-foreground-tool); managed jobs and
+terminals remain planned. Bash can modify files outside file-tool policy. It does
+not proactively refresh edit snapshots: the existing native stale-file checks
+reject changes between read/preview/apply. Read affected files again after a
+command changes them.
 
 The [eval tool reference](Eval_Tool.md) covers persistent Python/JavaScript code
 execution and callbacks into agent tools. That stack lives in upstream's

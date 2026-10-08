@@ -44,6 +44,46 @@ subscription. Deployed verifier/transport checks and execution remain follow-up 
 
 ## Next Implementation Slice
 
+### Approved Foreground Bash (2026-10-07)
+
+Implemented the `bash` composer preference and signed `worker_bash` model tool
+through the existing owner/private-chat/Worker/directory-authorized task path.
+One `execute` stage has a durable receipt and machine-fenced claim/completion;
+the optional `bashRequest` field and `execute` stage widen persisted contracts
+without a backfill. Worker owns native Shell execution, process-local session
+state, canonical cwd, bounded output, deadlines and shutdown cleanup. No new
+runtime dependency was needed: the pinned native package already supplies Shell.
+See [Bash execution](../Worker/Bash_Tool.md#implemented-radium-foreground-tool).
+
+This is a foreground slice: timeout defaults/maxes at 30 seconds, output returns
+once in a 32 KiB receipt, and the directory is not an OS sandbox. Only delivery
+retries; unknown outcomes cannot be automatically rerun. Background jobs,
+auto-background promotion, PTYs/services, artifacts, cancellation and reconnect/
+restart reconciliation remain open, together with deployed end-to-end verification.
+The existing Worker identity component and `convex-helpers` machine wrappers fit
+the authorization/coordination boundary; no new persistence component is needed
+for this one-shot path. See the existing [reuse research](../research/Convex_Reuse.md).
+
+Verification: `bun run test` passed 149 backend checks. Follow-up transport
+regressions passed with `bun run --cwd packages/backend test convex/worker_tasks.test.ts convex/worker_chat.test.ts src/worker/chat-tools.test.ts`, including
+exact signed-command approval, authorization, durable replay and completion
+acknowledgment after pruning. `bun run --cwd packages/worker test:unit src/tasks.test.ts`
+passed 11 consumer checks, including delivery-only retry, shutdown abort, independent
+subscription recovery and the
+Bash-specific output bound. `bun run --cwd apps/web vite:build` passed with existing
+chunk-size/Shiki WASM fallback warnings. The guarded offline API generator ran
+locally. Frontend `apps/web/node_modules/.bin/tsc --noEmit -p apps/web/tsconfig.json`
+remains blocked by existing AI SDK dependency mismatches, auth and backend alias
+errors; scoped ESLint is blocked by the missing root `eslint` dependency. No
+desktop browser was connected for interaction testing. No deployment or remote
+migration was performed.
+Final `bun run --cwd packages/worker test` passed 50 unit, 28 edit-engine and
+8 Bash-engine checks on Linux x64 / Bun 1.4.2 / pi-natives 18.8.3, including shell
+state separation, early-exit background cleanup and real process termination.
+`bun run --cwd packages/worker typecheck` reports only the previously documented
+backend Gateway routing/translator/type-import errors, with no Worker/Bash
+diagnostics. Scoped formatting and `git diff --check` passed.
+
 ### Executable Chatroom File Tools And Disconnect Diagnostics (2026-10-07)
 
 The previous composer slice saved configuration without exposing Worker tools to

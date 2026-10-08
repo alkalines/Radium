@@ -17,6 +17,12 @@ import {
 import { workerMutation, workerQuery } from "./machine";
 import { chatWorkerSessionId, validChatWorkerDirectory } from "./chat-config";
 import {
+  workerBashRequest,
+  validWorkerBashRequest,
+  workerBashRequestKey,
+  WORKER_BASH_OUTPUT_BYTES,
+} from "./bash-contract";
+import {
   validWorkerEditRequest,
   workerEditDispatchRequest,
   workerEditResult,
@@ -31,6 +37,8 @@ import {
   WORKER_TASK_RETENTION_MS,
   workerChatStage,
   workerChatTool,
+  type WorkerChatTool,
+  type WorkerChatStage,
   workerTaskRecord,
   workerTaskStatus,
 } from "./task-contract";
@@ -125,7 +133,10 @@ export const create = internalMutation({
 
 /** Bounded subscription to one status of this machine's own assignments. */
 export const assigned = workerQuery({
-  args: { status: workerTaskStatus, operation: v.optional(v.literal("edit")) },
+  args: {
+    status: workerTaskStatus,
+    operation: v.optional(v.union(v.literal("edit"), v.literal("bash"))),
+  },
   returns: v.array(workerTaskRecord),
   handler: async (ctx, args) =>
     await ctx.db
@@ -157,6 +168,7 @@ export const updateStatus = workerMutation({
     if (
       !task ||
       task.editRequest !== undefined ||
+      task.bashRequest !== undefined ||
       task.workspace !== ctx.worker.workspaceId ||
       task.workerId !== ctx.worker.workerId ||
       !Number.isSafeInteger(args.expectedRevision) ||
@@ -237,7 +249,7 @@ async function authorizeChatWorkerDispatch(
     userId: string;
     workerId: string;
     directory: string;
-    tool: "read" | "edit" | "create";
+    tool: WorkerChatTool;
   },
 ) {
   const authorized = await authorizeChatRecord(ctx, args.chatId, args.userId);
@@ -304,7 +316,7 @@ function previewIdFromResult(result: WorkerEditResult | undefined): string | nul
 async function chatTaskRequestId(
   chatId: Id<"aisdk_chats">,
   toolCallId: string,
-  stage: "read" | "preview" | "apply",
+  stage: WorkerChatStage,
 ): Promise<string> {
   const input = new TextEncoder().encode(JSON.stringify([chatId, toolCallId, stage]));
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", input));
@@ -312,7 +324,7 @@ async function chatTaskRequestId(
 }
 
 /**
- * Dispatch one approved Chatroom Worker stage under the chat's current owner-selected
+ * Dispatch one approved Chatroom file or Bash stage under the chat's current owner-selected
  * Worker and directory. Durable receipts make each call/stage one-shot beyond task cleanup.
  */
 export const dispatchChatEdit = internalMutation({
@@ -324,7 +336,7 @@ export const dispatchChatEdit = internalMutation({
     tool: workerChatTool,
     toolCallId: v.string(),
     stage: workerChatStage,
-    request: workerEditDispatchRequest,
+    request: v.union(workerEditDispatchRequest, workerBashRequest),
   },
   returns: v.object({ taskId: v.id("worker_tasks") }),
   handler: async (ctx, args) => {
@@ -333,6 +345,7 @@ export const dispatchChatEdit = internalMutation({
     const assignment = await authorizeChatWorkerDispatch(ctx, args);
     if (args.request.directory !== args.directory) return taskDenied();
 
+    const bash = args.tool === "bash";
     const expectedAction =
       args.tool === "read"
         ? args.stage === "read"
@@ -343,17 +356,36 @@ export const dispatchChatEdit = internalMutation({
           : args.stage === "apply"
             ? "apply"
             : null;
-    if (!expectedAction || args.request.action.kind !== expectedAction) return taskDenied();
-
     const sessionId = await chatWorkerSessionId(args.chatId, assignment.directory);
-    const request = {
-      ...args.request,
-      sessionId,
-      directory: assignment.directory,
-      writeMode: args.tool === "read" ? undefined : args.tool,
-    };
-    if (!validWorkerEditRequest(request)) return taskDenied();
-    const requestKey = workerEditRequestKey(request);
+    let editRequest;
+    let bashRequest;
+    if (bash) {
+      if (args.stage !== "execute" || !("command" in args.request)) return taskDenied();
+      bashRequest = { ...args.request, sessionId, directory: assignment.directory };
+      if (!validWorkerBashRequest(bashRequest)) return taskDenied();
+    } else {
+      if (
+        !("action" in args.request) ||
+        !expectedAction ||
+        args.request.action.kind !== expectedAction
+      )
+        return taskDenied();
+      editRequest = {
+        ...args.request,
+        sessionId,
+        directory: assignment.directory,
+        writeMode:
+          args.tool === "read"
+            ? undefined
+            : args.tool === "edit"
+              ? ("edit" as const)
+              : ("create" as const),
+      };
+      if (!validWorkerEditRequest(editRequest)) return taskDenied();
+    }
+    const requestKey = bashRequest
+      ? await workerBashRequestKey(bashRequest)
+      : workerEditRequestKey(editRequest!);
 
     const callStages = await ctx.db
       .query("worker_chat_calls")
@@ -394,7 +426,7 @@ export const dispatchChatEdit = internalMutation({
     }
 
     if (args.stage === "apply") {
-      if (args.request.action.kind !== "apply") return taskDenied();
+      if (!("action" in args.request) || args.request.action.kind !== "apply") return taskDenied();
       const previewCall = await ctx.db
         .query("worker_chat_calls")
         .withIndex("by_chat_call_stage", (q) =>
@@ -422,12 +454,15 @@ export const dispatchChatEdit = internalMutation({
     let taskId: Id<"worker_tasks">;
     if (existingTask) {
       if (
-        existingTask.operation !== "edit" ||
+        existingTask.operation !== (bash ? "bash" : "edit") ||
         existingTask.editOwnerId !== args.userId ||
         existingTask.chatId !== args.chatId ||
         existingTask.toolCallId !== args.toolCallId ||
-        !existingTask.editRequest ||
-        workerEditRequestKey(existingTask.editRequest) !== requestKey
+        (bash
+          ? !existingTask.bashRequest ||
+            (await workerBashRequestKey(existingTask.bashRequest)) !== requestKey
+          : !existingTask.editRequest ||
+            workerEditRequestKey(existingTask.editRequest) !== requestKey)
       )
         return taskDenied();
       taskId = existingTask._id;
@@ -436,8 +471,9 @@ export const dispatchChatEdit = internalMutation({
         workspace: assignment.workspace._id,
         workerId: args.workerId,
         requestId,
-        operation: "edit",
-        editRequest: request,
+        operation: bash ? "bash" : "edit",
+        editRequest,
+        bashRequest,
         editOwnerId: args.userId,
         chatId: args.chatId,
         toolCallId: args.toolCallId,
@@ -460,6 +496,8 @@ export const dispatchChatEdit = internalMutation({
       requestKey,
       taskId,
       result: existingTask?.result,
+      completionClaimId: existingTask?.result ? existingTask.claimId : undefined,
+      completionRevision: existingTask?.result ? existingTask.revision : undefined,
     });
     return { taskId };
   },
@@ -539,9 +577,9 @@ async function assignedEdit(
   taskId: Id<"worker_tasks">,
 ) {
   const task = await ctx.db.get(taskId);
+  if (!task) return null;
   if (
-    !task ||
-    !task.editRequest ||
+    (!task.editRequest && !task.bashRequest) ||
     task.workspace !== ctx.worker.workspaceId ||
     task.workerId !== ctx.worker.workerId
   )
@@ -549,13 +587,14 @@ async function assignedEdit(
   return task;
 }
 
-/** A per-process claim token prevents two connections from both executing a task. */
+/** Shared file/Bash claim: a per-process token prevents duplicate execution. */
 export const claimEdit = workerMutation({
   args: { taskId: v.id("worker_tasks"), claimId: v.string() },
   returns: v.union(v.null(), workerTaskRecord),
   handler: async (ctx, args) => {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(args.claimId)) return taskDenied();
     const task = await assignedEdit(ctx, args.taskId);
+    if (!task) return taskDenied();
     if (task.status === "processing" && task.claimId === args.claimId) return task;
     if (task.status !== "sent") return null;
     const patch = {
@@ -570,7 +609,10 @@ export const claimEdit = workerMutation({
   },
 });
 
-/** Complete once; repeating an identical receipt is safe, execution itself is never retried. */
+/**
+ * Complete once; repeating an identical receipt is safe, execution itself is never retried.
+ * A fenced durable chat receipt can acknowledge delivery after transient task pruning.
+ */
 export const completeEdit = workerMutation({
   args: {
     taskId: v.id("worker_tasks"),
@@ -578,9 +620,41 @@ export const completeEdit = workerMutation({
     expectedRevision: v.number(),
     result: workerEditResult,
   },
-  returns: workerTaskRecord,
+  returns: v.union(
+    workerTaskRecord,
+    v.object({ receiptAcknowledged: v.literal(true) }),
+    v.object({ receiptDiscarded: v.literal(true) }),
+  ),
   handler: async (ctx, args) => {
+    if (
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(args.claimId) ||
+      !Number.isSafeInteger(args.expectedRevision) ||
+      args.expectedRevision < 0
+    )
+      return taskDenied();
     const task = await assignedEdit(ctx, args.taskId);
+    if (!task) {
+      const call = await ctx.db
+        .query("worker_chat_calls")
+        .withIndex("by_task", (q) => q.eq("taskId", args.taskId))
+        .unique();
+      // No coordination or conversation record remains to accept this payload.
+      // This releases delivery bookkeeping only; it makes no execution/outcome claim.
+      if (!call) return { receiptDiscarded: true as const };
+      if (
+        !call ||
+        call.workspace !== ctx.worker.workspaceId ||
+        call.workerId !== ctx.worker.workerId ||
+        call.completionClaimId !== args.claimId ||
+        !Number.isSafeInteger(args.expectedRevision) ||
+        args.expectedRevision < 0 ||
+        call.completionRevision !== args.expectedRevision + 1 ||
+        !call.result ||
+        !sameExecutionResult(call.result, args.result)
+      )
+        return taskDenied();
+      return { receiptAcknowledged: true as const };
+    }
     if (
       task.claimId !== args.claimId ||
       !Number.isSafeInteger(args.expectedRevision) ||
@@ -589,7 +663,8 @@ export const completeEdit = workerMutation({
       return taskDenied();
     if (
       (args.result.output !== undefined &&
-        new TextEncoder().encode(args.result.output).length > WORKER_EDIT_OUTPUT_BYTES) ||
+        new TextEncoder().encode(args.result.output).length >
+          (task.bashRequest ? WORKER_BASH_OUTPUT_BYTES : WORKER_EDIT_OUTPUT_BYTES)) ||
       (!args.result.ok && !/^[A-Z0-9_]{1,80}$/.test(args.result.code))
     )
       return taskDenied();
@@ -600,15 +675,14 @@ export const completeEdit = workerMutation({
     if (
       task.revision === args.expectedRevision + 1 &&
       task.result &&
-      task.result.ok === args.result.ok &&
-      (task.result.ok && args.result.ok
-        ? task.result.output === args.result.output
-        : !task.result.ok &&
-          !args.result.ok &&
-          task.result.code === args.result.code &&
-          task.result.output === args.result.output)
+      sameExecutionResult(task.result, args.result)
     ) {
-      if (chatCall && !chatCall.result) await ctx.db.patch(chatCall._id, { result: args.result });
+      if (chatCall)
+        await ctx.db.patch(chatCall._id, {
+          result: args.result,
+          completionClaimId: args.claimId,
+          completionRevision: task.revision,
+        });
       return task;
     }
     if (task.status !== "processing" || task.revision !== args.expectedRevision) {
@@ -623,10 +697,23 @@ export const completeEdit = workerMutation({
       terminalAt: now,
     };
     await ctx.db.patch(task._id, patch);
-    if (chatCall) await ctx.db.patch(chatCall._id, { result: args.result });
+    if (chatCall)
+      await ctx.db.patch(chatCall._id, {
+        result: args.result,
+        completionClaimId: args.claimId,
+        completionRevision: patch.revision,
+      });
     return { ...task, ...patch };
   },
 });
+
+function sameExecutionResult(left: WorkerEditResult, right: WorkerEditResult): boolean {
+  return (
+    left.ok === right.ok &&
+    left.output === right.output &&
+    (left.ok || (!right.ok && left.code === right.code))
+  );
+}
 
 /**
  * Delete only terminal coordination records aged at least five minutes.

@@ -12,9 +12,10 @@
     "refresh": "bun src/cli.ts refresh",
     "forget": "bun src/cli.ts forget",
     "forget-token": "bun src/cli.ts forget-token",
-    "test": "bun run test:unit && bun run test:edit",
+    "test": "bun run test:unit && bun run test:edit && bun run test:bash",
     "test:unit": "vitest run",
     "test:edit": "bun test ./src/edit/service.engine.ts",
+    "test:bash": "bun test ./src/bash/service.engine.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -165,6 +165,26 @@ approvals, and durable stage receipts are documented in [Chatroom integration](C
 identity and persisted chat selection. It rechecks owner and chat visibility,
 the active Worker in that workspace, exact configured directory, enabled tool,
 and stage/action compatibility. It derives the native session and write mode.
+The same entry point also accepts enabled `bash` calls with a bounded
+`bashRequest` and the single `execute` stage. `claimEdit`/`completeEdit` share
+machine fencing and durable receipts between file and Bash execution. Bash
+receipts are limited to 32 KiB; file receipts retain their 128 KiB limit. The
+durable receipt also retains the completion claim/revision: if a completion
+commits but its acknowledgment is lost, the same machine can replay that exact
+receipt after transient task pruning. `completeEdit` then returns
+`{ receiptAcknowledged: true }` rather than a task record. This acknowledges
+delivery only and never re-executes a command. Changed claims/results and foreign
+machines are denied. Older receipts without completion fencing cannot use this
+acknowledgment path until a live-task completion retry fills the optional fields.
+If both the transient task and its conversation receipt have been removed (for
+example after chat deletion), completion returns `{ receiptDiscarded: true }`.
+It accepts/stores no result and establishes no execution outcome; the Worker only
+releases obsolete delivery bookkeeping. A remaining task or receipt still enforces
+its machine/claim/result checks. Independent indexed file/Bash subscriptions drop
+only the failed stream's assignments and recover on its next successful update.
+The consumer serializes both operations, and shutdown aborts shell commands before
+flushing receipts. Bash tasks cannot use generic status/retry updates. See
+[Bash execution](Bash_Tool.md#implemented-radium-foreground-tool).
 Apply must select a successful preview from that same tool call. Internal
 `chatEditOutcome` uses the same authorization and reads durable receipts even
 after the transient task is pruned. Chat deletion schedules `cleanupChatCalls`

@@ -114,6 +114,169 @@ async function fixture() {
   return { t, workspace, first, second, worker, chatId, owner, dispatch };
 }
 
+test("Bash dispatch enforces owner/chat/Worker configuration and retains one-shot receipts", async () => {
+  const f = await fixture();
+  const args = {
+    chatId: f.chatId,
+    userId: "owner",
+    workerId: f.first.identity.workerId,
+    directory: f.worker.directory,
+    tool: "bash" as const,
+    stage: "execute" as const,
+    toolCallId: "bash-1",
+    request: {
+      sessionId: "untrusted",
+      directory: f.worker.directory,
+      command: "printf done",
+      timeoutSeconds: 5,
+    },
+  };
+  const dispatch = (overrides = {}) =>
+    f.owner.mutation(internal.worker_tasks.dispatchChatEdit, { ...args, ...overrides });
+  await expect(dispatch()).rejects.toThrow();
+  await f.t.run((ctx) => ctx.db.patch(f.chatId, { worker: { ...f.worker, tools: ["bash"] } }));
+  await expect(dispatch({ userId: "member" })).rejects.toThrow();
+  const privateChatId = await f.t.run((ctx) =>
+    ctx.db.insert("aisdk_chats", {
+      workspace: f.workspace,
+      userId: "member",
+      scope: "personal",
+      messages: [],
+      chat_completions: [],
+      worker: { ...f.worker, tools: ["bash"] },
+    }),
+  );
+  await expect(dispatch({ chatId: privateChatId })).rejects.toThrow();
+  await expect(dispatch({ workerId: f.second.identity.workerId })).rejects.toThrow();
+  await expect(dispatch({ directory: "/different" })).rejects.toThrow();
+  await expect(dispatch({ stage: "preview" })).rejects.toThrow();
+  await expect(dispatch({ request: { ...args.request, timeoutSeconds: 0 } })).rejects.toThrow();
+  const { taskId } = await dispatch();
+  await f.t.run(async (ctx) => {
+    for (let i = 0; i < 4; i++)
+      await ctx.db.insert("worker_tasks", {
+        workspace: f.workspace,
+        workerId: f.first.identity.workerId,
+        requestId: `legacy-${i}`,
+        operation: "aaa-metadata",
+        status: "sent",
+        revision: 0,
+        attempt: 0,
+        updatedAt: Date.now(),
+      });
+  });
+  expect(
+    await f.first.machine.query(api.worker_tasks.assigned, { status: "sent", operation: "bash" }),
+  ).toEqual([expect.objectContaining({ _id: taskId })]);
+  const call = await f.t.run((ctx) =>
+    ctx.db
+      .query("worker_chat_calls")
+      .withIndex("by_task", (q) => q.eq("taskId", taskId))
+      .unique(),
+  );
+  expect(call!.requestKey).toMatch(/^[a-f0-9]{64}$/);
+  const stored = await f.t.run((ctx) => ctx.db.get(taskId));
+  expect(stored).toMatchObject({
+    operation: "bash",
+    bashRequest: {
+      sessionId: await chatWorkerSessionId(f.chatId, f.worker.directory),
+      command: "printf done",
+    },
+  });
+  await expect(
+    f.second.machine.mutation(api.worker_tasks.claimEdit, { taskId, claimId: "wrong-worker" }),
+  ).rejects.toThrow();
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.updateStatus, {
+      taskId,
+      expectedRevision: 0,
+      status: "processing",
+    }),
+  ).rejects.toThrow();
+  const claimed = await f.first.machine.mutation(api.worker_tasks.claimEdit, {
+    taskId,
+    claimId: "bash-claim",
+  });
+  expect(claimed).not.toBeNull();
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.completeEdit, {
+      taskId,
+      claimId: "bash-claim",
+      expectedRevision: claimed!.revision,
+      result: { ok: true, output: "x".repeat(32 * 1024 + 1) },
+    }),
+  ).rejects.toThrow();
+  const result = {
+    ok: true as const,
+    output: JSON.stringify({ ok: true, exitCode: 0, output: "done" }),
+  };
+  await f.first.machine.mutation(api.worker_tasks.completeEdit, {
+    taskId,
+    claimId: "bash-claim",
+    expectedRevision: claimed!.revision,
+    result,
+  });
+  await f.t.run((ctx) =>
+    ctx.db.patch(taskId, { terminalAt: Date.now() - WORKER_TASK_RETENTION_MS }),
+  );
+  expect(await f.owner.mutation(internal.worker_tasks.prune, {})).toBe(1);
+  expect(
+    await f.first.machine.mutation(api.worker_tasks.completeEdit, {
+      taskId,
+      claimId: "bash-claim",
+      expectedRevision: claimed!.revision,
+      result,
+    }),
+  ).toEqual({ receiptAcknowledged: true });
+  await expect(
+    f.second.machine.mutation(api.worker_tasks.completeEdit, {
+      taskId,
+      claimId: "bash-claim",
+      expectedRevision: claimed!.revision,
+      result,
+    }),
+  ).rejects.toThrow();
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.completeEdit, {
+      taskId,
+      claimId: "wrong-claim",
+      expectedRevision: claimed!.revision,
+      result,
+    }),
+  ).rejects.toThrow();
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.completeEdit, {
+      taskId,
+      claimId: "bash-claim",
+      expectedRevision: claimed!.revision,
+      result: { ...result, output: "different" },
+    }),
+  ).rejects.toThrow();
+  expect(await dispatch()).toEqual({ taskId });
+  expect(
+    await f.owner.query(internal.worker_tasks.chatEditOutcome, {
+      chatId: f.chatId,
+      userId: "owner",
+      taskId,
+    }),
+  ).toEqual(result);
+  await expect(
+    dispatch({ request: { ...args.request, command: "different command" } }),
+  ).rejects.toThrow();
+  await f.t.run((ctx) => ctx.db.patch(f.chatId, { worker: { ...f.worker, tools: [] } }));
+  await expect(dispatch()).rejects.toThrow();
+  await f.t.run((ctx) => ctx.db.delete(f.chatId));
+  await f.owner.mutation(internal.worker_tasks.cleanupChatCalls, { chatId: f.chatId });
+  expect(
+    await f.first.machine.mutation(api.worker_tasks.completeEdit, {
+      taskId,
+      claimId: "bash-claim",
+      expectedRevision: claimed!.revision,
+      result,
+    }),
+  ).toEqual({ receiptDiscarded: true });
+});
+
 test("chat dispatch is owner-only and reauthorizes workspace and personal chat visibility", async () => {
   const f = await fixture();
   await f.t.run((ctx) =>
