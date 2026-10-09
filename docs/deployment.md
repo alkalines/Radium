@@ -9,18 +9,43 @@ container and release paths are currently blocked and unverified pending the
 
 ### Application And Convex
 
-| Variable               | Required          | Scope         | Purpose                                                                |
-| ---------------------- | ----------------- | ------------- | ---------------------------------------------------------------------- |
-| `CONVEX_DEPLOYMENT`    | Cloud development | Local CLI     | Convex deployment selected by `convex dev`                             |
-| `VITE_CONVEX_URL`      | Yes               | Build/public  | Convex client URL, normally `https://<deployment>.convex.cloud`        |
-| `VITE_CONVEX_SITE_URL` | Yes               | Build/public  | Convex HTTP action origin, normally `https://<deployment>.convex.site` |
-| `SITE_URL`             | Yes               | Convex        | Public web origin used by Better Auth, such as `http://localhost:3000` |
-| `SECRET_STORE_KEYS`    | Yes               | Deploy/Convex | Versioned key material used by Convex Secret Store                     |
-| `AISDK_MaxRetries`     | No                | Convex        | AI SDK retry count; defaults to `0`                                    |
-| `LWC_SECRET`           | Feature-specific  | Convex        | Signs ChatGPT Subscription sessions                                    |
+| Variable                  | Required          | Scope              | Purpose                                                                |
+| ------------------------- | ----------------- | ------------------ | ---------------------------------------------------------------------- |
+| `CONVEX_DEPLOYMENT`       | Cloud development | Local CLI          | Convex deployment selected by `convex dev`                             |
+| `VITE_CONVEX_URL`         | Yes               | Build/public       | Convex client URL, normally `https://<deployment>.convex.cloud`        |
+| `VITE_CONVEX_SITE_URL`    | Yes               | Build/public       | Convex HTTP action origin, normally `https://<deployment>.convex.site` |
+| `SITE_URL`                | Yes               | Convex             | Public web origin used by Better Auth, such as `http://localhost:3000` |
+| `SECRET_STORE_KEYS`       | Yes               | Deploy/Convex      | Versioned key material used by Convex Secret Store                     |
+| `AISDK_MaxRetries`        | No                | Convex             | AI SDK retry count; defaults to `0`                                    |
+| `LWC_SECRET`              | Feature-specific  | Convex             | Signs ChatGPT Subscription sessions                                    |
+| `WORKER_AUTH_PRIVATE_JWK` | Worker auth       | Convex secret      | Private ES256 machine-token issuer JWK with `kid`                      |
+| `WORKER_AUTH_JWKS`        | Worker auth       | Convex/auth config | Matching public JWKS for the optional custom JWT verifier              |
 
 `VITE_*` values are public and embedded at build time. Never put provider API
 keys or other secrets in a `VITE_*` variable.
+
+`packages/backend/convex/convex.config.ts` declares the custom backend runtime
+environment contract with Convex validators. `SITE_URL` and `SECRET_STORE_KEYS`
+are required; `AISDK_MaxRetries`, `LWC_SECRET`, the Worker issuer keys, and the
+OTLP variables below are optional. `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` are
+Convex-provided system variables, not custom app settings. Declarations do not
+set values: configure deployment values through the dashboard or `convex env`.
+The app passes `SECRET_STORE_KEYS` to the Secret Store component by typed env
+reference. The Worker identity component has no env inputs; its issuer keys stay
+in app-owned signing and auth-verifier code.
+
+Convex 1.46.0 exposes declared values through the generated `env` export in
+`_generated/server`; the installed declarations mark app/component env support as
+beta and unstable, so review it after Convex upgrades. Those generated bindings
+have not been refreshed in this change, so backend runtime code still reads these
+values through `process.env`.
+
+Worker setup uses the backend's built-in `CONVEX_SITE_URL` and `CONVEX_CLOUD_URL`
+for reachable HTTP/client origins. See [Worker machine authentication](Worker/Machine_Authentication.md)
+for issuer-key generation, configuration application, setup codes and verification limits.
+Chatroom uses the existing private issuer configuration to derive scoped write
+approval signatures; no additional approval secret is required. Issuer-secret
+rotation invalidates pending Worker tool approvals. See [Worker tools in Chatroom](Worker/Chatroom.md).
 
 The frontend server also reads `VITE_CONVEX_SITE_URL` for its generic
 `/api/backend/*` proxy, forwarding to the Convex site's `/api/*` routes. See the
@@ -36,7 +61,8 @@ openssl rand -hex 32
 
 `SECRET_STORE_KEYS` uses a versioned value such as `1:<base64-key>`.
 
-For Convex Cloud, set runtime values with the dashboard or CLI:
+For Convex Cloud, set runtime values with the dashboard or run the CLI from
+`packages/backend`:
 
 ```bash
 bunx convex env set SITE_URL http://localhost:3000
@@ -67,15 +93,37 @@ accepted only for loopback addresses.
 
 ## Convex Cloud Development
 
-1. Copy `packages/website/.env.example` to `packages/website/.env.local` and set
-   `SECRET_STORE_KEYS`.
-2. Run `bun run --cwd packages/website convex:dev` and select or create a deployment.
-3. Configure the Convex runtime values shown above.
-4. Run `bun run --cwd packages/website vite:dev` in another terminal.
+The backend CLI selector, Convex deployment runtime values, and public frontend
+build values are configured independently:
 
-Convex writes deployment values such as `CONVEX_DEPLOYMENT`,
-`VITE_CONVEX_URL`, and `VITE_CONVEX_SITE_URL` to
-`packages/website/.env.local`.
+1. Run `bun run --cwd packages/backend dev` and select or create a Convex Cloud
+   development deployment. The CLI stores its deployment selector in the
+   ignored `packages/backend/.env.local` file.
+2. In another terminal, set runtime values on the selected deployment:
+
+   ```bash
+   cd packages/backend
+   bunx convex env set SITE_URL http://localhost:3000
+   bunx convex env set SECRET_STORE_KEYS '1:<base64-key>'
+   ```
+
+   Generate a unique Secret Store key as shown above. Optional values belong on
+   the deployment only when their feature is enabled; see
+   [`packages/backend/.env.example`](../packages/backend/.env.example). If the
+   initial `convex dev` process exited because required values were missing,
+   rerun it now.
+
+3. Copy `apps/web/.env.example` to `apps/web/.env.local`, then copy the selected
+   deployment's `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` into `VITE_CONVEX_URL`
+   and `VITE_CONVEX_SITE_URL`. These public values are copied independently;
+   Convex CLI does not write them into the frontend file.
+4. Keep the backend `convex dev` process running and start the frontend in a
+   separate terminal with `bun run --cwd apps/web vite:dev`.
+
+The `CONVEX_DEPLOYMENT` selector and any local CLI credentials select a target;
+they do not set `SITE_URL`, `SECRET_STORE_KEYS`, or other Convex runtime values.
+The backend example file documents those runtime values, while the frontend
+example contains only the public `VITE_*` values.
 
 ### Initial Workspace Provisioning
 
@@ -108,6 +156,35 @@ ready until every paginated verification query is exhausted with zero issues and
 the deployment readiness evidence is recorded. A successful component status or
 local test run is not migration-readiness evidence.
 
+### Standard Binding Codegen
+
+Run from the repository root to generate Worker component bindings, build the
+package, then generate backend bindings with the standard Convex CLI:
+
+```bash
+bun run codegen
+```
+
+The command first builds from checked-in bindings so the app's package import is
+resolvable during component codegen. Both codegen steps run in `packages/backend`
+using its configured deployment. The Worker step passes
+`--component-dir ../worker-component/src/component`, then rebuilds the package;
+the backend step runs `convex codegen`. Each step requires the previous one to
+succeed. Standard codegen requires deployment access for component analysis and
+does not deploy the generated functions. Review the generated diff before committing.
+
+For a fresh checkout without deployment access, `bun run build:components` builds
+the local workspace package from checked-in bindings. `bun run dev` builds it
+first and runs a TypeScript build watcher alongside Vite, Convex, and the Worker
+source watcher (`bun --watch src/cli.ts start` in `packages/worker`). Enroll the
+local Worker before starting it; see the [Worker setup guide](../packages/worker/README.md).
+Without enrollment the Worker reports a startup error while the other processes
+continue. Imported Worker file changes restart its process and discard in-memory
+edit sessions and previews; claimed tasks are not automatically rerun. Source API
+or schema changes still require the explicit codegen sequence above. Tests use
+the built package too; `bun run test` builds before running backend tests. See the
+[Worker component guide](Worker/Component.md) for package exports and scope.
+
 ### Offline API Binding Codegen
 
 The checked-in root API declaration can be refreshed without a deployment or
@@ -134,6 +211,15 @@ statements, mount options, or component config syntax. It does not generate
 schema, data model, server, or component files, perform remote component
 analysis, or verify a deployment. Do not hand-edit `convex/_generated/` or use
 normal `convex codegen` solely for this offline refresh.
+
+The offline parser supports typed app environment declarations and literal
+`app.env` references passed through component mounts. It validates the supported
+string, literal, union, and optional validator forms without evaluating config
+expressions or reading deployment values. Unsupported app options, env
+expressions, and validator syntax still fail closed. Root imports are validated
+throughout the config, not only in a leading import block; component import names
+must be unique and use supported config specifiers wherever they appear. Parser
+regressions are covered by `node --test apps/web/scripts/convex-config-parser.test.mjs`.
 
 ## Full Self-Hosted Image (Blocked Pending Audit)
 
@@ -204,8 +290,8 @@ Build-time Convex URLs must be present before building:
 
 ```bash
 bun install --frozen-lockfile
-bun run --cwd packages/website vite:build
-bun run --cwd packages/website vite:start
+bun run --cwd apps/web vite:build
+bun run --cwd apps/web vite:start
 ```
 
 The production server reads `.output/server/index.mjs` and defaults to port

@@ -68,8 +68,31 @@ workspace tools in chats, subject to the chat's effective selection.
 
 The Chatroom currently supports HTTP MCP servers, web search when configured,
 and approval UI for tool calls. Filesystem, command, and coding execution belong
-to the external Agent Runner; the checked-in Runner packages are health-check
-skeletons and are not an execution platform.
+to the external Worker. Its Convex component owns identity persistence, and the
+external service consumes owner-dispatched file tasks. See the [Worker guide](Worker.md).
+
+Workspace owners have a compact Worker selector inside the prompt input on the
+home page and in existing conversations. The menu lists active identities from
+that composer's workspace and provides independent Read/Edit/Create/Bash toggles.
+Choosing a Worker starts with all Worker tools disabled. New-chat selection is saved
+when creating the chat; existing-chat changes are saved immediately. Switching
+the home composer's workspace clears its effective selection. Existing chats use
+their own workspace even if the sidebar points elsewhere.
+
+Worker configuration is owner-only and also requires access to the chat. Members
+cannot select or change Workers, including in shared chats, and owners cannot
+configure another user's personal chat. The server rejects cross-workspace and
+revoked Worker selections. A previously saved revoked identity is displayed as
+unavailable and can be cleared. Active means enrolled and not revoked, not online.
+The menu also takes an absolute directory on the Worker. Enabled tools are now
+exposed to the model for owner requests. Read executes directly; Edit and Create
+require signed approval before staging and applying. Bash requires signed approval
+before running a foreground command, with bounded final output and a 30-second
+maximum deadline. Its directory is cwd, not a sandbox; see the
+[Bash guide](Worker/Bash_Tool.md#implemented-radium-foreground-tool). Tool dispatch rechecks the
+workspace and selection on every stage; Worker-side write modes enforce the
+individual toggles. See [Worker tools in Chatroom](Worker/Chatroom.md) for flow,
+durable receipts, timeouts, and verification limits.
 
 `packages/backend/convex/aisdk_tools.ts` owns workspace-authorized MCP server
 management and Exa credential operations. The web UI calls its public functions;
@@ -117,6 +140,12 @@ require prepaid credits and do not debit a Radium balance.
 
 ## Planned And Limited
 
+- Worker identity, enrollment/recovery, machine authentication, task coordination,
+  owner-dispatched file tasks, composer configuration, model file tools, signed
+  write approvals, and durable stage receipts are implemented locally. Deployed
+  verifier/transport and browser-to-model execution remain unverified. Cancellation
+  and ambiguous-outcome recovery remain planned. See the [Worker overview](Worker.md),
+  [task contracts](Worker/Tasks.md), and [Convex transport plan](Worker/Convex_Transport.md).
 - Better Auth organization ownership, invitations, organization-derived
   membership, and broader workspace roles are not implemented. Direct membership
   of existing users is the only sharing policy.

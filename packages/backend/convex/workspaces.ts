@@ -239,7 +239,7 @@ export async function requireWorkspaceAccessForUser(
   return workspace!;
 }
 
-async function authorizeChatRecord(
+export async function authorizeChatRecord(
   ctx: QueryCtx | MutationCtx,
   chatId: Id<"aisdk_chats">,
   userId: string,

@@ -57,6 +57,7 @@ export const Route = createFileRoute("/chatroom/$section")({
 function ChatroomPage() {
   const { section } = Route.useParams();
   const { workspace, isLoading } = useWorkspace();
+  const isWorkersPage = section === "workers";
 
   if (isLoading) {
     return <Skeleton className="mx-auto h-32 w-full max-w-3xl" />;
@@ -66,12 +67,16 @@ function ChatroomPage() {
     return (
       <WorkspaceNotice
         title="Workspace unavailable"
-        description="Select an active workspace to view Chatroom settings."
+        description={
+          isWorkersPage
+            ? "Select an active workspace to manage its Worker identities."
+            : "Select an active workspace to view Chatroom settings."
+        }
       />
     );
   }
 
-  if (workspace.role === "member") {
+  if (workspace.role === "member" && !isWorkersPage) {
     return (
       <WorkspaceNotice
         title="Chatroom settings are owner-only"
@@ -81,7 +86,7 @@ function ChatroomPage() {
   }
 
   return (
-    <div className="w-full max-w-3xl mx-auto p-4 md:p-6">
+    <div className="mx-auto w-full max-w-3xl p-4 md:p-6">
       <ChatroomSettings section={section as ChatroomSection} hideNav />
     </div>
   );

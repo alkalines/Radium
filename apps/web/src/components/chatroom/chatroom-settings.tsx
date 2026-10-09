@@ -1,17 +1,19 @@
 import { Link } from "@tanstack/react-router";
-import { SlidersHorizontalIcon, WrenchIcon } from "lucide-react";
+import { BotIcon, SlidersHorizontalIcon, WrenchIcon } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { WorkerManagement } from "@/components/workspaces/worker-management";
 import { ToolsPanel } from "./tools-panel";
 import { PreferencesPanel } from "./preferences-panel";
 
 /**
- * Chatroom settings sections. Mirrors {@link gatewaySections}: a typed array
- * that drives both the `/chatroom/$section` route and the settings sidebar.
+ * Chatroom sections. Mirrors {@link gatewaySections}: a typed array that drives
+ * both the `/chatroom/$section` route and the Chatroom sidebar navigation.
  */
 export const chatroomSections = [
   { value: "preferences", label: "Preferences", icon: SlidersHorizontalIcon },
   { value: "tools", label: "Tools", icon: WrenchIcon },
+  { value: "workers", label: "Workers", icon: BotIcon },
 ] as const;
 
 export type ChatroomSection = (typeof chatroomSections)[number]["value"];
@@ -43,6 +45,10 @@ export function ChatroomSettings({
 
       <TabsContent value="tools" tabIndex={-1}>
         {section === "tools" && <ToolsPanel />}
+      </TabsContent>
+
+      <TabsContent value="workers" tabIndex={-1}>
+        {section === "workers" && <WorkerManagement />}
       </TabsContent>
     </Tabs>
   );

@@ -1,7 +1,10 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { publicKey as workerPublicKey } from "worker-component";
 import { completionPricingSchema, completionUsageSchema } from "../src/usage/completion";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
+import { workerChatCallFields, workerTaskFields } from "../src/worker/task-contract";
+import { chatWorkerSelectionValidator } from "../src/worker/chat-config";
 import {
   telemetrySettingsSchema,
   telemetrySourceSchema,
@@ -16,6 +19,32 @@ import {
 } from "../src/workspaces/provider";
 
 export default defineSchema({
+  /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
+  worker_tasks: defineTable(workerTaskFields)
+    .index("by_worker_request", ["workspace", "workerId", "requestId"])
+    .index("by_worker_status", ["workspace", "workerId", "status", "operation"])
+    .index("by_status_terminalAt", ["status", "terminalAt"]),
+  /** Durable chat tool-call idempotency and output receipts; internal-only access. */
+  worker_chat_calls: defineTable(workerChatCallFields)
+    .index("by_chat_call_stage", ["chatId", "toolCallId", "stage"])
+    .index("by_task", ["taskId"]),
+  /** App authorization scope for a component-owned enrollment receipt; no setup secret. */
+  worker_enrollments: defineTable({
+    workspace: v.id("workspaces"),
+    componentEnrollmentId: v.string(),
+  }).index("by_workspace", ["workspace"]),
+  /** Immutable one-use proof contexts, removed transactionally on admission. */
+  worker_auth_challenges: defineTable({
+    kind: v.union(v.literal("enroll"), v.literal("recover"), v.literal("token")),
+    workspace: v.id("workspaces"),
+    enrollmentId: v.optional(v.id("worker_enrollments")),
+    requestId: v.optional(v.string()),
+    workerId: v.optional(v.string()),
+    keyId: v.optional(v.string()),
+    identityEpoch: v.optional(v.number()),
+    publicKey: workerPublicKey,
+    expiresAt: v.number(),
+  }).index("by_expiry", ["expiresAt"]),
   /**
    * A workspace is the ownership and credential boundary for Gateway resources.
    * Ownership is currently personal-user only. Explicit members are represented
@@ -301,6 +330,8 @@ export default defineSchema({
         mcpServers: v.array(v.id("mcp_servers")),
       }),
     ),
+    /** Owner-selected Worker and enabled Worker tools; execution wiring is future work. */
+    worker: v.optional(chatWorkerSelectionValidator),
   })
     .index("by_userId", ["userId"])
     .index("by_userId_and_lastInteractionAt", ["userId", "lastInteractionAt"])

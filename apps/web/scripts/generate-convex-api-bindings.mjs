@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseComponentName, parseRootComponents } from "./convex-config-parser.mjs";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptsDirectory, "../../..");
@@ -22,304 +23,6 @@ const write = args.includes("--write");
 
 function fail(message) {
   throw new Error(`[offline Convex API bindings] ${message}`);
-}
-
-function stripComments(source, filePath) {
-  let result = "";
-  let quote;
-  let escaped = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    const next = source[index + 1];
-    if (quote) {
-      result += character;
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === quote) quote = undefined;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      result += character;
-    } else if (character === "/" && next === "/") {
-      while (index < source.length && source[index] !== "\n") index += 1;
-      result += "\n";
-    } else if (character === "/" && next === "*") {
-      const end = source.indexOf("*/", index + 2);
-      if (end === -1) fail(`unterminated comment in ${relative(repositoryRoot, filePath)}`);
-      result += " ";
-      index = end + 1;
-    } else {
-      result += character;
-    }
-  }
-  if (quote) fail(`unterminated string in ${relative(repositoryRoot, filePath)}`);
-  return result;
-}
-
-function statements(filePath) {
-  const source = stripComments(fs.readFileSync(filePath, "utf8"), filePath)
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!source.endsWith(";"))
-    fail(`${relative(repositoryRoot, filePath)} must use semicolon-terminated statements`);
-  const result = source.split(";").map((statement) => statement.trim());
-  if (result[result.length - 1] !== "")
-    fail(`unsupported semicolon syntax in ${relative(repositoryRoot, filePath)}`);
-  return result.slice(0, -1).filter(Boolean);
-}
-
-function splitTopLevel(source, delimiter = ",") {
-  const parts = [];
-  let start = 0;
-  let depth = 0;
-  let quote;
-  let escaped = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === quote) quote = undefined;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-    } else if ("([{".includes(character)) {
-      depth += 1;
-    } else if (")] }".replace(/ /g, "").includes(character)) {
-      depth -= 1;
-      if (depth < 0) fail("unbalanced config expression");
-    } else if (character === delimiter && depth === 0) {
-      parts.push(source.slice(start, index).trim());
-      start = index + 1;
-    }
-  }
-  if (quote || depth !== 0) fail("unbalanced config expression");
-  parts.push(source.slice(start).trim());
-  return parts;
-}
-
-function objectProperties(source, description) {
-  const value = source.trim();
-  if (!value.startsWith("{") || !value.endsWith("}"))
-    fail(`${description} must be an object literal`);
-  const body = value.slice(1, -1).trim();
-  if (!body) return [];
-  const parts = splitTopLevel(body);
-  if (parts.at(-1) === "") parts.pop();
-  return parts.map((part) => {
-    if (!part) fail(`${description} contains an empty property`);
-    const colon = splitTopLevel(part, ":");
-    if (colon.length !== 2 || !/^[$A-Za-z_][$A-Za-z0-9_]*$/.test(colon[0])) {
-      fail(`${description} contains an unsupported property`);
-    }
-    return { name: colon[0], value: colon[1] };
-  });
-}
-
-function rootEnvironmentObject(source, description) {
-  for (const property of objectProperties(source, description)) {
-    const match = /^process\.env\.([$A-Za-z_][$A-Za-z0-9_]*)!?$/.exec(property.value);
-    if (!match || match[1] !== property.name) {
-      fail(`${description}.${property.name} uses an unsupported environment expression`);
-    }
-  }
-}
-
-const supportedValidators = new Set([
-  "any",
-  "array",
-  "bigint",
-  "boolean",
-  "bytes",
-  "float64",
-  "id",
-  "int64",
-  "literal",
-  "null",
-  "number",
-  "object",
-  "optional",
-  "record",
-  "string",
-  "union",
-]);
-
-function validatorArgument(source, description) {
-  const value = source.trim();
-  if (/^(?:["'](?:\\.|[^"'])*["']|[0-9]+(?:\.[0-9]+)?|true|false)$/.test(value)) return;
-  if (/^v\.[A-Za-z_$][\w$]*\(.*\)$/.test(value)) {
-    validatorExpression(value, description);
-    return;
-  }
-  if (value.startsWith("{") && value.endsWith("}")) {
-    for (const property of objectProperties(value, description))
-      validatorArgument(property.value, `${description}.${property.name}`);
-    return;
-  }
-  if (value.startsWith("[") && value.endsWith("]")) {
-    for (const item of splitTopLevel(value.slice(1, -1))) {
-      if (item) validatorArgument(item, `${description} array item`);
-    }
-    return;
-  }
-  fail(`${description} uses unsupported validator argument syntax`);
-}
-
-function validatorExpression(source, description) {
-  const match = /^v\.([A-Za-z_$][\w$]*)\((.*)\)$/.exec(source.trim());
-  if (!match || !supportedValidators.has(match[1]))
-    fail(`${description} uses unsupported validator syntax`);
-  const args = match[2].trim() ? splitTopLevel(match[2]) : [];
-  for (const [index, argument] of args.entries())
-    validatorArgument(argument, `${description} argument ${index + 1}`);
-}
-
-function componentOptions(source, validatorImported) {
-  const options = objectProperties(source, "component options");
-  const names = new Set();
-  for (const option of options) {
-    if (names.has(option.name)) fail(`component options repeat ${option.name}`);
-    names.add(option.name);
-    if (option.name !== "env") fail(`unsupported component option ${option.name}`);
-    if (!validatorImported) fail("component env requires the convex/values v import");
-    for (const property of objectProperties(option.value, "component env")) {
-      validatorExpression(property.value, `component env.${property.name}`);
-    }
-  }
-}
-
-function componentName(configPath) {
-  const parsed = statements(configPath);
-  let defineComponentImported = false;
-  let validatorImported = false;
-  const childImports = new Map();
-  for (const statement of parsed) {
-    const serverImport = /^import \{ defineComponent \} from "convex\/server"$/.test(statement);
-    const valuesImport = /^import \{ v \} from "convex\/values"$/.test(statement);
-    if (serverImport) defineComponentImported = true;
-    else if (valuesImport) validatorImported = true;
-    else if (statement.startsWith("import ")) {
-      const match =
-        /^import ([$A-Za-z_][$A-Za-z0-9_]*) from "([^"]+\/convex\.config(?:\.js)?)"$/.exec(
-          statement,
-        );
-      if (!match)
-        fail(`unsupported component config import in ${relative(repositoryRoot, configPath)}`);
-      childImports.set(match[1], match[2]);
-    }
-  }
-  if (!defineComponentImported)
-    fail(`component config must import defineComponent from convex/server`);
-
-  let declaration;
-  let exported = false;
-  let exportedIdentifier;
-  let name;
-  for (const statement of parsed) {
-    if (statement.startsWith("import ")) continue;
-    const declarationMatch = /^const ([$A-Za-z_][$A-Za-z0-9_]*) = (defineComponent\(.*\))$/.exec(
-      statement,
-    );
-    if (declarationMatch) {
-      if (declaration) fail(`component config declares more than one component`);
-      declaration = declarationMatch[1];
-      name = parseComponentCall(declarationMatch[2], validatorImported, configPath);
-      continue;
-    }
-    const exportMatch = /^export default (.*)$/.exec(statement);
-    if (exportMatch) {
-      if (exported) fail(`component config exports more than once`);
-      exported = true;
-      if (exportMatch[1].startsWith("defineComponent(")) {
-        if (declaration) fail("component config mixes direct and declared component exports");
-        name = parseComponentCall(exportMatch[1], validatorImported, configPath);
-      } else {
-        exportedIdentifier = exportMatch[1];
-      }
-      continue;
-    }
-    const useMatch = /^([$A-Za-z_][$A-Za-z0-9_]*)\.use\(([$A-Za-z_][$A-Za-z0-9_]*)\)$/.exec(
-      statement,
-    );
-    if (useMatch && useMatch[1] === declaration && childImports.has(useMatch[2])) continue;
-    fail(`unsupported component config syntax in ${relative(repositoryRoot, configPath)}`);
-  }
-  if (!exported) fail(`component config must have one export default`);
-  if (exportedIdentifier && (!declaration || exportedIdentifier !== declaration)) {
-    fail("component config must export its defineComponent value");
-  }
-  if (!name) fail("component config must export defineComponent(...)");
-  return name;
-}
-
-function parseComponentCall(source, validatorImported, configPath) {
-  const match = /^defineComponent\(("([^"\\]*)"|'([^'\\]*)')(?:,\s*(.*))?\)$/.exec(source);
-  if (!match) fail(`unsupported defineComponent syntax in ${relative(repositoryRoot, configPath)}`);
-  const name = match[2] ?? match[3];
-  if (!name) fail("component name cannot be empty");
-  if (match[4]) componentOptions(match[4], validatorImported);
-  return name;
-}
-
-function rootComponents() {
-  const configPath = join(functionsRoot, "convex.config.ts");
-  const parsed = statements(configPath);
-  const imports = new Map();
-  let defineAppImported = false;
-  for (const statement of parsed) {
-    if (!statement.startsWith("import ")) break;
-    if (/^import \{ defineApp \} from "convex\/server"$/.test(statement)) {
-      if (defineAppImported) fail("root config imports defineApp more than once");
-      defineAppImported = true;
-      continue;
-    }
-    const match = /^import ([$A-Za-z_][$A-Za-z0-9_]*) from "([^"]+)"$/.exec(statement);
-    if (!match || !/\/convex\.config(?:\.js)?$/.test(match[2])) {
-      fail(`unsupported root config import in ${relative(repositoryRoot, configPath)}`);
-    }
-    if (imports.has(match[1])) fail(`duplicate root component import ${match[1]}`);
-    imports.set(match[1], match[2]);
-  }
-  if (!defineAppImported) fail("root config must import defineApp from convex/server");
-
-  let appDeclared = false;
-  let appExported = false;
-  const mounts = [];
-  for (const statement of parsed) {
-    if (statement.startsWith("import ")) continue;
-    if (statement === "const app = defineApp()") {
-      if (appDeclared) fail("root config declares app more than once");
-      appDeclared = true;
-      continue;
-    }
-    const match = /^app\.use\(([$A-Za-z_][$A-Za-z0-9_]*)(?:,\s*(.*))?\)$/.exec(statement);
-    if (match) {
-      const specifier = imports.get(match[1]);
-      if (!specifier) fail(`app.use references unsupported component ${match[1]}`);
-      if (match[2]) {
-        const options = objectProperties(match[2], `app.use(${match[1]}) options`);
-        if (options.length !== 1 || options[0].name !== "env")
-          fail(`app.use(${match[1]}) uses unsupported options`);
-        rootEnvironmentObject(options[0].value, `app.use(${match[1]}).env`);
-      }
-      if (mounts.some((mount) => mount.component === match[1]))
-        fail(`component ${match[1]} is mounted more than once`);
-      mounts.push({ component: match[1], specifier });
-      continue;
-    }
-    if (statement === "export default app") {
-      if (appExported) fail("root config exports app more than once");
-      appExported = true;
-      continue;
-    }
-    fail(`unsupported root config syntax in ${relative(repositoryRoot, configPath)}`);
-  }
-  if (!appDeclared || !appExported) fail("root config must define and export app");
-  if (mounts.length !== imports.size)
-    fail("every imported component must have exactly one direct app.use mount");
-  return mounts.map(({ specifier, ...mount }) => ({ ...mount, specifier }));
 }
 
 function resolveComponentConfig(specifier) {
@@ -343,21 +46,29 @@ function resolveComponentConfig(specifier) {
 }
 
 function mountedComponents() {
-  return rootComponents().map(({ component, specifier }) => {
-    const configPath = resolveComponentConfig(specifier);
-    const componentDirectory = dirname(configPath);
-    const name = componentName(configPath);
-    const componentPath = relative(functionsRoot, componentDirectory).split(path.sep).join("/");
-    if (!componentPath) fail(`mounted component ${specifier} must resolve to a child directory`);
-    return {
-      name,
-      path: componentPath,
-      importSpecifier: specifier.replace(/\/convex\.config(?:\.js)?$/, ""),
-      componentDirectory,
-      configPath,
-      component,
-    };
-  });
+  const rootConfigPath = join(functionsRoot, "convex.config.ts");
+  const rootConfig = fs.readFileSync(rootConfigPath, "utf8");
+  return parseRootComponents(rootConfig, rootConfigPath, repositoryRoot).map(
+    ({ component, specifier }) => {
+      const configPath = resolveComponentConfig(specifier);
+      const componentDirectory = dirname(configPath);
+      const name = parseComponentName(
+        fs.readFileSync(configPath, "utf8"),
+        configPath,
+        repositoryRoot,
+      );
+      const componentPath = relative(functionsRoot, componentDirectory).split(path.sep).join("/");
+      if (!componentPath) fail(`mounted component ${specifier} must resolve to a child directory`);
+      return {
+        name,
+        path: componentPath,
+        importSpecifier: specifier.replace(/\/convex\.config(?:\.js)?$/, ""),
+        componentDirectory,
+        configPath,
+        component,
+      };
+    },
+  );
 }
 
 function compareModulePaths(a, b) {

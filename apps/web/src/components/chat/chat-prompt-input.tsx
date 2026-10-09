@@ -87,6 +87,7 @@ type ChatPromptInputProps = {
   status: ChatStatus;
   /** Optional "Tools" submenu rendered inside the `+` action menu. */
   toolsMenu?: ReactNode;
+  workerSelector?: ReactNode;
 };
 
 export function ChatPromptInput({
@@ -106,6 +107,7 @@ export function ChatPromptInput({
   selectedProvider,
   status,
   toolsMenu,
+  workerSelector,
 }: ChatPromptInputProps) {
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const selectedModelData = models?.find((model) => model.slug === selectedModel);
@@ -161,7 +163,7 @@ export function ChatPromptInput({
             placeholder={placeholder}
           />
         </PromptInputBody>
-        <PromptInputFooter className="px-3 pb-3 pt-0">
+        <PromptInputFooter className="flex-wrap px-3 pb-3 pt-0">
           <PromptInputTools>
             <PromptInputActionMenu>
               <PromptInputActionMenuTrigger />
@@ -170,6 +172,7 @@ export function ChatPromptInput({
                 {toolsMenu}
               </PromptInputActionMenuContent>
             </PromptInputActionMenu>
+            {workerSelector}
           </PromptInputTools>
 
           <PromptInputTools className="min-w-0 flex-1 justify-end">
