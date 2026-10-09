@@ -109,6 +109,13 @@ export async function readWorkerState(
   options: WorkerStateOptions = {},
 ): Promise<WorkerState | null> {
   try {
+    await lstat(stateDirectory);
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+
+  try {
     await ensurePrivateDirectory(stateDirectory);
   } catch (error) {
     if (isMissing(error)) return null;
@@ -200,6 +207,13 @@ export async function forgetWorkerState(
   stateDirectory: string,
   options: WorkerStateOptions = {},
 ): Promise<void> {
+  try {
+    await lstat(stateDirectory);
+  } catch (error) {
+    if (isMissing(error)) return;
+    throw error;
+  }
+
   try {
     await ensurePrivateDirectory(stateDirectory);
   } catch (error) {

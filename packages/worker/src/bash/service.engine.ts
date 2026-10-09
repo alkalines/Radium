@@ -209,7 +209,7 @@ test("serializes a session and isolates simultaneous native sessions and directo
   expect(changedDirectory).toMatchObject({ ok: false, code: "SESSION_DIRECTORY_CHANGED" });
 });
 
-test("limits retained session-scoped native shells", async () => {
+test("evicts idle session-scoped native shells when the retained-session limit is reached", async () => {
   const directory = await temporaryDirectory();
   const executor = newExecutor();
 
@@ -227,7 +227,7 @@ test("limits retained session-scoped native shells", async () => {
       sessionId: "bounded-overflow",
       command: "true",
     }),
-  ).toMatchObject({ ok: false, code: "SESSION_LIMIT" });
+  ).toMatchObject({ ok: true, exitCode: 0 });
 });
 
 test("close aborts an in-flight native command before waiting for it to settle", async () => {

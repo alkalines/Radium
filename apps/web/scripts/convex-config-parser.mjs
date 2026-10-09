@@ -255,7 +255,7 @@ export function parseRootComponents(source, configPath, repositoryRoot) {
   let defineAppImported = false;
   let validatorImported = false;
   for (const statement of parsed) {
-    if (!statement.startsWith("import ")) break;
+    if (!statement.startsWith("import ")) continue;
     if (/^import \{ defineApp \} from "convex\/server"$/.test(statement)) {
       if (defineAppImported) fail("root config imports defineApp more than once");
       defineAppImported = true;

@@ -81,8 +81,6 @@ export const createChallenge = internalMutation({
   },
   returns: v.object({ challengeId: v.string(), expiresAt: v.number() }),
   handler: async (ctx, args) => {
-    await limiter.limit(ctx, "challenge", { throws: true });
-
     const expiresAt = Date.now() + CHALLENGE_TTL;
 
     if (args.kind === "token") {
@@ -103,6 +101,8 @@ export const createChallenge = internalMutation({
       if (!key || key.workerId !== args.workerId) {
         return denied();
       }
+
+      await limiter.limit(ctx, "challenge", { key: record._id, throws: true });
 
       const challengeId = await ctx.db.insert("worker_auth_challenges", {
         kind: args.kind,
@@ -129,6 +129,8 @@ export const createChallenge = internalMutation({
     if (!workspace || workspace.archivedAt !== undefined) {
       return denied();
     }
+
+    await limiter.limit(ctx, "challenge", { key: workspace._id, throws: true });
 
     const challengeId = await ctx.db.insert("worker_auth_challenges", {
       kind: args.kind,

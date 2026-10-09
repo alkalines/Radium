@@ -53,6 +53,8 @@ them before contacting the backend. State defaults to `~/.radium-worker`; pass
 directory is secured to mode `0700`, and its state file is created atomically with
 mode `0600`. Existing state is never replaced by a new key. The setup token is
 kept in memory only for initial enrollment and is omitted from saved state.
+Reading or forgetting an identity with a missing state directory does not create
+that directory; reading returns no identity and forgetting is a no-op.
 The private key uses the OS credential store by default; headless hosts can select
 the protected-file fallback described in [Credential storage](#credential-storage).
 

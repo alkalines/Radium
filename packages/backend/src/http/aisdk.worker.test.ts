@@ -29,13 +29,17 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllEnvs());
 
-function fixture(userId = "owner", directory: string | undefined = "/project") {
+function fixture(
+  userId = "owner",
+  directory: string | undefined = "/project",
+  tools: Array<"read" | "edit" | "create" | "bash"> = ["read", "edit", "create"],
+) {
   mocks.user.mockResolvedValue({ _id: userId });
   const runQuery = vi
     .fn()
     .mockResolvedValueOnce({
       chat: {
-        worker: { workerId: "selected-worker", directory, tools: ["read", "edit", "create"] },
+        worker: { workerId: "selected-worker", directory, tools },
         scope: "workspace",
         userId: "owner",
       },
@@ -80,6 +84,15 @@ test("HTTP chat exposes the persisted Worker's enabled tools with signed write a
     workspaceId: "chat-workspace",
     workerId: "selected-worker",
   });
+});
+
+test("Bash-only Worker selection receives a signed approval secret", async () => {
+  const f = fixture("owner", "/project", ["bash"]);
+  expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
+  const options = mocks.streamText.mock.calls[0]![0];
+  expect(Object.keys(options.tools)).toEqual(["worker_bash"]);
+  expect(options.toolApproval).toEqual({ worker_bash: "user-approval" });
+  expect(options.experimental_toolApprovalSecret).toBeInstanceOf(Uint8Array);
 });
 
 test("shared-chat members never receive owner-selected Worker tools", async () => {

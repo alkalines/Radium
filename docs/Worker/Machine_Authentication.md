@@ -245,11 +245,12 @@ embedded as a data URI in `auth.config.ts`; no JWKS HTTP endpoint is needed.
   component receipt. It stores no token or public/private key.
 - App `worker_auth_challenges` stores immutable public proof context with indexed
   expiry. Successful admission deletes the challenge atomically; invalid signatures
-  never consume it. A cron removes up to 200 expired challenges per minute, above
-  the global challenge-creation budget.
+  never consume it. A cron removes up to 200 expired challenges per minute;
+  larger fleets can create an expiry-cleanup backlog.
 - Existing Rate Limiter component bounds successful enrollment creation to 10 per
-  workspace/minute and challenge creation to 120 globally/minute. Invalid rolled-back
-  operations do not consume these transactional quotas. This initial global cap
+  workspace/minute. Challenge creation is limited to 120/minute per workspace,
+  keyed by its stored ID after resolving and validating the workspace or enrollment.
+  Invalid rolled-back operations do not consume these transactional quotas. This
   is not a per-IP flood defense; proxy/network admission and fleet tuning remain open.
 - HTTP JSON bodies are streamed with an 8 KiB bound; proofs have a 4 KiB bound.
   Responses use `Cache-Control: no-store`; authentication errors collapse to

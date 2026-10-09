@@ -1,4 +1,5 @@
 import type { ConvexClient } from "convex/browser";
+import { ConvexError } from "convex/values";
 import { createHash } from "node:crypto";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "backend/convex/_generated/api";
@@ -43,6 +44,20 @@ export function consumeEditTasks(
   const receipts = new Map<string, { task: Task; result: WorkerEditResult }>();
   const network = <T>(promise: Promise<T>) => Promise.race([promise, cancelled]);
 
+  async function completeReceipt(receipt: { task: Task; result: WorkerEditResult }) {
+    try {
+      return await client.mutation(api.worker_tasks.completeEdit, {
+        taskId: receipt.task._id,
+        claimId,
+        expectedRevision: receipt.task.revision,
+        result: receipt.result,
+      });
+    } catch (error) {
+      if (isPermanentCompletionRejection(error)) return { receiptDiscarded: true as const };
+      throw error;
+    }
+  }
+
   async function pump() {
     if (running || stopped || !available) return;
     changed = false;
@@ -50,14 +65,7 @@ export function consumeEditTasks(
       for (const receipt of receipts.values()) {
         if (stopped || !available) return;
         try {
-          const delivered = await network(
-            client.mutation(api.worker_tasks.completeEdit, {
-              taskId: receipt.task._id,
-              claimId,
-              expectedRevision: receipt.task.revision,
-              result: receipt.result,
-            }),
-          );
+          const delivered = await network(completeReceipt(receipt));
           if (delivered) receipts.delete(receipt.task._id);
         } catch {
           // Retain the receipt for reconnection; never call execute again.
@@ -85,7 +93,11 @@ export function consumeEditTasks(
         } catch {
           return;
         }
-        if (!task || stopped || !available) continue;
+        if (!task) continue;
+        if (stopped || !available) {
+          receipts.set(task._id, { task, result: { ok: false, code: "NOT_EXECUTED" } });
+          return;
+        }
         // Local native snapshots cannot cross a workspace, caller, or chat boundary.
         const sessionId = createHash("sha256")
           .update(
@@ -113,14 +125,7 @@ export function consumeEditTasks(
         receipts.set(task._id, { task, result });
         if (stopped || !available) return;
         try {
-          const delivered = await network(
-            client.mutation(api.worker_tasks.completeEdit, {
-              taskId: task._id,
-              claimId,
-              expectedRevision: task.revision,
-              result,
-            }),
-          );
+          const delivered = await network(completeReceipt({ task, result }));
           if (delivered) receipts.delete(task._id);
           else return;
         } catch {
@@ -191,15 +196,7 @@ export function consumeEditTasks(
           const timeout = new Promise<undefined>((resolve) => {
             timer = setTimeout(() => resolve(undefined), 2_000);
           });
-          const delivered = await Promise.race([
-            client.mutation(api.worker_tasks.completeEdit, {
-              taskId: receipt.task._id,
-              claimId,
-              expectedRevision: receipt.task.revision,
-              result: receipt.result,
-            }),
-            timeout,
-          ]);
+          const delivered = await Promise.race([completeReceipt(receipt), timeout]);
           if (delivered) receipts.delete(receipt.task._id);
         } catch {
           // No replay on a later process; the processing task must be inspected.
@@ -210,6 +207,17 @@ export function consumeEditTasks(
       await executor.close();
     },
   };
+}
+
+function isPermanentCompletionRejection(error: unknown): boolean {
+  if (!(error instanceof ConvexError)) return false;
+  const data = error.data;
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "code" in data &&
+    (data.code === "WORKER_TASK_DENIED" || data.code === "WORKER_TASK_STALE_REVISION")
+  );
 }
 
 function executionResult(output: string, operation: string): WorkerEditResult {

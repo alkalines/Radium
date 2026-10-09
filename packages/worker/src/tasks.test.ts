@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { ConvexClient } from "convex/browser";
 import type { FunctionReturnType } from "convex/server";
+import { ConvexError } from "convex/values";
 import { getFunctionName } from "convex/server";
 import { api } from "backend/convex/_generated/api";
 import { consumeEditTasks } from "./tasks.js";
@@ -75,16 +76,16 @@ test("consumption waits for authority, serializes updates and retries only compl
   expect(f.executor.close).toHaveBeenCalledTimes(1);
 });
 
-test("disconnect before a claim response never executes; shutdown cancels pending network waits", async () => {
+test("a claim returned while unavailable gets a NOT_EXECUTED receipt after reconnect", async () => {
   vi.useFakeTimers();
   const f = fixture();
   let finish!: (value: Task) => void;
-  f.mutation.mockImplementation(
-    () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-  );
+  f.mutation.mockImplementation(async (fn) => {
+    if (!isClaim(fn)) return { ...task, status: "success" };
+    return await new Promise((resolve) => {
+      finish = resolve;
+    });
+  });
   f.consumer.setAvailable(true);
   f.notify([task]);
   await vi.advanceTimersByTimeAsync(1);
@@ -92,10 +93,86 @@ test("disconnect before a claim response never executes; shutdown cancels pendin
   finish({ ...task, revision: 1 });
   await vi.advanceTimersByTimeAsync(1);
   expect(f.executor.execute).not.toHaveBeenCalled();
+  expect(f.mutation.mock.calls.filter(([fn]) => !isClaim(fn))).toHaveLength(0);
+  f.notify([]);
   f.consumer.setAvailable(true);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(f.mutation.mock.calls.filter(([fn]) => !isClaim(fn))).toHaveLength(1);
+  expect(f.mutation.mock.calls.at(-1)?.[1]).toMatchObject({
+    result: { ok: false, code: "NOT_EXECUTED" },
+  });
   await f.consumer.close();
   expect(f.executor.execute).not.toHaveBeenCalled();
   expect(f.executor.close).toHaveBeenCalledTimes(1);
+});
+
+test("a claim returned during shutdown gets a NOT_EXECUTED receipt before close", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  let finish!: (value: Task) => void;
+  f.mutation.mockImplementation((fn) => {
+    if (!isClaim(fn)) return Promise.resolve({ ...task, status: "failed" });
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  });
+  f.consumer.setAvailable(true);
+  f.notify([task]);
+  await vi.advanceTimersByTimeAsync(1);
+  finish({ ...task, revision: 1 });
+  await f.consumer.close();
+  expect(f.executor.execute).not.toHaveBeenCalled();
+  expect(f.mutation.mock.calls.filter(([fn]) => !isClaim(fn))).toHaveLength(1);
+  expect(f.mutation.mock.calls.at(-1)?.[1]).toMatchObject({
+    result: { ok: false, code: "NOT_EXECUTED" },
+  });
+  expect(f.executor.close).toHaveBeenCalledTimes(1);
+});
+
+test.each(["WORKER_TASK_DENIED", "WORKER_TASK_STALE_REVISION"])(
+  "a permanent %s completion rejection discards the receipt",
+  async (code) => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.mutation.mockImplementation(async (fn) => {
+      if (isClaim(fn)) return { ...task, revision: 1 };
+      throw new ConvexError({ code });
+    });
+    f.consumer.setAvailable(true);
+    f.notify([task]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.executor.execute).toHaveBeenCalledTimes(1);
+    expect(f.mutation.mock.calls.filter(([fn]) => !isClaim(fn))).toHaveLength(1);
+
+    f.notify([]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.mutation.mock.calls.filter(([fn]) => !isClaim(fn))).toHaveLength(1);
+    expect(f.executor.execute).toHaveBeenCalledTimes(1);
+    await f.consumer.close();
+  },
+);
+
+test("a cancelled completion retains its receipt for delivery retry", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  let cancelled = true;
+  f.mutation.mockImplementation(async (fn) => {
+    if (isClaim(fn)) return { ...task, revision: 1 };
+    if (cancelled) throw new DOMException("cancelled", "AbortError");
+    return { ...task, status: "success" };
+  });
+  f.consumer.setAvailable(true);
+  f.notify([task]);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(f.executor.execute).toHaveBeenCalledTimes(1);
+  expect(f.mutation.mock.calls.filter(([fn]) => !isClaim(fn))).toHaveLength(1);
+
+  cancelled = false;
+  f.notify([]);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(f.executor.execute).toHaveBeenCalledTimes(1);
+  expect(f.mutation.mock.calls.filter(([fn]) => !isClaim(fn))).toHaveLength(2);
+  await f.consumer.close();
 });
 
 test("a competing consumer's claim never reaches the local editor", async () => {

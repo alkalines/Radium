@@ -62,6 +62,9 @@ The adapter appends a foreground `wait`, preserving the command's exit status.
 If `exit` or shell error behavior bypasses that wait, remaining native background
 jobs are aborted and the shell is removed rather than reused. At most 64 native
 shell sessions are retained; timeout/cancellation also removes the affected shell.
+At capacity, a new session evicts the least-recently-used idle shell, losing its
+process-local state. Active or queued sessions are not evicted; if every session
+is busy, the request fails with `SESSION_LIMIT`.
 
 PTY input/resize, explicit async, auto-background promotion, service supervision,
 user cancellation, reconnectable output, artifacts and restart reconciliation

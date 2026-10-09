@@ -33,6 +33,8 @@ it does not establish that the process is online. The terminal must report
    chat, Worker, directory, and enabled tools. The SDK checks the signature and
    exact tool input before executing a submitted approval. Changing configuration
    or rotating the issuer secret invalidates pending write approvals.
+   Bash-only selections also derive this approval key; enabling a file-write
+   tool alongside Bash is not required.
 5. Internal `worker_tasks.dispatchChatEdit` rechecks visibility, ownership, active
    Worker identity, exact configured directory, and enabled tool at every stage.
    Write calls stage a preview and apply only that call's successful preview ID.

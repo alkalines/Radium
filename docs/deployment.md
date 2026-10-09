@@ -216,8 +216,10 @@ The offline parser supports typed app environment declarations and literal
 `app.env` references passed through component mounts. It validates the supported
 string, literal, union, and optional validator forms without evaluating config
 expressions or reading deployment values. Unsupported app options, env
-expressions, and validator syntax still fail closed. Parser regressions are
-covered by `node --test apps/web/scripts/convex-config-parser.test.mjs`.
+expressions, and validator syntax still fail closed. Root imports are validated
+throughout the config, not only in a leading import block; component import names
+must be unique and use supported config specifiers wherever they appear. Parser
+regressions are covered by `node --test apps/web/scripts/convex-config-parser.test.mjs`.
 
 ## Full Self-Hosted Image (Blocked Pending Audit)
 

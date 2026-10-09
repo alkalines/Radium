@@ -367,7 +367,7 @@ async function buildChatTools(
     const workerTools = buildWorkerChatTools(ctx, scope);
     Object.assign(tools, workerTools.tools);
     toolApproval = workerTools.toolApproval;
-    if (selection.tools.some((name) => name === "edit" || name === "create")) {
+    if (selection.tools.some((name) => name === "edit" || name === "create" || name === "bash")) {
       const issuerSecret = process.env.WORKER_AUTH_PRIVATE_JWK;
       if (!issuerSecret) throw new Error("Worker authentication is not configured");
       approvalSecret = await workerChatApprovalSecret(issuerSecret, scope);

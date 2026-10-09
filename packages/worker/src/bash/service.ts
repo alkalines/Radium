@@ -29,6 +29,10 @@ interface BashResult {
   truncated: boolean;
 }
 
+type SessionAllocation =
+  | { session: BashSession }
+  | { code: "SERVICE_CLOSED" | "SESSION_DIRECTORY_CHANGED" | "SESSION_LIMIT" };
+
 /** Creates a Worker-local, foreground-only native Shell executor. */
 export function createBashExecutor(): {
   execute(request: WorkerBashRequest): Promise<string>;
@@ -40,6 +44,7 @@ export function createBashExecutor(): {
 class WorkerBashExecutor {
   private readonly sessions = new Map<string, BashSession>();
   private readonly queues = new Map<string, Promise<void>>();
+  private sessionAllocationQueue: Promise<void> = Promise.resolve();
   private shellConstructor?: typeof import("@oh-my-pi/pi-natives").Shell;
   private shellConstructorPromise?: Promise<typeof import("@oh-my-pi/pi-natives").Shell>;
   private closed = false;
@@ -99,8 +104,9 @@ class WorkerBashExecutor {
       return failure("SESSION_DIRECTORY_CHANGED");
     }
 
+    if (session) this.touchSession(request.sessionId, session);
+
     if (!session) {
-      if (this.sessions.size >= MAX_SESSIONS) return failure("SESSION_LIMIT");
       let Shell: typeof import("@oh-my-pi/pi-natives").Shell;
       try {
         Shell = await this.loadShellConstructor();
@@ -109,14 +115,9 @@ class WorkerBashExecutor {
       }
       if (this.closed) return failure("SERVICE_CLOSED");
 
-      // Other session queues can create shells while the native package imports.
-      if (this.sessions.size >= MAX_SESSIONS) return failure("SESSION_LIMIT");
-      session = {
-        directory,
-        exitStatusVariable: `__radium_worker_${randomUUID().replaceAll("-", "")}_exit`,
-        shell: new Shell(),
-      };
-      this.sessions.set(request.sessionId, session);
+      const allocation = await this.allocateSession(request.sessionId, directory, Shell);
+      if ("code" in allocation) return failure(allocation.code);
+      session = allocation.session;
     }
 
     let runResult: Awaited<ReturnType<NativeShell["run"]>>;
@@ -197,6 +198,64 @@ class WorkerBashExecutor {
         });
     }
     return this.shellConstructorPromise;
+  }
+
+  /** Serialize capacity changes while leaving native command execution concurrent. */
+  private async allocateSession(
+    sessionId: string,
+    directory: string,
+    Shell: typeof import("@oh-my-pi/pi-natives").Shell,
+  ): Promise<SessionAllocation> {
+    let release!: () => void;
+    const previous = this.sessionAllocationQueue;
+    this.sessionAllocationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+
+    try {
+      if (this.closed) return { code: "SERVICE_CLOSED" };
+
+      // Recheck after waiting for another session's allocation or eviction.
+      const existing = this.sessions.get(sessionId);
+      if (existing) {
+        if (existing.directory !== directory) return { code: "SESSION_DIRECTORY_CHANGED" };
+        this.touchSession(sessionId, existing);
+        return { session: existing };
+      }
+
+      if (this.sessions.size >= MAX_SESSIONS) {
+        const victim = [...this.sessions].find(([id]) => !this.queues.has(id));
+        if (!victim) return { code: "SESSION_LIMIT" };
+
+        const [victimId, victimSession] = victim;
+        // Remove before awaiting abort. Requests for this ID will wait on this
+        // allocation queue and can only create a fresh shell after abort settles.
+        this.sessions.delete(victimId);
+        try {
+          await victimSession.shell.abort();
+        } catch {
+          // Discarding an idle session is best-effort; do not retain it on failure.
+        }
+      }
+
+      if (this.closed) return { code: "SERVICE_CLOSED" };
+
+      const session: BashSession = {
+        directory,
+        exitStatusVariable: `__radium_worker_${randomUUID().replaceAll("-", "")}_exit`,
+        shell: new Shell(),
+      };
+      this.sessions.set(sessionId, session);
+      return { session };
+    } finally {
+      release();
+    }
+  }
+
+  private touchSession(sessionId: string, session: BashSession): void {
+    this.sessions.delete(sessionId);
+    this.sessions.set(sessionId, session);
   }
 
   private async closeSessions(): Promise<void> {

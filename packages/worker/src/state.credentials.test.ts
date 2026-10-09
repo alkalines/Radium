@@ -39,6 +39,16 @@ beforeEach(() => {
 });
 
 describe("Worker credential persistence", () => {
+  it("does not create a missing state directory when reading or forgetting state", async () => {
+    const directory = await newStateDirectory();
+
+    await expect(readWorkerState(directory)).resolves.toBeNull();
+    await expect(readdir(directory)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await expect(forgetWorkerState(directory)).resolves.toBeUndefined();
+    await expect(readdir(directory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.each([null, undefined])(
     "can save, forget, and re-enroll when native missing entries return %s",
     async (missing) => {
@@ -241,7 +251,7 @@ describe("Worker credential persistence", () => {
       }),
     ).rejects.toThrow("OS credential store could not save the private key");
     await expect(readWorkerState(strictDirectory)).resolves.toBeNull();
-    expect(await readdir(strictDirectory)).toEqual([]);
+    await expect(readdir(strictDirectory)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects a selected keyring's failure instead of reading the local fallback", async () => {

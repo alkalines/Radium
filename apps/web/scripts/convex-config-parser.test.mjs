@@ -35,6 +35,42 @@ test("keeps legacy literal process.env component bindings supported", () => {
   assert.equal(parseRootComponents(config, rootConfigPath, repositoryRoot).length, 1);
 });
 
+test("checks root imports throughout the config, including after component mounts", () => {
+  const lateValidImport = `
+    import { defineApp } from "convex/server";
+    const app = defineApp();
+    app.use(secretStore);
+    import secretStore from "convex-secret-store/convex.config.js";
+    export default app;
+  `;
+  const lateUnsupportedImport = `
+    import { defineApp } from "convex/server";
+    const app = defineApp();
+    import secretStore from "not-a-component";
+    export default app;
+  `;
+  const lateDuplicateImport = `
+    import { defineApp } from "convex/server";
+    const app = defineApp();
+    import secretStore from "convex-secret-store/convex.config.js";
+    import secretStore from "another-component/convex.config.js";
+    app.use(secretStore);
+    export default app;
+  `;
+
+  assert.deepEqual(parseRootComponents(lateValidImport, rootConfigPath, repositoryRoot), [
+    { component: "secretStore", specifier: "convex-secret-store/convex.config.js" },
+  ]);
+  assert.throws(
+    () => parseRootComponents(lateUnsupportedImport, rootConfigPath, repositoryRoot),
+    /unsupported root config import/,
+  );
+  assert.throws(
+    () => parseRootComponents(lateDuplicateImport, rootConfigPath, repositoryRoot),
+    /duplicate root component import secretStore/,
+  );
+});
+
 test("rejects undeclared app env references and dynamic env expressions", () => {
   const undeclared = `
     import { defineApp } from "convex/server";

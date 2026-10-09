@@ -148,6 +148,11 @@ on reconnect/every five seconds, never the filesystem operation. It pauses furth
 work while a result receipt is undelivered. Neither inputs nor outputs are logged.
 Graceful shutdown stops new claims, waits for in-flight local work, then makes a
 best-effort completion flush with a two-second network deadline before disposal.
+If shutdown or lost availability prevents execution after a successful claim,
+the Worker records a `NOT_EXECUTED` failure receipt instead of abandoning the task.
+Permanent `WORKER_TASK_DENIED` or `WORKER_TASK_STALE_REVISION` completion rejections
+discard the local delivery receipt; transport failures and cancellation retain
+it for delivery retry, without re-executing the operation.
 
 **Crash boundary:** there is no distributed filesystem transaction. A crash after
 claim leaves `processing`; a crash after applying but before reporting leaves an

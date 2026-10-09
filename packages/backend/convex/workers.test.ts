@@ -2,6 +2,7 @@
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { RateLimiter } from "@convex-dev/rate-limiter";
 import { register } from "worker-component/test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { api, internal } from "./_generated/api";
@@ -47,6 +48,7 @@ modules["./workerPolicyTest.ts"] = async () => ({
   }),
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.useRealTimers();
 });
@@ -316,6 +318,37 @@ test("HTTP proofs reject wrong key/audience/context, consume once, and recover a
   });
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual(identity);
+});
+
+test("challenge selectors validate before workspace-scoped quotas apply", async () => {
+  const f = await setup();
+  const limit = vi.spyOn(RateLimiter.prototype, "limit");
+  const publicKey = await normalizeWorkerKey(f.jwk);
+  const createChallenge = (enrollmentId: string, requestId: string) =>
+    f.t.mutation(internal.workers.createChallenge, {
+      kind: "enroll",
+      enrollmentId,
+      requestId,
+      publicKey,
+    });
+
+  await expect(createChallenge("not-an-enrollment", "invalid")).rejects.toThrow();
+  expect(limit).not.toHaveBeenCalled();
+  for (let index = 0; index < 120; index++) {
+    await createChallenge(f.bundle.enrollmentId, `request-${index}`);
+  }
+  await expect(createChallenge(f.bundle.enrollmentId, "over-limit")).rejects.toThrow();
+
+  const otherWorkspace = await f.t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Other" }),
+  );
+  const otherEnrollment = await f.owner.action(api.workers.createEnrollment, {
+    workspace: otherWorkspace,
+    name: "Other Worker",
+  });
+  await expect(
+    createChallenge(otherEnrollment.enrollmentId, "other-workspace"),
+  ).resolves.toHaveProperty("challengeId");
 });
 
 test("selector mismatch rolls enrollment consumption back; expired proofs and revoked keys cannot authenticate", async () => {
