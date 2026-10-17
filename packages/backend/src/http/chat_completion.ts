@@ -179,7 +179,7 @@ async function recordCompletion(
       telemetry_request_id: info.telemetry?.requestId,
     },
     response: {
-      gen_id: providerGenerationId,
+      gen_id: details.generationId,
       finish_reason: details.finishReason || "stop",
       gen_time: generation.genTime,
       ttft: generation.ttft,

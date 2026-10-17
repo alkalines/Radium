@@ -160,6 +160,9 @@ describe("moved HTTP handlers", () => {
 
     expect(response.status).toBe(200);
     const responseBody = await response.text();
+    const returnedGenerationId = JSON.parse(responseBody.split("\n")[0].slice("data: ".length)).id;
+    expect(returnedGenerationId).toMatch(/^gen-/);
+    expect(returnedGenerationId).not.toBe("provider-generation");
     expect(responseBody).toContain('"provider":"test-provider"');
     expect(responseBody).toContain("data: [DONE]\n\n");
     expect(runMutation).toHaveBeenCalledExactlyOnceWith(internal.keys.recordCompletion, {
@@ -175,7 +178,7 @@ describe("moved HTTP handlers", () => {
         telemetry_request_id: undefined,
       },
       response: {
-        gen_id: "provider-generation",
+        gen_id: returnedGenerationId,
         finish_reason: "length",
         gen_time: 25,
         ttft: 40,
