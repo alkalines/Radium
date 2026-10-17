@@ -10,7 +10,10 @@ import {
 export type BackendLogInput = Omit<LoggingEventInput, "product" | "source">;
 type BackendLogFields = Omit<BackendLogInput, "event" | "level">;
 
-/** Best-effort Convex logger. The initial sink is the Convex function log stream. */
+/**
+ * Best-effort Convex logger. Invalid envelopes and sink failures are ignored so
+ * operational logging cannot change the behavior of the observed operation.
+ */
 export function logOperationalEvent(input: BackendLogInput): void {
   try {
     const envelope = createLoggingEnvelope({
@@ -29,6 +32,7 @@ function write(level: LoggingLevel, event: string, fields: BackendLogFields = {}
   logOperationalEvent({ level, event, ...fields });
 }
 
+/** Level-specific façade over the shared bounded operational event envelope. */
 export const logger = {
   debug: (event: string, fields?: BackendLogFields) => write("debug", event, fields),
   error: (event: string, fields?: BackendLogFields) => write("error", event, fields),

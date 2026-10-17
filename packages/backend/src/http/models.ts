@@ -1,10 +1,10 @@
 import { api, internal } from "../../convex/_generated/api";
 import type { ActionCtx } from "../../convex/_generated/server";
 
+/** List models available to the workspace assigned to the supplied API key. */
 export async function handleOpenAIModels(ctx: ActionCtx, req: Request): Promise<Response> {
-  // Auth
-  const authBearer = req.headers.get("Authorization")?.replace("Bearer ", "");
-  if (!authBearer || authBearer === "")
+  const bearerToken = req.headers.get("Authorization")?.replace("Bearer ", "");
+  if (!bearerToken || bearerToken === "")
     return Response.json(
       {
         error: {
@@ -14,12 +14,13 @@ export async function handleOpenAIModels(ctx: ActionCtx, req: Request): Promise<
       },
       { status: 401 },
     );
-  const checkKey = await ctx
+  // Treat lookup failures like an invalid key rather than exposing backend errors.
+  const keyInfo = await ctx
     .runQuery(api.keys.getKeyInfo, {
-      key: authBearer,
+      key: bearerToken,
     })
     .catch(() => {});
-  if (!checkKey)
+  if (!keyInfo)
     return Response.json(
       {
         error: {
@@ -29,9 +30,9 @@ export async function handleOpenAIModels(ctx: ActionCtx, req: Request): Promise<
       },
       { status: 401 },
     );
-  const legacyBalance = "legacyBalance" in checkKey ? checkKey.legacyBalance : undefined;
+  const legacyBalance = "legacyBalance" in keyInfo ? keyInfo.legacyBalance : undefined;
   const workspace =
-    checkKey.workspace ??
+    keyInfo.workspace ??
     (legacyBalance
       ? await ctx.runMutation(internal.workspaces.ensureForLegacyBalance, {
           balance: legacyBalance,

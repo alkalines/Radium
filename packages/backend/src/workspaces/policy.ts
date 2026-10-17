@@ -1,3 +1,4 @@
+/** Workspace ownership plus the legacy balance pointer retained during migration. */
 export type WorkspaceOwner = {
   ownerType: "user";
   ownerId: string;
@@ -5,11 +6,13 @@ export type WorkspaceOwner = {
   legacyBalance?: string;
 };
 
+/** A direct workspace membership; organization membership is not represented here. */
 export type WorkspaceMember = {
   userId: string;
   role: "member";
 };
 
+/** Personal chats are creator-private; workspace chats are shared with workspace access. */
 export type ChatScope = "personal" | "workspace";
 
 /**
@@ -25,18 +28,21 @@ export function canManageChat(
   return chat.userId === userId || (chat.scope === "workspace" && workspace.ownerId === userId);
 }
 
+/** Visibility and ownership fields for a chat with workspace routing metadata. */
 export type ChatOwnership = {
   userId: string;
   workspaceId?: string;
   scope?: ChatScope;
 };
 
+/** Pre-workspace chat fields used while legacy balances are still mapped. */
 export type LegacyChatOwnership = {
   userId: string;
   workspaceId?: string;
   balanceId?: string;
 };
 
+/** Chat ownership with the optional legacy pointer retained for consistency checks. */
 export type ResolvedChatOwnership = ChatOwnership & {
   balanceId?: string;
 };

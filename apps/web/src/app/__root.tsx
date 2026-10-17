@@ -52,6 +52,7 @@ export const Route = createRootRouteWithContext<{
     const token = await getAuth();
 
     if (token) {
+      // Route loaders may prefetch authenticated Convex data before the client hydrates.
       context.convexQueryClient.serverHttpClient?.setAuth(token);
     }
 

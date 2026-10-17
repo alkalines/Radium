@@ -1,79 +1,77 @@
-import { Models_Response_Type } from "@/types/openai/models";
+import type { Models_Response_Type } from "@/types/openai/models";
 import { v } from "convex/values";
 import { internalQuery, query } from "./_generated/server";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
 import { workspaceQuery } from "./helpers";
 
+/** Return the OpenAI-compatible model listing for one validated workspace. */
 export const openaiModels = internalQuery({
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args): Promise<Models_Response_Type[]> => {
     const workspace = await ctx.db.get("workspaces", args.workspace);
     if (!workspace || workspace.archivedAt !== undefined) throw new Error("Workspace not found.");
-    const [modelsList, providerRecords] = await Promise.all([
+    const [models, providerRecords] = await Promise.all([
       ctx.db.query("models").take(200),
       workspaceProviderRecords(ctx, workspace),
     ]);
     const configuredProviders = providerRecords.filter(isWorkspaceProviderEnabled);
 
-    return modelsList.flatMap((m) => {
+    return models.flatMap((model) => {
       // @todo: Get more consistent statics
-      const modelProviders = configuredProviders.flatMap(({ provider }) =>
-        provider.models.filter((providerModel) => providerModel.model === m.slug),
+      const providerModels = configuredProviders.flatMap(({ provider }) =>
+        provider.models.filter((providerModel) => providerModel.model === model.slug),
       );
-      const baseProvider = modelProviders[0];
-      const topProvider = modelProviders[0];
-      if (!baseProvider) return [];
+      // Preserve configured-provider order; the API exposes the first matching provider model.
+      const selectedProviderModel = providerModels[0];
+      if (!selectedProviderModel) return [];
 
       return [
         {
-          id: m.slug,
-          canonical_slug: m.slug,
-          created: Math.floor(m._creationTime / 1000), // UNIX: Math.floor(Date.now() / 1000)
+          id: model.slug,
+          canonical_slug: model.slug,
+          created: Math.floor(model._creationTime / 1000), // Unix timestamp in seconds.
           object: "model",
-          description: m.description,
-          name: m.name,
-          hugging_face_id: m.model_weights?.split("https://huggingface.co/")[1],
+          description: model.description,
+          name: model.name,
+          hugging_face_id: model.model_weights?.split("https://huggingface.co/")[1],
           architecture: {
-            modality: `${m.architecture.input_modalities.join("+")}->${m.architecture.output_modalities.join("+")}`,
-            input_modalities: m.architecture.input_modalities,
-            output_modalities: m.architecture.output_modalities,
-            tokenizer: m.architecture.tokenizer,
-            instruct_type: null, // WTF OPENROUTER
+            modality: `${model.architecture.input_modalities.join("+")}->${model.architecture.output_modalities.join("+")}`,
+            input_modalities: model.architecture.input_modalities,
+            output_modalities: model.architecture.output_modalities,
+            tokenizer: model.architecture.tokenizer,
+            instruct_type: null, // Kept for compatibility with OpenRouter model metadata.
           },
           default_parameters: {
-            frequency_penalty: m.default_parameters?.frequency_penalty,
-            temperature: m.default_parameters?.temperature,
-            top_p: m.default_parameters?.top_p,
+            frequency_penalty: model.default_parameters?.frequency_penalty,
+            temperature: model.default_parameters?.temperature,
+            top_p: model.default_parameters?.top_p,
           },
           per_request_limits: {
             completion_tokens: null,
             prompt_tokens: null,
           },
           // Provider based
-          supported_parameters: baseProvider?.supported_parameters,
-          pricing: baseProvider
-            ? {
-                prompt: baseProvider.pricing.input,
-                completion: baseProvider.pricing.output,
-                input_cache_read: baseProvider.pricing.cache_read,
-                input_cache_write: baseProvider.pricing.cache_write,
-                // @todo
-              }
-            : null,
-          context_length: baseProvider?.context,
-          top_provider: topProvider
-            ? {
-                context_length: topProvider.context,
-                max_completion_tokens: topProvider.max_output,
-                is_moderated: topProvider.moderated,
-              }
-            : null,
+          supported_parameters: selectedProviderModel.supported_parameters,
+          pricing: {
+            prompt: selectedProviderModel.pricing.input,
+            completion: selectedProviderModel.pricing.output,
+            input_cache_read: selectedProviderModel.pricing.cache_read,
+            input_cache_write: selectedProviderModel.pricing.cache_write,
+            // @todo
+          },
+          context_length: selectedProviderModel.context,
+          top_provider: {
+            context_length: selectedProviderModel.context,
+            max_completion_tokens: selectedProviderModel.max_output,
+            is_moderated: selectedProviderModel.moderated,
+          },
         } as Models_Response_Type,
       ];
     });
   },
 });
 
+/** List global models available from at least one enabled provider in this workspace. */
 export const availableModels = workspaceQuery({
   args: {},
   async handler(ctx) {
@@ -112,6 +110,7 @@ export const availableModels = workspaceQuery({
   },
 });
 
+/** Look up a global model by its canonical slug. */
 export const modelInfo = query({
   args: {
     slug: v.string(),

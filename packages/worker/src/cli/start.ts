@@ -65,9 +65,9 @@ export async function startWorker(options: CliOptions): Promise<void> {
     });
     diagnosticsTimer = setInterval(() => {
       if (!control || previousStatusKey === "connected") return;
-      const state = control.diagnostics();
+      const diagnostics = control.diagnostics();
       console.info(
-        `Worker connection pending: socket=${state.socketConnected ? "open" : "closed"}, auth=${state.authenticated ? "accepted" : "pending"}, identity=${state.identityAvailable ? "available" : "pending"}, tokenExchange=${state.tokenExchangePending ? "pending" : "idle"}, socketRetries=${state.connectionRetries}.`,
+        `Worker connection pending: socket=${diagnostics.socketConnected ? "open" : "closed"}, auth=${diagnostics.authenticated ? "accepted" : "pending"}, identity=${diagnostics.identityAvailable ? "available" : "pending"}, tokenExchange=${diagnostics.tokenExchangePending ? "pending" : "idle"}, socketRetries=${diagnostics.connectionRetries}.`,
       );
     }, 15_000);
     if (editor) {

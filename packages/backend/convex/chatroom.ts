@@ -498,10 +498,18 @@ export async function isChatVisibleToWorkspace(
   try {
     const result = await requireAccessibleChat(ctx, chatId);
     const { chat, workspace } = result;
-    const belongsToWorkspace = chat.workspace
-      ? chat.workspace === workspaceId &&
-        (chat.balance === undefined || chat.balance === workspace.legacyBalance)
-      : chat.balance !== undefined && chat.balance === workspace.legacyBalance;
+
+    // Match both ownership keys during the legacy migration; a legacy balance
+    // alone identifies a chat only when it has no workspace id yet.
+    let belongsToWorkspace = false;
+    if (chat.workspace) {
+      belongsToWorkspace =
+        chat.workspace === workspaceId &&
+        (chat.balance === undefined || chat.balance === workspace.legacyBalance);
+    } else {
+      belongsToWorkspace = chat.balance !== undefined && chat.balance === workspace.legacyBalance;
+    }
+
     visible = workspace._id === workspaceId && belongsToWorkspace;
   } catch {
     // A deleted or inaccessible chat must not turn into an observable row.
@@ -566,14 +574,21 @@ export async function filterVisibleTraces(
 
   for (const trace of traces) {
     if (trace.source !== "chatroom") continue;
-    const visible =
-      trace.chatId !== undefined &&
-      (await isChatVisibleToWorkspace(ctx, workspace._id, trace.chatId, cache)) &&
-      (await isTraceCompletionVisible(ctx, workspace, trace, cache));
-    const previous = chatroomVisibilityByRequest.get(trace.requestId);
+
+    let visible = false;
+    if (trace.chatId !== undefined) {
+      visible = await isChatVisibleToWorkspace(ctx, workspace._id, trace.chatId, cache);
+      if (visible) {
+        visible = await isTraceCompletionVisible(ctx, workspace, trace, cache);
+      }
+    }
+
+    // Any hidden Chatroom sibling suppresses the no-chat Gateway trace for the
+    // same request, even when another sibling is visible.
+    const previousVisibility = chatroomVisibilityByRequest.get(trace.requestId);
     chatroomVisibilityByRequest.set(
       trace.requestId,
-      previous === undefined ? visible : previous && visible,
+      previousVisibility === undefined ? visible : previousVisibility && visible,
     );
   }
 

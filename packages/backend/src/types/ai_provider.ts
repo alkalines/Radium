@@ -1,8 +1,6 @@
-/**
- * Imports
- */
-import { LanguageModel } from "ai";
+import type { LanguageModel } from "ai";
 
+/** Provider SDK packages that have a connector implementation in this backend. */
 export type AIProviderNpmPackage =
   | "@openrouter/ai-sdk-provider"
   | "@ai-sdk/openai"
@@ -10,6 +8,7 @@ export type AIProviderNpmPackage =
   | "@ai-sdk/anthropic"
   | "@opencoredev/loginwithchatgpt-ai";
 
+/** Configuration passed to a provider SDK when constructing its model connector. */
 export type AIProviderSDK_Config = {
   apiKey: string;
   name?: string;
@@ -87,15 +86,13 @@ export type AIProviderSDK_ModelSettings = {
      */
     search_prompt?: string;
   };
-  // Provider is supposed to be at src/ai_balancer.ts
 };
+/** Provider initializer that returns a model factory for the configured SDK. */
 export type AIProviderSDK = (
   Config: AIProviderSDK_Config,
 ) => (model: string, settings?: AIProviderSDK_ModelSettings) => LanguageModel;
 
-/**
- * Configuration at type
- */
+/** Catalog and connector configuration for an upstream AI provider. */
 export type AIProviderConfig = {
   /**
    * Provider name
@@ -112,13 +109,9 @@ export type AIProviderConfig = {
    * Training policy of the provider
    */
   policies: {
-    /**
-     * If free models inputs will be used for AI Training
-     */
+    /** Whether the provider may use free-model inputs for training. */
     trainingOnFree: boolean;
-    /**
-     * If paid models inputs will be used for AI Training
-     */
+    /** Whether the provider may use paid-model inputs for training. */
     trainingOnPaid: boolean;
     /**
      * Terms of service (TOS) of the Provider
@@ -134,18 +127,9 @@ export type AIProviderConfig = {
    */
   headquarters?: string;
   /**
-   * Models list available
-   * @todo Integration
-   */
-  //models: any[]; // Later
-  /**
    * Default BaseURL of the provider
    */
   defaultBaseURL: string | undefined;
-  /**
-   * Connector constructor. Explicitly typed to accept AdapterConfig and
-   * return an instance of BaseAdapter. Avoids using the `typeof` shortcut.
-   */
+  /** Connector factory that creates a model factory for the configured SDK. */
   connector: AIProviderSDK;
-  // Models will be handled at Convex Data table (i hope it doesn't bite me in the Ass later....)
 };

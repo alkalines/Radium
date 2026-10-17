@@ -83,19 +83,17 @@ const welcomeTexts = {
   ],
 };
 
-const welcomeTextCount = Object.values(welcomeTexts).reduce((count, value) => {
-  if (value.length > 0 && Array.isArray(value[0])) {
-    return count + (value as string[][]).flat().length;
-  }
-
-  return count + (value as string[]).length;
-}, 0);
+const welcomeTextCount = Object.values(welcomeTexts).flat(2).length;
 
 function getRandomWelcomeText(name: string | undefined, index: number, date = new Date()) {
   const hour = date.getHours();
   const day = date.getDay();
-  const timeOfDayTexts =
-    hour < 12 ? welcomeTexts.morning : hour < 17 ? welcomeTexts.afternoon : welcomeTexts.evening;
+  let timeOfDayTexts = welcomeTexts.evening;
+  if (hour < 12) {
+    timeOfDayTexts = welcomeTexts.morning;
+  } else if (hour < 17) {
+    timeOfDayTexts = welcomeTexts.afternoon;
+  }
   const candidates = [
     ...welcomeTexts.anytime,
     ...timeOfDayTexts,
@@ -140,11 +138,11 @@ export const Route = createFileRoute("/chat")({
 });
 
 function ChatRouteComponent() {
-  const isChildRoute = useRouterState({
+  const isNestedChatRoute = useRouterState({
     select: (state) => state.location.pathname !== "/chat",
   });
 
-  return isChildRoute ? <Outlet /> : <ChatHomePage />;
+  return isNestedChatRoute ? <Outlet /> : <ChatHomePage />;
 }
 
 function ChatHomePage() {
@@ -180,6 +178,8 @@ function ChatHomePage() {
 
   useEffect(() => {
     if (modelWorkspaceId === workspaceId) return;
+
+    // Model and Worker choices belong to a workspace; discard stale choices as it changes.
     setModelWorkspaceId(workspaceId);
     setModel(undefined);
     setProvider(undefined);
@@ -197,15 +197,14 @@ function ChatHomePage() {
   );
   const defaultModel = defaultModelQuery.data;
   const explicitModel = modelWorkspaceId === workspaceId ? model : undefined;
-  const modelListLoading =
+  const isModelListLoading =
     models === undefined || modelsFetching || modelWorkspaceId !== workspaceId;
-  const isModelLoading =
-    modelListLoading ||
-    Boolean(
-      models.length > 0 &&
-      !explicitModel &&
-      (userInfo === undefined || (signedIn && defaultModelQuery.isPending)),
-    );
+  const hasModelsToChooseFrom = Boolean(models?.length);
+  const isWaitingForDefaultModel =
+    hasModelsToChooseFrom &&
+    !explicitModel &&
+    (userInfo === undefined || (signedIn && defaultModelQuery.isPending));
+  const isModelLoading = isModelListLoading || isWaitingForDefaultModel;
   const availableDefaultModel = models?.some((item) => item.slug === defaultModel)
     ? defaultModel
     : undefined;
@@ -410,6 +409,7 @@ function ChatScopeMenu({
   );
 }
 
+/** Navigates with the shared-composer transition when supported, or normally if unavailable. */
 function navigateWithChatTransition(navigateToChat: () => Promise<void>) {
   if (typeof document === "undefined" || !("startViewTransition" in document)) {
     return navigateToChat();

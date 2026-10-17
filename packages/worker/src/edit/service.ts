@@ -72,7 +72,13 @@ interface SerializedResult {
   oversized: boolean;
 }
 
-/** Worker-local native edit adapter for one authorized execution root. */
+/**
+ * Worker-local native edit adapter for one backend-authorized execution root.
+ * Requests are serialized per service; previews stage changes in process memory
+ * and never write to disk. After write-mode validation, apply consumes its preview
+ * before rechecking filesystem preimages or writing, even if those steps fail.
+ * Expiry, session close, and shutdown also discard pending previews.
+ */
 export class WorkerEditService {
   private readonly sessions = new Map<string, EditContext>();
   private pendingBytes = 0;

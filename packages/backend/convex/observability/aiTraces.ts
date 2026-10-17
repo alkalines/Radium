@@ -94,6 +94,7 @@ async function tracesForWorkspace(
   readLimit: number,
   outputLimit = readLimit,
 ) {
+  // Keep the legacy index in the read path until ownership backfill verification is complete.
   const traces =
     since !== undefined
       ? await ctx.db
@@ -126,6 +127,7 @@ async function tracesForWorkspace(
     : [];
   const byId = new Map(traces.map((trace) => [trace._id, trace]));
   for (const trace of legacy) byId.set(trace._id, trace);
+  // Workspace ownership does not make another user's private Chatroom trace visible.
   const visible = await filterVisibleTraces(ctx, workspace, [...byId.values()]);
   return visible.sort((a, b) => b.startedAt - a.startedAt).slice(0, outputLimit);
 }
@@ -149,18 +151,20 @@ async function requireOwnedTrace(ctx: QueryCtxOrMutationCtx, traceId: Id<"teleme
   const trace = await ctx.db.get("telemetry_traces", traceId);
   if (!trace) throw new Error("Trace not found.");
 
-  const workspace = trace.workspace
-    ? await ctx.db.get("workspaces", trace.workspace)
-    : trace.balance
-      ? await ctx.db
-          .query("workspaces")
-          .withIndex("by_legacyBalance", (q) => q.eq("legacyBalance", trace.balance!))
-          .first()
-      : null;
+  let workspace: Doc<"workspaces"> | null = null;
+  if (trace.workspace) {
+    workspace = await ctx.db.get("workspaces", trace.workspace);
+  } else if (trace.balance) {
+    workspace = await ctx.db
+      .query("workspaces")
+      .withIndex("by_legacyBalance", (q) => q.eq("legacyBalance", trace.balance!))
+      .first();
+  }
   if (!workspace) {
     throw new Error("Trace not found.");
   }
   await requireOwnedWorkspace(ctx, workspace._id);
+  // Hide missing and policy-filtered records behind the same lookup result.
   if (!(await isTraceVisible(ctx, workspace, trace))) throw new Error("Trace not found.");
   return { trace, workspace };
 }
@@ -170,6 +174,7 @@ export const getTrace = query({
   args: { traceId: v.id("telemetry_traces") },
   handler: async (ctx, args) => {
     const { trace, workspace } = await requireOwnedTrace(ctx, args.traceId);
+    // The extra rows are sentinels for bounded responses, not additional returned children.
     const spans = await ctx.db
       .query("telemetry_spans")
       .withIndex("by_trace_and_startedAt", (q) => q.eq("trace", trace._id))
@@ -223,6 +228,7 @@ export const getSummary = query({
   args: { workspace: v.id("workspaces"), since: v.number() },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    // Read one beyond the summary window so the result can report truncation.
     const traces = await tracesForWorkspace(ctx, workspace, args.since, 2001);
     return {
       ...summarizeTraces(traces.slice(0, 2000)),
@@ -290,6 +296,7 @@ export const startTrace = internalMutation({
     inputJson: v.optional(v.string()),
   },
   handler: async (ctx, { inputJson, ...args }) => {
+    // These internal arguments still contain request claims that must match app-owned records.
     const workspace = await requireWorkspaceAccessForUser(ctx, args.workspace, args.userId);
     if (args.apiKey) {
       const apiKey = await ctx.db.get("api_keys", args.apiKey);

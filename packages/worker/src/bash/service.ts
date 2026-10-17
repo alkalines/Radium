@@ -33,7 +33,12 @@ type SessionAllocation =
   | { session: BashSession }
   | { code: "SERVICE_CLOSED" | "SESSION_DIRECTORY_CHANGED" | "SESSION_LIMIT" };
 
-/** Creates a Worker-local, foreground-only native Shell executor. */
+/**
+ * Create a Worker-local native Shell executor with foreground-only commands.
+ *
+ * The requested directory is the command working directory, not a filesystem
+ * sandbox; commands are serialized within each session and output is bounded.
+ */
 export function createBashExecutor(): {
   execute(request: WorkerBashRequest): Promise<string>;
   close(): Promise<void>;
@@ -50,7 +55,7 @@ class WorkerBashExecutor {
   private closed = false;
   private closePromise?: Promise<void>;
 
-  /** Execute one foreground command and return a size-bounded JSON result. */
+  /** Return a bounded JSON result; requests sharing a session ID run serially. */
   execute(request: WorkerBashRequest): Promise<string> {
     if (this.closed) return Promise.resolve(failure("SERVICE_CLOSED"));
     if (!isValidRequest(request)) return Promise.resolve(failure("INVALID_REQUEST"));
@@ -80,7 +85,10 @@ class WorkerBashExecutor {
       });
   }
 
-  /** Abort running commands before waiting for queued work and releasing shells. */
+  /**
+   * Abort running commands before waiting for queued work and releasing shells.
+   * Repeated calls share the same shutdown operation.
+   */
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
@@ -156,6 +164,7 @@ class WorkerBashExecutor {
     try {
       backgroundChildren = (await session.shell.liveBackgroundJobCount()) > 0;
     } catch {
+      // Do not reuse a shell when its remaining child-process state is unknown.
       backgroundChildren = true;
     }
     if (timedOut || cancelled || backgroundChildren) {
@@ -165,15 +174,17 @@ class WorkerBashExecutor {
       this.sessions.delete(request.sessionId);
     }
 
-    const code = timedOut
-      ? "COMMAND_TIMEOUT"
-      : cancelled
-        ? "COMMAND_CANCELLED"
-        : exitCode === null
-          ? "EXIT_CODE_UNAVAILABLE"
-          : exitCode !== 0
-            ? "COMMAND_FAILED"
-            : undefined;
+    let code: string | undefined;
+    if (timedOut) {
+      code = "COMMAND_TIMEOUT";
+    } else if (cancelled) {
+      code = "COMMAND_CANCELLED";
+    } else if (exitCode === null) {
+      code = "EXIT_CODE_UNAVAILABLE";
+    } else if (exitCode !== 0) {
+      code = "COMMAND_FAILED";
+    }
+
     return resultJson({
       ok: code === undefined,
       ...(code === undefined ? {} : { code }),
@@ -184,6 +195,7 @@ class WorkerBashExecutor {
     });
   }
 
+  /** Share concurrent lazy imports and allow another attempt after a load failure. */
   private loadShellConstructor(): Promise<typeof import("@oh-my-pi/pi-natives").Shell> {
     if (this.shellConstructor) return Promise.resolve(this.shellConstructor);
     if (!this.shellConstructorPromise) {
@@ -305,10 +317,12 @@ function inheritedEnvironment(): Record<string, string> {
   );
 }
 
+/** Append a shell-level wait while preserving the command's foreground exit status. */
 function withForegroundWait(command: string, exitStatus: string): string {
   return `${command}\n${exitStatus}=$?\nwait\n(exit "$${exitStatus}")`;
 }
 
+/** Return the longest prefix that fits the byte limit without splitting a code point. */
 function utf8Prefix(
   text: string,
   maxBytes: number,

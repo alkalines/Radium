@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import type { ToolUIPart } from "ai";
 import { type ComponentProps, createContext, type ReactNode, useContext } from "react";
 
+/** Approval payload before a decision or after an approved/rejected decision. */
 type ToolUIPartApproval =
   | {
       id: string;
@@ -15,21 +16,6 @@ type ToolUIPartApproval =
   | {
       id: string;
       approved: boolean;
-      reason?: string;
-    }
-  | {
-      id: string;
-      approved: true;
-      reason?: string;
-    }
-  | {
-      id: string;
-      approved: true;
-      reason?: string;
-    }
-  | {
-      id: string;
-      approved: false;
       reason?: string;
     }
   | undefined;

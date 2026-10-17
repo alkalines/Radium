@@ -100,10 +100,6 @@ async function workspaceForUser(ctx: MutationCtx, userId: string) {
   return workspace;
 }
 
-async function workspaceDocumentForUser(ctx: MutationCtx, userId: string) {
-  return await workspaceForUser(ctx, userId);
-}
-
 async function ensureProviderMigrationBudget(ctx: MutationCtx): Promise<void> {
   const metrics = await ctx.meta.getTransactionMetrics();
   if (
@@ -119,7 +115,10 @@ async function ensureProviderMigrationBudget(ctx: MutationCtx): Promise<void> {
   }
 }
 
-/** Iterate the complete provider catalogue through its indexed paginator. */
+/**
+ * Visit the complete provider catalogue in slug order. A workspace migration
+ * must fit its provider work in one transaction.
+ */
 async function forEachProvider(
   ctx: MutationCtx,
   callback: (provider: Doc<"providers">) => Promise<void>,
@@ -135,6 +134,7 @@ async function forEachProvider(
   }
 }
 
+/** Read-side counterpart that reports duplicate adjacent slugs to verification. */
 async function forEachProviderRead(
   ctx: QueryCtx,
   callback: (provider: Doc<"providers">, duplicateSlug: boolean) => Promise<void>,
@@ -184,6 +184,7 @@ const verificationPageValidator = v.object({
 type VerificationIssues = Record<string, number>;
 type VerificationSamples = Record<string, string[]>;
 
+/** Count each issue and retain at most five unique record IDs for remediation samples. */
 function addVerificationIssue(
   issues: VerificationIssues,
   samples: VerificationSamples,
@@ -197,6 +198,7 @@ function addVerificationIssue(
   samples[code] = sample;
 }
 
+/** Return this page's results; callers must follow the cursor to verify every record. */
 function verificationPage(
   result: { page: unknown[]; continueCursor: string; isDone: boolean },
   issues: VerificationIssues,
@@ -210,10 +212,6 @@ function verificationPage(
     issues,
     samples,
   };
-}
-
-async function defaultWorkspaceForUserRead(ctx: QueryCtx, userId: string) {
-  return await getDefaultWorkspaceForUser(ctx, userId);
 }
 
 async function workspaceRequiresProviderConfiguration(
@@ -471,6 +469,10 @@ function parseCredentialPreview(value: string, env: string[]): Record<string, st
   }
 }
 
+/**
+ * Resolve a historical chat only through validated existing attribution or its
+ * legacy balance mapping; never infer a replacement from the user's default.
+ */
 async function workspaceForChat(ctx: MutationCtx, chat: Doc<"aisdk_chats">) {
   const balance = chat.balance ? await ctx.db.get("balances", chat.balance) : null;
   if (chat.balance && !balance) {
@@ -520,6 +522,7 @@ async function apiKeyForLegacyKey(
   return apiKey;
 }
 
+/** Validate every present ownership edge before backfilling a completion. */
 async function completionOwnership(ctx: MutationCtx, completion: Doc<"chat_completions">) {
   let balance = completion.bill.balance
     ? await ctx.db.get("balances", completion.bill.balance)
@@ -598,6 +601,7 @@ async function completionOwnership(ctx: MutationCtx, completion: Doc<"chat_compl
   return { balance, legacyKey, apiKey, workspace };
 }
 
+/** Validate every present ownership edge before backfilling a trace. */
 async function traceOwnership(ctx: MutationCtx, trace: Doc<"telemetry_traces">) {
   let balance = trace.balance ? await ctx.db.get("balances", trace.balance) : undefined;
   if (trace.balance && !balance) {
@@ -713,7 +717,7 @@ export const mcpServersToWorkspaces = migrations.define({
   migrateOne: async (ctx, server) => {
     const workspace = server.workspace
       ? await ctx.db.get("workspaces", server.workspace)
-      : await workspaceDocumentForUser(ctx, server.userId);
+      : await workspaceForUser(ctx, server.userId);
     if (!workspace) throw migrationBlocked("an MCP server has no workspace mapping");
     assertWorkspaceOwner(workspace, server.userId);
     await migrateMcpSecret(ctx, server, workspace);
@@ -761,7 +765,7 @@ export const workspaceCredentials = migrations.define({
   },
 });
 
-/** Copy legacy key hashes and propagate source revocations. */
+/** Copy legacy key hashes and reconcile revocation timestamps in both key records. */
 export const apiKeysFromKeys = migrations.define({
   table: "keys",
   batchSize: 25,
@@ -806,7 +810,7 @@ export const chatroomSettingsToWorkspaces = migrations.define({
   table: "chatroom_settings",
   batchSize: 25,
   migrateOne: async (ctx, settings) => {
-    const workspace = await workspaceDocumentForUser(ctx, settings.userId);
+    const workspace = await workspaceForUser(ctx, settings.userId);
     for (const serverId of settings.mcpServers) {
       const server = await ctx.db.get("mcp_servers", serverId);
       if (!server || server.userId !== settings.userId || server.workspace !== workspace._id) {
@@ -931,7 +935,10 @@ export const spansToWorkspaces = migrations.define({
   },
 });
 
-/** Run all ownership migrations in dependency order. */
+/**
+ * Run ownership migrations in dependency order. Keep this list aligned with
+ * OWNERSHIP_MIGRATION_STEPS.
+ */
 export const runAll = migrations.runner([
   internal.migrations.workspacesFromBalances,
   internal.migrations.workspacesFromSettings,
@@ -1518,7 +1525,7 @@ export const verifyChatroomSettings = internalQuery({
     const issues: VerificationIssues = {};
     const samples: VerificationSamples = {};
     for (const settings of result.page) {
-      const workspace = await defaultWorkspaceForUserRead(ctx, settings.userId);
+      const workspace = await getDefaultWorkspaceForUser(ctx, settings.userId);
       if (!workspace) {
         addVerificationIssue(issues, samples, "settings_workspace_missing", settings._id);
         continue;

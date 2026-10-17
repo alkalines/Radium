@@ -11,7 +11,7 @@ type Trace = {
   toolCallCount?: number;
 };
 
-/** Keep request order, replacing nested gateway traces with their chatroom parent. */
+/** Keep each request's first position and same-source match, preferring Chatroom over Gateway. */
 export function preferChatroomTraces<T extends Pick<Trace, "requestId" | "source">>(
   traces: T[],
 ): T[] {
@@ -25,7 +25,7 @@ export function preferChatroomTraces<T extends Pick<Trace, "requestId" | "source
   return [...byRequest.values()];
 }
 
-/** Aggregate an already bounded window, counting each request once. */
+/** Aggregate an already bounded window once per request, grouping daily totals by UTC date. */
 export function summarizeTraces(traces: Trace[]) {
   const windowed = preferChatroomTraces(traces);
   const summary = {

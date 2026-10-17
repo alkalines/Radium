@@ -3,7 +3,11 @@ import { validChatWorkerDirectory } from "./chat-config";
 
 /** Foreground commands have a deadline shorter than the Chatroom receipt wait. */
 export const WORKER_BASH_TIMEOUT_SECONDS = 30;
+
+/** Maximum UTF-8 output size accepted in a persisted Bash result. */
 export const WORKER_BASH_OUTPUT_BYTES = 32 * 1024;
+
+/** Persisted request shape; `directory` selects the initial working directory, not a sandbox. */
 export const workerBashRequest = v.object({
   directory: v.string(),
   sessionId: v.string(),
@@ -12,6 +16,7 @@ export const workerBashRequest = v.object({
 });
 export type WorkerBashRequest = Infer<typeof workerBashRequest>;
 
+/** Validate command content and execution bounds before the request enters task coordination. */
 export function validWorkerBashRequest(request: WorkerBashRequest): boolean {
   return (
     validChatWorkerDirectory(request.directory) &&

@@ -94,13 +94,13 @@ export const listMcpServers = workspaceQuery({
       .take(200);
 
     const defaultWorkspace = await getDefaultWorkspaceForUser(ctx, ctx.workspace.ownerId);
-    const legacyServers =
-      defaultWorkspace?._id === ctx.workspace._id
-        ? await ctx.db
-            .query("mcp_servers")
-            .withIndex("by_userId", (q) => q.eq("userId", ctx.workspace.ownerId))
-            .take(200)
-        : [];
+    const isDefaultWorkspace = defaultWorkspace?._id === ctx.workspace._id;
+    const legacyServers = isDefaultWorkspace
+      ? await ctx.db
+          .query("mcp_servers")
+          .withIndex("by_userId", (q) => q.eq("userId", ctx.workspace.ownerId))
+          .take(200)
+      : [];
     const visibleServers = [
       ...workspaceServers.map((server) => ({ server, legacy: false })),
       ...legacyServers
@@ -110,28 +110,30 @@ export const listMcpServers = workspaceQuery({
 
     const result = [];
     for (const { server, legacy } of visibleServers) {
-      const workspaceSecret =
-        server.auth.type === "bearer"
-          ? await readSecret(
-              ctx,
-              {
-                namespace: workspaceMcpSecretNamespace(args.workspace, server._id),
-                name: MCP_SECRET_NAME,
-              },
-              "workspace MCP bearer token",
-            )
-          : null;
-      const legacySecret =
-        workspaceSecret && !workspaceSecret.ok && legacy
-          ? await readSecret(
-              ctx,
-              {
-                namespace: mcpSecretNamespace(server._id),
-                name: MCP_SECRET_NAME,
-              },
-              "legacy MCP bearer token",
-            )
-          : null;
+      let workspaceSecret: SecretReadResult | null = null;
+      if (server.auth.type === "bearer") {
+        workspaceSecret = await readSecret(
+          ctx,
+          {
+            namespace: workspaceMcpSecretNamespace(args.workspace, server._id),
+            name: MCP_SECRET_NAME,
+          },
+          "workspace MCP bearer token",
+        );
+      }
+
+      let legacySecret: SecretReadResult | null = null;
+      if (workspaceSecret && !workspaceSecret.ok && legacy) {
+        legacySecret = await readSecret(
+          ctx,
+          {
+            namespace: mcpSecretNamespace(server._id),
+            name: MCP_SECRET_NAME,
+          },
+          "legacy MCP bearer token",
+        );
+      }
+
       result.push({
         _id: server._id,
         _creationTime: server._creationTime,
@@ -261,22 +263,23 @@ export const updateMcpServer = mutation({
         },
         "workspace MCP bearer token",
       );
-      const existingSecret = workspaceSecret.ok
-        ? workspaceSecret
-        : legacy
-          ? await readSecret(
-              ctx,
-              {
-                namespace: mcpSecretNamespace(args.server),
-                name: MCP_SECRET_NAME,
-              },
-              "legacy MCP bearer token",
-            )
-          : null;
-      if (!existingSecret || !existingSecret.ok) {
+      let existingSecret = workspaceSecret;
+      if (!workspaceSecret.ok && legacy) {
+        existingSecret = await readSecret(
+          ctx,
+          {
+            namespace: mcpSecretNamespace(args.server),
+            name: MCP_SECRET_NAME,
+          },
+          "legacy MCP bearer token",
+        );
+      }
+      if (!existingSecret.ok) {
         throw new Error("A bearer token is required for bearer authentication.");
       }
       if (!workspaceSecret.ok) {
+        // Promote legacy-only credentials to the workspace namespace before the
+        // server row is moved out of the legacy ownership model.
         await secrets.put(ctx, {
           namespace: workspaceMcpSecretNamespace(args.workspace, args.server),
           name: MCP_SECRET_NAME,

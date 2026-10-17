@@ -34,6 +34,10 @@ type SecretReadResult = Awaited<ReturnType<typeof secrets.get>>;
 type SecretContext = QueryCtx | MutationCtx;
 type SecretLookup = { namespace: SecretNamespace; name: string };
 
+/**
+ * Treat only a missing value as eligible for legacy fallback. Other Secret Store
+ * failures require recovery rather than silently hiding an unavailable credential.
+ */
 async function readSecret(
   ctx: SecretContext,
   lookup: SecretLookup,
@@ -108,6 +112,7 @@ const globalModelValidator = v.object({
   }),
 });
 
+/** List provider snapshots configured for a workspace the caller owns. */
 export const list = query({
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
@@ -147,6 +152,8 @@ async function requireWorkspaceProvider(
     }
     return { workspace, provider, configuration, catalog };
   }
+  // Legacy workspaces may materialize their first local provider configuration;
+  // workspaces without a legacy mapping must have an explicit configuration.
   if (!workspace.legacyBalance || !catalog) {
     throw new Error(`Provider ${slug} is not configured for this workspace.`);
   }
@@ -290,6 +297,7 @@ export const importProvider = mutation({
   },
 });
 
+/** Enable or disable provider routing for an owned workspace. */
 export const setEnabled = mutation({
   args: {
     workspace: v.id("workspaces"),
@@ -407,6 +415,7 @@ export const deleteProvider = mutation({
   },
 });
 
+/** List credential previews only; secret values remain write-only to clients. */
 export const listCredentials = query({
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
@@ -484,6 +493,7 @@ export const listCredentials = query({
   },
 });
 
+/** Store credentials in Secret Store and persist only their masked preview in app data. */
 export const upsertCredentials = mutation({
   args: {
     workspace: v.id("workspaces"),
@@ -535,6 +545,7 @@ export const upsertCredentials = mutation({
   },
 });
 
+/** Remove workspace credentials and their legacy fallback during the migration window. */
 export const deleteCredentials = mutation({
   args: {
     workspace: v.id("workspaces"),
@@ -588,13 +599,16 @@ export const bindOAuthCredential = internalMutation({
     if (!workspace || !canAccessWorkspace(workspace, args.userId)) {
       throw new Error("Workspace not found.");
     }
-    const provider = configuration
-      ? configuration.deletedAt === undefined
-        ? (configuration.snapshot ?? (catalog ? providerSnapshotFromCatalog(catalog) : null))
-        : null
-      : workspace.legacyBalance && catalog
-        ? providerSnapshotFromCatalog(catalog)
-        : null;
+    let provider: ProviderSnapshot | null = null;
+    if (configuration) {
+      // A tombstone is an explicit deletion and must not fall back to the catalog.
+      if (configuration.deletedAt === undefined) {
+        provider =
+          configuration.snapshot ?? (catalog ? providerSnapshotFromCatalog(catalog) : null);
+      }
+    } else if (workspace.legacyBalance && catalog) {
+      provider = providerSnapshotFromCatalog(catalog);
+    }
     if (!provider || provider.credential_type !== "oauth") {
       throw new Error(`OAuth provider ${args.provider} is not configured.`);
     }
@@ -671,6 +685,7 @@ export const unbindOAuthCredential = internalMutation({
   },
 });
 
+/** Resolve credentialed, enabled workspace providers for internal model routing. */
 export const resolveProviderCandidatesForModel = internalQuery({
   args: {
     workspace: v.id("workspaces"),

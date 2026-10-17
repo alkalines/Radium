@@ -17,10 +17,9 @@ export default defineConfig({
   plugins: [
     tailwindcss(),
     tanstackStart({
-      srcDirectory: "src", // This is the default
+      srcDirectory: "src",
       router: {
-        // Specifies the directory TanStack Router uses for your routes.
-        routesDirectory: "app", // Defaults to "routes", relative to srcDirectory
+        routesDirectory: "app",
       },
     }),
     viteReact(),

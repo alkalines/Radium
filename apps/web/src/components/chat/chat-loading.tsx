@@ -5,8 +5,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 const chatHandoffStoragePrefix = "radium:chat-handoff:";
 
+/** Shared CSS view-transition name for the composer between chat routes. */
 export const chatComposerViewTransitionName = "chat-composer";
 
+/**
+ * Store a submitted prompt in this tab's session storage until its new chat is
+ * ready. Browser storage errors are allowed to propagate to the caller.
+ */
 export function rememberChatHandoff(chatId: string, prompt: string) {
   if (typeof window === "undefined") {
     return;
@@ -15,6 +20,7 @@ export function rememberChatHandoff(chatId: string, prompt: string) {
   window.sessionStorage.setItem(`${chatHandoffStoragePrefix}${chatId}`, prompt);
 }
 
+/** Read the stored prompt without removing it; storage errors propagate to the caller. */
 export function readChatHandoff(chatId: string) {
   if (typeof window === "undefined") {
     return null;
@@ -23,6 +29,7 @@ export function readChatHandoff(chatId: string) {
   return window.sessionStorage.getItem(`${chatHandoffStoragePrefix}${chatId}`);
 }
 
+/** Remove the prompt saved for a chat after handoff or abandonment; storage errors propagate. */
 export function clearChatHandoff(chatId: string) {
   if (typeof window === "undefined") {
     return;

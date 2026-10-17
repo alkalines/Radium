@@ -12,7 +12,7 @@ const backendRoot = join(repositoryRoot, "packages/backend");
 const functionsRoot = join(backendRoot, "convex");
 const outputPath = join(functionsRoot, "_generated", "api.d.ts");
 const backendPackageJson = join(backendRoot, "package.json");
-const websiteRequire = createRequire(backendPackageJson);
+const backendRequire = createRequire(backendPackageJson);
 const auditedConvexVersion = "1.46.0";
 const args = process.argv.slice(2);
 
@@ -28,7 +28,7 @@ function fail(message) {
 function resolveComponentConfig(specifier) {
   if (!specifier.startsWith(".")) {
     try {
-      return websiteRequire.resolve(specifier);
+      return backendRequire.resolve(specifier);
     } catch {
       fail(`cannot resolve mounted component ${specifier}`);
     }
@@ -74,7 +74,9 @@ function mountedComponents() {
 function compareModulePaths(a, b) {
   const left = a.split(path.sep).join("/");
   const right = b.split(path.sep).join("/");
-  return left < right ? -1 : left > right ? 1 : 0;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
 
 function localModulePaths(directory) {
@@ -83,7 +85,7 @@ function localModulePaths(directory) {
   function visit(current) {
     const entries = fs
       .readdirSync(current, { withFileTypes: true })
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      .sort((a, b) => compareModulePaths(a.name, b.name));
     for (const entry of entries) {
       const filePath = join(current, entry.name);
       if (entry.isDirectory()) {
@@ -114,7 +116,7 @@ function localModulePaths(directory) {
   return modules.sort(compareModulePaths).map((modulePath) => modulePath.split(path.sep).join("/"));
 }
 
-const convexPackageJson = websiteRequire.resolve("convex/package.json");
+const convexPackageJson = backendRequire.resolve("convex/package.json");
 const convexPackageRoot = dirname(convexPackageJson);
 const packageInfo = JSON.parse(fs.readFileSync(convexPackageJson, "utf8"));
 if (packageInfo.version !== auditedConvexVersion) {

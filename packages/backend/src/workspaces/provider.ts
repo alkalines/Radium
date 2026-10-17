@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 
+/** Supported provider adapter packages persisted in workspace snapshots. */
 export const providerNpmValidator = v.union(
   v.literal("@openrouter/ai-sdk-provider"),
   v.literal("@ai-sdk/openai"),
@@ -8,6 +9,7 @@ export const providerNpmValidator = v.union(
   v.literal("@opencoredev/loginwithchatgpt-ai"),
 );
 
+/** Model metadata accepted in a provider catalogue or workspace snapshot. */
 export const providerModelValidator = v.object({
   model: v.string(),
   upstream_model_id: v.optional(v.string()),
@@ -80,8 +82,10 @@ export const providerSnapshotValidator = v.object({
   models: v.array(providerModelValidator),
 });
 
+/** Type of the validated, workspace-local provider snapshot. */
 export type ProviderSnapshot = typeof providerSnapshotValidator.type;
 
+/** Provider snapshot with the identity and enabled state used by workspace views. */
 export type WorkspaceProviderView = ProviderSnapshot & {
   _id: string;
   _creationTime: number;
@@ -89,6 +93,10 @@ export type WorkspaceProviderView = ProviderSnapshot & {
   active: boolean;
 };
 
+/**
+ * Copy provider metadata into the persisted snapshot shape, omitting absent
+ * optional fields so the result is safe to store as a Convex value.
+ */
 export function providerSnapshotFromCatalog(provider: ProviderSnapshot): ProviderSnapshot {
   return {
     slug: provider.slug,

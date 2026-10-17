@@ -16,7 +16,10 @@ const TITLE_SYSTEM_PROMPT = [
   "Do not mention assistant responses, because none exist yet.",
 ].join(" ");
 
-/** Reusable AI SDK title generator for chat-like first prompts. */
+/**
+ * Generate a validated title from the initial user prompt. Object-generation
+ * failures with response text get a lightweight fallback; other failures propagate.
+ */
 export async function generateChatTitle({
   model,
   initialUserMessage,
@@ -47,7 +50,10 @@ export async function generateChatTitle({
   }
 }
 
-/** Extract the initial prompt without including assistant or later user turns. */
+/**
+ * Extract the prompt used for title generation, preferring queued text and
+ * otherwise using only the first user turn (never assistant or later turns).
+ */
 export function firstUserMessageText(chat: {
   messages: ReadonlyArray<{ role: string; parts: readonly unknown[] }>;
   messages_queue?: { text: string } | null;
@@ -73,15 +79,17 @@ function textFromMessagePart(part: unknown) {
   return "";
 }
 
+/** Normalize a generated emoji/title pair and supply stable defaults when either is empty. */
 export function sanitizeTitle(title: GeneratedChatTitle): GeneratedChatTitle {
+  const normalizedTitle = title.title
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 32);
+
   return {
     emoji: Array.from(title.emoji.trim())[0] ?? "💬",
-    title:
-      title.title
-        .replace(/[\r\n]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 32) || "New chat",
+    title: normalizedTitle || "New chat",
   };
 }
 
@@ -91,13 +99,16 @@ function titleFromText(text: string): GeneratedChatTitle {
   try {
     const parsed = titleSchema.safeParse(JSON.parse(trimmed));
     if (parsed.success) return sanitizeTitle(parsed.data);
-  } catch {}
+  } catch {
+    // Model output may not be JSON; fall back to extracting an emoji and title.
+  }
 
   const [first = "", ...rest] = Array.from(trimmed);
   const title = rest.join("").replace(/^[\s:.-]+/, "");
   return sanitizeTitle({ emoji: first || "💬", title: title || trimmed || "New chat" });
 }
 
+/** Whether a catalogue model supports both text input and text output for titles. */
 export function isTitleGenerationModel(
   model: {
     type: string;

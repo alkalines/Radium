@@ -23,7 +23,6 @@ export function Providers({
   initialToken?: string | null;
 }) {
   const navigate = useNavigate();
-  //const { slug } = useParams({ strict: false })
 
   return (
     <ConvexBetterAuthProvider
@@ -36,39 +35,7 @@ export function Providers({
           authClient={authClient}
           redirectTo="/settings/account"
           navigate={navigate}
-          plugins={[
-            themePlugin({ useTheme }),
-            // usernamePlugin({
-            //   usernamePrefix: "@",
-            //   localization: { usernamePlaceholder: "username" },
-            // }),
-            // magicLinkPlugin(),
-            // emailOtpPlugin({
-            //   emailVerification: true,
-            //   passwordReset: true,
-            //   changeEmail: true,
-            // }),
-            // twoFactorPlugin(),
-            // passkeyPlugin(),
-            // apiKeyPlugin({
-            //   organization: true,
-            //   configurations: [
-            //     { id: "default", label: "Personal", organization: false },
-            //     {
-            //       id: "organization",
-            //       label: "Organization",
-            //       organization: true,
-            //     },
-            //   ],
-            // }),
-            // multiSessionPlugin(),
-            // deleteUserPlugin(),
-            // organizationPlugin({
-            //   slugPrefix: "@",
-            //   slug: slug ?? null,
-            //   teams: true,
-            // }),
-          ]}
+          plugins={[themePlugin({ useTheme })]}
           Link={Link}
         >
           <ConvexAuthQueryCache>
@@ -123,6 +90,7 @@ function ConvexAuthQueryCache({ children }: { children: ReactNode }) {
 
     if (!identityChanged) return;
 
+    // Hide descendants until the previous user's identity-scoped data is gone.
     queryClient.removeQueries({ queryKey: ["convexQuery"] });
     setCacheIdentity({ initialized: true, userId });
   }, [cacheIdentity.initialized, identityChanged, isPending, queryClient, userId]);

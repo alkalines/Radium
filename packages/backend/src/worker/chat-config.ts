@@ -41,7 +41,10 @@ type ChatWorkerMetadata = {
   status: "active" | "revoked";
 };
 
-/** Validate owner authority, a unique tool selection, and an active workspace Worker. */
+/**
+ * Validate owner authority, unique tools, and an active Worker in the same workspace.
+ * Identity lookup failures are treated as an invalid selection; the input is returned unchanged.
+ */
 export async function validateChatWorkerSelection(
   selection: ChatWorkerSelection,
   userId: string,

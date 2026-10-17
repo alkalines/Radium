@@ -18,14 +18,17 @@ import type {
   ToolExecutionStartEvent,
 } from "ai";
 
+/** Workspace policy supplied to request collection and payload capture. */
 export type TelemetrySettings = {
   enabled: boolean;
   recordInputs: boolean;
   recordOutputs: boolean;
 };
 
+/** Identifies whether the stream was initiated by Chatroom or direct Gateway use. */
 export type TelemetrySource = "chatroom" | "gateway";
 
+/** Optional usage counters copied from an AI SDK operation. */
 export type TelemetryUsage = {
   inputTokens?: number;
   outputTokens?: number;
@@ -35,6 +38,7 @@ export type TelemetryUsage = {
   cacheWriteTokens?: number;
 };
 
+/** One step, model call, or tool execution within a request trace. */
 export type TelemetrySpan = {
   kind: "step" | "model" | "tool";
   name: string;
@@ -54,6 +58,7 @@ export type TelemetrySpan = {
   outputJson?: string;
 };
 
+/** Attribution and captured input written when a supported stream starts. */
 export type TelemetryStartTrace = {
   requestId: string;
   source: TelemetrySource;
@@ -68,6 +73,7 @@ export type TelemetryStartTrace = {
   inputJson?: string;
 };
 
+/** Terminal request state and its collected child spans. */
 export type TelemetryFinishTrace<TraceId> = {
   traceId: TraceId;
   spans: TelemetrySpan[];
@@ -82,11 +88,13 @@ export type TelemetryFinishTrace<TraceId> = {
   outputJson?: string;
 };
 
+/** Persistence boundary used by the SDK-independent collector. */
 export type TelemetryPersistence<TraceId> = {
   startTrace: (trace: TelemetryStartTrace) => Promise<TraceId>;
   finishTrace: (trace: TelemetryFinishTrace<TraceId>) => PromiseLike<unknown>;
 };
 
+/** Server-derived request identity and persistence policy for one collector. */
 export type TelemetryCollectorOptions<TraceId> = {
   requestId: string;
   source: TelemetrySource;
@@ -100,6 +108,7 @@ type TelemetryStartEvent = Parameters<NonNullable<Telemetry["onStart"]>>[0];
 type TelemetryEndEvent = Parameters<NonNullable<Telemetry["onEnd"]>>[0];
 
 const MAX_PAYLOAD_LENGTH = 32_000;
+// Persist only the first bounded set of child spans for a request.
 const MAX_SPANS = 100;
 
 /** Build the local collector and, when configured, an OTLP integration for one request. */
@@ -278,6 +287,7 @@ class TelemetryCollector<TraceId> implements Telemetry {
     outputJson?: string;
   }) {
     if (this.finalized || !this.traceId) return;
+    // Lock terminal state before persistence; competing callbacks must not duplicate writes.
     this.finalized = true;
     const endedAt = Date.now();
     await this.options.persistence.finishTrace({
@@ -309,6 +319,7 @@ function externalTelemetry(requestId: string, source: TelemetrySource): Telemetr
   const isLoopbackHttp =
     endpointUrl.protocol === "http:" &&
     ["localhost", "127.0.0.1", "[::1]"].includes(endpointUrl.hostname);
+  // Plaintext OTLP stays on loopback; remote endpoints must use TLS.
   if (!isHttps && !isLoopbackHttp) {
     return undefined;
   }
@@ -376,6 +387,7 @@ function safeJson(value: unknown): string | undefined {
 }
 
 function truncateJson(json: string): string {
+  // Back up to a comma outside strings when the character cap cuts through a JSON value.
   const prefix = json.slice(0, MAX_PAYLOAD_LENGTH - 256);
   const commaPositions: number[] = [];
   let inString = false;

@@ -4,13 +4,17 @@ import { publicKey, workerMetadata } from "../contracts.js";
 import { getWorker, metadata } from "./model.js";
 import { validateLimit } from "../validation.js";
 
+/** Read one worker's metadata; the calling app wrapper owns workspace authorization. */
 export const getWorkerMetadata = query({
   args: { workspaceId: v.string(), workerId: v.string() },
   returns: workerMetadata,
   handler: async (ctx, args) => metadata(await getWorker(ctx, args.workspaceId, args.workerId)),
 });
 
-/** Bounded first-page metadata for owner management, never key or enrollment material. */
+/**
+ * Bounded first-page metadata for owner management, never key or enrollment material.
+ * The app wrapper must authorize the owner before calling this component query.
+ */
 export const listWorkers = query({
   args: { workspaceId: v.string(), limit: v.number() },
   returns: v.array(workerMetadata),
@@ -24,6 +28,7 @@ export const listWorkers = query({
   },
 });
 
+/** Resolve public verification material only for an active worker in the requested workspace. */
 export const getVerificationKey = query({
   args: { workspaceId: v.string(), keyId: v.string() },
   returns: v.union(
@@ -51,6 +56,7 @@ export const getVerificationKey = query({
   },
 });
 
+/** Revoke an identity once and return its current epoch on idempotent retries. */
 export const revokeWorker = mutation({
   args: { workspaceId: v.string(), workerId: v.string() },
   returns: v.number(),

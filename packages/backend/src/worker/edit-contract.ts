@@ -22,14 +22,18 @@ export const workerEditRequest = v.object({
   ...workerEditRequestFields,
   directory: v.optional(v.string()),
 });
-/** New dispatch always carries its execution directory in the backend instructions. */
+/** New dispatches require an execution directory; the optional form above retains legacy tasks. */
 export const workerEditDispatchRequest = v.object({
   ...workerEditRequestFields,
   directory: v.string(),
 });
 
 export type WorkerEditRequest = Infer<typeof workerEditRequest>;
+
+/** Maximum encoded request size persisted for a Worker file-tool task. */
 export const WORKER_EDIT_INPUT_BYTES = 32 * 1024;
+
+/** Maximum UTF-8 output size accepted in a Worker file-tool result. */
 export const WORKER_EDIT_OUTPUT_BYTES = 128 * 1024;
 
 /** Explicit tool output, never operational logging; chat receipts may outlive the task. */
@@ -57,6 +61,7 @@ export function workerEditRequestKey(request: WorkerEditRequest): string {
   ]);
 }
 
+/** Validate a persisted request, including its action-specific bounds and encoded size. */
 export function validWorkerEditRequest(request: WorkerEditRequest): boolean {
   if (!/^[a-zA-Z0-9_-]{1,128}$/.test(request.sessionId)) return false;
   if (new TextEncoder().encode(JSON.stringify(request)).length > WORKER_EDIT_INPUT_BYTES)

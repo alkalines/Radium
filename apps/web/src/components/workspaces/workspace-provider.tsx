@@ -18,6 +18,7 @@ import { useConvexAuth } from "convex/react";
 import { selectWorkspace } from "backend/src/workspaces/selection";
 
 type WorkspaceList = Exclude<FunctionReturnType<typeof api.workspaces.list>, string>;
+/** Workspace summary exposed to the active workspace context and its consumers. */
 export type WorkspaceSummary = WorkspaceList[number];
 
 type WorkspaceContextValue = {
@@ -35,6 +36,12 @@ type WorkspaceContextValue = {
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 const STORAGE_KEY = "radium.workspace";
 
+/**
+ * Loads the signed-in user's workspaces, provisions a personal workspace when
+ * the list is empty, and persists the active selection in browser storage.
+ * Query and provisioning failures are exposed separately so callers can show
+ * the appropriate state and retry provisioning without changing selection.
+ */
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
   const { data, isPending, error } = useQuery(
@@ -137,6 +144,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * Read the accessible workspace list, current selection, loading/errors, and
+ * selection/provisioning callbacks; throws outside `WorkspaceProvider`.
+ */
 export function useWorkspace(): WorkspaceContextValue {
   const context = useContext(WorkspaceContext);
   if (!context) throw new Error("useWorkspace must be used inside WorkspaceProvider.");

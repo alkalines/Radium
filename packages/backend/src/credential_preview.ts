@@ -1,4 +1,5 @@
-export function credentialPreview(value: string) {
-  if (value.length <= 4) return "****";
-  return `****${value.slice(-4)}`;
+/** Show a masked credential preview without exposing any but its final four characters. */
+export function credentialPreview(credential: string) {
+  if (credential.length <= 4) return "****";
+  return `****${credential.slice(-4)}`;
 }

@@ -144,6 +144,7 @@ export const Route = createFileRoute("/chat/$chatId")({
 function ChatConversationPage() {
   const { chatId } = Route.useParams();
 
+  // Streaming state and one-shot refs belong to a single chat, so reset them on navigation.
   return <ChatConversationContent chatId={chatId} key={chatId} />;
 }
 
@@ -160,20 +161,23 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   const setChatScope = useMutation(api.aisdk.SetChatScope);
   const setChatWorker = useMutation(api.aisdk.SetChatWorker);
   const [workerSaving, setWorkerSaving] = useState(false);
-  const [model, setModel] = useState<string | undefined>(search.model);
-  const [provider, setProvider] = useState<string | undefined>(search.provider);
+  const [modelOverride, setModelOverride] = useState<string | undefined>(search.model);
+  const [providerOverride, setProviderOverride] = useState<string | undefined>(search.provider);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [reasoningBudget, setReasoningBudget] = useState<number>();
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [scopeSaving, setScopeSaving] = useState(false);
   const [handoffPrompt] = useState(() => readChatHandoff(chatId));
   const [handoffSettled, setHandoffSettled] = useState(() => handoffPrompt === null);
+  // Seed useChat once from persisted messages; do not overwrite its live state on later query updates.
   const loadedInitialMessages = useRef(false);
+  // Mark before sending so Convex updates or status changes cannot replay the queued turn.
   const sentQueuedMessage = useRef(false);
   const [alignLatestUserMessage, setAlignLatestUserMessage] = useState(false);
   const alignmentWasActive = useRef(false);
   const latestUserMessageElement = useRef<HTMLDivElement | null>(null);
   const alignmentSpacerElement = useRef<HTMLDivElement | null>(null);
+  // Prevent duplicate sends if the SDK rechecks this approval before it settles.
   const submittedApprovalContinuations = useRef(new Set<string>());
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
   const chatWorkspaceId = typeof chat === "string" || !chat ? undefined : chat.workspace;
@@ -211,35 +215,33 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     typeof chat === "string" || !chat
       ? undefined
       : getLastMessageProvider(chat.messages as UIMessage[]);
+  const hasAvailableModels = Boolean(models?.length);
+  const hasPersistedModelChoice = Boolean(chatModel || queuedModel);
+  const isWaitingForModelChoice =
+    chat === undefined ||
+    (!hasPersistedModelChoice &&
+      (userInfo === undefined || (signedIn && defaultModelQuery.isPending)));
   const isModelLoading =
-    models === undefined ||
-    Boolean(
-      models.length > 0 &&
-      !model &&
-      (chat === undefined ||
-        (!chatModel &&
-          !queuedModel &&
-          (userInfo === undefined || (signedIn && defaultModelQuery.isPending)))),
-    );
+    models === undefined || (hasAvailableModels && !modelOverride && isWaitingForModelChoice);
   const availableDefaultModel = models?.some((item) => item.slug === defaultModel)
     ? defaultModel
     : undefined;
   // Resolution order: explicit choice, this chat's model, queued model, the
   // user's saved default, then the first available model.
   const selectedModel =
-    model ??
+    modelOverride ??
     chatModel ??
     queuedModel ??
     (isModelLoading ? undefined : (availableDefaultModel ?? models?.[0]?.slug));
   const selectedModelData = models?.find((item) => item.slug === selectedModel);
-  const preferredProvider = provider ?? chatProvider ?? queuedProvider;
+  const preferredProvider = providerOverride ?? chatProvider ?? queuedProvider;
   const selectedProvider = selectedModelData?.providers.some(
     (item) => item.id === preferredProvider,
   )
     ? preferredProvider
     : selectedModelData?.providers[0]?.id;
   const handleModelChange = useCallback((nextModel: string) => {
-    setModel(nextModel);
+    setModelOverride(nextModel);
   }, []);
 
   async function updateWorker(selection: ChatWorkerSelection | null) {
@@ -347,6 +349,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       const scrollBounds = scrollElement.getBoundingClientRect();
       const targetBounds = targetElement.getBoundingClientRect();
       const messageScrollTop = scrollElement.scrollTop + targetBounds.top - scrollBounds.top;
+      // Subtract the artificial spacer so it adds scroll room without moving the real content target.
       const contentScrollTop = defaultTargetScrollTop - spacerElement.offsetHeight;
 
       return Math.max(messageScrollTop, contentScrollTop);
@@ -359,6 +362,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
       return;
     }
 
+    // Keep the handoff visible briefly even if the chat query resolves immediately.
     const timeoutId = window.setTimeout(() => {
       setHandoffSettled(true);
     }, 1450);
@@ -373,6 +377,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
   }, [chat, chatId]);
 
   useEffect(() => {
+    // Keep the latest user turn aligned while generating; release the alignment when generation ends.
     if (alignLatestUserMessage && (status === "submitted" || status === "streaming")) {
       alignmentWasActive.current = true;
       return;
@@ -445,7 +450,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
     return undefined;
   }, [messages]);
 
-  /** Builds the per-request body (model + reasoning settings) for a given model. */
+  /** Builds a send body for one model, omitting reasoning options it does not support. */
   const buildSendBody = useCallback(
     (modelSlug: string) => {
       const modelData = models?.find((item) => item.slug === modelSlug);
@@ -594,7 +599,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
             isModelLoading={isModelLoading}
             models={models}
             onModelChange={handleModelChange}
-            onProviderChange={setProvider}
+            onProviderChange={setProviderOverride}
             onReasoningBudgetChange={setReasoningBudget}
             onReasoningEffortChange={setReasoningEffort}
             onSubmit={() => {}}
@@ -620,7 +625,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
           isModelLoading={isModelLoading}
           models={models}
           onModelChange={handleModelChange}
-          onProviderChange={setProvider}
+          onProviderChange={setProviderOverride}
           onReasoningBudgetChange={setReasoningBudget}
           onReasoningEffortChange={setReasoningEffort}
           onSubmit={() => {}}
@@ -757,7 +762,7 @@ function ChatConversationContent({ chatId }: { chatId: string }) {
             isModelLoading={isModelLoading}
             models={models}
             onModelChange={handleModelChange}
-            onProviderChange={setProvider}
+            onProviderChange={setProviderOverride}
             onReasoningBudgetChange={setReasoningBudget}
             onReasoningEffortChange={setReasoningEffort}
             onStop={() => void stop()}
@@ -1008,6 +1013,7 @@ function ChatMessageParts({
     );
   }
 
+  // Keep adjacent reasoning and tool activity together in one disclosure, preserving message order.
   const blocks: Array<
     { type: "part"; item: IndexedMessagePart } | { type: "thought"; items: IndexedMessagePart[] }
   > = [];
@@ -1271,13 +1277,24 @@ function WebSearchResults({ output }: { output: unknown }) {
 }
 
 function getWebSearchResults(output: unknown) {
-  if (typeof output !== "object" || !output || !("results" in output)) return [];
-  if (!Array.isArray(output.results)) return [];
+  if (typeof output !== "object" || output === null || !("results" in output)) {
+    return [];
+  }
+
+  if (!Array.isArray(output.results)) {
+    return [];
+  }
 
   return output.results.flatMap((result) => {
-    if (typeof result !== "object" || !result) return [];
+    if (typeof result !== "object" || result === null) {
+      return [];
+    }
+
     const url = "url" in result && typeof result.url === "string" ? result.url : undefined;
-    if (!url) return [];
+    if (!url) {
+      return [];
+    }
+
     return [
       {
         url,
@@ -1335,6 +1352,7 @@ function hasRenderableAssistantContent(part: UIMessage["parts"][number]) {
   return !isToolPart(part) && part.type !== "step-start";
 }
 
+/** Returns a continuation key when the latest assistant step is ready to resume after approval. */
 function getApprovalContinuationKey(messages: UIMessage[]) {
   const message = messages[messages.length - 1];
 
@@ -1346,6 +1364,7 @@ function getApprovalContinuationKey(messages: UIMessage[]) {
     (lastIndex, part, index) => (part.type === "step-start" ? index : lastIndex),
     -1,
   );
+  // Earlier steps are already complete; only approvals in the current step can trigger a resume.
   const toolParts = message.parts.slice(lastStepStartIndex + 1).filter(isToolPart);
   const respondedApprovals = toolParts.filter(
     (part) => part.state === "approval-responded" && "approval" in part,

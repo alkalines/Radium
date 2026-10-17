@@ -51,6 +51,7 @@ export function CredentialsDialog({
   const complete = target?.env.every((name) => values[name]?.trim()) ?? false;
   const oauthFetch = useCallback(
     async (input: RequestInfo | URL, init?: RequestInit) => {
+      // Scope the request to this workspace while retaining the browser session.
       const url = new URL(
         typeof input === "string" || input instanceof URL ? input : input.url,
         window.location.origin,

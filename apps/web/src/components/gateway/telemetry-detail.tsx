@@ -73,6 +73,7 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
 
   const { trace } = data;
   const steps = buildSteps(data.spans);
+  // Keep a root-payload step visible even when the trace contains no model spans.
   const displaySteps = steps.length ? steps : [{ tools: [] }];
   const title = getRunTitle(data.inputJson, steps[0]?.model?.inputJson) ?? trace.functionId;
 
@@ -274,18 +275,18 @@ function PromptView({ value }: { value?: string }) {
       };
     }),
   ];
-  const hiddenCount = Math.max(0, entries.length - 2);
-  const previousMessages = entries.slice(0, hiddenCount);
-  const visibleMessages = entries.slice(hiddenCount);
+  const previousMessageCount = Math.max(0, entries.length - 2);
+  const previousMessages = entries.slice(0, previousMessageCount);
+  const visibleMessages = entries.slice(previousMessageCount);
 
   return (
     <div className="flex flex-col gap-2.5">
-      {hiddenCount > 0 && <PreviousMessages messages={previousMessages} />}
+      {previousMessageCount > 0 && <PreviousMessages messages={previousMessages} />}
       {visibleMessages.map((message, index) => (
         <MessageCard
-          key={`${message.role}-${hiddenCount + index}`}
+          key={`${message.role}-${previousMessageCount + index}`}
           role={message.role}
-          index={hiddenCount + index + 1}
+          index={previousMessageCount + index + 1}
           content={message.content}
         />
       ))}
@@ -526,13 +527,17 @@ function InputToolPart({ part }: { part: Record<string, unknown> }) {
 
 function OutputView({ value, tools }: { value?: string; tools: Span[] }) {
   const parsed = parseJson(value);
-  const parts = Array.isArray(parsed)
-    ? parsed
-    : asRecord(parsed) && Array.isArray(asRecord(parsed)?.content)
-      ? (asRecord(parsed)!.content as unknown[])
-      : parsed === undefined
-        ? []
-        : [parsed];
+  const outputContent = asRecord(parsed)?.content;
+  let parts: unknown[];
+  if (Array.isArray(parsed)) {
+    parts = parsed;
+  } else if (Array.isArray(outputContent)) {
+    parts = outputContent;
+  } else if (parsed === undefined) {
+    parts = [];
+  } else {
+    parts = [parsed];
+  }
 
   if (!parts.length && !tools.length) return <EmptyPayload label="output" value={value} />;
 
@@ -933,6 +938,7 @@ function prettyJson(value: unknown): string {
   }
 }
 
+/** Group model calls with their matching step summary and tools in time order. */
 function buildSteps(spans: Span[]): Step[] {
   const models = spans
     .filter((span) => span.kind === "model")
@@ -1020,6 +1026,7 @@ function parseJson(value: string | undefined): unknown {
   }
 }
 
+/** Recover complete JSON fields from backend payloads marked with a trailing ellipsis. */
 function repairTruncatedJson(value: string): unknown | undefined {
   if (!value.endsWith("...")) return undefined;
   const prefix = value.slice(0, -3);
@@ -1047,6 +1054,7 @@ function structuralCommaPositions(value: string): number[] {
 
   for (let index = 0; index < value.length; index++) {
     const character = value[index];
+    // A comma inside a quoted string is not a safe point to truncate the payload.
     if (inString) {
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
@@ -1078,6 +1086,7 @@ function closeJsonPrefix(value: string): string | undefined {
     }
   }
 
+  // Close only the open JSON containers; malformed bracket order is rejected above.
   let repaired = value.trimEnd();
   if (inString) {
     repaired = repaired.replace(/\\u[\da-fA-F]{0,3}$/, "");

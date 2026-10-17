@@ -4,6 +4,7 @@ import { providerSnapshotFromCatalog, type ProviderSnapshot } from "../src/works
 
 type ProviderContext = QueryCtx | MutationCtx;
 
+/** A workspace's provider snapshot and the optional rows it was resolved from. */
 export type WorkspaceProviderRecord = {
   configuration: Doc<"workspace_configurations"> | null;
   provider: ProviderSnapshot;
@@ -11,8 +12,9 @@ export type WorkspaceProviderRecord = {
 };
 
 /**
- * Resolve local provider snapshots, falling back to the immutable catalogue
- * only for workspaces that have not started local configuration yet.
+ * Resolve local provider snapshots, using catalogue metadata when a snapshot is
+ * missing. Legacy workspaces without local configuration also expose enabled
+ * catalogue providers until they begin configuring providers locally.
  */
 export async function workspaceProviderRecords(
   ctx: ProviderContext,
@@ -30,11 +32,10 @@ export async function workspaceProviderRecords(
     for (const configuration of configurations) {
       if (configuration.deletedAt !== undefined) continue;
       const catalogProvider = catalogBySlug.get(configuration.provider) ?? null;
-      const provider = configuration.snapshot
-        ? configuration.snapshot
-        : catalogProvider
-          ? providerSnapshotFromCatalog(catalogProvider)
-          : null;
+      let provider = configuration.snapshot;
+      if (!provider && catalogProvider) {
+        provider = providerSnapshotFromCatalog(catalogProvider);
+      }
       if (!provider || provider.slug !== configuration.provider) continue;
       records.push({ configuration, provider, catalog: catalogProvider });
     }
@@ -51,6 +52,7 @@ export async function workspaceProviderRecords(
     }));
 }
 
+/** Build the public workspace view using local configuration before catalogue defaults. */
 export function workspaceProviderView(record: WorkspaceProviderRecord) {
   const catalogEnabled = record.catalog?.enabled ?? true;
   return {
@@ -62,6 +64,7 @@ export function workspaceProviderView(record: WorkspaceProviderRecord) {
   };
 }
 
+/** Whether a configured provider may be selected for workspace routing. */
 export function isWorkspaceProviderEnabled(record: WorkspaceProviderRecord): boolean {
   return (record.configuration?.enabled ?? true) && (record.configuration?.active ?? true);
 }

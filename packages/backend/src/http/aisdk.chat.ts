@@ -61,7 +61,7 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
   }
 
   const body = (await req.json()) as AISDKChatRequestBody;
-  const chatId = (body?.chatId || body?.id)!;
+  const chatId = body?.chatId || body?.id;
 
   if (!chatId || !body.model || !Array.isArray(body.messages)) {
     return Response.json(
@@ -94,6 +94,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
       workspace: workspaceId,
     },
   );
+  // Workspace owners can read owner-managed telemetry, so member-owned personal
+  // chats must not contribute prompt or response content to that channel.
   const telemetrySettingsForRequest =
     (chat.scope ?? "personal") === "personal" && chat.userId !== workspace.ownerId
       ? { ...telemetrySettings, recordInputs: false, recordOutputs: false }
@@ -353,14 +355,15 @@ async function buildChatTools(
   // Shared-chat membership never grants machine execution. Identity and directory
   // come from the persisted chat; dispatch rechecks configuration on every stage.
   if (worker.userId === worker.ownerId && worker.selection?.tools.length) {
+    const workerSelection = worker.selection;
     const selection = await validateChatWorkerSelection(
-      worker.selection,
+      workerSelection,
       worker.userId,
       { id: worker.workspaceId, ownerId: worker.ownerId },
       () =>
         ctx.runQuery(components.workerIdentity.identities.getWorkerMetadata, {
           workspaceId: worker.workspaceId,
-          workerId: worker.selection!.workerId,
+          workerId: workerSelection.workerId,
         }),
     );
     const scope = { chatId, workspaceId: worker.workspaceId, userId: worker.userId, selection };
@@ -391,6 +394,8 @@ async function buildChatTools(
       });
       clients.push(client);
 
+      // Keep the client registered before loading tools so the outer cleanup
+      // still closes it if the server accepts a connection but tool loading fails.
       const serverTools = await client.tools();
       const prefix = toolNamePrefix(server.name);
       for (const [name, definition] of Object.entries(serverTools)) {
@@ -454,19 +459,22 @@ async function resolveMcpHeaders(
     namespace: workspaceMcpSecretNamespace(workspaceId, serverId),
     name: MCP_SECRET_NAME,
   });
-  const token = workspaceToken.ok
-    ? workspaceToken
-    : legacy && workspaceToken.reason === "not_found"
-      ? await secrets.get(ctx, {
-          namespace: mcpSecretNamespace(serverId),
-          name: MCP_SECRET_NAME,
-        })
-      : workspaceToken;
+
+  let token = workspaceToken;
+  if (!workspaceToken.ok && legacy && workspaceToken.reason === "not_found") {
+    token = await secrets.get(ctx, {
+      namespace: mcpSecretNamespace(serverId),
+      name: MCP_SECRET_NAME,
+    });
+  }
+
   if (!token.ok) throw new Error("MCP bearer token unavailable.");
   return { Authorization: `Bearer ${token.value}` };
 }
 
 /**
+ * AI SDK's resumable-stream GET endpoint is not implemented. Supporting it
+ * would require durable stream storage; a Redis dependency or a custom
+ * Convex-backed store would add operational and database complexity here.
  * https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams#3-implement-the-get-handler
- * We can't implement the GET handler. In case we wanted Convex needed to be compatible with an Redis library or create an extremely custom logic to store data into convex, but this aproach would add major pressure on the DB and be harder to maintain
  */
