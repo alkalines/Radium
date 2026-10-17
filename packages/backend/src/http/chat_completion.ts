@@ -1,8 +1,8 @@
 import { api, internal } from "../../convex/_generated/api";
 import {
   ChatCompletions_RequestBody,
-  ChatCompletions_RequestBody_Type,
-  ChatCompletions_Streaming_Chunk_Type,
+  type ChatCompletions_RequestBody_Type,
+  type ChatCompletions_Streaming_Chunk_Type,
 } from "@/types/openai/types";
 import AIBalancer from "@/ai_balancer";
 import * as z from "zod";
@@ -20,13 +20,33 @@ import {
   type TelemetryRequestContext,
 } from "@/telemetry/convex";
 
+type CompletionInfo = {
+  ctx: ActionCtx;
+  workspaceId: Id<"workspaces">;
+  apiKeyId?: Id<"api_keys">;
+  legacyBalanceId?: Id<"balances">;
+  legacyKeyId?: Id<"keys">;
+  chatContext?: ChatRequestContext;
+  byok: boolean;
+  onGeneration?: (generation: Parameters<genCallbackType>[0]) => void;
+  telemetry?: TelemetryRequestContext;
+  abortSignal?: AbortSignal | null;
+};
+
+type CompletionRecordDetails = {
+  generationId: string;
+  originalProviderGenerationId?: string;
+  finishReason?: string;
+  canceled: boolean;
+};
+
+/** Handle an authenticated OpenAI-compatible chat-completion request. */
 export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promise<Response> {
   try {
     const reqData = ChatCompletions_RequestBody.parse(await req.json());
 
-    // Auth
-    const authBearer = req.headers.get("Authorization")?.replace("Bearer ", "");
-    if (!authBearer || authBearer === "")
+    const bearerToken = req.headers.get("Authorization")?.replace("Bearer ", "");
+    if (!bearerToken || bearerToken === "")
       return Response.json(
         {
           error: {
@@ -36,12 +56,13 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
         },
         { status: 401 },
       );
-    const checkKey = await ctx
+    // Treat lookup failures like an invalid key rather than exposing backend errors.
+    const keyInfo = await ctx
       .runQuery(api.keys.getKeyInfo, {
-        key: authBearer,
+        key: bearerToken,
       })
-      .catch((E) => {});
-    if (!checkKey)
+      .catch(() => {});
+    if (!keyInfo)
       return Response.json(
         {
           error: {
@@ -51,11 +72,11 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
         },
         { status: 401 },
       );
-    const apiKey = "apiKey" in checkKey ? checkKey.apiKey : undefined;
-    const legacyBalance = "legacyBalance" in checkKey ? checkKey.legacyBalance : undefined;
-    const legacyKey = "legacyKey" in checkKey ? checkKey.legacyKey : undefined;
+    const apiKey = "apiKey" in keyInfo ? keyInfo.apiKey : undefined;
+    const legacyBalance = "legacyBalance" in keyInfo ? keyInfo.legacyBalance : undefined;
+    const legacyKey = "legacyKey" in keyInfo ? keyInfo.legacyKey : undefined;
     const workspaceId =
-      checkKey.workspace ??
+      keyInfo.workspace ??
       (legacyBalance
         ? await ctx.runMutation(internal.workspaces.ensureForLegacyBalance, {
             balance: legacyBalance,
@@ -75,8 +96,8 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
         workspace: workspaceId,
       },
     );
-    // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
-    return CreateCompletion(reqData, provider, {
+    // TODO: Check the model's maximum input and output limits before dispatch.
+    return createCompletion(reqData, provider, {
       ctx,
       workspaceId,
       apiKeyId: apiKey,
@@ -88,7 +109,7 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
         ? {
             workspace: workspaceId,
             apiKey,
-            userId: checkKey.userId,
+            userId: keyInfo.userId,
             requestId: crypto.randomUUID(),
             settings: telemetrySettings,
           }
@@ -103,6 +124,11 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
   }
 }
 
+/**
+ * Run a chat completion for a server-authorized workspace. Callers that provide
+ * chat context must derive its identity and chat ID from their authorization
+ * check; completion persistence revalidates that attribution.
+ */
 export const Internal_Chat_Completion = async (
   ctx: ActionCtx,
   reqData: ChatCompletions_RequestBody_Type,
@@ -116,8 +142,8 @@ export const Internal_Chat_Completion = async (
   const effectiveChatContext =
     chatContext ??
     (telemetry?.chatId ? { actor: telemetry.userId, chatId: telemetry.chatId } : undefined);
-  // TODO: Check the MAX Output + Input of the model and them check if the user can afford it.
-  return CreateCompletion(reqData, provider, {
+  // TODO: Check the model's maximum input and output limits before dispatch.
+  return createCompletion(reqData, provider, {
     ctx,
     workspaceId,
     byok: true,
@@ -128,24 +154,61 @@ export const Internal_Chat_Completion = async (
   });
 };
 
-const CreateCompletion = async (
+/** Persist shared completion attribution and usage after the caller notifies its generation listener. */
+async function recordCompletion(
+  requestBody: ChatCompletions_RequestBody_Type,
+  provider: Awaited<ReturnType<typeof AIBalancer>>,
+  info: CompletionInfo,
+  generation: Parameters<genCallbackType>[0],
+  details: CompletionRecordDetails,
+): Promise<void> {
+  const providerGenerationId =
+    generation.genId || details.originalProviderGenerationId || details.generationId;
+
+  await info.ctx.runMutation(internal.keys.recordCompletion, {
+    bill: completionBill(info),
+    ...completionActor(info),
+    request: {
+      api: "chat_completions",
+      byok: info.byok,
+      canceled: details.canceled,
+      model_slug: requestBody.model,
+      provider: provider.info.slug,
+      stream: requestBody.stream ?? false,
+      prompt_cache_key: requestBody.prompt_cache_key || requestBody.user,
+      telemetry_request_id: info.telemetry?.requestId,
+    },
+    response: {
+      gen_id: providerGenerationId,
+      finish_reason: details.finishReason || "stop",
+      gen_time: generation.genTime,
+      ttft: generation.ttft,
+      provider_gen_id: providerGenerationId,
+      usage: {
+        completion_tokens: generation.usage.completion_tokens,
+        prompt_tokens: generation.usage.prompt_tokens,
+        completion_tokens_details: {
+          reasoning_tokens:
+            generation.usage.completion_tokens_details.reasoning_tokens ?? undefined,
+        },
+        prompt_tokens_details: {
+          cached_tokens: generation.usage.prompt_tokens_details.cached_tokens ?? undefined,
+          written_cache_tokens:
+            generation.usage.prompt_tokens_details.written_cache_tokens ?? undefined,
+        },
+        total_tokens: generation.usage.completion_tokens + generation.usage.prompt_tokens,
+      },
+    },
+  });
+}
+
+const createCompletion = async (
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>,
-  info: {
-    ctx: ActionCtx;
-    workspaceId: Id<"workspaces">;
-    apiKeyId?: Id<"api_keys">;
-    legacyBalanceId?: Id<"balances">;
-    legacyKeyId?: Id<"keys">;
-    chatContext?: ChatRequestContext;
-    byok: boolean;
-    onGeneration?: (generation: Parameters<genCallbackType>[0]) => void;
-    telemetry?: TelemetryRequestContext;
-    abortSignal?: AbortSignal | null;
-  },
+  info: CompletionInfo,
 ): Promise<Response> => {
-  const genID = `gen-${crypto.randomUUID()}`;
-  const telemetry = info.telemetry
+  const generationId = `gen-${crypto.randomUUID()}`;
+  const aiSdkTelemetry = info.telemetry
     ? {
         isEnabled: true,
         functionId: "radium.gateway",
@@ -161,76 +224,47 @@ const CreateCompletion = async (
     : { isEnabled: false };
 
   if (reqData.stream) {
-    let originalGenID: string;
-    let finishedReason: string;
+    let originalProviderGenerationId: string | undefined;
+    let finishReason: string | undefined;
     let streamCanceled = false;
 
     const providerGen = await StreamCompletion(
       reqData,
       provider,
       async (genCompletion) => {
-        // End of the stream
+        // The listener may synchronously cancel the stream; read its state afterward.
         info.onGeneration?.(genCompletion);
-        await info.ctx.runMutation(internal.keys.recordCompletion, {
-          bill: completionBill(info),
-          ...completionActor(info),
-          request: {
-            api: "chat_completions",
-            //app
-            byok: info.byok,
-            canceled: streamCanceled,
-            model_slug: reqData.model,
-            provider: provider.info.slug,
-            stream: reqData.stream ?? false,
-            prompt_cache_key: reqData.prompt_cache_key || reqData.user,
-            telemetry_request_id: info.telemetry?.requestId,
-          },
-          response: {
-            gen_id: genCompletion.genId || originalGenID || genID,
-            finish_reason: finishedReason || "stop",
-            gen_time: genCompletion.genTime,
-            ttft: genCompletion.ttft,
-            provider_gen_id: genCompletion.genId || originalGenID || genID,
-            usage: {
-              completion_tokens: genCompletion.usage.completion_tokens,
-              prompt_tokens: genCompletion.usage.prompt_tokens,
-              completion_tokens_details: {
-                reasoning_tokens:
-                  genCompletion.usage.completion_tokens_details.reasoning_tokens ?? undefined,
-              },
-              prompt_tokens_details: {
-                cached_tokens: genCompletion.usage.prompt_tokens_details.cached_tokens ?? undefined,
-                written_cache_tokens:
-                  genCompletion.usage.prompt_tokens_details.written_cache_tokens ?? undefined,
-              },
-              total_tokens:
-                genCompletion.usage.completion_tokens + genCompletion.usage.prompt_tokens,
-            },
-          },
+        await recordCompletion(reqData, provider, info, genCompletion, {
+          generationId,
+          originalProviderGenerationId,
+          finishReason,
+          canceled: streamCanceled,
         });
       },
-      telemetry,
+      aiSdkTelemetry,
       info.abortSignal,
     );
 
-    const customReadable = new ReadableStream({
+    const sseStream = new ReadableStream({
       async start(controller) {
-        const controllerOutput = (text: string) =>
+        const enqueueSseEvent = (text: string) =>
           controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
 
         for await (const providerChunk of convertStreamToAsyncIterator<string>(providerGen)) {
           try {
-            let chunk = JSON.parse(providerChunk) as ChatCompletions_Streaming_Chunk_Type;
-            if (!originalGenID) originalGenID = chunk.id;
-            if (chunk.choices[0].finish_reason) finishedReason = chunk.choices[0].finish_reason;
+            const chunk = JSON.parse(providerChunk) as ChatCompletions_Streaming_Chunk_Type;
+            if (!originalProviderGenerationId) originalProviderGenerationId = chunk.id;
+            if (chunk.choices[0].finish_reason) finishReason = chunk.choices[0].finish_reason;
 
-            chunk.id = genID;
+            chunk.id = generationId;
             chunk.provider = provider.info.slug;
-            controllerOutput(JSON.stringify(chunk));
-          } catch (E) {}
+            enqueueSseEvent(JSON.stringify(chunk));
+          } catch {
+            // The inner translator's [DONE] marker is not a JSON chunk; emit the SSE sentinel below.
+          }
         }
 
-        controllerOutput("[DONE]");
+        enqueueSseEvent("[DONE]");
         controller.close();
       },
       async cancel(reason?) {
@@ -239,8 +273,7 @@ const CreateCompletion = async (
       },
     });
 
-    // Server Sent Events (SSE)
-    return new Response(customReadable, {
+    return new Response(sseStream, {
       headers: {
         Connection: "keep-alive",
         "Content-Encoding": "none",
@@ -249,58 +282,21 @@ const CreateCompletion = async (
       },
     });
   } else {
-    let originalGenID;
-    let finishedReason: string;
-    let generation = await NonStreamingCompletion(
+    const generation = await NonStreamingCompletion(
       reqData,
       provider,
       async (genCompletion) => {
-        // End of the stream
         info.onGeneration?.(genCompletion);
-        await info.ctx.runMutation(internal.keys.recordCompletion, {
-          bill: completionBill(info),
-          ...completionActor(info),
-          request: {
-            api: "chat_completions",
-            //app
-            byok: info.byok,
-            canceled: false, //streamCanceled
-            model_slug: reqData.model,
-            provider: provider.info.slug,
-            stream: reqData.stream ?? false,
-            prompt_cache_key: reqData.prompt_cache_key || reqData.user,
-            telemetry_request_id: info.telemetry?.requestId,
-          },
-          response: {
-            gen_id: genCompletion.genId || originalGenID || genID,
-            finish_reason: finishedReason || "stop",
-            gen_time: genCompletion.genTime,
-            ttft: genCompletion.ttft,
-            provider_gen_id: genCompletion.genId || originalGenID || genID,
-            usage: {
-              completion_tokens: genCompletion.usage.completion_tokens,
-              prompt_tokens: genCompletion.usage.prompt_tokens,
-              completion_tokens_details: {
-                reasoning_tokens:
-                  genCompletion.usage.completion_tokens_details.reasoning_tokens ?? undefined,
-              },
-              prompt_tokens_details: {
-                cached_tokens: genCompletion.usage.prompt_tokens_details.cached_tokens ?? undefined,
-                written_cache_tokens:
-                  genCompletion.usage.prompt_tokens_details.written_cache_tokens ?? undefined,
-              },
-              total_tokens:
-                genCompletion.usage.completion_tokens + genCompletion.usage.prompt_tokens,
-            },
-          },
+        await recordCompletion(reqData, provider, info, genCompletion, {
+          generationId,
+          canceled: false,
         });
       },
-      telemetry,
+      aiSdkTelemetry,
       info.abortSignal,
     );
-    generation.id = genID;
+    generation.id = generationId;
     generation.provider = provider.info.slug;
-    finishedReason = generation.choices[0].finish_reason || "stop";
 
     return Response.json(generation);
   }

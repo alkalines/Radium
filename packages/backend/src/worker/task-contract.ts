@@ -65,7 +65,10 @@ export const workerTaskRecord = v.object({
   ...workerTaskFields,
 });
 
-/** Durable idempotency receipts outlive the short-lived Worker coordination tasks. */
+/**
+ * Durable per-call/stage receipts outlive short-lived tasks. `requestKey` binds a receipt to
+ * its canonical request; the completion claim and revision fence acknowledgments after task pruning.
+ */
 export const workerChatCallFields = {
   workspace: v.id("workspaces"),
   chatId: v.id("aisdk_chats"),

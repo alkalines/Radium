@@ -15,8 +15,8 @@ export const MODELS_DEV_API_URL = "https://models.dev/api.json";
 /**
  * The npm provider packages the gateway can actually connect to (see
  * `src/providers.ts`). models.dev lists ~145 providers across many SDK
- * packages; only these four are wired up, so the rest are surfaced as
- * unsupported in the UI.
+ * packages; only the packages below are wired up, so providers using others
+ * are surfaced as unsupported in the UI.
  */
 export const SUPPORTED_NPM: readonly AIProviderNpmPackage[] = [
   "@openrouter/ai-sdk-provider",
@@ -26,6 +26,7 @@ export const SUPPORTED_NPM: readonly AIProviderNpmPackage[] = [
   "@opencoredev/loginwithchatgpt-ai",
 ];
 
+/** Whether a models.dev provider uses an SDK package connected by this backend. */
 export function isSupportedNpm(npm: string | undefined): npm is AIProviderNpmPackage {
   return !!npm && (SUPPORTED_NPM as readonly string[]).includes(npm);
 }
@@ -309,7 +310,7 @@ export function mapModelsDevModel(providerId: string, model: ModelsDevModel): Ma
   };
 }
 
-/** Fetch and parse the full models.dev catalogue. */
+/** Fetch the models.dev catalogue; rejects for non-OK responses or invalid JSON. */
 export async function fetchModelsDev(signal?: AbortSignal): Promise<ModelsDevApi> {
   const response = await fetch(MODELS_DEV_API_URL, { signal });
   if (!response.ok) {

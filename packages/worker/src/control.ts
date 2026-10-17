@@ -5,7 +5,7 @@ import type { AuthOptions } from "./auth/proof.js";
 import type { WorkerState } from "./auth/state.js";
 import { WorkerProtocolError, type WorkerMetadata } from "./protocol.js";
 
-/** Identity availability, with metadata derived from the generated backend contract. */
+/** Why the control connection cannot currently report an authorized active identity. */
 export type WorkerControlDisconnectReason =
   | "connecting"
   | "token_http_failed"
@@ -14,13 +14,16 @@ export type WorkerControlDisconnectReason =
   | "transport"
   | "shutdown";
 
+/** Current authorization, transport, and active-identity availability. */
 export type WorkerControlStatus =
   | { status: "connected"; worker: WorkerMetadata }
   | { status: "disconnected"; reason: WorkerControlDisconnectReason };
 
-/** One outbound connection and its idempotent lifecycle cleanup. */
+/** One outbound connection with diagnostic state and idempotent lifecycle cleanup. */
 export interface WorkerControlConnection {
+  /** Convex client used by the Worker's task subscriptions. */
   client: ConvexClient;
+  /** Snapshot of SDK transport state and this control connection's auth/identity state. */
   diagnostics: () => {
     socketConnected: boolean;
     authenticated: boolean;
@@ -28,6 +31,7 @@ export interface WorkerControlConnection {
     tokenExchangePending: boolean;
     connectionRetries: number;
   };
+  /** Stop retries and subscriptions, then close the client; safe to call repeatedly. */
   close: () => Promise<void>;
 }
 
@@ -39,6 +43,7 @@ const MAX_AUTH_RETRY_MS = 60_000;
  * setAuth obtains backend-signed access tokens using the Worker's saved key;
  * workers.current separately verifies that this identity is still authorized.
  * A connected socket or a valid JWT alone does not establish active authority.
+ * Reports connected only when authentication, transport, and matching active metadata agree.
  * Null/stale/revoked metadata, query errors and transport loss report disconnected.
  * This module reports identity/control availability; it does not execute jobs.
  */
@@ -112,9 +117,8 @@ export function connectWorkerControl(
     ({ isWebSocketConnected, connectionRetries }) => {
       socketConnected = isWebSocketConnected;
       if (!isWebSocketConnected) {
-        disconnected(
-          !hasConnectedSocket && (connectionRetries ?? 0) === 0 ? "connecting" : "transport",
-        );
+        const isInitialAttempt = !hasConnectedSocket && (connectionRetries ?? 0) === 0;
+        disconnected(isInitialAttempt ? "connecting" : "transport");
       } else {
         hasConnectedSocket = true;
         reportRestored();

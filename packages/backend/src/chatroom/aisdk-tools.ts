@@ -1,7 +1,13 @@
-/** Runtime-neutral Chatroom tool configuration rules shared by Convex and the chat action. */
-/** Credential provider identity, independent of the built-in tool-set id. */
+/**
+ * Runtime-neutral Chatroom tool configuration shared by Convex and the chat action.
+ * This provider identity is separate from the built-in tool-set id.
+ */
 export const EXA_TOOL_CREDENTIAL_PROVIDER = "exa" as const;
 
+/**
+ * Trim and normalize an absolute MCP URL. Throws for invalid URLs or protocols
+ * other than HTTP(S).
+ */
 export function normalizeMcpUrl(url: string): string {
   let parsed: URL;
   try {
@@ -15,12 +21,14 @@ export function normalizeMcpUrl(url: string): string {
   return parsed.toString();
 }
 
+/** Trim an MCP server name and reject it if empty. */
 export function requireMcpName(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) throw new Error("Server name is required.");
   return trimmed;
 }
 
+/** Trim an Exa API key and reject it if empty. */
 export function requireExaApiKey(key: string): string {
   const trimmed = key.trim();
   if (!trimmed) throw new Error("An Exa API key is required.");

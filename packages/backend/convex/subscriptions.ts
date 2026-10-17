@@ -17,6 +17,7 @@ export const getState = internalQuery({
       )
       .unique();
 
+    // Expiry is lazy: keep the row for a later write to replace, but expose it as absent.
     if (!entry || (entry.expiresAt !== undefined && entry.expiresAt <= Date.now())) {
       return undefined;
     }
@@ -47,6 +48,7 @@ export const setState = internalMutation({
       expiresAt: args.expiresAt,
     };
 
+    // The indexed key is the upsert identity for both sessions and rate-limit buckets.
     if (existing) {
       await ctx.db.replace(existing._id, value);
     } else {

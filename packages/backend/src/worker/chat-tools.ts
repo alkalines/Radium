@@ -86,6 +86,10 @@ export function buildWorkerChatTools(
     return waitForOutcome(taskId, signal);
   }
 
+  /**
+   * Poll the durable receipt. Abort or timeout only stops waiting; the Worker task may
+   * still be running, so an unknown result is never treated as permission to retry.
+   */
   async function waitForOutcome(
     taskId: Id<"worker_tasks">,
     signal?: AbortSignal,
@@ -162,6 +166,7 @@ export function buildWorkerChatTools(
         signal,
       );
     });
+    // A failed write must not leave the queue rejected and block later approved writes.
     writesQueue = result.then(
       () => undefined,
       () => undefined,

@@ -10,6 +10,7 @@ import {
 
 export type { TelemetrySettings } from "./integration";
 
+/** Server-derived workspace attribution and settings for one telemetry request. */
 export type TelemetryRequestContext = {
   workspace: Id<"workspaces">;
   apiKey?: Id<"api_keys">;

@@ -9,6 +9,7 @@ export const WORKSPACE_SECRET_NAMESPACE_PREFIX = "workspace:" as const;
 
 export const MCP_SECRET_NAME = "bearer" as const;
 
+/** Secret Store namespace formats, including legacy forms retained during migration. */
 export type SecretNamespace =
   | `provider:${string}`
   | `balance:${string}:tools`
@@ -28,6 +29,7 @@ export type SecretMetadata = {
 
 export const secrets = new SecretStore<SecretNamespace, SecretMetadata>(components.secretStore);
 
+/** Legacy provider namespace kept available for migration fallback and cleanup. */
 export function providerSecretNamespace(provider: string): SecretNamespace {
   return `provider:${provider}`;
 }

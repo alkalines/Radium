@@ -13,7 +13,9 @@ type ErrorResponse = (error: unknown) => Response;
 type InternalChatContext = { userId: string; chatId: Id<"aisdk_chats"> };
 
 /**
- * Build the AI SDK provider backed by Radium's internal OpenAI-compatible gateway.
+ * Build an AI SDK provider whose requests are parsed and routed through the
+ * workspace's internal OpenAI-compatible gateway. The supplied error handler
+ * converts routing or request failures into a response for the AI SDK.
  */
 export function createInternalGatewayProvider(
   ctx: ActionCtx,
@@ -36,6 +38,7 @@ export function createInternalGatewayProvider(
       try {
         const requestBody = getGatewayRequestBody(init?.body);
         if (providerSlug) requestBody.provider = providerSlug;
+        // Carry the same authenticated identity under each downstream contract's field name.
         const downstreamChatContext = {
           actor: chatContext.userId,
           userId: chatContext.userId,

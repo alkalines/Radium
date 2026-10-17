@@ -32,7 +32,7 @@ const SourceDocumentUIPartSchema = v.object({
   providerMetadata: v.optional(v.any()),
 });
 
-const FileUIPartPartSchema = v.object({
+const MessageFileUIPartSchema = v.object({
   type: v.literal("file"),
   mediaType: v.string(),
   filename: v.optional(v.string()),
@@ -44,8 +44,10 @@ const StepStartUIPartSchema = v.object({
   type: v.literal("step-start"),
 });
 
-const DataUIPartSchema = v.any(); // To complex to keep up to date
+// AI SDK data parts are extensible, so keep their persisted payloads forward-compatible.
+const DataUIPartSchema = v.any();
 
+/** Persisted AI SDK UI message shape; keep its accepted parts compatible with stored chats. */
 export const messageSchema = v.object({
   id: v.optional(v.string()),
   role: v.union(v.literal("system"), v.literal("user"), v.literal("assistant")),
@@ -56,14 +58,14 @@ export const messageSchema = v.object({
       ReasoningUIPartSchema,
       SourceUrlUIPartSchema,
       SourceDocumentUIPartSchema,
-      FileUIPartPartSchema,
+      MessageFileUIPartSchema,
       StepStartUIPartSchema,
       DataUIPartSchema,
     ),
   ),
 });
 
-const FileUIPartSchema = v.object({
+const QueuedFileUIPartSchema = v.object({
   type: v.literal("file"),
   mediaType: v.string(),
   filename: v.optional(v.string()),
@@ -71,9 +73,10 @@ const FileUIPartSchema = v.object({
   providerMetadata: v.optional(v.any()),
 });
 
+/** User message held for the next assistant generation before it is appended to chat history. */
 export const queuedMessageSchema = v.object({
   text: v.string(),
-  files: v.array(FileUIPartSchema),
+  files: v.array(QueuedFileUIPartSchema),
   model: v.string(), // Slug, not the ID
   provider: v.optional(v.string()),
   reasoningEffort: v.optional(v.string()),

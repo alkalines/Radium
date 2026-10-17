@@ -5,6 +5,7 @@ import { fetchModelsDev, type ModelsDevApi } from "backend/src/models_dev";
 /** Module-level cache so reopening dialogs doesn't refetch ~2 MB of catalogue. */
 let catalogueCache: Promise<ModelsDevApi> | null = null;
 
+/** Reuse an in-flight catalogue request and clear failed requests so they can be retried. */
 export function loadCatalogue(): Promise<ModelsDevApi> {
   catalogueCache ??= fetchModelsDev().catch((error) => {
     catalogueCache = null;

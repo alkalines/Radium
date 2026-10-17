@@ -12,17 +12,33 @@ import { WORKER_BASH_OUTPUT_BYTES, type WorkerBashRequest } from "backend/src/wo
 
 type Task = FunctionReturnType<typeof api.worker_tasks.assigned>[number];
 
+/** Executes Worker filesystem edit requests on the local machine. */
 export interface EditExecutor {
+  /** Execute one claimed edit and return its result text for receipt handling. */
   execute(request: WorkerEditRequest): Promise<string>;
+
+  /** Release any local resources owned by the executor. */
   close(): Promise<void>;
 }
 
+/** Executes Worker Bash requests on the local machine. */
 export interface BashExecutor {
+  /** Execute one claimed Bash request and return its serialized result. */
   execute(request: WorkerBashRequest): Promise<string>;
+
+  /** Abort active commands and release local shell resources. */
   close(): Promise<void>;
 }
 
-/** Serialize file/Bash work and retry only receipt delivery, never execution. */
+/**
+ * Consume assigned edit tasks and, when supplied, Bash tasks on this Worker.
+ *
+ * The consumer claims each task before local execution. If receipt delivery fails,
+ * it retains and retries the result without executing the task again. Shutdown
+ * closes the Bash executor first, waits for local work, attempts a bounded receipt
+ * flush, and then closes the edit executor. A process crash can leave an operation's
+ * outcome unknown; receipts are in memory and are not replayed after restart.
+ */
 export function consumeEditTasks(
   client: ConvexClient,
   executor: EditExecutor,
@@ -77,14 +93,14 @@ export function consumeEditTasks(
       for (const assignment of assignments) {
         if (stopped || !available) return;
         if (!healthyOperations.has(assignment.operation)) continue;
-        if (
-          !assignment.editOwnerId ||
-          !(
-            (assignment.operation === "edit" && assignment.editRequest) ||
-            (assignment.operation === "bash" && assignment.bashRequest && bashExecutor)
-          )
-        )
+        if (!assignment.editOwnerId) continue;
+        if (assignment.operation === "edit") {
+          if (!assignment.editRequest) continue;
+        } else if (assignment.operation === "bash") {
+          if (!assignment.bashRequest || !bashExecutor) continue;
+        } else {
           continue;
+        }
         let task: Task | null | undefined;
         try {
           task = await network(
@@ -209,6 +225,7 @@ export function consumeEditTasks(
   };
 }
 
+/** Identify completion rejections that cannot be fixed by retrying the receipt. */
 function isPermanentCompletionRejection(error: unknown): boolean {
   if (!(error instanceof ConvexError)) return false;
   const data = error.data;
@@ -230,14 +247,13 @@ function executionResult(output: string, operation: string): WorkerEditResult {
   try {
     const response: unknown = JSON.parse(output);
     if (response && typeof response === "object" && "ok" in response && response.ok === false) {
+      const fallbackCode = bash ? "BASH_EXECUTION_FAILED" : "EDIT_EXECUTION_FAILED";
       const code =
         "code" in response &&
         typeof response.code === "string" &&
         /^[A-Z0-9_]{1,80}$/.test(response.code)
           ? response.code
-          : bash
-            ? "BASH_EXECUTION_FAILED"
-            : "EDIT_EXECUTION_FAILED";
+          : fallbackCode;
       return { ok: false, code, output };
     }
   } catch {

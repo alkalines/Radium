@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 
-// Usage metadata supports BYOK cost estimates; it is not a credit or payment record.
+/** BYOK usage metadata for operational estimates, not a credit or payment record. */
 export type completionUsage = {
   prompt_tokens: number;
   completion_tokens: number;
@@ -25,6 +25,7 @@ export const completionUsageSchema = v.object({
   }),
 });
 
+/** Operational BYOK pricing estimates persisted with a completion, not charges or credits. */
 export type completionPricing = {
   prompt_tokens: number;
   completion_tokens: number;

@@ -10,7 +10,11 @@ import {
 } from "../validation.js";
 import { activeIdentity } from "./model.js";
 
-/** The app generates a 256-bit token and passes only its SHA-256 hex digest. */
+/**
+ * Create a pending enrollment from an app-generated token digest; the raw token
+ * is never persisted by this component. Workspace authorization belongs to the
+ * app wrapper that invokes this mutation.
+ */
 export const createEnrollment = mutation({
   args: {
     workspaceId: v.string(),
@@ -43,7 +47,10 @@ export const createEnrollment = mutation({
   },
 });
 
-/** Call only after verifying a fresh proof bound to this enrollment and request. */
+/**
+ * Complete enrollment only after the app verifies a fresh proof bound to this
+ * enrollment and request. Retries succeed only for the same request ID and key.
+ */
 export const completeEnrollment = mutation({
   args: {
     workspaceId: v.string(),
@@ -97,7 +104,10 @@ export const completeEnrollment = mutation({
   },
 });
 
-/** Recovery requires fresh proof of the originally enrolled key, not a setup token. */
+/**
+ * Recover a completed enrollment using fresh proof of its original key, not the
+ * setup token. The app HTTP boundary must verify that proof before this query.
+ */
 export const recoverEnrollment = query({
   args: { workspaceId: v.string(), enrollmentId: v.string(), thumbprint: v.string() },
   returns: workerIdentity,
@@ -112,6 +122,7 @@ export const recoverEnrollment = query({
   },
 });
 
+/** Revoke an unused setup selector; completed identities must be revoked separately. */
 export const revokeEnrollment = mutation({
   args: { workspaceId: v.string(), enrollmentId: v.string() },
   returns: v.null(),
@@ -125,7 +136,10 @@ export const revokeEnrollment = mutation({
   },
 });
 
-/** Completed receipts are retained for key-bound recovery; cleanup removes unused tokens only. */
+/**
+ * Delete a bounded batch of expired pending or revoked setup tokens. Completed
+ * receipts remain available for key-bound recovery.
+ */
 export const pruneEnrollments = mutation({
   args: { limit: v.number() },
   returns: v.number(),

@@ -1,3 +1,4 @@
+/** Dependency order for the ownership backfill; keep aligned with `migrations.runAll`. */
 export const OWNERSHIP_MIGRATION_STEPS = [
   "workspacesFromBalances",
   "workspacesFromSettings",
@@ -19,11 +20,13 @@ export const OWNERSHIP_MIGRATION_STEPS = [
 export const OWNERSHIP_MIGRATION_REMEDIATION =
   "Repair or quarantine the affected record, restore Secret Store key material when required, then rerun the affected migration and its verification query.";
 
+/** Minimal current and legacy ownership fields used to decide whether a record needs backfill. */
 export type LegacyOwnershipRecord = {
   workspace?: string;
   legacyBalance?: string;
 };
 
+/** Existing chat fields that the personal-workspace backfill is allowed to fill. */
 export type ChatWorkspaceBackfillRecord<WorkspaceId extends string = string> = {
   workspace?: WorkspaceId;
   scope?: "personal" | "workspace";

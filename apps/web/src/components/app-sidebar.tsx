@@ -79,21 +79,10 @@ const data = {
       icon: RouteIcon,
     },
   ],
-  navSecondary: [
-    // {
-    //   title: "Settings",
-    //   url: "/settings/account",
-    //   icon: Settings2Icon,
-    // },
-    // {
-    //   title: "Help",
-    //   url: "#",
-    //   icon: LifeBuoyIcon,
-    // },
-  ],
+  navSecondary: [],
 };
 
-export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   // Subscribe to chats here (not in MainSidebarSections) so the query stays alive while
   // the settings/gateway nav is shown, avoiding a "Loading chats..." flash on return.
   const {
@@ -487,33 +476,31 @@ function AnimatedDotsIcon() {
 
 function groupChatsByLastInteraction(chats: SidebarChat[]) {
   const now = Date.now();
-  const sections = [
-    { label: "Pinned", chats: [] as SidebarChat[] },
-    { label: "Past 7 days", chats: [] as SidebarChat[] },
-    ...Array.from({ length: 12 }, (_, index) => ({
-      label: `${index + 1} month${index === 0 ? "" : "s"} ago`,
-      chats: [] as SidebarChat[],
-    })),
-    { label: "Past years", chats: [] as SidebarChat[] },
-  ];
+  const pinned = { label: "Pinned", chats: [] as SidebarChat[] };
+  const recent = { label: "Past 7 days", chats: [] as SidebarChat[] };
+  const monthly = Array.from({ length: 12 }, (_, index) => ({
+    label: `${index + 1} month${index === 0 ? "" : "s"} ago`,
+    chats: [] as SidebarChat[],
+  }));
+  const pastYears = { label: "Past years", chats: [] as SidebarChat[] };
 
   for (const chat of chats) {
     if (chat.pinnedAt) {
-      sections[0].chats.push(chat);
+      pinned.chats.push(chat);
       continue;
     }
 
     const ageInDays = (now - chat.lastInteractionAt) / (1000 * 60 * 60 * 24);
 
     if (ageInDays <= 7) {
-      sections[1].chats.push(chat);
+      recent.chats.push(chat);
     } else if (ageInDays <= 365) {
-      const monthIndex = Math.min(Math.ceil(ageInDays / 30), 12);
-      sections[monthIndex + 1].chats.push(chat);
+      const monthIndex = Math.min(Math.ceil(ageInDays / 30), monthly.length) - 1;
+      monthly[monthIndex].chats.push(chat);
     } else {
-      sections[14].chats.push(chat);
+      pastYears.chats.push(chat);
     }
   }
 
-  return sections.filter((section) => section.chats.length > 0);
+  return [pinned, recent, ...monthly, pastYears].filter((section) => section.chats.length > 0);
 }

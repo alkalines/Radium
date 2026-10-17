@@ -15,6 +15,7 @@ export function ErrorToaster() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
+    // Compose with existing cache handlers and restore them on unmount.
     const queryCache = queryClient.getQueryCache();
     const previousQueryOnError = queryCache.config.onError;
 

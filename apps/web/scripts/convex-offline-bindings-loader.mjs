@@ -36,6 +36,10 @@ function isConvexModule(filePath, relativePath) {
   );
 }
 
+/**
+ * Replace the template's deployment-oriented imports with local-only shims.
+ * Other imports retain Node resolution; the separate network guard remains required.
+ */
 export function resolve(specifier, context, nextResolve) {
   if (context.parentURL?.startsWith("file:") && specifier.startsWith(".")) {
     const target = fileURLToPath(new URL(specifier, context.parentURL));

@@ -68,6 +68,8 @@ export function WorkerManagement() {
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<WorkerList[number] | null>(null);
   const workspaceIdRef = useRef(workspaceId);
+
+  // Async handlers consult this ref before changing setup codes and workspace-scoped dialogs.
   workspaceIdRef.current = workspaceId;
 
   useEffect(() => {

@@ -1,3 +1,7 @@
+/**
+ * Read a stream one chunk at a time. The reader lock is released when iteration
+ * completes or fails; this helper does not cancel the underlying stream.
+ */
 export async function* convertStreamToAsyncIterator<T>(stream: ReadableStream): AsyncGenerator<T> {
   const reader = stream.getReader();
   try {

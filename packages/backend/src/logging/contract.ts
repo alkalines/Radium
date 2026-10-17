@@ -7,6 +7,7 @@ export const LOGGING_SOURCES = {
   frontend: "frontend",
 } as const;
 
+/** Shared ingestion bounds for operational log envelopes. */
 export const LOGGING_LIMITS = {
   maxCorrelationValueLength: 128,
   maxEnvelopeCharacters: 8_192,
@@ -51,10 +52,12 @@ export const loggingEnvelopeSchema = v.object({
   correlation: v.optional(loggingCorrelationSchema),
 });
 
+/** Versioned event shape shared by frontend ingestion and backend operational logs. */
 export type LoggingEnvelope = Infer<typeof loggingEnvelopeSchema>;
 export type LoggingLevel = Infer<typeof loggingLevelSchema>;
 export type LoggingMetadata = NonNullable<LoggingEnvelope["metadata"]>;
 export type LoggingCorrelation = NonNullable<LoggingEnvelope["correlation"]>;
+/** Event fields accepted before source, product, version, and timestamp defaults are applied. */
 export type LoggingEventInput = Omit<
   LoggingEnvelope,
   "source" | "product" | "timestamp" | "version"
@@ -64,7 +67,7 @@ export type LoggingEventInput = Omit<
   timestamp?: number;
 };
 
-/** Add the version and event time to the shared envelope without adding optional undefined fields. */
+/** Apply shared defaults without adding optional fields whose values are undefined. */
 export function createLoggingEnvelope(input: LoggingEventInput): LoggingEnvelope {
   const envelope: LoggingEnvelope = {
     version: LOGGING_VERSION,
@@ -84,6 +87,7 @@ export function createLoggingEnvelope(input: LoggingEventInput): LoggingEnvelope
 
 const safeIdentifierPattern = /^[A-Za-z][A-Za-z0-9._:-]*$/;
 const safeCorrelationPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+// Reject sensitive-shaped metadata keys rather than attempting to scrub their values.
 const sensitiveMetadataKeyPattern =
   /(?:access.?token|api.?key|authorization|cookie|credential|email|identity|password|passwd|phone|private|prompt|secret|session|subject|token|transcript|user)/i;
 const correlationKeys = new Set(["requestId", "sessionId", "traceId"]);

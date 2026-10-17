@@ -30,6 +30,7 @@ function createStore<T>(ctx: ActionCtx, namespace: SubscriptionNamespace): KeyVa
         key,
         // Convex values cannot contain object properties whose value is undefined.
         value: JSON.parse(JSON.stringify(value)),
+        // Convert the provider's relative TTL to a timestamp at the time of this write.
         expiresAt: options?.ttlMs === undefined ? undefined : Date.now() + options.ttlMs,
       });
     },
@@ -105,6 +106,8 @@ export async function handleChatGPTSubscription(
   const body = await readJson(response.clone());
   const sessionCookie = readSessionCookie(request.headers.get("cookie"));
 
+  // Bind authenticated sessions; clear a binding on logout or an observed expired session.
+  // An unauthenticated status clears it only while the request still carries its cookie.
   if (path.endsWith("/status") && body?.status === "authenticated") {
     if (sessionCookie) {
       const label = [body.user?.email, body.user?.plan && `${body.user.plan} plan`]

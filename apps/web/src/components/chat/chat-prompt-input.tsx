@@ -527,6 +527,7 @@ function VoiceInputButton() {
   );
 }
 
+/** Keep only queued attachments with URLs, which can be represented as AI SDK file parts. */
 export function filterFilesWithUrl<T extends { url?: string }>(file: T): file is T & FileUIPart {
   return Boolean(file.url);
 }

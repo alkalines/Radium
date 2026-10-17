@@ -48,7 +48,7 @@ export const Route = createFileRoute("/gateway/$section")({
 
     return { session };
   },
-  loader: ({ context: { queryClient }, params: { section } }) => {
+  loader: ({ context: { queryClient } }) => {
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
   },
   component: GatewayPage,
@@ -57,6 +57,7 @@ export const Route = createFileRoute("/gateway/$section")({
 function GatewayPage() {
   const { section } = Route.useParams();
   const { workspace, isLoading } = useWorkspace();
+  const isActivitySection = section === "activity";
 
   if (isLoading) {
     return <Skeleton className="mx-auto h-32 w-full max-w-5xl" />;
@@ -83,7 +84,7 @@ function GatewayPage() {
   return (
     <div
       className={
-        section === "activity"
+        isActivitySection
           ? "mx-auto w-full max-w-7xl p-4 md:p-6"
           : "mx-auto w-full max-w-5xl p-4 md:p-6"
       }

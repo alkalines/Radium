@@ -7,6 +7,7 @@ const MAX_SETUP_BYTES = 16 * 1024;
 const MAX_RESPONSE_BYTES = 32 * 1024;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 
+/** Public half of the P-256 key used to identify a Worker. */
 export type PublicP256Jwk = JWK & {
   kty: "EC";
   crv: "P-256";
@@ -14,8 +15,10 @@ export type PublicP256Jwk = JWK & {
   y: string;
 };
 
+/** Private signing key; keep it in the credential store and out of logs/state files. */
 export type PrivateP256Jwk = PublicP256Jwk & { d: string };
 
+/** Validated contents of a short-lived, one-time Worker setup code. */
 export interface WorkerSetup {
   version: 1;
   backendUrl: string;
@@ -25,8 +28,10 @@ export interface WorkerSetup {
   expiresAt: number;
 }
 
+/** Persistable setup metadata, deliberately excluding the one-time enrollment token. */
 export type StoredWorkerSetup = Omit<WorkerSetup, "token">;
 
+/** Local binding to the server-issued Worker, key, workspace, and identity epoch. */
 export interface WorkerIdentity {
   workerId: string;
   keyId: string;
@@ -37,8 +42,10 @@ export interface WorkerIdentity {
 /** Shared machine metadata derived from the app's generated subscription contract. */
 export type WorkerMetadata = NonNullable<FunctionReturnType<typeof api.workers.current>>;
 
+/** Fetch signature used by authentication requests and their test seam. */
 export type WorkerFetch = (input: string | URL, init: RequestInit) => Promise<Response>;
 
+/** Sanitized protocol or validation failure safe to surface without response bodies. */
 export class WorkerProtocolError extends Error {
   constructor(message: string) {
     super(message);
@@ -46,6 +53,7 @@ export class WorkerProtocolError extends Error {
   }
 }
 
+/** Authentication endpoint failure that preserves only its HTTP status. */
 export class WorkerHttpError extends Error {
   constructor(readonly status: number) {
     super(`Worker authentication endpoint returned HTTP ${status}`);
@@ -53,7 +61,10 @@ export class WorkerHttpError extends Error {
   }
 }
 
-/** Parse the versioned, base64url-encoded one-time setup code without echoing it. */
+/**
+ * Validate the versioned, base64url-encoded one-time setup code without echoing it.
+ * Rejects malformed, expired, oversized, or non-origin endpoint values.
+ */
 export function parseSetupCode(input: string, now = Date.now()): WorkerSetup {
   const code = input.trim();
   if (!code.startsWith(SETUP_PREFIX)) {
@@ -126,6 +137,7 @@ export function parseSetupCode(input: string, now = Date.now()): WorkerSetup {
   };
 }
 
+/** Remove the one-time token before setup metadata is persisted. */
 export function storedSetup(setup: WorkerSetup): StoredWorkerSetup {
   return {
     version: 1,
@@ -136,7 +148,7 @@ export function storedSetup(setup: WorkerSetup): StoredWorkerSetup {
   };
 }
 
-/** Validate and normalize a Convex HTTP or client origin. */
+/** Validate and normalize an HTTPS origin or an HTTP loopback origin. */
 export function validateOrigin(input: string, field = "URL"): string {
   let url: URL;
   try {
@@ -173,6 +185,11 @@ export function validateOrigin(input: string, field = "URL"): string {
   return url.origin;
 }
 
+/**
+ * POST JSON with redirects disabled and a bounded, timed response read.
+ * Fetch and JSON-decoding failures are sanitized; response-stream errors may propagate.
+ * Non-2xx responses with readable, bounded bodies retain only their HTTP status.
+ */
 export async function postJson<T>(
   url: string,
   body: unknown,
@@ -216,6 +233,7 @@ async function readBoundedBody(response: Response): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let length = 0;
   try {
+    // Content-Length is only an early rejection; enforce the same bound while streaming.
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -243,6 +261,7 @@ function decodeBase64Url(encoded: string, errorMessage: string): Uint8Array {
   try {
     if (!BASE64URL_PATTERN.test(encoded)) throw new Error();
     const bytes = Buffer.from(encoded, "base64url");
+    // Buffer decoding is permissive; accept only the canonical encoding we were given.
     if (bytes.toString("base64url") !== encoded) throw new Error();
     return bytes;
   } catch {

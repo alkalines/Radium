@@ -11,6 +11,7 @@ async function completionsForWorkspace(
   readLimit = 200,
   outputLimit = readLimit,
 ) {
+  // Keep the legacy index in the read path until ownership backfill verification is complete.
   const current =
     since !== undefined
       ? await ctx.db
@@ -41,6 +42,7 @@ async function completionsForWorkspace(
           .order("desc")
           .take(readLimit)
     : [];
+  // Migrated rows can match both indexes; deduplicate before applying private-chat visibility.
   const byId = new Map(current.map((completion) => [completion._id, completion]));
   for (const completion of legacy) byId.set(completion._id, completion);
   const visible = await filterVisibleCompletions(ctx, workspace, [
@@ -127,6 +129,7 @@ export const getActivity = query({
   },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    // Read one beyond the response cap so the owner can see that this window was truncated.
     const completions = await completionsForWorkspace(ctx, workspace, args.since, 2001);
     const truncated = completions.length > 2000;
     const windowedCompletions = completions.slice(0, 2000);
@@ -156,11 +159,12 @@ export const getActivity = query({
       const { usage, pricing } = completion.response;
       const tokens = usage.prompt_tokens + usage.completion_tokens;
       const modelId = completion.request.model;
-      const keyId = completion.bill.apiKey
-        ? `api:${completion.bill.apiKey}`
-        : completion.bill.key
-          ? `legacy:${completion.bill.key}`
-          : "unattributed";
+      let keyId = "unattributed";
+      if (completion.bill.apiKey) {
+        keyId = `api:${completion.bill.apiKey}`;
+      } else if (completion.bill.key) {
+        keyId = `legacy:${completion.bill.key}`;
+      }
       const date = new Date(completion._creationTime).toISOString().slice(0, 10);
 
       summary.spend += pricing.cost;

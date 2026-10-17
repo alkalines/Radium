@@ -47,6 +47,7 @@ import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { ProviderLogo } from "./provider-logo";
 
 type Generation = FunctionReturnType<typeof api.observability.usage.getGenerations>[number];
+const DAY_IN_MS = 86_400_000;
 
 function formatCost(value: number): string {
   return `$${value.toFixed(Math.abs(value) < 1 ? 4 : 2)}`;
@@ -107,9 +108,10 @@ export function LogsPanel() {
     if (preset === "custom") {
       from = customRange?.from?.getTime();
       // Include the entire end day.
-      to = customRange?.to ? customRange.to.getTime() + 24 * 60 * 60 * 1000 : undefined;
-    } else if (RANGE_PRESETS[preset].days != null) {
-      from = Date.now() - RANGE_PRESETS[preset].days! * 24 * 60 * 60 * 1000;
+      to = customRange?.to ? customRange.to.getTime() + DAY_IN_MS : undefined;
+    } else {
+      const rangeDays = RANGE_PRESETS[preset].days;
+      if (rangeDays != null) from = Date.now() - rangeDays * DAY_IN_MS;
     }
 
     return generations.filter((generation) => {

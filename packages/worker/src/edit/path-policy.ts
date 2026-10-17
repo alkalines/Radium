@@ -1,6 +1,7 @@
 import { lstat, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
+/** Path-policy rejection whose code is safe for the Worker edit response. */
 export class WorkerEditPathError extends Error {
   constructor(readonly code: "PATH_OUTSIDE_ROOT" | "UNSAFE_PATH") {
     super(
@@ -12,13 +13,21 @@ export class WorkerEditPathError extends Error {
   }
 }
 
+/** Validated path details returned by {@link resolveWorkerEditPath}. */
 export interface ResolvedWorkerEditPath {
+  /** Absolute path formed beneath the canonical execution root. */
   absolutePath: string;
+  /** Slash-separated path relative to the execution root for public results. */
   displayPath: string;
   exists: boolean;
 }
 
-/** Resolve one authored or native-engine path while checking each existing component for symlink escapes. */
+/**
+ * Resolve an authored or native-engine path beneath a canonical execution root.
+ * Existing path components must have the requested file/directory shape, and
+ * symlink targets are allowed only when they remain inside that root. Missing
+ * targets are returned with `exists: false`; unsafe paths throw a typed error.
+ */
 export async function resolveWorkerEditPath(
   root: string,
   authoredPath: string,

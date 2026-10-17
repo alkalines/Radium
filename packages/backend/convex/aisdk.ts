@@ -17,6 +17,7 @@ const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace")
 const MAX_CHAT_CANDIDATES = 100;
 
 // Mutation
+/** Create a private-by-default chat and schedule title generation from its queued prompt. */
 export const CreateChat = workspaceMutation({
   args: {
     scope: v.optional(chatScopeValidator),
@@ -175,8 +176,9 @@ export const SetChatScope = mutation({
     if (!identity) throw new Error("Not logged in.");
 
     const { chat } = await requireAccessibleChat(ctx, args.chatId);
-    if (chat.userId !== identity._id)
+    if (chat.userId !== identity._id) {
       throw new Error("Only the chat creator can change its scope.");
+    }
 
     await ctx.db.patch("aisdk_chats", args.chatId, { scope: args.scope });
     return { scope: args.scope };
@@ -271,6 +273,8 @@ export const InternalChatInfo = internalQuery({
 export const ListChats = workspaceQuery({
   args: {},
   handler: async (ctx, args) => {
+    // Read creator-owned and explicitly shared chats separately: workspace
+    // membership, including ownership, must never expose another user's personal chats.
     const [ownChats, sharedChats, legacyChats] = await Promise.all([
       ctx.db
         .query("aisdk_chats")

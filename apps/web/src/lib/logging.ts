@@ -9,9 +9,14 @@ import {
   type LoggingEventInput,
 } from "backend/src/logging/contract";
 
+/** Frontend event fields; the logger supplies the product and source values. */
 export type FrontendLogInput = Omit<LoggingEventInput, "product" | "source">;
 
-/** Send an authenticated, bounded operational event without affecting UI behavior. */
+/**
+ * Create a best-effort operational logger for the authenticated browser user.
+ * The returned callback drops oversized or unauthenticated events and never
+ * waits for ingestion, so logging failures cannot block the caller.
+ */
 export function useFrontendLogger(): (input: FrontendLogInput) => void {
   const ingest = useMutation(api.observability.events.ingest);
   const { isAuthenticated } = useConvexAuth();

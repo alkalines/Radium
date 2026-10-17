@@ -37,6 +37,8 @@ function stripComments(source, filePath, repositoryRoot) {
   return result;
 }
 
+// This deliberately accepts a restricted config grammar, not arbitrary TypeScript.
+// Unsupported expressions must fail rather than execute during offline generation.
 function statements(source, filePath, repositoryRoot) {
   const text = stripComments(source, filePath, repositoryRoot).replace(/\s+/g, " ").trim();
   if (!text.endsWith(";"))
@@ -162,16 +164,12 @@ function rootEnvironmentObject(source, description, appEnvironment) {
   }
 }
 
-function parseComponentOptions(source, validatorImported) {
-  optionsEnvironment(source, "component options", validatorImported);
-}
-
 function parseComponentCall(source, validatorImported, configPath, repositoryRoot) {
   const match = /^defineComponent\(("([^"\\]*)"|'([^'\\]*)')(?:,\s*(.*))?\)$/.exec(source);
   if (!match) fail(`unsupported defineComponent syntax in ${relative(repositoryRoot, configPath)}`);
   const name = match[2] ?? match[3];
   if (!name) fail("component name cannot be empty");
-  if (match[4]) parseComponentOptions(match[4], validatorImported);
+  if (match[4]) optionsEnvironment(match[4], "component options", validatorImported);
   return name;
 }
 

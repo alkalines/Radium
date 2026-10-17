@@ -270,7 +270,8 @@ export default defineSchema({
   }),
   // Chatroom
   /**
-   * A user-attached MCP (Model Context Protocol) server. Secrets (e.g. the
+   * Workspace MCP (Model Context Protocol) server metadata, retaining user attribution
+   * for legacy records until backfill completes. Secrets (e.g. the
    * bearer token) are stored in the Secret Store component; this table only
    * keeps non-secret connection metadata and masked previews.
    */
@@ -293,9 +294,8 @@ export default defineSchema({
     .index("by_userId", ["userId"])
     .index("by_workspace", ["workspace"]),
   /**
-   * The user's chatroom settings (per BetterAuth user). Holds the default tool
-   * selection copied into new chats (editable from Chatroom → Tools) and the
-   * default model new chats pre-select (editable from Chatroom → Preferences).
+   * Legacy per-user Chatroom defaults retained for migration and fallback reads.
+   * New configuration writes belong to workspace_settings.
    */
   chatroom_settings: defineTable({
     userId: v.string(), // Better Auth ID
@@ -321,8 +321,8 @@ export default defineSchema({
     activeStream: v.optional(v.boolean()),
     lastInteractionAt: v.optional(v.number()),
     /**
-     * Per-chat tool override. When absent, the chat resolves tools from the
-     * user's {@link chatroom_settings}.
+     * Per-chat tool override. When absent, the chat inherits workspace defaults,
+     * including the legacy settings fallback during migration.
      */
     tools: v.optional(
       v.object({
@@ -330,7 +330,7 @@ export default defineSchema({
         mcpServers: v.array(v.id("mcp_servers")),
       }),
     ),
-    /** Owner-selected Worker and enabled Worker tools; execution wiring is future work. */
+    /** Owner-selected Worker, execution directory, and enabled tools; dispatch rechecks authority. */
     worker: v.optional(chatWorkerSelectionValidator),
   })
     .index("by_userId", ["userId"])

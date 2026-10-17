@@ -21,6 +21,7 @@ import {
   validWorkerBashRequest,
   workerBashRequestKey,
   WORKER_BASH_OUTPUT_BYTES,
+  type WorkerBashRequest,
 } from "./bash-contract";
 import {
   validWorkerEditRequest,
@@ -28,6 +29,7 @@ import {
   workerEditResult,
   workerEditRequestKey,
   WORKER_EDIT_OUTPUT_BYTES,
+  type WorkerEditRequest,
   type WorkerEditResult,
 } from "./edit-contract";
 import {
@@ -63,8 +65,9 @@ async function authorizeDispatch(ctx: MutationCtx, args: DispatchScope) {
     args.requestId.length > 128 ||
     (args.toolCallId !== undefined &&
       (!args.chatId || !args.toolCallId || args.toolCallId.length > 128))
-  )
+  ) {
     return taskDenied();
+  }
   if (args.chatId) {
     const access = await requireAccessibleChat(ctx, args.chatId);
     if (access.workspace._id !== args.workspace) return taskDenied();
@@ -73,7 +76,9 @@ async function authorizeDispatch(ctx: MutationCtx, args: DispatchScope) {
     workspaceId: args.workspace,
     workerId: args.workerId,
   });
-  if (!worker || worker.status !== "active") return taskDenied();
+  if (!worker || worker.status !== "active") {
+    return taskDenied();
+  }
   return user;
 }
 
@@ -177,7 +182,9 @@ export const updateStatus = workerMutation({
       return taskDenied();
     }
 
-    if (task.revision === args.expectedRevision + 1 && task.status === args.status) return task;
+    if (task.revision === args.expectedRevision + 1 && task.status === args.status) {
+      return task;
+    }
     if (task.revision !== args.expectedRevision) {
       throw new ConvexError({ code: "WORKER_TASK_STALE_REVISION" });
     }
@@ -242,6 +249,7 @@ export const dispatchEdit = mutation({
   },
 });
 
+/** Recheck chat visibility, owner-selected assignment, and active Worker before dispatch. */
 async function authorizeChatWorkerDispatch(
   ctx: MutationCtx,
   args: {
@@ -302,12 +310,15 @@ function previewIdFromResult(result: WorkerEditResult | undefined): string | nul
     const value: unknown = JSON.parse(result.output);
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const preview = value as { ok?: unknown; action?: unknown; previewId?: unknown };
-    return preview.ok === true &&
-      preview.action === "preview" &&
-      typeof preview.previewId === "string" &&
-      /^[a-zA-Z0-9_-]{1,128}$/.test(preview.previewId)
-      ? preview.previewId
-      : null;
+    if (
+      preview.ok !== true ||
+      preview.action !== "preview" ||
+      typeof preview.previewId !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(preview.previewId)
+    ) {
+      return null;
+    }
+    return preview.previewId;
   } catch {
     return null;
   }
@@ -325,7 +336,9 @@ async function chatTaskRequestId(
 
 /**
  * Dispatch one approved Chatroom file or Bash stage under the chat's current owner-selected
- * Worker and directory. Durable receipts make each call/stage one-shot beyond task cleanup.
+ * Worker and directory. Durable receipts make each call/stage one-shot beyond task cleanup;
+ * a new apply stage must match that call's persisted preview receipt. Task and receipt creation
+ * share this mutation so a retry cannot leave an untracked assignment.
  */
 export const dispatchChatEdit = internalMutation({
   args: {
@@ -346,23 +359,25 @@ export const dispatchChatEdit = internalMutation({
     if (args.request.directory !== args.directory) return taskDenied();
 
     const bash = args.tool === "bash";
-    const expectedAction =
-      args.tool === "read"
-        ? args.stage === "read"
-          ? "read"
-          : null
-        : args.stage === "preview"
-          ? "preview"
-          : args.stage === "apply"
-            ? "apply"
-            : null;
+    let expectedAction: "read" | "preview" | "apply" | null = null;
+    if (args.tool === "read") {
+      if (args.stage === "read") expectedAction = "read";
+    } else if (args.stage === "preview") {
+      expectedAction = "preview";
+    } else if (args.stage === "apply") {
+      expectedAction = "apply";
+    }
+
     const sessionId = await chatWorkerSessionId(args.chatId, assignment.directory);
-    let editRequest;
-    let bashRequest;
+    let editRequest: WorkerEditRequest | undefined;
+    let bashRequest: WorkerBashRequest | undefined;
+    let requestKey: string;
     if (bash) {
       if (args.stage !== "execute" || !("command" in args.request)) return taskDenied();
-      bashRequest = { ...args.request, sessionId, directory: assignment.directory };
-      if (!validWorkerBashRequest(bashRequest)) return taskDenied();
+      const request = { ...args.request, sessionId, directory: assignment.directory };
+      if (!validWorkerBashRequest(request)) return taskDenied();
+      bashRequest = request;
+      requestKey = await workerBashRequestKey(request);
     } else {
       if (
         !("action" in args.request) ||
@@ -370,23 +385,23 @@ export const dispatchChatEdit = internalMutation({
         args.request.action.kind !== expectedAction
       )
         return taskDenied();
-      editRequest = {
+
+      let writeMode: "edit" | "create" | undefined;
+      if (args.tool === "edit") writeMode = "edit";
+      if (args.tool === "create") writeMode = "create";
+
+      const request = {
         ...args.request,
         sessionId,
         directory: assignment.directory,
-        writeMode:
-          args.tool === "read"
-            ? undefined
-            : args.tool === "edit"
-              ? ("edit" as const)
-              : ("create" as const),
+        writeMode,
       };
-      if (!validWorkerEditRequest(editRequest)) return taskDenied();
+      if (!validWorkerEditRequest(request)) return taskDenied();
+      editRequest = request;
+      requestKey = workerEditRequestKey(request);
     }
-    const requestKey = bashRequest
-      ? await workerBashRequestKey(bashRequest)
-      : workerEditRequestKey(editRequest!);
 
+    // A tool-call ID stays bound to its original assignment across all stages.
     const callStages = await ctx.db
       .query("worker_chat_calls")
       .withIndex("by_chat_call_stage", (q) =>
@@ -425,6 +440,7 @@ export const dispatchChatEdit = internalMutation({
       return { taskId: existingCall.taskId };
     }
 
+    // A first-time apply must reference the successful preview receipt for this call.
     if (args.stage === "apply") {
       if (!("action" in args.request) || args.request.action.kind !== "apply") return taskDenied();
       const previewCall = await ctx.db
@@ -457,14 +473,18 @@ export const dispatchChatEdit = internalMutation({
         existingTask.operation !== (bash ? "bash" : "edit") ||
         existingTask.editOwnerId !== args.userId ||
         existingTask.chatId !== args.chatId ||
-        existingTask.toolCallId !== args.toolCallId ||
-        (bash
-          ? !existingTask.bashRequest ||
-            (await workerBashRequestKey(existingTask.bashRequest)) !== requestKey
-          : !existingTask.editRequest ||
-            workerEditRequestKey(existingTask.editRequest) !== requestKey)
+        existingTask.toolCallId !== args.toolCallId
       )
         return taskDenied();
+
+      let existingRequestKey: string | undefined;
+      if (bash && existingTask.bashRequest) {
+        existingRequestKey = await workerBashRequestKey(existingTask.bashRequest);
+      } else if (!bash && existingTask.editRequest) {
+        existingRequestKey = workerEditRequestKey(existingTask.editRequest);
+      }
+      if (existingRequestKey !== requestKey) return taskDenied();
+
       taskId = existingTask._id;
     } else {
       taskId = await ctx.db.insert("worker_tasks", {
@@ -572,7 +592,8 @@ export const outcome = query({
   },
 });
 
-async function assignedEdit(
+/** Load an executable task and require that it belongs to the calling Worker. */
+async function assignedToolTask(
   ctx: MutationCtx & { worker: { workspaceId: string; workerId: string } },
   taskId: Id<"worker_tasks">,
 ) {
@@ -593,7 +614,7 @@ export const claimEdit = workerMutation({
   returns: v.union(v.null(), workerTaskRecord),
   handler: async (ctx, args) => {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(args.claimId)) return taskDenied();
-    const task = await assignedEdit(ctx, args.taskId);
+    const task = await assignedToolTask(ctx, args.taskId);
     if (!task) return taskDenied();
     if (task.status === "processing" && task.claimId === args.claimId) return task;
     if (task.status !== "sent") return null;
@@ -632,7 +653,7 @@ export const completeEdit = workerMutation({
       args.expectedRevision < 0
     )
       return taskDenied();
-    const task = await assignedEdit(ctx, args.taskId);
+    const task = await assignedToolTask(ctx, args.taskId);
     if (!task) {
       const call = await ctx.db
         .query("worker_chat_calls")
@@ -642,7 +663,6 @@ export const completeEdit = workerMutation({
       // This releases delivery bookkeeping only; it makes no execution/outcome claim.
       if (!call) return { receiptDiscarded: true as const };
       if (
-        !call ||
         call.workspace !== ctx.worker.workspaceId ||
         call.workerId !== ctx.worker.workerId ||
         call.completionClaimId !== args.claimId ||

@@ -11,8 +11,8 @@ import z from "zod";
 import type { completionUsage } from "../usage/completion";
 import AIBalancer from "../ai_balancer";
 import { convertStreamToAsyncIterator } from "../tools/chunkReader";
-import { ToolsSchema } from "../types/openai/tools";
-import {
+import type { ToolsSchema } from "../types/openai/tools";
+import type {
   ChatCompletions_NotStreaming_ResponseBody_Type,
   ChatCompletions_RequestBody_Type,
   ChatCompletions_Streaming_Chunk_Type,
@@ -25,58 +25,49 @@ const emptyGenerationUsage = {
   outputTokenDetails: { reasoningTokens: null },
 };
 
-function toolsParsing(reqData: ChatCompletions_RequestBody_Type) {
-  let object: Record<string, any> = {};
-  const rawTools = reqData.tools as ToolsSchema[];
+function parseTools(request: ChatCompletions_RequestBody_Type) {
+  const tools: Record<string, any> = {};
+  const rawTools = request.tools as ToolsSchema[];
 
-  rawTools?.forEach((rawTool) => {
-    if (rawTool.type === "function") {
-      const toolInfo = rawTool.function;
+  rawTools?.forEach((toolDefinition) => {
+    if (toolDefinition.type === "function") {
+      const functionDefinition = toolDefinition.function;
 
-      object[toolInfo.name] = tool({
-        description: toolInfo.description,
-        inputSchema: jsonSchema(toolInfo.parameters ?? { type: "object", properties: {} }),
-        /**
-         * Strict is non existent on the AISDK
-         * @comment i don't know why.
-         */
+      tools[functionDefinition.name] = tool({
+        description: functionDefinition.description,
+        inputSchema: jsonSchema(
+          functionDefinition.parameters ?? { type: "object", properties: {} },
+        ),
       });
     } else {
-      const toolInfo = rawTool.custom;
-      /**
-       * @todo [dynamicTools](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling#dynamic-tools)
-       */
-      // Map "custom" tools to a simple string-input tool so the model can call them.
-      // If a grammar is provided, we still accept string input; the provider enforces the grammar.
-      const inputSchema =
-        toolInfo?.format?.type === "grammar"
-          ? z.object({ input: z.string() })
-          : z.object({ input: z.string() });
+      const customDefinition = toolDefinition.custom;
+      // Custom tools use string input here; supplied grammars are not translated.
+      const inputSchema = z.object({ input: z.string() });
 
-      object[toolInfo.name] = tool({
-        description: toolInfo.description,
+      tools[customDefinition.name] = tool({
+        description: customDefinition.description,
         inputSchema,
       });
     }
   });
 
-  return object;
+  return tools;
 }
 
-function toolChoiceParse(reqData: ChatCompletions_RequestBody_Type) {
-  const tc = reqData.tool_choice as any;
-  if (tc == null) return;
+function parseToolChoice(request: ChatCompletions_RequestBody_Type) {
+  const toolChoice = request.tool_choice as any;
+  if (toolChoice == null) return;
 
-  if (typeof tc === "string") return tc;
+  if (typeof toolChoice === "string") return toolChoice;
 
-  if (tc.type === "function" && tc.function?.name)
-    return { type: "tool", toolName: tc.function.name } as any;
+  if (toolChoice.type === "function" && toolChoice.function?.name)
+    return { type: "tool", toolName: toolChoice.function.name } as any;
 
-  if (tc.type === "custom" && tc.custom?.name)
-    return { type: "tool", toolName: tc.custom.name } as any;
+  if (toolChoice.type === "custom" && toolChoice.custom?.name)
+    return { type: "tool", toolName: toolChoice.custom.name } as any;
 
-  if (tc.type === "allowed_tools")
-    return tc.allowed_tools?.mode === "required" ? "required" : "auto";
+  if (toolChoice.type === "allowed_tools")
+    return toolChoice.allowed_tools?.mode === "required" ? "required" : "auto";
 
   // Unknown shape → fall back to default
   return undefined;
@@ -209,7 +200,7 @@ function getAISDKStream(
   telemetry?: TelemetryOptions,
   onProviderCall?: () => void,
 ): ReturnType<typeof streamText> {
-  const parsedToolChoice = toolChoiceParse(reqData);
+  const parsedToolChoice = parseToolChoice(reqData);
   const modelMessages = openAIToModelMessages(reqData.messages);
   /**
    * @todo Reasoning parameter, and provider specific options
@@ -243,7 +234,7 @@ function getAISDKStream(
     allowSystemInMessages: true,
     abortSignal,
     maxOutputTokens: reqData.max_completion_tokens ?? undefined,
-    tools: toolsParsing(reqData) as any,
+    tools: parseTools(reqData) as any,
     toolChoice: parsedToolChoice,
     maxRetries: parseInt(process.env.AISDK_MaxRetries ?? "0"),
     temperature: reqData.temperature,
@@ -257,6 +248,7 @@ function getAISDKStream(
   });
 }
 
+/** Called after a generation settles; timing values are milliseconds and callback failures are non-fatal. */
 export type genCallbackType = (genCompletion: {
   genId?: string;
   usage: completionUsage;
@@ -265,10 +257,9 @@ export type genCallbackType = (genCompletion: {
 }) => undefined | Promise<undefined>;
 
 /**
- * Transform an OpenAI-Compatible request into a OpenAI-Compatible streamed response using the AISDK as an middleware
- * @param reqData OpenAI Compatible Request data
- * @param provider Provider message connector
- * @returns An Readable Stream of Chunks
+ * Adapt an OpenAI-compatible request to completion chunks using the AI SDK.
+ * The returned stream ends with `[DONE]`; the caller frames its chunks for the
+ * transport. Usage callback settlement is idempotent across completion and cancellation.
  */
 export async function StreamCompletion(
   reqData: ChatCompletions_RequestBody_Type,
@@ -290,7 +281,8 @@ export async function StreamCompletion(
     },
   );
 
-  // Usage Callback
+  // Cancellation and generator finalization can both settle usage; cache the
+  // promise so persistence and the generation callback run at most once.
   let firstTokenAt: number | undefined;
   let lastTokenAt: number | undefined;
   const markOutput = () => {
@@ -303,23 +295,24 @@ export async function StreamCompletion(
     if (completionSettlement) return completionSettlement;
 
     const settlement = (async () => {
-      const r = await Promise.resolve(result.usage).catch(() => {
+      const usage = await Promise.resolve(result.usage).catch(() => {
+        // Some adapters reject usage after dispatch; retain the zero-usage fallback only then.
         if (!providerDispatched) return;
         return emptyGenerationUsage;
       });
-      if (!r) return;
+      if (!usage) return;
 
       try {
         await genCallback({
-          genId: genID,
+          genId: generationId,
           usage: {
-            completion_tokens: r.outputTokens || 0,
+            completion_tokens: usage.outputTokens || 0,
             completion_tokens_details: {
-              reasoning_tokens: r.outputTokenDetails.reasoningTokens ?? null,
+              reasoning_tokens: usage.outputTokenDetails.reasoningTokens ?? null,
             },
-            prompt_tokens: r.inputTokens || 0,
+            prompt_tokens: usage.inputTokens || 0,
             prompt_tokens_details: {
-              cached_tokens: r.inputTokenDetails.cacheReadTokens ?? null,
+              cached_tokens: usage.inputTokenDetails.cacheReadTokens ?? null,
               // @todo: written_cache_tokens
             },
           },
@@ -329,48 +322,44 @@ export async function StreamCompletion(
               : 0,
           ttft: firstTokenAt !== undefined ? firstTokenAt - requestStartedAt : 0,
         });
-      } catch (e) {}
+      } catch {
+        // A generation callback failure must not fail the model response.
+      }
     })();
     completionSettlement = settlement;
     return settlement;
   };
 
-  // Transform to OpenAI Stream
-  const aisdk_response = toUIMessageStream({ stream: result.stream });
-  const chunkLoadStream = (async function* () {
+  const aiSdkResponse = toUIMessageStream({ stream: result.stream });
+  const uiMessageChunks = (async function* () {
     try {
-      yield* convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
+      yield* convertStreamToAsyncIterator<UIMessageChunk>(aiSdkResponse);
     } finally {
       await endOfCompletion();
     }
   })();
   const createdDateUnix = Math.floor(requestStartedAt / 1000);
-  let genID: string;
-  let finishReasons = {
-    toolCalls: false,
-    text: false,
-    max_tokens: false,
-  };
+  let generationId: string;
+  let hasToolCalls = false;
   return new ReadableStream({
     async start(controller) {
-      const controllerOutput = (text: string) => controller.enqueue(text);
-      const openaiOutput = (response: ChatCompletions_Streaming_Chunk_Type) => {
-        controllerOutput(JSON.stringify(response));
+      const writeOpenAIChunk = (response: ChatCompletions_Streaming_Chunk_Type) => {
+        controller.enqueue(JSON.stringify(response));
       };
 
       const emittedToolCalls = new Set<string>();
       const timedToolCalls = new Set<string>();
-      for await (const chunk of chunkLoadStream) {
+      for await (const chunk of uiMessageChunks) {
         // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
         switch (chunk.type) {
           case "reasoning-start":
-            if (!genID) genID = chunk.id;
+            if (!generationId) generationId = chunk.id;
 
             if (!reqData.reasoning?.exclude) {
-              openaiOutput({
-                id: genID || "not-available",
+              writeOpenAIChunk({
+                id: generationId || "not-available",
                 created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
+                model: reqData.model,
                 object: "chat.completion.chunk",
                 choices: [
                   {
@@ -384,14 +373,14 @@ export async function StreamCompletion(
             }
             break;
           case "reasoning-delta":
-            if (!genID) genID = chunk.id;
+            if (!generationId) generationId = chunk.id;
             if (chunk.delta === "[REDACTED]") break;
             if (chunk.delta) markOutput();
             if (!reqData.reasoning?.exclude) {
-              openaiOutput({
-                id: genID || "not-available",
+              writeOpenAIChunk({
+                id: generationId || "not-available",
                 created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
+                model: reqData.model,
                 object: "chat.completion.chunk",
                 choices: [
                   {
@@ -409,13 +398,13 @@ export async function StreamCompletion(
             }
             break;
           case "reasoning-end":
-            if (!genID) genID = chunk.id;
+            if (!generationId) generationId = chunk.id;
 
             if (!reqData.reasoning?.exclude) {
-              openaiOutput({
-                id: genID || "not-available",
+              writeOpenAIChunk({
+                id: generationId || "not-available",
                 created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
+                model: reqData.model,
                 object: "chat.completion.chunk",
                 choices: [
                   {
@@ -434,11 +423,11 @@ export async function StreamCompletion(
             break;
           case "tool-input-start":
             emittedToolCalls.add(chunk.toolCallId);
-            finishReasons.toolCalls = true;
-            openaiOutput({
-              id: genID || "not-available",
+            hasToolCalls = true;
+            writeOpenAIChunk({
+              id: generationId || "not-available",
               created: createdDateUnix,
-              model: reqData.model, // @todo Not fuck everything in case of routers
+              model: reqData.model,
               object: "chat.completion.chunk",
               choices: [
                 {
@@ -469,10 +458,10 @@ export async function StreamCompletion(
               markOutput();
               timedToolCalls.add(chunk.toolCallId);
             }
-            openaiOutput({
-              id: genID || "not-available",
+            writeOpenAIChunk({
+              id: generationId || "not-available",
               created: createdDateUnix,
-              model: reqData.model, // @todo Not fuck everything in case of routers
+              model: reqData.model,
               object: "chat.completion.chunk",
               choices: [
                 {
@@ -497,14 +486,14 @@ export async function StreamCompletion(
             });
             break;
           case "tool-input-available":
-            finishReasons.toolCalls = true;
+            hasToolCalls = true;
             if (!timedToolCalls.has(chunk.toolCallId)) markOutput();
             if (!emittedToolCalls.has(chunk.toolCallId)) {
               emittedToolCalls.add(chunk.toolCallId);
-              openaiOutput({
-                id: genID || "not-available",
+              writeOpenAIChunk({
+                id: generationId || "not-available",
                 created: createdDateUnix,
-                model: reqData.model, // @todo Not fuck everything in case of routers
+                model: reqData.model,
                 object: "chat.completion.chunk",
                 choices: [
                   {
@@ -534,10 +523,10 @@ export async function StreamCompletion(
               });
             }
 
-            openaiOutput({
-              id: genID || "not-available",
+            writeOpenAIChunk({
+              id: generationId || "not-available",
               created: createdDateUnix,
-              model: reqData.model, // @todo Not fuck everything in case of routers
+              model: reqData.model,
               object: "chat.completion.chunk",
               choices: [
                 {
@@ -553,12 +542,12 @@ export async function StreamCompletion(
             });
             break;
           case "text-delta":
-            if (!genID) genID = chunk.id;
+            if (!generationId) generationId = chunk.id;
             if (chunk.delta) markOutput();
-            openaiOutput({
-              id: genID || "not-available",
+            writeOpenAIChunk({
+              id: generationId || "not-available",
               created: createdDateUnix,
-              model: reqData.model, // @todo Not fuck everything in case of routers
+              model: reqData.model,
               object: "chat.completion.chunk",
               choices: [
                 {
@@ -580,14 +569,14 @@ export async function StreamCompletion(
               (await result.usage).outputTokens
             ) {
               finishReason = "length";
-            } else if (finishReasons.toolCalls) {
+            } else if (hasToolCalls) {
               finishReason = "tool_calls";
             }
 
-            openaiOutput({
-              id: genID || "not-available",
+            writeOpenAIChunk({
+              id: generationId || "not-available",
               created: createdDateUnix,
-              model: reqData.model, // @todo Not fuck everything in case of routers
+              model: reqData.model,
               object: "chat.completion.chunk",
               choices: [
                 {
@@ -618,7 +607,7 @@ export async function StreamCompletion(
       }
 
       // End of the stream
-      controllerOutput("[DONE]");
+      controller.enqueue("[DONE]");
       controller.close();
     },
     async cancel(reason?) {
@@ -628,12 +617,7 @@ export async function StreamCompletion(
   });
 }
 
-/**
- * Transform an OpenAI-Compatible request into a OpenAI-Compatible standard response using the AISDK as an middleware
- * @param reqData OpenAI Compatible Request data
- * @param provider Provider message connector
- * @returns An Object with an ready response
- */
+/** Adapt an OpenAI-compatible request to a non-streaming completion response using the AI SDK. */
 export async function NonStreamingCompletion(
   reqData: ChatCompletions_RequestBody_Type,
   provider: Awaited<ReturnType<typeof AIBalancer>>,
@@ -654,7 +638,8 @@ export async function NonStreamingCompletion(
     },
   );
 
-  // Usage Callback
+  // Keep settlement idempotent because generator cleanup can happen on both
+  // normal completion and cancellation.
   let firstTokenAt: number | undefined;
   let lastTokenAt: number | undefined;
   const markOutput = () => {
@@ -667,23 +652,24 @@ export async function NonStreamingCompletion(
     if (completionSettlement) return completionSettlement;
 
     const settlement = (async () => {
-      const r = await Promise.resolve(result.usage).catch(() => {
+      const usage = await Promise.resolve(result.usage).catch(() => {
+        // Some adapters reject usage after dispatch; retain the zero-usage fallback only then.
         if (!providerDispatched) return;
         return emptyGenerationUsage;
       });
-      if (!r) return;
+      if (!usage) return;
 
       try {
         await genCallback({
           genId: openAIResponse.id || undefined,
           usage: {
-            completion_tokens: r.outputTokens || 0,
+            completion_tokens: usage.outputTokens || 0,
             completion_tokens_details: {
-              reasoning_tokens: r.outputTokenDetails.reasoningTokens ?? null,
+              reasoning_tokens: usage.outputTokenDetails.reasoningTokens ?? null,
             },
-            prompt_tokens: r.inputTokens || 0,
+            prompt_tokens: usage.inputTokens || 0,
             prompt_tokens_details: {
-              cached_tokens: r.inputTokenDetails.cacheReadTokens ?? null,
+              cached_tokens: usage.inputTokenDetails.cacheReadTokens ?? null,
               // @todo: written_cache_tokens
             },
           },
@@ -693,16 +679,18 @@ export async function NonStreamingCompletion(
               : 0,
           ttft: firstTokenAt !== undefined ? firstTokenAt - requestStartedAt : 0,
         });
-      } catch (e) {}
+      } catch {
+        // A generation callback failure must not fail the model response.
+      }
     })();
     completionSettlement = settlement;
     return settlement;
   };
 
-  const aisdk_response = toUIMessageStream({ stream: result.stream });
-  const chunkLoadStream = (async function* () {
+  const aiSdkResponse = toUIMessageStream({ stream: result.stream });
+  const uiMessageChunks = (async function* () {
     try {
-      yield* convertStreamToAsyncIterator<UIMessageChunk>(aisdk_response);
+      yield* convertStreamToAsyncIterator<UIMessageChunk>(aiSdkResponse);
     } finally {
       await endOfCompletion();
     }
@@ -710,9 +698,9 @@ export async function NonStreamingCompletion(
 
   const createdDateUnix = Math.floor(requestStartedAt / 1000);
 
-  let openAIResponse: ChatCompletions_NotStreaming_ResponseBody_Type = {
+  const openAIResponse: ChatCompletions_NotStreaming_ResponseBody_Type = {
     created: createdDateUnix,
-    model: reqData.model, // @todo Not fuck everything in case of routers
+    model: reqData.model,
     object: "chat.completion",
     choices: [
       {
@@ -729,7 +717,7 @@ export async function NonStreamingCompletion(
     usage: {},
   };
 
-  for await (const chunk of chunkLoadStream) {
+  for await (const chunk of uiMessageChunks) {
     // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
     switch (chunk.type) {
       case "reasoning-start":
