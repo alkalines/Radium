@@ -22,13 +22,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -44,12 +38,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -61,17 +50,11 @@ import {
 } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  resolveWorkspaceIconName,
-  type WorkspaceIconName,
-} from "backend/src/workspaces/icons";
+import { resolveWorkspaceIconName, type WorkspaceIconName } from "backend/src/workspaces/icons";
 import { WorkspaceIcon, workspaceIconOptions } from "./workspace-icon";
 import { useWorkspace, type WorkspaceSummary } from "./workspace-provider";
 
-type WorkspaceMemberList = Exclude<
-  FunctionReturnType<typeof api.workspaces.listMembers>,
-  string
->;
+type WorkspaceMemberList = Exclude<FunctionReturnType<typeof api.workspaces.listMembers>, string>;
 type ArchivedWorkspaceList = Exclude<
   FunctionReturnType<typeof api.workspaces.listArchived>,
   string
@@ -96,9 +79,7 @@ export function WorkspaceManagement() {
   const restoreWorkspace = useMutation(api.workspaces.restore);
   const addMember = useMutation(api.workspaces.addMember);
   const removeMember = useMutation(api.workspaces.removeMember);
-  const ownedWorkspaceCount = workspaces.filter(
-    (item) => item.role === "owner",
-  ).length;
+  const ownedWorkspaceCount = workspaces.filter((item) => item.role === "owner").length;
   const isOwner = workspace?.role === "owner";
 
   const { data: archivedData, error: archivedError } = useQuery(
@@ -110,22 +91,12 @@ export function WorkspaceManagement() {
       isOwner && workspaceId ? { workspace: workspaceId } : "skip",
     ),
   );
-  const archived = Array.isArray(archivedData)
-    ? archivedData
-    : ([] as ArchivedWorkspaceList);
-  const members = Array.isArray(membersData)
-    ? membersData
-    : ([] as WorkspaceMemberList);
+  const archived = Array.isArray(archivedData) ? archivedData : ([] as ArchivedWorkspaceList);
+  const members = Array.isArray(membersData) ? membersData : ([] as WorkspaceMemberList);
 
-  const [nameDialog, setNameDialog] = useState<"create" | "rename" | null>(
-    null,
-  );
-  const [renameTarget, setRenameTarget] = useState<WorkspaceSummary | null>(
-    null,
-  );
-  const [archiveTarget, setArchiveTarget] = useState<WorkspaceSummary | null>(
-    null,
-  );
+  const [nameDialog, setNameDialog] = useState<"create" | "rename" | null>(null);
+  const [renameTarget, setRenameTarget] = useState<WorkspaceSummary | null>(null);
+  const [archiveTarget, setArchiveTarget] = useState<WorkspaceSummary | null>(null);
   const [iconTarget, setIconTarget] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [memberEmail, setMemberEmail] = useState("");
@@ -167,9 +138,7 @@ export function WorkspaceManagement() {
       }
       setNameDialog(null);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to update workspace.",
-      );
+      toast.error(error instanceof Error ? error.message : "Failed to update workspace.");
     } finally {
       setPendingAction(null);
     }
@@ -183,18 +152,13 @@ export function WorkspaceManagement() {
       setArchiveTarget(null);
       toast.success("Workspace archived.");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to archive workspace.",
-      );
+      toast.error(error instanceof Error ? error.message : "Failed to archive workspace.");
     } finally {
       setPendingAction(null);
     }
   }
 
-  async function updateWorkspaceIcon(
-    target: WorkspaceSummary,
-    icon: WorkspaceIconName,
-  ) {
+  async function updateWorkspaceIcon(target: WorkspaceSummary, icon: WorkspaceIconName) {
     if (pendingAction) return;
     setPendingAction(`icon:${target._id}`);
     try {
@@ -202,11 +166,7 @@ export function WorkspaceManagement() {
       setIconTarget(null);
       toast.success("Workspace icon updated.");
     } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to update workspace icon.",
-      );
+      toast.error(error instanceof Error ? error.message : "Failed to update workspace icon.");
     } finally {
       setPendingAction(null);
     }
@@ -221,9 +181,7 @@ export function WorkspaceManagement() {
       if (workspaceIdRef.current === workspaceAtStart) setWorkspace(target._id);
       toast.success("Workspace restored.");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to restore workspace.",
-      );
+      toast.error(error instanceof Error ? error.message : "Failed to restore workspace.");
     } finally {
       setPendingAction(null);
     }
@@ -239,9 +197,7 @@ export function WorkspaceManagement() {
       setMemberEmail("");
       toast.success("Member added.");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to add member.",
-      );
+      toast.error(error instanceof Error ? error.message : "Failed to add member.");
     } finally {
       setPendingAction(null);
     }
@@ -254,9 +210,7 @@ export function WorkspaceManagement() {
       await removeMember({ workspace: workspaceId, email });
       toast.success("Member removed.");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to remove member.",
-      );
+      toast.error(error instanceof Error ? error.message : "Failed to remove member.");
     } finally {
       setPendingAction(null);
     }
@@ -266,12 +220,9 @@ export function WorkspaceManagement() {
     <div className="flex flex-col gap-8">
       <div className="flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div className="flex flex-col gap-1">
-          <h1 className="font-heading text-2xl font-semibold tracking-tight">
-            Workspaces
-          </h1>
+          <h1 className="font-heading text-2xl font-semibold tracking-tight">Workspaces</h1>
           <p className="text-sm text-muted-foreground">
-            Keep models, credentials, settings, and conversations separated by
-            context.
+            Keep models, credentials, settings, and conversations separated by context.
           </p>
         </div>
         <Button
@@ -292,9 +243,7 @@ export function WorkspaceManagement() {
       <Card>
         <CardHeader>
           <CardTitle>Your workspaces</CardTitle>
-          <CardDescription>
-            Choose the active workspace or manage one you own.
-          </CardDescription>
+          <CardDescription>Choose the active workspace or manage one you own.</CardDescription>
         </CardHeader>
         <CardContent>
           {error ? (
@@ -316,9 +265,7 @@ export function WorkspaceManagement() {
                   <BoxesIcon />
                 </EmptyMedia>
                 <EmptyTitle>
-                  {provisionError
-                    ? "Workspace setup failed"
-                    : "Preparing your workspace"}
+                  {provisionError ? "Workspace setup failed" : "Preparing your workspace"}
                 </EmptyTitle>
                 <EmptyDescription>
                   {provisionError
@@ -338,10 +285,7 @@ export function WorkspaceManagement() {
               {workspaces.map((item) => {
                 const active = item._id === workspaceId;
                 return (
-                  <div
-                    key={item._id}
-                    className="flex flex-wrap items-center gap-3 p-3"
-                  >
+                  <div key={item._id} className="flex flex-wrap items-center gap-3 p-3">
                     <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
                       <WorkspaceIcon name={item.icon} className="size-4" />
                     </div>
@@ -351,18 +295,12 @@ export function WorkspaceManagement() {
                         <Badge variant="outline" className="capitalize">
                           {item.role}
                         </Badge>
-                        {active ? (
-                          <Badge variant="secondary">Active</Badge>
-                        ) : null}
+                        {active ? <Badge variant="secondary">Active</Badge> : null}
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5">
                       {!active ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setWorkspace(item._id)}
-                        >
+                        <Button variant="outline" size="sm" onClick={() => setWorkspace(item._id)}>
                           Switch
                         </Button>
                       ) : null}
@@ -379,8 +317,7 @@ export function WorkspaceManagement() {
                           <Popover
                             open={iconTarget === item._id}
                             onOpenChange={(open) =>
-                              !pendingAction &&
-                              setIconTarget(open ? item._id : null)
+                              !pendingAction && setIconTarget(open ? item._id : null)
                             }
                           >
                             <PopoverTrigger asChild>
@@ -400,22 +337,17 @@ export function WorkspaceManagement() {
                               aria-describedby={`workspace-icon-description-${item._id}`}
                             >
                               <PopoverHeader>
-                                <PopoverTitle
-                                  id={`workspace-icon-title-${item._id}`}
-                                >
+                                <PopoverTitle id={`workspace-icon-title-${item._id}`}>
                                   Workspace icon
                                 </PopoverTitle>
-                                <PopoverDescription
-                                  id={`workspace-icon-description-${item._id}`}
-                                >
+                                <PopoverDescription id={`workspace-icon-description-${item._id}`}>
                                   Choose an icon for {item.name}.
                                 </PopoverDescription>
                               </PopoverHeader>
                               <div className="grid grid-cols-6 place-items-center gap-1">
                                 {workspaceIconOptions.map((option) => {
                                   const selected =
-                                    resolveWorkspaceIconName(item.icon) ===
-                                    option.name;
+                                    resolveWorkspaceIconName(item.icon) === option.name;
                                   return (
                                     <Button
                                       key={option.name}
@@ -423,26 +355,16 @@ export function WorkspaceManagement() {
                                       size="icon-sm"
                                       title={option.label}
                                       disabled={pendingAction !== null}
-                                      onClick={() =>
-                                        void updateWorkspaceIcon(
-                                          item,
-                                          option.name,
-                                        )
-                                      }
+                                      onClick={() => void updateWorkspaceIcon(item, option.name)}
                                       aria-label={`Use ${option.label} icon`}
                                       aria-pressed={selected}
                                     >
-                                      {pendingAction === `icon:${item._id}` &&
-                                      selected ? (
+                                      {pendingAction === `icon:${item._id}` && selected ? (
                                         <Spinner />
                                       ) : (
                                         <option.icon />
                                       )}
-                                      {selected ? (
-                                        <span className="sr-only">
-                                          Selected
-                                        </span>
-                                      ) : null}
+                                      {selected ? <span className="sr-only">Selected</span> : null}
                                     </Button>
                                   );
                                 })}
@@ -483,16 +405,13 @@ export function WorkspaceManagement() {
           {!workspace ? (
             <Alert>
               <AlertTitle>Workspace unavailable</AlertTitle>
-              <AlertDescription>
-                Select an active workspace to manage its members.
-              </AlertDescription>
+              <AlertDescription>Select an active workspace to manage its members.</AlertDescription>
             </Alert>
           ) : !isOwner ? (
             <Alert>
               <AlertTitle>Owner access required</AlertTitle>
               <AlertDescription>
-                You are a member of this workspace. Only its owner can change
-                member access.
+                You are a member of this workspace. Only its owner can change member access.
               </AlertDescription>
             </Alert>
           ) : (
@@ -500,9 +419,7 @@ export function WorkspaceManagement() {
               <form onSubmit={addWorkspaceMember}>
                 <FieldGroup>
                   <Field>
-                    <FieldLabel htmlFor="workspace-member-email">
-                      Add member by email
-                    </FieldLabel>
+                    <FieldLabel htmlFor="workspace-member-email">Add member by email</FieldLabel>
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                       <Input
                         id="workspace-member-email"
@@ -527,8 +444,8 @@ export function WorkspaceManagement() {
                       </Button>
                     </div>
                     <FieldDescription>
-                      The person must already have a registered Radium account.
-                      Access is granted immediately; no invitation is sent.
+                      The person must already have a registered Radium account. Access is granted
+                      immediately; no invitation is sent.
                     </FieldDescription>
                   </Field>
                 </FieldGroup>
@@ -536,10 +453,7 @@ export function WorkspaceManagement() {
 
               <div className="flex flex-col divide-y rounded-lg border">
                 {membersError ? (
-                  <Alert
-                    className="rounded-none border-0"
-                    variant="destructive"
-                  >
+                  <Alert className="rounded-none border-0" variant="destructive">
                     <AlertTitle>Members unavailable</AlertTitle>
                     <AlertDescription>
                       This workspace can no longer be managed from your account.
@@ -552,29 +466,18 @@ export function WorkspaceManagement() {
                   </div>
                 ) : (
                   members.map((member) => (
-                    <div
-                      key={member.userId}
-                      className="flex items-center gap-3 p-3"
-                    >
+                    <div key={member.userId} className="flex items-center gap-3 p-3">
                       <Avatar size="sm">
-                        <AvatarFallback>
-                          {getInitials(member.name || member.email)}
-                        </AvatarFallback>
+                        <AvatarFallback>{getInitials(member.name || member.email)}</AvatarFallback>
                       </Avatar>
                       <div className="flex min-w-0 flex-1 flex-col">
-                        <span className="truncate font-medium">
-                          {member.name || member.email}
-                        </span>
+                        <span className="truncate font-medium">{member.name || member.email}</span>
                         <span className="flex items-center gap-1 truncate text-xs text-muted-foreground">
                           <MailIcon className="size-3 shrink-0" />
                           {member.email}
                         </span>
                       </div>
-                      <Badge
-                        variant={
-                          member.role === "owner" ? "default" : "secondary"
-                        }
-                      >
+                      <Badge variant={member.role === "owner" ? "default" : "secondary"}>
                         {member.role}
                       </Badge>
                       {member.role === "member" ? (
@@ -583,16 +486,10 @@ export function WorkspaceManagement() {
                           size="icon"
                           className="text-muted-foreground hover:text-destructive"
                           disabled={pendingAction !== null}
-                          onClick={() =>
-                            void removeWorkspaceMember(member.email)
-                          }
+                          onClick={() => void removeWorkspaceMember(member.email)}
                           aria-label={`Remove ${member.email}`}
                         >
-                          {pendingAction === member.email ? (
-                            <Spinner />
-                          ) : (
-                            <XIcon />
-                          )}
+                          {pendingAction === member.email ? <Spinner /> : <XIcon />}
                         </Button>
                       ) : (
                         <UserRoundIcon className="size-4 text-muted-foreground" />
@@ -610,9 +507,7 @@ export function WorkspaceManagement() {
         <Card>
           <CardHeader>
             <CardTitle>Archived workspaces</CardTitle>
-            <CardDescription>
-              Restore an archived workspace and its configuration.
-            </CardDescription>
+            <CardDescription>Restore an archived workspace and its configuration.</CardDescription>
           </CardHeader>
           <CardContent>
             {archivedError ? (
@@ -632,9 +527,7 @@ export function WorkspaceManagement() {
                       name={item.icon}
                       className="size-4 shrink-0 text-muted-foreground"
                     />
-                    <span className="min-w-0 flex-1 truncate font-medium">
-                      {item.name}
-                    </span>
+                    <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
                     <Button
                       size="sm"
                       variant="outline"
@@ -667,8 +560,7 @@ export function WorkspaceManagement() {
                 {nameDialog === "rename" ? "Rename workspace" : "New workspace"}
               </DialogTitle>
               <DialogDescription>
-                Workspaces keep provider credentials, API keys, settings, and
-                chats separate.
+                Workspaces keep provider credentials, API keys, settings, and chats separate.
               </DialogDescription>
             </DialogHeader>
             <FieldGroup>
@@ -694,13 +586,8 @@ export function WorkspaceManagement() {
               >
                 Cancel
               </Button>
-              <Button
-                type="submit"
-                disabled={pendingAction !== null || !name.trim()}
-              >
-                {pendingAction === "name" ? (
-                  <Spinner data-icon="inline-start" />
-                ) : null}
+              <Button type="submit" disabled={pendingAction !== null || !name.trim()}>
+                {pendingAction === "name" ? <Spinner data-icon="inline-start" /> : null}
                 {nameDialog === "rename" ? "Rename" : "Create"}
               </Button>
             </DialogFooter>
@@ -710,16 +597,14 @@ export function WorkspaceManagement() {
 
       <Dialog
         open={archiveTarget !== null}
-        onOpenChange={(open) =>
-          !open && !pendingAction && setArchiveTarget(null)
-        }
+        onOpenChange={(open) => !open && !pendingAction && setArchiveTarget(null)}
       >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Archive {archiveTarget?.name}?</DialogTitle>
             <DialogDescription>
-              The workspace will leave the active list. It can be restored from
-              this page later. Workspaces containing chats cannot be archived.
+              The workspace will leave the active list. It can be restored from this page later.
+              Workspaces containing chats cannot be archived.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -735,9 +620,7 @@ export function WorkspaceManagement() {
               onClick={() => void confirmArchive()}
               disabled={pendingAction !== null}
             >
-              {pendingAction === "archive" ? (
-                <Spinner data-icon="inline-start" />
-              ) : null}
+              {pendingAction === "archive" ? <Spinner data-icon="inline-start" /> : null}
               Archive
             </Button>
           </DialogFooter>

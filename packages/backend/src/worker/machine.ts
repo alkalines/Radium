@@ -8,7 +8,7 @@ import { backendOrigin, workerIssuer } from "./auth";
 /** Keep machine authorization failures indistinguishable from HTTP proof denials. */
 export function denyWorkerAuth(): never {
   throw new ConvexError({ code: "WORKER_AUTH_DENIED" });
-} 
+}
 
 /** Server-derived identity scope available to machine-authorized handlers. */
 export type WorkerScope = {
