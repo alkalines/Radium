@@ -29,6 +29,12 @@ Run lint and typecheck before declaring any task done.
 - Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
 - Docs: https://docs.expo.dev/router/introduction.md
 
+## Styling
+
+- Use Uniwind with Tailwind CSS 4. Theme tokens live in `src/global.css`; Metro integration lives in `metro.config.js`. There is no JavaScript Tailwind config or custom Babel config.
+- Preserve the app's explicit 16px rem base. Keep the CSS entry import in `src/app/_layout.tsx` and reuse `cn` from `src/lib/utils.ts` for conflicting class names.
+- Use the Uniwind skill for styling work. Do not add NativeWind presets or `react-native-css-interop`.
+
 ## Building with EAS
 
 Use EAS to build, sign, and submit the app in the cloud (`eas build`, `eas submit`) and to ship over-the-air updates (`eas update`) — no local Xcode or Android Studio required. Run EAS CLI as `bunx eas-cli <command>` in Bun projects, or `npx eas-cli@latest <command>` otherwise; substitute that for bare `eas` in docs examples.

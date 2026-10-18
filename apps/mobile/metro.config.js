@@ -1,6 +1,10 @@
 const { getDefaultConfig } = require("expo/metro-config");
-const { withNativeWind } = require('nativewind/metro');
- 
-const config = getDefaultConfig(__dirname)
- 
-module.exports = withNativeWind(config, { input: './global.css', inlineRem: 16 });
+const { withUniwindConfig } = require("uniwind/metro");
+
+const config = getDefaultConfig(__dirname);
+
+module.exports = withUniwindConfig(config, {
+  cssEntryFile: "./src/global.css",
+  // Preserve the app's existing explicit rem base rather than the library default.
+  polyfills: { rem: 16 },
+});

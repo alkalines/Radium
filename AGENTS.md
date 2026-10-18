@@ -6,7 +6,7 @@
 - **Chatroom** is where users communicate with agents. It owns conversations, agent configuration, and execution approvals; it uses Gateway for routing and may use a Radium Worker for host-dependent tools.
 - **Worker** executes host-dependent work such as editing files, creating folders, and running commands. Convex coordinates durable state and authorization; it is not the execution host. A connected machine's model endpoint and its Worker execution capabilities are separate concerns.
 - **Gateway** is the workspace routing boundary: connect machines/model endpoints, providers, and accounts through a single endpoint, centralizing credentials and use across interfaces and API types. Owner audit support is a product goal, not permission to bypass chat privacy. Do not assume one account or endpoint per provider, or claim planned protocols/routing/auditing are implemented.
-- `apps/` owns client applications: Web in `apps/web`, with an Expo React Native app and watchOS/Wear OS support planned. `packages/` owns backend, Worker, components, and reusable code; do not make shared contracts depend on a particular client.
+- `apps/` owns client applications: Web in `apps/web` and Expo React Native mobile in `apps/mobile`; watchOS/Wear OS support is planned. `packages/` owns backend, Worker, components, and reusable code; do not make shared contracts depend on a particular client.
 
 ## Commands and setup
 
