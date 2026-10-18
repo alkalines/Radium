@@ -33,7 +33,11 @@ export default function AppTabs() {
   );
 }
 
-export function TabButton({ children, isFocused, ...props }: TabTriggerSlotProps) {
+// Router's slot ref targets the component type; the actual child forwards a native Pressable ref.
+type TabButtonProps = Omit<TabTriggerSlotProps, "ref"> &
+  Pick<React.ComponentProps<typeof Pressable>, "ref">;
+
+export function TabButton({ children, isFocused, ...props }: TabButtonProps) {
   return (
     <Pressable {...props} style={({ pressed }) => pressed && styles.pressed}>
       <ThemedView

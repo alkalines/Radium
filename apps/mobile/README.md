@@ -1,4 +1,28 @@
-# Welcome to your Expo app 👋
+# Radium mobile
+
+## Authentication foundation
+
+The mobile app reuses the existing Better Auth backend through `src/lib/auth-client.ts` and `ConvexBetterAuthProvider`. On native, the Expo plugin persists sessions in SecureStore; the app does not maintain a second token store.
+
+- `/auth/sign-in` and `/auth/sign-up` use React Native Reusables primitives, shared validation, loading/error feedback, and Uniwind light/dark tokens.
+- The root layout waits for session restoration, offers retry on session lookup failure, and protects the `(app)` tab group with Expo Router. Successful sign-in/sign-up and sign-out change navigation through session state. These are UI guards, not a substitute for backend authorization.
+- `UserMenu` displays the real session user and signs out. Account editing and multi-account switching are not implemented.
+- Link-based password recovery is wired but disabled by `authOptions.passwordReset` in `src/lib/auth.ts`. Enable it only after the backend has a `sendResetPassword` delivery callback and trusts the app's callback origin. Test `/auth/reset-password` deep links in a development build using the `radium` scheme; Expo Go URLs are not stable callback URLs.
+- Social sign-in and email verification are not exposed: the backend currently configures neither social providers nor verification delivery. The installed `social-connections.tsx` and `verify-email-form.tsx` remain unused registry scaffolds, not working auth features. Do not mount them as-is.
+
+Copy `.env.example` to `.env.local` and set matching `EXPO_PUBLIC_CONVEX_URL` and `EXPO_PUBLIC_CONVEX_SITE_URL` for your deployment. The site URL must point to the Convex HTTP origin, not the web frontend. Both values are public. No backend deployment is required by these frontend changes.
+
+From the repository root:
+
+```sh
+bun install
+bun run --cwd apps/mobile start
+bun run --cwd apps/mobile lint
+```
+
+From `apps/mobile`, run `bunx tsc --noEmit` and `bun test tests/auth.test.mjs` for local static and validation checks. Live authentication still needs an isolated configured Convex deployment and a test account: check registration, invalid credentials, app restart/session restoration, protected deep links, sign-out, and network failure. Recovery additionally requires configured email delivery. Do not use production accounts/data for verification.
+
+## Expo starter reference
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 

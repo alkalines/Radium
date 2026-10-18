@@ -7,6 +7,7 @@ import { HintRow } from "@/components/hint-row";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { WebBadge } from "@/components/web-badge";
+import { UserMenu } from "@/components/user-menu";
 import { BottomTabInset, MaxContentWidth, Spacing } from "@/constants/theme";
 
 function getDevMenuHint() {
@@ -32,6 +33,7 @@ export default function HomeScreen() {
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
+        <UserMenu />
         <ThemedView style={styles.heroSection}>
           <AnimatedIcon />
           <ThemedText type="title" style={styles.title}>
