@@ -1,5 +1,6 @@
 import "@/global.css"
 
+import { PortalHost } from "@rn-primitives/portal"
 import { ConvexBetterAuthProvider } from "@convex-dev/better-auth/react";
 import { ConvexReactClient } from "convex/react";
 import { authClient } from "@/lib/auth-client";
@@ -23,6 +24,7 @@ export default function TabLayout() {
       <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
         <AnimatedSplashOverlay />
         <AppTabs />
+        <PortalHost />
       </ThemeProvider>
     </ConvexBetterAuthProvider>
   );
