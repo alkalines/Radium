@@ -93,9 +93,7 @@ const moveDirectories = async (userInput) => {
         if (userInput === "y") {
           const newAssetPath = path.join(exampleDirPath, "assets/images", asset);
           await fs.promises.rename(assetPath, newAssetPath);
-          console.log(
-            `➡️ /assets/images/${asset} moved to /${exampleDir}/assets/images/${asset}.`
-          );
+          console.log(`➡️ /assets/images/${asset} moved to /${exampleDir}/assets/images/${asset}.`);
         } else {
           await fs.promises.rm(assetPath, { recursive: true, force: true });
           console.log(`❌ /assets/images/${asset} deleted.`);
@@ -124,7 +122,7 @@ const moveDirectories = async (userInput) => {
         userInput === "y"
           ? `\n4. Delete the /${exampleDir} directory when you're done referencing it.`
           : ""
-      }`
+      }`,
     );
   } catch (error) {
     console.error(`❌ Error during script execution: ${error.message}`);
@@ -141,5 +139,5 @@ rl.question(
       console.log("❌ Invalid input. Please enter 'Y' or 'N'.");
       rl.close();
     }
-  }
+  },
 );

@@ -14,6 +14,7 @@
     "@ai-sdk/openai": "^4.0.71",
     "@ai-sdk/openai-compatible": "^3.0.53",
     "@ai-sdk/otel": "^1.0.107",
+    "@better-auth/expo": "1.6.33",
     "@convex-dev/better-auth": "^0.12.5",
     "@convex-dev/migrations": "^0.3.6",
     "@convex-dev/rate-limiter": "^0.4.0",

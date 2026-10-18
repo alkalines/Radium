@@ -24,7 +24,8 @@
     "test": "bun run build:components && bun run --cwd packages/backend test",
     "lint": "eslint",
     "format": "oxfmt",
-    "format:check": "oxfmt --check"
+    "format:check": "oxfmt --check",
+    "mobile": "bun run --cwd apps/mobile start"
   },
   "devDependencies": {
     "concurrently": "^10.0.5"
