@@ -1,3 +1,5 @@
+import "@/global.css"
+
 import { ConvexBetterAuthProvider } from "@convex-dev/better-auth/react";
 import { ConvexReactClient } from "convex/react";
 import { authClient } from "@/lib/auth-client";
