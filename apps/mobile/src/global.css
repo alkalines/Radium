@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "uniwind";
 
+@source "../node_modules/streamdown/dist/*.js";
+
 @theme {
   --radius-lg: 0.625rem;
   --radius-md: calc(0.625rem - 2px);

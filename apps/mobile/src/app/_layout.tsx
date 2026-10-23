@@ -60,6 +60,9 @@ function AuthNavigator() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Protected guard={!!session}>
         <Stack.Screen name="(app)" />
+        <Stack.Protected guard={__DEV__}>
+          <Stack.Screen name="ai-elements" />
+        </Stack.Protected>
       </Stack.Protected>
       <Stack.Protected guard={!session}>
         <Stack.Screen name="auth/sign-in" />

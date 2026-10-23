@@ -31,7 +31,7 @@ Run lint and typecheck before declaring any task done.
 
 ## Styling
 
-- Use Uniwind with Tailwind CSS 4. Theme tokens live in `src/global.css`; Metro integration lives in `metro.config.js`. There is no JavaScript Tailwind config or custom Babel config.
+- Use Uniwind with Tailwind CSS 4. Theme tokens live in `src/global.css`; Metro integration lives in `metro.config.js`. There is no JavaScript Tailwind config. `babel.config.js` configures Worklets Bundle Mode for native streaming Markdown, not styling; keep Uniwind as the outermost Metro wrapper.
 - Preserve the app's explicit 16px rem base. Keep the CSS entry import in `src/app/_layout.tsx` and reuse `cn` from `src/lib/utils.ts` for conflicting class names.
 - Use the Uniwind skill for styling work. Do not add NativeWind presets or `react-native-css-interop`.
 
