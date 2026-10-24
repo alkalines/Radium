@@ -271,11 +271,14 @@ async function authorizeChatWorkerDispatch(
   )
     return taskDenied();
 
+  // Tools may be chosen before a Worker; dispatch needs the stored Worker and derived directory.
   const selection = chat.worker;
   const directory = selection?.directory;
+  const workerId = selection?.workerId;
   if (
     !selection ||
-    selection.workerId !== args.workerId ||
+    workerId === undefined ||
+    workerId !== args.workerId ||
     typeof directory !== "string" ||
     !validChatWorkerDirectory(directory) ||
     args.directory !== directory ||
@@ -287,14 +290,14 @@ async function authorizeChatWorkerDispatch(
   try {
     worker = await ctx.runQuery(components.workerIdentity.identities.getWorkerMetadata, {
       workspaceId: workspace._id,
-      workerId: selection.workerId,
+      workerId,
     });
   } catch {
     return taskDenied();
   }
   if (
     !worker ||
-    worker.workerId !== selection.workerId ||
+    worker.workerId !== workerId ||
     worker.workspaceId !== workspace._id ||
     worker.status !== "active"
   )

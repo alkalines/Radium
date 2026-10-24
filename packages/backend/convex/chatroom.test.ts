@@ -250,6 +250,71 @@ test("setting a default materializes legacy fields and does not bleed to another
   ).resolves.toBe(true);
 });
 
+test("Worker tool defaults are owner-written, member-readable, and keep legacy settings", async () => {
+  const t = makeTest();
+  const ids = await chatFixture(t);
+  await t.run((ctx) =>
+    ctx.db.insert("chatroom_settings", {
+      userId: "owner",
+      defaultModel: "legacy-model",
+      builtinToolSets: ["web_search"],
+      mcpServers: [],
+    }),
+  );
+  const owner = asUser(t, "owner");
+  const member = asUser(t, "member");
+
+  await expect(
+    member.query(api.chatroom.getWorkerToolDefaults, { workspace: ids.workspace }),
+  ).resolves.toEqual([]);
+  await expect(
+    member.mutation(api.chatroom.setWorkerToolDefaults, {
+      workspace: ids.workspace,
+      tools: ["read"],
+    }),
+  ).rejects.toThrow("Workspace not found.");
+  await expect(
+    owner.mutation(api.chatroom.setWorkerToolDefaults, {
+      workspace: ids.workspace,
+      tools: ["read", "read"],
+    }),
+  ).rejects.toThrow("Worker tools must be unique.");
+
+  await owner.mutation(api.chatroom.setWorkerToolDefaults, {
+    workspace: ids.workspace,
+    tools: ["read", "edit"],
+  });
+  await expect(
+    member.query(api.chatroom.getWorkerToolDefaults, { workspace: ids.workspace }),
+  ).resolves.toEqual(["read", "edit"]);
+  // The first workspace write materializes the legacy fallback instead of dropping it.
+  await expect(
+    member.query(api.chatroom.getToolDefaults, { workspace: ids.workspace }),
+  ).resolves.toEqual({ builtinToolSets: ["web_search"], mcpServers: [] });
+});
+
+test("CreateChat stores draft tool choices as a sanitized chat override without touching defaults", async () => {
+  const t = makeTest();
+  const ids = await chatFixture(t);
+  const member = asUser(t, "member");
+
+  const chatId = await member.mutation(api.aisdk.CreateChat, {
+    workspace: ids.workspace,
+    messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+    tools: { builtinToolSets: ["web_search", "unknown-tool"], mcpServers: [] },
+  });
+
+  await expect(member.query(api.chatroom.getChatTools, { chatId })).resolves.toEqual({
+    builtinToolSets: ["web_search"],
+    mcpServers: [],
+    source: "chat",
+  });
+  await expect(
+    member.query(api.chatroom.getToolDefaults, { workspace: ids.workspace }),
+  ).resolves.toEqual({ builtinToolSets: [], mcpServers: [] });
+  expect(await t.run((ctx) => ctx.db.query("workspace_settings").collect())).toEqual([]);
+});
+
 test("moved title handlers preserve existing titles unless regeneration is forced", async () => {
   const t = makeTest();
   const { ownerShared: chatId } = await chatFixture(t);

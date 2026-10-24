@@ -12,10 +12,11 @@ import { authComponent, createAuth } from "./auth";
 import schema from "./schema";
 import { canAccessResolvedChat, canAccessWorkspace, canManageChat } from "../src/workspaces/policy";
 import { isWorkspaceIconName } from "../src/workspaces/icons";
+import { isTileColorName } from "../src/workspaces/colors";
+import { normalizeDisplayName } from "../src/workspaces/names";
 
 const MAX_WORKSPACES = 100;
 const MAX_MEMBERS = 200;
-const MAX_NAME_LENGTH = 80;
 
 const workspaceRoleValidator = v.union(v.literal("owner"), v.literal("member"));
 
@@ -24,6 +25,7 @@ const workspaceSummaryValidator = v.object({
   _creationTime: v.number(),
   name: v.string(),
   icon: v.optional(v.string()),
+  color: v.optional(v.string()),
   ownerType: v.literal("user"),
   role: workspaceRoleValidator,
 });
@@ -86,6 +88,8 @@ export async function loadWorkspaceSettings(
     ...(settings?.telemetry !== undefined ? { telemetry: settings.telemetry } : {}),
     builtinToolSets: settings?.builtinToolSets ?? [],
     mcpServers: settings?.mcpServers ?? [],
+    // Legacy user settings predate Worker tools, so only workspace rows can set them.
+    ...(settings?.workerTools !== undefined ? { workerTools: settings.workerTools } : {}),
   };
 }
 
@@ -141,15 +145,6 @@ type BetterAuthUser = {
   name: string;
 };
 
-function normalizeWorkspaceName(name: string): string {
-  const normalized = name
-    .replace(/[\r\n]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) throw new Error("Workspace name is required.");
-  return normalized.slice(0, MAX_NAME_LENGTH);
-}
-
 function normalizeMemberEmail(email: string): string {
   const normalized = email.trim().toLowerCase();
   if (!normalized) throw new Error("Member email is required.");
@@ -166,6 +161,7 @@ function workspaceSummary(workspace: WorkspaceRecord, role: WorkspaceRole) {
     _creationTime: workspace._creationTime,
     name: workspace.name,
     icon: workspace.icon,
+    color: workspace.color,
     ownerType: workspace.ownerType,
     role,
   };
@@ -476,7 +472,7 @@ export const ensurePersonalWorkspace = mutation({
           await ctx.db.insert("workspaces", {
             ownerType: "user",
             ownerId: identity._id,
-            name: normalizeWorkspaceName(args.name ?? "Personal workspace"),
+            name: normalizeDisplayName(args.name ?? "Personal workspace", "Workspace"),
             legacyBalance: balance._id,
             legacyOrganizationId: balance.organizationId,
             legacyTeamId: balance.teamId,
@@ -489,7 +485,7 @@ export const ensurePersonalWorkspace = mutation({
     return await ctx.db.insert("workspaces", {
       ownerType: "user",
       ownerId: identity._id,
-      name: normalizeWorkspaceName(args.name ?? "Personal workspace"),
+      name: normalizeDisplayName(args.name ?? "Personal workspace", "Workspace"),
     });
   },
 });
@@ -539,7 +535,7 @@ export const create = mutation({
     return await ctx.db.insert("workspaces", {
       ownerType: "user",
       ownerId: identity._id,
-      name: normalizeWorkspaceName(args.name),
+      name: normalizeDisplayName(args.name, "Workspace"),
     });
   },
 });
@@ -549,7 +545,9 @@ export const rename = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
-    await ctx.db.patch("workspaces", workspace._id, { name: normalizeWorkspaceName(args.name) });
+    await ctx.db.patch("workspaces", workspace._id, {
+      name: normalizeDisplayName(args.name, "Workspace"),
+    });
     return null;
   },
 });
@@ -561,6 +559,18 @@ export const setIcon = mutation({
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     if (!isWorkspaceIconName(args.icon)) throw new Error("Unsupported workspace icon.");
     await ctx.db.patch("workspaces", workspace._id, { icon: args.icon });
+    return null;
+  },
+});
+
+/** Set the workspace tile color; owner only, and only for supported color names. */
+export const setColor = mutation({
+  args: { workspace: v.id("workspaces"), color: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    if (!isTileColorName(args.color)) throw new Error("Unsupported workspace color.");
+    await ctx.db.patch("workspaces", workspace._id, { color: args.color });
     return null;
   },
 });

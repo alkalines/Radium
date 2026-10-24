@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
-import { PencilIcon, PlusIcon, ServerIcon, Trash2Icon, WrenchIcon } from "lucide-react";
+import { MoreHorizontalIcon, PencilIcon, PlusIcon, ServerIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -11,8 +11,8 @@ import {
   WEB_SEARCH_TOOL_ID,
   type ToolSelection,
 } from "backend/src/chatroom/tools";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
+import { GroupList, Row, RowBlock, Tag } from "@/components/harness/group-list";
+import { WorkspacePageHeader, ownerOnlyNotice } from "@/components/settings/workspace-page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,27 +25,36 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@/components/ui/empty";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { McpServerDialog, type McpServerEditTarget } from "./mcp-server-dialog";
+import {
+  ToolRow,
+  builtinToolIcon,
+  isWorkerToolOptionEnabled,
+  withWorkerToolOption,
+  workerToolOptions,
+  type WorkerToolOption,
+} from "./tool-catalog";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 /**
- * Chatroom → Tools settings. Manages the user's *default* tool selection (which
- * built-in tool sets and MCP servers new chats start with) and the catalogue of
- * MCP servers themselves. Per-chat overrides are edited from the chat composer.
+ * Chatroom → Tools settings: the workspace *defaults* a new Session starts with (built-in tool
+ * sets, MCP servers, and the Worker tools applied once a Worker is selected) plus the catalogue
+ * of MCP servers. Owner-only writes; per-Session choices live in the Composer's Tools dialog and
+ * never write back here.
  */
 export function ToolsPanel() {
-  const { workspaceId } = useWorkspace();
+  const { workspace, workspaceId } = useWorkspace();
+  const isOwner = workspace?.role === "owner";
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
   const { data: servers } = useQuery(
@@ -61,6 +70,22 @@ export function ToolsPanel() {
     ),
   );
   const setToolDefaults = useMutation(api.chatroom.setToolDefaults);
+  const { data: workerToolDefaults } = useQuery(
+    convexQuery(
+      api.chatroom.getWorkerToolDefaults,
+      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
+  );
+  // Optimistic so a quick second toggle builds on the first instead of the stale server list.
+  const setWorkerToolDefaults = useMutation(
+    api.chatroom.setWorkerToolDefaults,
+  ).withOptimisticUpdate((localStore, args) => {
+    localStore.setQuery(
+      api.chatroom.getWorkerToolDefaults,
+      { workspace: args.workspace },
+      args.tools,
+    );
+  });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<McpServerEditTarget>(null);
@@ -99,125 +124,138 @@ export function ToolsPanel() {
     void persist({ ...selection, mcpServers });
   }
 
+  async function toggleWorkerTool(option: WorkerToolOption, enabled: boolean) {
+    if (!workspaceId || !isOwner || workerToolDefaults === undefined) return;
+
+    const tools = withWorkerToolOption(workerToolDefaults, option, enabled);
+    try {
+      await setWorkerToolDefaults({ workspace: workspaceId, tools });
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to update default Worker tools.",
+      );
+    }
+  }
+
   function openCreate() {
     setEditTarget(null);
     setDialogOpen(true);
   }
 
   return (
-    <div className="flex flex-col gap-8">
-      <section className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-lg font-semibold tracking-tight">Built-in tools</h2>
-          <p className="text-sm text-muted-foreground">
-            Tool sets bundled with Radium. Enabled tools are turned on by default in new chats.
-          </p>
-        </div>
-
-        <div className="flex flex-col divide-y rounded-lg border">
-          {BUILTIN_TOOL_SETS.map((toolSet) => {
-            const enabled = selection.builtinToolSets.includes(toolSet.id);
-            return (
-              <div key={toolSet.id} className="flex flex-col">
-                <div className="flex items-center gap-3 p-3">
-                  <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
-                    <WrenchIcon className="size-4" />
-                  </div>
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="flex items-center gap-2 font-medium">
-                      {toolSet.name}
-                      {!toolSet.available && <Badge variant="secondary">Soon</Badge>}
-                    </span>
-                    <span className="truncate text-xs text-muted-foreground">
-                      {toolSet.description}
-                    </span>
-                  </div>
-                  <Switch
-                    checked={enabled}
-                    onCheckedChange={(checked) => toggleBuiltin(toolSet.id, checked)}
-                    disabled={!signedIn || defaults === undefined}
-                    aria-label={`Enable ${toolSet.name} by default`}
-                  />
-                </div>
-                {toolSet.id === WEB_SEARCH_TOOL_ID && enabled && workspaceId && (
-                  <ExaApiKeyField workspaceId={workspaceId} />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex flex-col gap-1">
-            <h2 className="text-lg font-semibold tracking-tight">MCP servers</h2>
-            <p className="text-sm text-muted-foreground">
-              Connect Model Context Protocol servers to expose their tools to your chats.
-            </p>
-          </div>
-          <Button onClick={openCreate} disabled={!signedIn}>
+    <>
+      <WorkspacePageHeader
+        title="Tools"
+        description={
+          isOwner
+            ? "Workspace defaults for new Sessions. Choose tools for one Session from the Tools dialog in the Composer."
+            : ownerOnlyNotice
+        }
+        action={
+          <Button variant="outline" size="sm" onClick={openCreate} disabled={!signedIn}>
             <PlusIcon data-icon="inline-start" />
-            Add server
+            Add MCP server
           </Button>
-        </div>
+        }
+      />
 
+      {/* Same rows as the Composer's Tools dialog: built-in and Worker tools in one flat list. */}
+      <GroupList
+        title="Tools"
+        description="Enabled tools are on in new Sessions. Worker tools apply once a Worker is picked; write and bash ask for approval before each run."
+      >
+        {BUILTIN_TOOL_SETS.map((toolSet) => {
+          const enabled = toolSet.available && selection.builtinToolSets.includes(toolSet.id);
+          return (
+            <Fragment key={toolSet.id}>
+              <ToolRow
+                icon={builtinToolIcon(toolSet.id)}
+                toolId={toolSet.id}
+                description={toolSet.description}
+                tags={toolSet.available ? null : <Tag>Soon</Tag>}
+                isDimmed={!toolSet.available}
+              >
+                <Switch
+                  checked={enabled}
+                  onCheckedChange={(checked) => toggleBuiltin(toolSet.id, checked)}
+                  disabled={!signedIn || defaults === undefined || !toolSet.available}
+                  aria-label={`Enable ${toolSet.name} by default`}
+                />
+              </ToolRow>
+              {toolSet.id === WEB_SEARCH_TOOL_ID && enabled && workspaceId && (
+                <ExaApiKeyField workspaceId={workspaceId} />
+              )}
+            </Fragment>
+          );
+        })}
+        {workerToolOptions.map((tool) => (
+          <ToolRow
+            key={tool.id}
+            icon={tool.icon}
+            toolId={tool.id}
+            description={tool.description}
+            tags={tool.requiresApproval ? <Tag>Approval</Tag> : null}
+          >
+            <Switch
+              checked={isWorkerToolOptionEnabled(tool, workerToolDefaults ?? [])}
+              onCheckedChange={(checked) => void toggleWorkerTool(tool, checked)}
+              disabled={!isOwner || workerToolDefaults === undefined}
+              aria-label={`Enable ${tool.label} by default`}
+            />
+          </ToolRow>
+        ))}
+      </GroupList>
+
+      <GroupList
+        title="MCP servers"
+        description="Connect Model Context Protocol servers to expose their tools to your chats."
+      >
         {!signedIn && userInfo !== undefined && (
-          <Alert>
-            <AlertTitle>Sign in required</AlertTitle>
-            <AlertDescription>Sign in to add MCP servers.</AlertDescription>
-          </Alert>
+          <RowBlock className="text-sm text-muted-foreground">Sign in to add MCP servers.</RowBlock>
         )}
 
-        {signedIn && servers === undefined ? (
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-16" />
-            <Skeleton className="h-16" />
-          </div>
-        ) : signedIn && servers && servers.length === 0 ? (
-          <Empty className="border border-dashed">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <ServerIcon />
-              </EmptyMedia>
-              <EmptyTitle>No MCP servers</EmptyTitle>
-              <EmptyDescription>
-                Add a server to give your chats access to external tools.
-              </EmptyDescription>
-            </EmptyHeader>
-            <Button onClick={openCreate}>
-              <PlusIcon data-icon="inline-start" />
-              Add server
-            </Button>
-          </Empty>
-        ) : signedIn && servers ? (
-          <div className="flex flex-col divide-y rounded-lg border">
-            {servers.map((server) => (
-              <div key={server._id} className="flex items-center gap-3 p-3">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
-                  <ServerIcon className="size-4" />
-                </div>
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate font-medium">{server.name}</span>
-                  <span className="truncate font-mono text-xs text-muted-foreground">
-                    {server.url}
-                  </span>
-                </div>
-                <Badge variant="secondary" className="shrink-0 capitalize">
-                  {server.auth.type === "none" ? "No auth" : server.auth.type}
-                </Badge>
-                <div className="flex shrink-0 items-center gap-1.5 pl-1">
-                  <Switch
-                    checked={selection.mcpServers.includes(server._id)}
-                    onCheckedChange={(checked) => toggleServer(server._id, checked)}
-                    disabled={defaults === undefined}
-                    aria-label={`Enable ${server.name} by default`}
-                  />
+        {signedIn && servers === undefined && (
+          <RowBlock>
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-4 w-64" />
+          </RowBlock>
+        )}
+
+        {signedIn && servers?.length === 0 && (
+          <RowBlock className="text-sm text-muted-foreground">
+            No MCP servers yet. Add one to give your chats access to external tools.
+          </RowBlock>
+        )}
+
+        {signedIn &&
+          servers?.map((server) => (
+            <Row
+              key={server._id}
+              icon={ServerIcon}
+              title={server.name}
+              tag={server.auth.type === "none" ? "No auth" : server.auth.type}
+              description={<span className="font-mono text-[13px]">{server.url}</span>}
+            >
+              <Switch
+                checked={selection.mcpServers.includes(server._id)}
+                onCheckedChange={(checked) => toggleServer(server._id, checked)}
+                disabled={defaults === undefined}
+                aria-label={`Enable ${server.name} by default`}
+              />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
                   <Button
                     variant="ghost"
-                    size="icon"
+                    size="icon-xs"
                     className="text-muted-foreground"
-                    onClick={() => {
+                    aria-label={`Actions for ${server.name}`}
+                  >
+                    <MoreHorizontalIcon />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onSelect={() => {
                       setEditTarget({
                         _id: server._id,
                         name: server.name,
@@ -228,25 +266,22 @@ export function ToolsPanel() {
                       });
                       setDialogOpen(true);
                     }}
-                    aria-label={`Edit ${server.name}`}
                   >
                     <PencilIcon />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={() => setDeleting({ _id: server._id, name: server.name })}
-                    aria-label={`Delete ${server.name}`}
+                    Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => setDeleting({ _id: server._id, name: server.name })}
                   >
                     <Trash2Icon />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </section>
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </Row>
+          ))}
+      </GroupList>
 
       <McpServerDialog
         workspaceId={workspaceId}
@@ -262,7 +297,7 @@ export function ToolsPanel() {
         workspaceId={workspaceId}
         onOpenChange={(open) => !open && setDeleting(null)}
       />
-    </div>
+    </>
   );
 }
 
@@ -314,7 +349,7 @@ function ExaApiKeyField({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
   }
 
   return (
-    <div className="flex flex-col gap-2 bg-muted/20 px-3 pb-3 pt-1">
+    <RowBlock className="gap-2 pt-1">
       <Label htmlFor="exa-api-key" className="text-xs text-muted-foreground">
         Exa API key {!stored && <span className="text-destructive">(required for Web Search)</span>}
       </Label>
@@ -328,14 +363,14 @@ function ExaApiKeyField({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
           onChange={(event) => setValue(event.target.value)}
           disabled={submitting || stored === undefined}
         />
-        <Button onClick={save} disabled={submitting || !value.trim()}>
+        <Button variant="outline" size="sm" onClick={save} disabled={submitting || !value.trim()}>
           {submitting && <Spinner data-icon="inline-start" />}
           {stored ? "Replace" : "Save"}
         </Button>
         {stored && (
           <Button
             variant="ghost"
-            size="icon"
+            size="icon-xs"
             className="text-muted-foreground hover:text-destructive"
             onClick={remove}
             disabled={submitting}
@@ -357,7 +392,7 @@ function ExaApiKeyField({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
         </a>
         .
       </p>
-    </div>
+    </RowBlock>
   );
 }
 

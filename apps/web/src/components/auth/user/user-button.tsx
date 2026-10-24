@@ -50,6 +50,8 @@ export type UserButtonProps = {
   links?: (UserButtonLink | ReactElement)[];
   /** Hide the built-in "Settings" link. Useful when replacing it via `links`. */
   hideSettings?: boolean;
+  /** Classes for the avatar in the `icon` size, e.g. to fit a 28px Tab strip. */
+  avatarClassName?: string;
 };
 
 function renderUserLink(
@@ -81,6 +83,7 @@ function renderUserLink(
  * @param variant - Visual variant of the trigger button
  * @param links - Additional menu entries rendered above the built-in items
  * @param hideSettings - Hide the built-in "Settings" link
+ * @param avatarClassName - Classes for the avatar when `size` is `"icon"`
  * @returns The dropdown menu component with user actions
  */
 export function UserButton({
@@ -91,6 +94,7 @@ export function UserButton({
   variant = "ghost",
   links,
   hideSettings = false,
+  avatarClassName,
 }: UserButtonProps) {
   const { authClient, basePaths, viewPaths, localization, plugins, navigate } =
     useAuth<MultiSessionAuthClient>();
@@ -126,7 +130,7 @@ export function UserButton({
         }
       >
         {size === "icon" ? (
-          <UserAvatar />
+          <UserAvatar className={avatarClassName} />
         ) : (
           <>
             {session || sessionPending || settingActiveSession ? (

@@ -29,17 +29,25 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllEnvs());
 
-function fixture(
-  userId = "owner",
-  directory: string | undefined = "/project",
-  tools: Array<"read" | "edit" | "create" | "bash"> = ["read", "edit", "create"],
-) {
+type StoredWorker = {
+  workerId?: string;
+  directory?: string;
+  tools: Array<"read" | "edit" | "create" | "bash">;
+};
+
+const defaultWorker: StoredWorker = {
+  workerId: "selected-worker",
+  directory: "/project",
+  tools: ["read", "edit", "create"],
+};
+
+function fixture(userId = "owner", worker: StoredWorker = defaultWorker) {
   mocks.user.mockResolvedValue({ _id: userId });
   const runQuery = vi
     .fn()
     .mockResolvedValueOnce({
       chat: {
-        worker: { workerId: "selected-worker", directory, tools },
+        worker,
         scope: "workspace",
         userId: "owner",
       },
@@ -47,7 +55,7 @@ function fixture(
     })
     .mockResolvedValueOnce({ enabled: false })
     .mockResolvedValueOnce({ mcpServers: [] });
-  if (userId === "owner")
+  if (userId === "owner" && worker.workerId !== undefined)
     runQuery.mockResolvedValueOnce({
       workerId: "selected-worker",
       workspaceId: "chat-workspace",
@@ -87,7 +95,7 @@ test("HTTP chat exposes the persisted Worker's enabled tools with signed write a
 });
 
 test("Bash-only Worker selection receives a signed approval secret", async () => {
-  const f = fixture("owner", "/project", ["bash"]);
+  const f = fixture("owner", { ...defaultWorker, tools: ["bash"] });
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
   const options = mocks.streamText.mock.calls[0]![0];
   expect(Object.keys(options.tools)).toEqual(["worker_bash"]);
@@ -102,13 +110,37 @@ test("shared-chat members never receive owner-selected Worker tools", async () =
   expect(f.runQuery).toHaveBeenCalledTimes(4);
 });
 
-test("missing Worker directory fails visibly before marking a stream active", async () => {
-  const f = fixture("owner", "");
+test("an invalid stored Worker directory fails visibly before marking a stream active", async () => {
+  const f = fixture("owner", { ...defaultWorker, directory: "relative/path" });
   const response = await handleAISDKChat(f.ctx, request());
   expect(response.status).toBe(400);
   expect(await response.json()).toMatchObject({
-    error: { message: expect.stringContaining("absolute directory") },
+    error: { message: expect.stringContaining("Worker tools are unavailable") },
   });
   expect(mocks.streamText).not.toHaveBeenCalled();
   expect(f.runMutation).not.toHaveBeenCalled();
+});
+
+test("a Worker without a reported directory exposes tools that explain why they cannot run", async () => {
+  const f = fixture("owner", { workerId: "selected-worker", tools: ["read", "bash"] });
+  expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
+  const options = mocks.streamText.mock.calls[0]![0];
+  expect(Object.keys(options.tools)).toEqual(["worker_read", "worker_bash"]);
+  expect(options.toolApproval).toEqual({});
+  await expect(
+    options.tools.worker_bash.execute({ command: "ls", timeout: 5 }, { toolCallId: "call" }),
+  ).resolves.toMatchObject({
+    ok: false,
+    code: "WORKER_DIRECTORY_UNAVAILABLE",
+    message: "Worker has not reported a working directory; update/restart the Worker.",
+  });
+  // Only the stream-start bookkeeping ran; nothing was dispatched to the Worker.
+  expect(f.runMutation).toHaveBeenCalledTimes(1);
+});
+
+test("Worker tools chosen without a Worker are not offered to the model", async () => {
+  const f = fixture("owner", { tools: ["read"] });
+  expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
+  expect(mocks.streamText.mock.calls[0]![0].tools).toEqual({});
+  expect(f.runQuery).toHaveBeenCalledTimes(4);
 });

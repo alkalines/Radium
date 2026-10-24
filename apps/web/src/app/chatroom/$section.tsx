@@ -1,104 +1,69 @@
-import { createFileRoute, notFound, redirect } from "@tanstack/react-router";
-import { createIsomorphicFn } from "@tanstack/react-start";
-import { ensureSession as ensureSessionClient } from "@better-auth-ui/core";
-import { ensureSessionServer } from "@better-auth-ui/core/server";
-import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
-
 import { convexQuery } from "@convex-dev/react-query";
+import { createFileRoute, notFound } from "@tanstack/react-router";
 
-import {
-  ChatroomSettings,
-  chatroomSections,
-  type ChatroomSection,
-} from "@/components/chatroom/chatroom-settings";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Skeleton } from "@/components/ui/skeleton";
-import { useWorkspace } from "@/components/workspaces/workspace-provider";
+import { chatroomSections } from "@/components/chatroom/chatroom-settings";
+import { PreferencesPanel } from "@/components/chatroom/preferences-panel";
+import { ToolsPanel } from "@/components/chatroom/tools-panel";
+import { WorkspaceSettingsGate } from "@/components/settings/workspace-settings-gate";
+import { WorkerManagement } from "@/components/workspaces/worker-management";
+import { requireSession } from "@/lib/require-session";
 import { api } from "backend/convex/_generated/api";
-import { auth } from "@/lib/auth";
-import { authClient } from "@/lib/auth-client";
 
 export const Route = createFileRoute("/chatroom/$section")({
   staticData: {
     pageTitle: "Chatroom",
+    screen: "settings",
   },
   async beforeLoad({ params: { section }, context: { queryClient }, location }) {
     if (!chatroomSections.some((entry) => entry.value === section)) {
       throw notFound();
     }
 
-    const ensureSession = createIsomorphicFn()
-      .server(() =>
-        ensureSessionServer(queryClient, auth as any, {
-          baseURL: getRequestUrl().origin,
-          headers: getRequestHeaders(),
-        }),
-      )
-      .client(() => ensureSessionClient(queryClient, authClient));
-
-    const session = await ensureSession();
-
-    if (!session) {
-      throw redirect({
-        to: "/auth/$path",
-        params: { path: "sign-in" },
-        search: { redirectTo: location.href },
-      });
-    }
-
+    const session = await requireSession({ queryClient, location });
     return { session };
   },
-  loader: ({ context: { queryClient }, params: { section } }) => {
+  loader: ({ context: { queryClient } }) => {
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
   },
   component: ChatroomPage,
 });
 
+const chatroomOwnerOnlyDetail =
+  "Shared chat defaults, tools, and MCP servers stay with the workspace owner. You can still start and use chats here.";
+
 function ChatroomPage() {
   const { section } = Route.useParams();
-  const { workspace, isLoading } = useWorkspace();
-  const isWorkersPage = section === "workers";
+  const chatroomSection = chatroomSections.find((entry) => entry.value === section);
 
-  if (isLoading) {
-    return <Skeleton className="mx-auto h-32 w-full max-w-3xl" />;
+  if (!chatroomSection) {
+    throw notFound();
   }
 
-  if (!workspace) {
-    return (
-      <WorkspaceNotice
-        title="Workspace unavailable"
-        description={
-          isWorkersPage
-            ? "Select an active workspace to manage its Worker identities."
-            : "Select an active workspace to view Chatroom settings."
-        }
-      />
-    );
+  switch (chatroomSection.value) {
+    // Members may open the Workers page; it drops its owner controls itself.
+    case "workers":
+      return (
+        <WorkspaceSettingsGate title={chatroomSection.label}>
+          <WorkerManagement />
+        </WorkspaceSettingsGate>
+      );
+    case "preferences":
+      return (
+        <WorkspaceSettingsGate
+          title={chatroomSection.label}
+          ownerOnlyDetail={chatroomOwnerOnlyDetail}
+        >
+          <PreferencesPanel />
+        </WorkspaceSettingsGate>
+      );
+    case "tools":
+      return (
+        <WorkspaceSettingsGate
+          title={chatroomSection.label}
+          ownerOnlyDetail={chatroomOwnerOnlyDetail}
+        >
+          <ToolsPanel />
+        </WorkspaceSettingsGate>
+      );
   }
-
-  if (workspace.role === "member" && !isWorkersPage) {
-    return (
-      <WorkspaceNotice
-        title="Chatroom settings are owner-only"
-        description={`You can start and use chats in ${workspace.name}. Only its owner can change shared defaults, tools, and MCP servers.`}
-      />
-    );
-  }
-
-  return (
-    <div className="mx-auto w-full max-w-3xl p-4 md:p-6">
-      <ChatroomSettings section={section as ChatroomSection} hideNav />
-    </div>
-  );
-}
-
-function WorkspaceNotice({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="mx-auto w-full max-w-3xl p-4 md:p-6">
-      <Alert>
-        <AlertTitle>{title}</AlertTitle>
-        <AlertDescription>{description}</AlertDescription>
-      </Alert>
-    </div>
-  );
 }

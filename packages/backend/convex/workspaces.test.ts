@@ -404,6 +404,38 @@ test("workspace icons are owner-managed and visible to members", async () => {
   ).rejects.toThrow("Workspace not found.");
 });
 
+test("workspace colors are owner-managed, validated, and visible to members", async () => {
+  const t = makeTest();
+  const workspace = await t.run(async (ctx) => {
+    const workspaceId = await ctx.db.insert("workspaces", {
+      ownerType: "user",
+      ownerId: "owner",
+      name: "Shared workspace",
+    });
+    await ctx.db.insert("workspace_members", {
+      workspace: workspaceId,
+      userId: "member",
+      role: "member",
+    });
+    return workspaceId;
+  });
+  const owner = asUser(t, "owner");
+  const member = asUser(t, "member");
+
+  await expect(
+    owner.mutation(api.workspaces.setColor, { workspace, color: "teal" }),
+  ).resolves.toBeNull();
+  await expect(member.query(api.workspaces.list, {})).resolves.toContainEqual(
+    expect.objectContaining({ _id: workspace, color: "teal", role: "member" }),
+  );
+  await expect(
+    member.mutation(api.workspaces.setColor, { workspace, color: "red" }),
+  ).rejects.toThrow("Workspace not found.");
+  await expect(
+    owner.mutation(api.workspaces.setColor, { workspace, color: "#ff0000" }),
+  ).rejects.toThrow("Unsupported workspace color.");
+});
+
 test("workspaceQuery exposes effective settings without leaking legacy settings", async () => {
   const t = makeWorkspaceContextTest();
   const ids = await t.run(async (ctx) => {

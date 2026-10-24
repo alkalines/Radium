@@ -6,7 +6,7 @@ import type { ActionCtx } from "../../convex/_generated/server";
 import {
   chatWorkerSessionId,
   validChatWorkerDirectory,
-  type ChatWorkerSelection,
+  type ChatWorkerTarget,
 } from "./chat-config";
 import type { WorkerEditRequest, WorkerEditResult } from "./edit-contract";
 import { WORKER_BASH_TIMEOUT_SECONDS } from "./bash-contract";
@@ -14,11 +14,18 @@ import { WORKER_BASH_TIMEOUT_SECONDS } from "./bash-contract";
 const WAIT_MS = 45_000;
 const POLL_MS = 500;
 
+/** Returned by every Worker tool when the chat has no usable Worker directory; nothing is dispatched. */
+const DIRECTORY_UNAVAILABLE = {
+  ok: false,
+  code: "WORKER_DIRECTORY_UNAVAILABLE",
+  message: "Worker has not reported a working directory; update/restart the Worker.",
+};
+
 type WorkerChatScope = {
   chatId: Id<"aisdk_chats">;
   workspaceId: Id<"workspaces">;
   userId: string;
-  selection: ChatWorkerSelection;
+  selection: ChatWorkerTarget;
 };
 
 /** Bind SDK approval signatures to this owner, chat, Worker, directory and tool selection. */
@@ -42,7 +49,12 @@ export async function workerChatApprovalSecret(issuerSecret: string, scope: Work
   return new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(context)));
 }
 
-/** AI SDK tools execute only through authorized Convex task coordination, never local filesystem APIs. */
+/**
+ * AI SDK tools execute only through authorized Convex task coordination, never local filesystem
+ * APIs. Without a valid stored directory (the Worker never reported a temp directory and the
+ * Project has no folder for it) the enabled tools are still exposed but return
+ * {@link DIRECTORY_UNAVAILABLE} without approval prompts or dispatch.
+ */
 export function buildWorkerChatTools(
   ctx: ActionCtx,
   scope: WorkerChatScope,
@@ -51,12 +63,10 @@ export function buildWorkerChatTools(
   toolApproval: ToolApprovalConfiguration<ToolSet, unknown>;
 } {
   const { selection, chatId, userId } = scope;
-  const directory = selection.directory;
-  if (!directory || !validChatWorkerDirectory(directory)) {
-    throw new Error(
-      "Set an absolute Worker directory in the prompt's Worker menu before using Worker tools.",
-    );
-  }
+  const directory =
+    selection.directory && validChatWorkerDirectory(selection.directory)
+      ? selection.directory
+      : undefined;
   const tools: ToolSet = {};
   const toolApproval: ToolApprovalConfiguration<ToolSet, unknown> = {};
   let writesQueue: Promise<unknown> = Promise.resolve();
@@ -69,17 +79,18 @@ export function buildWorkerChatTools(
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
     if (signal?.aborted) return { ok: false, code: "REQUEST_ABORTED" };
+    if (!directory) return DIRECTORY_UNAVAILABLE;
     const { taskId } = await ctx.runMutation(internal.worker_tasks.dispatchChatEdit, {
       chatId,
       userId,
       workerId: selection.workerId,
-      directory: directory!,
+      directory,
       tool: kind,
       toolCallId,
       stage,
       request: {
-        directory: directory!,
-        sessionId: await chatWorkerSessionId(chatId, directory!),
+        directory,
+        sessionId: await chatWorkerSessionId(chatId, directory),
         action,
       },
     });
@@ -201,7 +212,7 @@ export function buildWorkerChatTools(
       execute: ({ patch }, { toolCallId, abortSignal }) =>
         write("edit", patch, toolCallId, abortSignal),
     });
-    toolApproval.worker_edit = "user-approval";
+    if (directory) toolApproval.worker_edit = "user-approval";
   }
   if (selection.tools.includes("create")) {
     tools.worker_create = tool({
@@ -226,7 +237,7 @@ export function buildWorkerChatTools(
         return write("create", patch, toolCallId, abortSignal);
       },
     });
-    toolApproval.worker_create = "user-approval";
+    if (directory) toolApproval.worker_create = "user-approval";
   }
   if (selection.tools.includes("bash")) {
     tools.worker_bash = tool({
@@ -250,17 +261,18 @@ export function buildWorkerChatTools(
       }),
       execute: async ({ command, timeout }, { toolCallId, abortSignal }) => {
         if (abortSignal?.aborted) return { ok: false, code: "REQUEST_ABORTED" };
+        if (!directory) return DIRECTORY_UNAVAILABLE;
         const { taskId } = await ctx.runMutation(internal.worker_tasks.dispatchChatEdit, {
           chatId,
           userId,
           workerId: selection.workerId,
-          directory: directory!,
+          directory,
           tool: "bash",
           toolCallId,
           stage: "execute",
           request: {
-            directory: directory!,
-            sessionId: await chatWorkerSessionId(chatId, directory!),
+            directory,
+            sessionId: await chatWorkerSessionId(chatId, directory),
             command,
             timeoutSeconds: timeout,
           },
@@ -268,7 +280,7 @@ export function buildWorkerChatTools(
         return waitForOutcome(taskId, abortSignal);
       },
     });
-    toolApproval.worker_bash = "user-approval";
+    if (directory) toolApproval.worker_bash = "user-approval";
   }
   return { tools, toolApproval };
 }

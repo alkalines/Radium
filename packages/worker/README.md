@@ -95,6 +95,8 @@ no inbound HTTP listener; the former `/health` endpoint and `--port` option have
 been removed. Enrollment and token exchange still use outbound requests to the
 Convex-hosted authentication endpoints.
 
+While connected, `start` also reports presence through the machine-authorized `workers:reportPresence` mutation on connect and every 20 seconds (`WORKER_HEARTBEAT_INTERVAL_MS` in `backend/src/worker/presence.ts`). The report carries only the Worker's temp directory, `radium` under the OS temp folder (`/tmp` on Linux, `$TMPDIR` on macOS, `%TEMP%` on Windows), which `start` creates if missing. The website shows a Worker as online for 60 seconds after its last report, and chats without a Project folder for this Worker run in that temp directory. Presence is advisory and never authorizes tasks; failed reports are ignored and retried on the next heartbeat. A Worker started before this change reports nothing until it is restarted.
+
 `status` is a local, network-free inspection. For a completed identity, `refresh`
 performs a fresh backend challenge/token exchange without changing the saved key,
 identity, or remote Worker registration; it prints only the token expiry. A pending
@@ -124,7 +126,7 @@ and session disposal. See
 
 Owners dispatch via `api.worker_tasks.dispatchEdit` and subscribe to
 `api.worker_tasks.outcome`; the Chatroom composer can save an owner-only Worker
-selection, an absolute directory, and independent Read/Edit/Create preferences.
+selection and independent Read/Edit/Create/Bash preferences. The backend derives the directory: the chat Project's folder for that Worker, else the Worker's reported temp directory.
 Chatroom exposes those tools to the model for owner requests; Edit/Create require
 signed approval and operation-constrained staging/application. See
 [Chatroom integration](../../docs/Worker/Chatroom.md). Sessions
@@ -147,8 +149,8 @@ and backend authorization tests are separate.
 
 ## Chatroom Bash commands
 
-Enable **Bash commands** in the prompt's Worker menu and set an absolute directory
-on this machine. Each model command needs signed user approval. `start` consumes
+Enable **Bash commands** in the prompt's Worker tools. The command runs in the backend-derived directory (Project folder or this Worker's temp directory).
+Each model command needs signed user approval. `start` consumes
 foreground Bash and file tasks over the same authenticated control connection.
 Commands use native `Shell`, the Worker's OS permissions and inherited environment;
 the directory is cwd, not a sandbox. Timeout defaults to 30 seconds (range 1–30).
@@ -224,6 +226,7 @@ or copy-on-write storage. It does not revoke the remote identity.
 | `src/auth/state.ts`, `src/auth/credentials.ts`, `src/auth/private-files.ts` | Recovery metadata, credential adapters and protected local file operations. |
 | `src/control.ts`                                                            | Typed Convex subscription, auth retry and connection cleanup.               |
 | `src/tasks.ts`                                                              | Serialized file/Bash claims, local execution and completion receipts.       |
+| `src/presence.ts`                                                           | Temp directory setup and connected-only presence heartbeats.                |
 | `src/bash/`                                                                 | Native foreground shell sessions, deadlines and bounded output.             |
 | `src/edit/`                                                                 | Directory routing, native snapshot/preview sessions and local path policy.  |
 | `src/protocol.ts`                                                           | Setup/HTTP boundary validation and shared wire types.                       |

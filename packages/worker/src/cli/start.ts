@@ -10,6 +10,7 @@ import { WorkerProtocolError } from "../protocol.js";
 import { consumeEditTasks, type EditExecutor } from "../tasks.js";
 import { WorkerDirectoryEdits } from "../edit/directories.js";
 import { createBashExecutor } from "../bash/service.js";
+import { prepareTempDirectory, startPresenceReporter, type PresenceReporter } from "../presence.js";
 import type { CliOptions } from "./options.js";
 import { storageDescription } from "./prompt.js";
 
@@ -39,8 +40,10 @@ export async function startWorker(options: CliOptions): Promise<void> {
   let tasks: ReturnType<typeof consumeEditTasks> | undefined;
   let bash: ReturnType<typeof createBashExecutor> | undefined;
   let diagnosticsTimer: ReturnType<typeof setInterval> | undefined;
+  let presence: PresenceReporter | undefined;
   const close = async () => {
-    if (diagnosticsTimer) clearInterval(diagnosticsTimer);
+    clearInterval(diagnosticsTimer);
+    presence?.close();
     try {
       if (tasks) await tasks.close();
       else {
@@ -54,15 +57,19 @@ export async function startWorker(options: CliOptions): Promise<void> {
   try {
     editor = new WorkerDirectoryEdits();
     bash = createBashExecutor();
+    const tempDirectory = await prepareTempDirectory();
     let previousStatusKey: string | undefined;
     control = connectWorkerControl(state, (status) => {
       tasks?.setAvailable(status.status === "connected");
+      presence?.setAvailable(status.status === "connected");
       const statusKey =
         status.status === "connected" ? "connected" : `disconnected:${status.reason}`;
       if (previousStatusKey === statusKey) return;
       previousStatusKey = statusKey;
       console.info(formatControlStatus(status));
     });
+    presence = startPresenceReporter(control.client, tempDirectory);
+    presence.setAvailable(previousStatusKey === "connected");
     diagnosticsTimer = setInterval(() => {
       if (!control || previousStatusKey === "connected") return;
       const diagnostics = control.diagnostics();

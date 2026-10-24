@@ -12,8 +12,8 @@ import {
 import { createServerFn } from "@tanstack/react-start";
 import type { ReactNode } from "react";
 
-import { AppShell } from "@/components/app-shell";
 import { Providers } from "@/components/providers";
+import { HarnessWindow } from "@/components/window/harness-window";
 import { Toaster } from "@/components/ui/sonner";
 import { getToken } from "@/lib/auth-server";
 import appCss from "@/styles/app.css?url";
@@ -38,7 +38,7 @@ export const Route = createRootRouteWithContext<{
         content: "width=device-width, initial-scale=1",
       },
       {
-        title: "Alkalines Radium",
+        title: "Radium",
       },
     ],
     links: [
@@ -48,18 +48,20 @@ export const Route = createRootRouteWithContext<{
       },
     ],
   }),
-  beforeLoad: async ({ context }) => {
-    const token = await getAuth();
+  beforeLoad: async ({ context }): Promise<{ token?: string | null }> => {
+    // The token only seeds `ConvexBetterAuthProvider` (read once at mount) and server-side
+    // prefetch auth; after hydration Better Auth keeps it fresh on the client. Fetching it on
+    // every client navigation blocked each Tab switch on a server round trip, and route guards
+    // (`requireSession`) still check the session on the client.
+    if (typeof window !== "undefined") return {};
 
+    const token = await getAuth();
     if (token) {
       // Route loaders may prefetch authenticated Convex data before the client hydrates.
       context.convexQueryClient.serverHttpClient?.setAuth(token);
     }
 
-    return {
-      isAuthenticated: Boolean(token),
-      token,
-    };
+    return { token };
   },
   component: RootRouteComponent,
   shellComponent: RootDocument,
@@ -70,9 +72,9 @@ function RootRouteComponent() {
 
   return (
     <Providers convexClient={context.convexQueryClient.convexClient} initialToken={context.token}>
-      <AppShell>
+      <HarnessWindow>
         <Outlet />
-      </AppShell>
+      </HarnessWindow>
     </Providers>
   );
 }

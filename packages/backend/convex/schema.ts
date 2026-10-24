@@ -4,7 +4,8 @@ import { publicKey as workerPublicKey } from "worker-component";
 import { completionPricingSchema, completionUsageSchema } from "../src/usage/completion";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import { workerChatCallFields, workerTaskFields } from "../src/worker/task-contract";
-import { chatWorkerSelectionValidator } from "../src/worker/chat-config";
+import { chatWorkerSelectionValidator, chatWorkerToolValidator } from "../src/worker/chat-config";
+import { projectFolderValidator } from "../src/projects/validators";
 import {
   telemetrySettingsSchema,
   telemetrySourceSchema,
@@ -33,6 +34,17 @@ export default defineSchema({
     workspace: v.id("workspaces"),
     componentEnrollmentId: v.string(),
   }).index("by_workspace", ["workspace"]),
+  /**
+   * Last heartbeat and reported temp directory per Worker identity, written only by the Worker's
+   * machine-authorized `workers.reportPresence`. Advisory: online state never authorizes dispatch.
+   */
+  worker_presence: defineTable({
+    workspace: v.id("workspaces"),
+    workerId: v.string(),
+    lastSeenAt: v.number(),
+    /** Absolute Worker-local temp directory used for chats without a Project folder. */
+    tempDirectory: v.optional(v.string()),
+  }).index("by_workspace_and_workerId", ["workspace", "workerId"]),
   /** Immutable one-use proof contexts, removed transactionally on admission. */
   worker_auth_challenges: defineTable({
     kind: v.union(v.literal("enroll"), v.literal("recover"), v.literal("token")),
@@ -56,6 +68,8 @@ export default defineSchema({
     ownerId: v.string(), // Better Auth user ID
     name: v.string(),
     icon: v.optional(v.string()),
+    /** Tile color name from `src/workspaces/colors.ts`; unknown names resolve to the default. */
+    color: v.optional(v.string()),
     archivedAt: v.optional(v.number()),
     /** Transitional mapping retained until the legacy tables are retired. */
     legacyBalance: v.optional(v.id("balances")),
@@ -121,7 +135,29 @@ export default defineSchema({
     telemetry: v.optional(telemetrySettingsSchema),
     builtinToolSets: v.array(v.string()),
     mcpServers: v.array(v.id("mcp_servers")),
+    /** Worker tools preselected when a Worker is picked for a new chat; absent means none. */
+    workerTools: v.optional(v.array(chatWorkerToolValidator)),
   }).index("by_workspace", ["workspace"]),
+  /**
+   * Folder-like grouping of chats inside a workspace. Deleting a Project detaches its chats;
+   * chat privacy is still decided per chat. `folders` (one per Worker) and `defaultWorkerId`
+   * (one of `folders`) are owner-set and pick the Worker working directory for its chats.
+   */
+  projects: defineTable({
+    workspace: v.id("workspaces"),
+    userId: v.string(), // Better Auth ID of the creator
+    name: v.string(),
+    color: v.optional(v.string()),
+    icon: v.optional(v.string()),
+    folders: v.optional(v.array(projectFolderValidator)),
+    defaultWorkerId: v.optional(v.string()),
+  }).index("by_workspace", ["workspace"]),
+  /** Per-user (not per-workspace) interface preferences keyed by Better Auth user ID. */
+  user_preferences: defineTable({
+    userId: v.string(),
+    pinnedModels: v.array(v.string()),
+    hiddenModels: v.array(v.string()),
+  }).index("by_userId", ["userId"]),
   /**
    * Legacy balance ownership remains in the widened schema. It is read only by
    * migration/rollback compatibility paths and is not used for credits.
@@ -330,8 +366,13 @@ export default defineSchema({
         mcpServers: v.array(v.id("mcp_servers")),
       }),
     ),
-    /** Owner-selected Worker, execution directory, and enabled tools; dispatch rechecks authority. */
+    /**
+     * Owner-selected Worker tools, optional Worker, and server-derived directory (Project folder,
+     * else the Worker's temp directory); dispatch rechecks authority.
+     */
     worker: v.optional(chatWorkerSelectionValidator),
+    /** Optional Project grouping in the same workspace; never grants visibility. */
+    project: v.optional(v.id("projects")),
   })
     .index("by_userId", ["userId"])
     .index("by_userId_and_lastInteractionAt", ["userId", "lastInteractionAt"])
@@ -348,7 +389,20 @@ export default defineSchema({
       "workspace",
       "userId",
       "lastInteractionAt",
-    ]),
+    ])
+    .index("by_workspace_and_userId_and_project_and_lastInteractionAt", [
+      "workspace",
+      "userId",
+      "project",
+      "lastInteractionAt",
+    ])
+    .index("by_workspace_and_scope_and_project_and_lastInteractionAt", [
+      "workspace",
+      "scope",
+      "project",
+      "lastInteractionAt",
+    ])
+    .index("by_project_and_lastInteractionAt", ["project", "lastInteractionAt"]),
   telemetry_traces: defineTable({
     /** Deprecated attribution pointer retained for historical traces. */
     balance: v.optional(v.id("balances")),
