@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-/** Square initial tile that identifies a Project in lists, Tabs, and the Context bar. */
+/** Square initial tile that identifies a Project in lists, Tabs, and the Session context. */
 export function ProjectTile({ initial, className }: { initial: string; className?: string }) {
   return (
     <span

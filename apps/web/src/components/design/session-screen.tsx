@@ -4,10 +4,7 @@ import * as m from "motion/react-m";
 import {
   ArrowUpIcon,
   BrainIcon,
-  ChevronDownIcon,
   FileCodeIcon,
-  GitBranchIcon,
-  MonitorIcon,
   PlusIcon,
   ShieldAlertIcon,
   SquareIcon,
@@ -16,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { AgentStatus, type RunState } from "@/components/agentic/agent-status";
+import { RadiumWordmark } from "@/components/agentic/radium-wordmark";
 import { SessionAmbient } from "@/components/agentic/session-ambient";
 import { StreamingText } from "@/components/agentic/streaming-text";
 import { TerminalLog } from "@/components/agentic/terminal-log";
@@ -30,14 +28,6 @@ import {
   CodeBlockLine,
   CodeBlockTitle,
 } from "@/components/ui/code-block";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   InputGroup,
   InputGroupAddon,
@@ -59,8 +49,10 @@ import {
 } from "@/components/ui/trace";
 import { useHighlightedCode } from "@/hooks/use-highlighted-code";
 import { transitions, variants } from "@/lib/motion";
-import { demoEfforts, demoModels, workspaceName } from "./demo-data";
-import { ProjectTile } from "./project-tile";
+import { cn } from "@/lib/utils";
+import type { DemoWorkspace } from "./demo-data";
+import { ModelPicker } from "./model-picker";
+import { SessionContext } from "./session-context";
 import {
   hasReached,
   runStateFor,
@@ -70,18 +62,20 @@ import {
 } from "./use-run-simulation";
 
 /**
- * One Session Tab. Empty sessions show the greeting, Composer, and ambient layer; once a prompt is
- * sent the Composer docks to the bottom through a shared `layoutId` and the simulated Run plays.
+ * One Session Tab. Empty sessions show the animated wordmark, Composer, and ambient layer; once a
+ * prompt is sent the Composer docks to the bottom through a shared `layoutId` and the run plays.
  */
 export function SessionScreen({
   tabId,
   isActive,
+  workspace,
   restoredPrompt,
   onRunStateChange,
   onTitleChange,
 }: {
   tabId: string;
   isActive: boolean;
+  workspace: DemoWorkspace;
   /** Set for sessions reopened from Home; they render their finished run without animation. */
   restoredPrompt?: string;
   onRunStateChange: (state: RunState) => void;
@@ -127,83 +121,84 @@ export function SessionScreen({
     />
   );
 
-  if (isEmpty) {
-    return (
-      <div className="relative flex h-full flex-col items-center justify-center px-4">
-        <SessionAmbient />
-        <div className="relative flex w-full max-w-160 flex-col items-center gap-6">
-          <h1 className="text-center text-3xl font-medium tracking-tight">
-            What should we work on?
-          </h1>
-          {composer}
-          <ContextBar />
-        </div>
-      </div>
-    );
-  }
-
+  // One tree for both states: the Composer column keeps its position among its siblings, so React
+  // keeps the Composer, model choice, and Session context mounted while it docks.
   return (
-    <div className="flex h-full flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-190 flex-col gap-6 px-4 py-8">
-          <Message align="end">
-            <MessageContent>
-              <Bubble variant="secondary" align="end">
-                <BubbleContent>{run.prompt}</BubbleContent>
-              </Bubble>
-            </MessageContent>
-          </Message>
+    <div className="relative flex h-full flex-col">
+      {isEmpty ? <SessionAmbient /> : null}
 
-          <Message>
-            <MessageContent className="gap-4">
-              <RunTrace phase={run.phase} terminalLines={run.terminalLines} />
+      {isEmpty ? null : (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-190 flex-col gap-6 px-4 py-8">
+            <Message align="end">
+              <MessageContent>
+                <Bubble variant="secondary" align="end">
+                  <BubbleContent>{run.prompt}</BubbleContent>
+                </Bubble>
+              </MessageContent>
+            </Message>
 
-              <AnimatePresence mode="popLayout" initial={false}>
-                {run.phase === "awaiting" ? (
-                  // popLayout measures its direct child, so the motion element sits here.
-                  <m.div
-                    key="gate"
-                    variants={variants.swap}
-                    initial="hidden"
-                    animate="visible"
-                    exit="exit"
-                  >
-                    <ApprovalGate onApprove={approve} onDeny={deny} />
-                  </m.div>
+            <Message>
+              <MessageContent className="gap-4">
+                <RunTrace phase={run.phase} terminalLines={run.terminalLines} />
+
+                <AnimatePresence mode="popLayout" initial={false}>
+                  {run.phase === "awaiting" ? (
+                    // popLayout measures its direct child, so the motion element sits here.
+                    <m.div
+                      key="gate"
+                      variants={variants.swap}
+                      initial="hidden"
+                      animate="visible"
+                      exit="exit"
+                    >
+                      <ApprovalGate onApprove={approve} onDeny={deny} />
+                    </m.div>
+                  ) : null}
+                  {run.phase === "denied" ? (
+                    <m.div key="denied" variants={variants.swap} initial="hidden" animate="visible">
+                      <Marker className="text-xs">
+                        <XIcon />
+                        <MarkerContent>Denied. No command was executed.</MarkerContent>
+                      </Marker>
+                    </m.div>
+                  ) : null}
+                </AnimatePresence>
+
+                {run.answer ? (
+                  <StreamingText
+                    text={run.answer}
+                    streaming={run.phase === "answering"}
+                    className="text-sm"
+                  />
                 ) : null}
-                {run.phase === "denied" ? (
-                  <m.div key="denied" variants={variants.swap} initial="hidden" animate="visible">
-                    <Marker className="text-xs">
-                      <XIcon />
-                      <MarkerContent>Denied. No command was executed.</MarkerContent>
-                    </Marker>
-                  </m.div>
-                ) : null}
-              </AnimatePresence>
 
-              {run.answer ? (
-                <StreamingText
-                  text={run.answer}
-                  streaming={run.phase === "answering"}
-                  className="text-sm"
-                />
-              ) : null}
-
-              <AnimatePresence initial={false}>
-                {run.phase === "done" ? (
-                  <m.div key="diff" variants={variants.reveal} initial="hidden" animate="visible">
-                    <DiffBlock />
-                  </m.div>
-                ) : null}
-              </AnimatePresence>
-            </MessageContent>
-          </Message>
+                <AnimatePresence initial={false}>
+                  {run.phase === "done" ? (
+                    <m.div key="diff" variants={variants.reveal} initial="hidden" animate="visible">
+                      <DiffBlock />
+                    </m.div>
+                  ) : null}
+                </AnimatePresence>
+              </MessageContent>
+            </Message>
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="mx-auto flex w-full max-w-190 flex-col gap-2 px-4 pb-4">
+      <div
+        className={cn(
+          "relative mx-auto flex w-full flex-col px-4",
+          isEmpty ? "max-w-168 flex-1 justify-center gap-3" : "max-w-190 gap-2 pb-4",
+        )}
+      >
+        {isEmpty ? (
+          <h1 className="mb-6 flex justify-center">
+            <RadiumWordmark className="h-14 w-auto md:h-16" />
+          </h1>
+        ) : null}
         {composer}
-        <ContextBar />
+        <SessionContext workspace={workspace} isFixed={!isEmpty} />
       </div>
     </div>
   );
@@ -223,9 +218,6 @@ function Composer({
   onStop: () => void;
 }) {
   const [value, setValue] = useState("");
-  const [modelId, setModelId] = useState<string>(demoModels[0].id);
-  const [effort, setEffort] = useState<string>("Medium");
-  const model = demoModels.find((candidate) => candidate.id === modelId) ?? demoModels[0];
   const canSend = value.trim().length > 0 && !isRunning;
 
   function send() {
@@ -235,7 +227,7 @@ function Composer({
   }
 
   return (
-    <m.div layoutId={layoutId} transition={transitions.layout} className="w-full">
+    <m.div layout layoutId={layoutId} transition={transitions.layout} className="w-full">
       <InputGroup className="rounded-2xl border-border bg-card">
         <InputGroupTextarea
           value={value}
@@ -255,49 +247,14 @@ function Composer({
             <PlusIcon />
           </InputGroupButton>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <InputGroupButton size="xs" className="text-muted-foreground">
-                {model.label}
-                <ChevronDownIcon data-icon="inline-end" />
-              </InputGroupButton>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              <DropdownMenuLabel>Model</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={modelId} onValueChange={setModelId}>
-                {demoModels.map((candidate) => (
-                  <DropdownMenuRadioItem key={candidate.id} value={candidate.id}>
-                    {candidate.label}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <InputGroupButton size="xs" className="text-muted-foreground">
-                {effort}
-                <ChevronDownIcon data-icon="inline-end" />
-              </InputGroupButton>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              <DropdownMenuLabel>Reasoning effort</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={effort} onValueChange={setEffort}>
-                {demoEfforts.map((level) => (
-                  <DropdownMenuRadioItem key={level} value={level}>
-                    {level}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="ml-auto flex min-w-0 items-center">
+            <ModelPicker />
+          </div>
 
           {isRunning ? (
             <InputGroupButton
               variant="secondary"
               size="icon-sm"
-              className="ml-auto"
               aria-label="Stop run"
               onClick={onStop}
             >
@@ -307,7 +264,6 @@ function Composer({
             <InputGroupButton
               variant="default"
               size="icon-sm"
-              className="ml-auto"
               aria-label="Send"
               disabled={!canSend}
               onClick={send}
@@ -318,30 +274,6 @@ function Composer({
         </InputGroupAddon>
       </InputGroup>
     </m.div>
-  );
-}
-
-/** Workspace, Worker, and branch for the Session, shown under the Composer. */
-function ContextBar() {
-  return (
-    <div className="flex flex-wrap items-center justify-center gap-1 text-[13px] text-muted-foreground">
-      <Button variant="ghost" size="xs" className="text-muted-foreground">
-        <ProjectTile initial="A" />
-        {workspaceName}
-        <ChevronDownIcon data-icon="inline-end" />
-      </Button>
-      <span className="text-subtle-foreground">/</span>
-      <Button variant="ghost" size="xs" className="text-muted-foreground">
-        <MonitorIcon data-icon="inline-start" />
-        radium-dev-01
-        <AgentStatus state="succeeded" label="Worker online" hideLabel />
-        <ChevronDownIcon data-icon="inline-end" />
-      </Button>
-      <span className="inline-flex h-6 items-center gap-1.5 rounded-md bg-accent px-2 font-mono text-xs">
-        <GitBranchIcon className="size-3" />
-        feat/agentic-design-system
-      </span>
-    </div>
   );
 }
 
