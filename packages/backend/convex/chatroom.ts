@@ -31,6 +31,7 @@ import {
 } from "./workspaces";
 import { ownedWorkspaceMutation, workspaceQuery } from "./helpers";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
+import { chatWorkerToolValidator, type ChatWorkerTool } from "../src/worker/chat-config";
 
 /**
  * Workspace Chatroom configuration replaces the legacy per-user
@@ -45,7 +46,8 @@ import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider
 
 const VALID_BUILTIN_IDS = new Set<string>(BUILTIN_TOOL_SETS.map((toolSet) => toolSet.id));
 
-const toolSelectionValidator = v.object({
+/** Built-in tool set IDs plus workspace MCP server IDs, as stored for defaults and chats. */
+export const toolSelectionValidator = v.object({
   builtinToolSets: v.array(v.string()),
   mcpServers: v.array(v.id("mcp_servers")),
 });
@@ -56,10 +58,11 @@ type ToolSelection = {
 };
 
 /**
- * Sanitise a selection against the workspace. Legacy user-owned servers are
- * accepted only by the deterministic migration workspace.
+ * Sanitise a selection against the workspace: unknown built-in IDs and MCP servers from other
+ * workspaces are dropped silently. Legacy user-owned servers are accepted only by the
+ * deterministic migration workspace. Callers authorize the workspace first.
  */
-async function sanitizeSelection(
+export async function sanitizeSelection(
   ctx: QueryCtx | MutationCtx,
   workspace: Doc<"workspaces">,
   selection: ToolSelection,
@@ -98,6 +101,28 @@ export const setToolDefaults = ownedWorkspaceMutation({
     const selection = await sanitizeSelection(ctx, ctx.workspace, args.selection);
 
     return await ctx.workspace.updateSettings(selection);
+  },
+});
+
+/** Read the workspace's default Worker tools; members may read, absent means none. */
+export const getWorkerToolDefaults = workspaceQuery({
+  args: {},
+  returns: v.array(chatWorkerToolValidator),
+  handler: async (ctx): Promise<ChatWorkerTool[]> => {
+    return ctx.workspace.settings.workerTools ?? [];
+  },
+});
+
+/** Replace the workspace's default Worker tools. Owner only; tools must be unique. */
+export const setWorkerToolDefaults = ownedWorkspaceMutation({
+  args: { tools: v.array(chatWorkerToolValidator) },
+  returns: v.id("workspace_settings"),
+  handler: async (ctx, args) => {
+    if (new Set(args.tools).size !== args.tools.length) {
+      throw new Error("Worker tools must be unique.");
+    }
+
+    return await ctx.workspace.updateSettings({ workerTools: args.tools });
   },
 });
 

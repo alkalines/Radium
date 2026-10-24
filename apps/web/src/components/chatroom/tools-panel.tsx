@@ -2,14 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
-import {
-  MoreHorizontalIcon,
-  PencilIcon,
-  PlusIcon,
-  ServerIcon,
-  Trash2Icon,
-  WrenchIcon,
-} from "lucide-react";
+import { MoreHorizontalIcon, PencilIcon, PlusIcon, ServerIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -18,8 +11,8 @@ import {
   WEB_SEARCH_TOOL_ID,
   type ToolSelection,
 } from "backend/src/chatroom/tools";
-import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
-import { WorkspacePageHeader } from "@/components/settings/workspace-page-header";
+import { GroupList, Row, RowBlock, Tag } from "@/components/harness/group-list";
+import { WorkspacePageHeader, ownerOnlyNotice } from "@/components/settings/workspace-page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,15 +36,25 @@ import { Switch } from "@/components/ui/switch";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { McpServerDialog, type McpServerEditTarget } from "./mcp-server-dialog";
+import {
+  ToolRow,
+  builtinToolIcon,
+  isWorkerToolOptionEnabled,
+  withWorkerToolOption,
+  workerToolOptions,
+  type WorkerToolOption,
+} from "./tool-catalog";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 /**
- * Chatroom → Tools settings. Manages the user's *default* tool selection (which
- * built-in tool sets and MCP servers new chats start with) and the catalogue of
- * MCP servers themselves. Per-chat overrides are edited from the chat composer.
+ * Chatroom → Tools settings: the workspace *defaults* a new Session starts with (built-in tool
+ * sets, MCP servers, and the Worker tools applied once a Worker is selected) plus the catalogue
+ * of MCP servers. Owner-only writes; per-Session choices live in the Composer's Tools dialog and
+ * never write back here.
  */
 export function ToolsPanel() {
-  const { workspaceId } = useWorkspace();
+  const { workspace, workspaceId } = useWorkspace();
+  const isOwner = workspace?.role === "owner";
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
   const { data: servers } = useQuery(
@@ -67,6 +70,22 @@ export function ToolsPanel() {
     ),
   );
   const setToolDefaults = useMutation(api.chatroom.setToolDefaults);
+  const { data: workerToolDefaults } = useQuery(
+    convexQuery(
+      api.chatroom.getWorkerToolDefaults,
+      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
+  );
+  // Optimistic so a quick second toggle builds on the first instead of the stale server list.
+  const setWorkerToolDefaults = useMutation(
+    api.chatroom.setWorkerToolDefaults,
+  ).withOptimisticUpdate((localStore, args) => {
+    localStore.setQuery(
+      api.chatroom.getWorkerToolDefaults,
+      { workspace: args.workspace },
+      args.tools,
+    );
+  });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<McpServerEditTarget>(null);
@@ -105,6 +124,19 @@ export function ToolsPanel() {
     void persist({ ...selection, mcpServers });
   }
 
+  async function toggleWorkerTool(option: WorkerToolOption, enabled: boolean) {
+    if (!workspaceId || !isOwner || workerToolDefaults === undefined) return;
+
+    const tools = withWorkerToolOption(workerToolDefaults, option, enabled);
+    try {
+      await setWorkerToolDefaults({ workspace: workspaceId, tools });
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to update default Worker tools.",
+      );
+    }
+  }
+
   function openCreate() {
     setEditTarget(null);
     setDialogOpen(true);
@@ -114,7 +146,11 @@ export function ToolsPanel() {
     <>
       <WorkspacePageHeader
         title="Tools"
-        description="Tools and MCP servers new chats start with. Change them per chat from the composer."
+        description={
+          isOwner
+            ? "Workspace defaults for new Sessions. Choose tools for one Session from the Tools dialog in the Composer."
+            : ownerOnlyNotice
+        }
         action={
           <Button variant="outline" size="sm" onClick={openCreate} disabled={!signedIn}>
             <PlusIcon data-icon="inline-start" />
@@ -123,33 +159,51 @@ export function ToolsPanel() {
         }
       />
 
+      {/* Same rows as the Composer's Tools dialog: built-in and Worker tools in one flat list. */}
       <GroupList
-        title="Built-in tools"
-        description="Tool sets bundled with Radium. Enabled tools are turned on by default in new chats."
+        title="Tools"
+        description="Enabled tools are on in new Sessions. Worker tools apply once a Worker is picked; write and bash ask for approval before each run."
       >
         {BUILTIN_TOOL_SETS.map((toolSet) => {
-          const enabled = selection.builtinToolSets.includes(toolSet.id);
+          const enabled = toolSet.available && selection.builtinToolSets.includes(toolSet.id);
           return (
             <Fragment key={toolSet.id}>
-              <Row
-                icon={WrenchIcon}
-                title={toolSet.name}
-                tag={toolSet.available ? undefined : "Soon"}
+              <ToolRow
+                icon={builtinToolIcon(toolSet.id)}
+                toolId={toolSet.id}
                 description={toolSet.description}
+                tags={toolSet.available ? null : <Tag>Soon</Tag>}
+                isDimmed={!toolSet.available}
               >
                 <Switch
                   checked={enabled}
                   onCheckedChange={(checked) => toggleBuiltin(toolSet.id, checked)}
-                  disabled={!signedIn || defaults === undefined}
+                  disabled={!signedIn || defaults === undefined || !toolSet.available}
                   aria-label={`Enable ${toolSet.name} by default`}
                 />
-              </Row>
+              </ToolRow>
               {toolSet.id === WEB_SEARCH_TOOL_ID && enabled && workspaceId && (
                 <ExaApiKeyField workspaceId={workspaceId} />
               )}
             </Fragment>
           );
         })}
+        {workerToolOptions.map((tool) => (
+          <ToolRow
+            key={tool.id}
+            icon={tool.icon}
+            toolId={tool.id}
+            description={tool.description}
+            tags={tool.requiresApproval ? <Tag>Approval</Tag> : null}
+          >
+            <Switch
+              checked={isWorkerToolOptionEnabled(tool, workerToolDefaults ?? [])}
+              onCheckedChange={(checked) => void toggleWorkerTool(tool, checked)}
+              disabled={!isOwner || workerToolDefaults === undefined}
+              aria-label={`Enable ${tool.label} by default`}
+            />
+          </ToolRow>
+        ))}
       </GroupList>
 
       <GroupList

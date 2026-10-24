@@ -48,18 +48,20 @@ export const Route = createRootRouteWithContext<{
       },
     ],
   }),
-  beforeLoad: async ({ context }) => {
-    const token = await getAuth();
+  beforeLoad: async ({ context }): Promise<{ token?: string | null }> => {
+    // The token only seeds `ConvexBetterAuthProvider` (read once at mount) and server-side
+    // prefetch auth; after hydration Better Auth keeps it fresh on the client. Fetching it on
+    // every client navigation blocked each Tab switch on a server round trip, and route guards
+    // (`requireSession`) still check the session on the client.
+    if (typeof window !== "undefined") return {};
 
+    const token = await getAuth();
     if (token) {
       // Route loaders may prefetch authenticated Convex data before the client hydrates.
       context.convexQueryClient.serverHttpClient?.setAuth(token);
     }
 
-    return {
-      isAuthenticated: Boolean(token),
-      token,
-    };
+    return { token };
   },
   component: RootRouteComponent,
   shellComponent: RootDocument,

@@ -1,14 +1,17 @@
 import { useState } from "react";
-import { BrainIcon, ChevronDownIcon } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import { BrainIcon, ChevronDownIcon, SettingsIcon } from "lucide-react";
 
 import { ProviderLogo } from "@/components/gateway/provider-logo";
 import { ModelList } from "@/components/models/model-list";
+import { useModelPreferences } from "@/components/models/model-preferences";
 import {
   effortLabel,
   reasoningEffortsFor,
   type AvailableModel,
   type ModelProviderOption,
 } from "@/components/models/model-options";
+import { CommandItem } from "@/components/ui/command";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,7 +43,9 @@ export function validReasoningEffort(model: AvailableModel | undefined, effort: 
  * The Composer's Model control (`docs/Interface_Design.md` §2): one trigger shows the model name
  * and its reasoning level; the popover searches the workspace's models and its footer picks the
  * inference provider and the reasoning amount (plus a token budget when the model accepts one).
- * Fully controlled; selecting a model keeps the provider and effort valid for it.
+ * Fully controlled; selecting a model keeps the provider and effort valid for it. The user's
+ * pinned models list first and hidden ones drop out (`useModelPreferences`); rows pin inline and
+ * `Manage models`, the last option in the list, opens Settings → Models.
  */
 export function ModelPicker({
   models,
@@ -67,6 +72,8 @@ export function ModelPicker({
   onReasoningBudgetChange: (budget: number | undefined) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const navigate = useNavigate();
+  const { pinnedModels, hiddenModels, setModelPinned } = useModelPreferences();
   const model = models?.find((candidate) => candidate.slug === selectedModel);
   const hasModels = Boolean(models?.length);
 
@@ -123,8 +130,25 @@ export function ModelPicker({
           models={models ?? []}
           selectedSlug={selectedModel}
           onSelect={selectModel}
+          pinnedSlugs={pinnedModels}
+          hiddenSlugs={hiddenModels}
+          onTogglePin={(target, pinned) => void setModelPinned(target.slug, pinned)}
+          extraItems={
+            <CommandItem
+              value="manage-models"
+              keywords={["Manage models", "settings", "pin", "hide"]}
+              className="text-muted-foreground"
+              onSelect={() => {
+                setIsOpen(false);
+                void navigate({ to: "/settings/models" });
+              }}
+            >
+              <SettingsIcon />
+              Manage models
+            </CommandItem>
+          }
           footer={
-            <div className="flex items-center justify-between gap-2 border-t p-2">
+            <div className="flex items-center gap-2 border-t p-2">
               <ProviderDropdown
                 providers={model?.providers ?? []}
                 providerId={selectedProvider}

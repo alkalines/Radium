@@ -58,10 +58,17 @@ export type ComposerMessage = { text: string; files: FileUIPart[] };
 type PendingAttachment = { id: string; file: File; url: string };
 
 /**
+ * Where the Composer keeps its text beyond the component (the per-Tab snapshot). `read` runs once
+ * after mount, so server and client render the same empty textarea; `write` runs on every text
+ * change, including the clear on submit and the restore after a failed submit.
+ */
+export type ComposerTextStore = { read: () => string; write: (text: string) => void };
+
+/**
  * The Session prompt input (`docs/Interface_Design.md` §2, Composer): textarea plus a toolbar with
- * the `+` menu leading and the Model control, context usage, voice input, and send/stop trailing.
- * Enter sends, Shift+Enter adds a line. Files come from the `+` menu, paste, or a drop onto the
- * Composer; Backspace in an empty textarea removes the last one.
+ * the `+` menu and `toolbarControls` (Tools) leading and the Model control, context usage, voice
+ * input, and send/stop trailing. Enter sends, Shift+Enter adds a line. Files come from the `+`
+ * menu, paste, or a drop onto the Composer; Backspace in an empty textarea removes the last one.
  *
  * Submitting clears the input immediately. When `onSubmit` throws or rejects, the text and files
  * are restored so the user can retry; it is called at most once per submit.
@@ -79,6 +86,8 @@ export function Composer({
   modelControl,
   contextUsage,
   menuItems,
+  toolbarControls,
+  textStore,
 }: {
   layoutId: string;
   autoFocus: boolean;
@@ -92,8 +101,13 @@ export function Composer({
   contextUsage?: ReactNode;
   /** Extra `+` menu entries (submenus) after "Add photos & files". */
   menuItems?: ReactNode;
+  /** Toolbar buttons right after the `+` menu, such as the Tools control. */
+  toolbarControls?: ReactNode;
+  textStore?: ComposerTextStore;
 }) {
   const [value, setValue] = useState("");
+  // Async submit and voice callbacks need the latest text, not the text of their render.
+  const valueRef = useRef(value);
   const [isComposing, setIsComposing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -102,12 +116,29 @@ export function Composer({
   const hasContent = value.trim().length > 0 || attachments.length > 0;
   const isSendEnabled = canSend && hasContent && !isRunning;
 
+  // The text lives in Composer state so typing re-renders only the Composer; the store is written
+  // directly instead of lifting the text into the Session screen.
+  function updateValue(next: string) {
+    valueRef.current = next;
+    setValue(next);
+    textStore?.write(next);
+  }
+
+  // Restore after mount (not in the initial state) so server and client markup match.
+  const readStoredText = useRef(textStore?.read);
+  useEffect(() => {
+    const stored = readStoredText.current?.();
+    if (!stored) return;
+    valueRef.current = stored;
+    setValue(stored);
+  }, []);
+
   async function submit() {
     if (!isSendEnabled) return;
 
     const text = value.trim();
     const submitted = takeAttachments();
-    setValue("");
+    updateValue("");
 
     try {
       const files = await Promise.all(submitted.map(toFileUIPart));
@@ -115,7 +146,7 @@ export function Composer({
       for (const attachment of submitted) URL.revokeObjectURL(attachment.url);
     } catch {
       // Keep the prompt for a retry; anything typed meanwhile wins over the restored text.
-      setValue((current) => current || text);
+      updateValue(valueRef.current || text);
       restoreAttachments(submitted);
     }
   }
@@ -208,7 +239,7 @@ export function Composer({
             aria-label="Message"
             placeholder="Ask anything, / for commands, @ for context…"
             className="max-h-48 min-h-14 px-4 pt-3.5"
-            onChange={(event) => setValue(event.target.value)}
+            onChange={(event) => updateValue(event.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             onCompositionStart={() => setIsComposing(true)}
@@ -229,6 +260,7 @@ export function Composer({
                 {menuItems}
               </DropdownMenuContent>
             </DropdownMenu>
+            {toolbarControls}
 
             <div className="ml-auto flex min-w-0 items-center gap-1">
               {modelControl}
@@ -238,7 +270,7 @@ export function Composer({
 
             <VoiceInputButton
               onTranscript={(transcript) =>
-                setValue((current) => (current ? `${current} ${transcript}` : transcript))
+                updateValue(valueRef.current ? `${valueRef.current} ${transcript}` : transcript)
               }
             />
 

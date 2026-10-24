@@ -8,6 +8,7 @@ import { connectWorkerControl, type WorkerControlStatus } from "./control.js";
 import { password } from "@clack/prompts";
 import { consumeEditTasks } from "./tasks.js";
 import { WorkerDirectoryEdits } from "./edit/directories.js";
+import { startPresenceReporter } from "./presence.js";
 
 vi.mock("./auth/state.js", () => ({
   defaultStateDirectory: () => "/test/worker",
@@ -28,6 +29,10 @@ vi.mock("./tasks.js", () => ({
     setAvailable: vi.fn(),
     close: vi.fn().mockResolvedValue(undefined),
   })),
+}));
+vi.mock("./presence.js", () => ({
+  prepareTempDirectory: vi.fn().mockResolvedValue("/tmp/radium"),
+  startPresenceReporter: vi.fn(() => ({ setAvailable: vi.fn(), close: vi.fn() })),
 }));
 vi.mock("@clack/prompts", () => ({
   password: vi.fn(),
@@ -233,9 +238,13 @@ describe("Worker CLI credential lifecycle", () => {
     await vi.waitFor(() => expect(consumeEditTasks).toHaveBeenCalled());
     expect(vi.mocked(consumeEditTasks).mock.calls[0]?.[1]).toBeInstanceOf(WorkerDirectoryEdits);
     expect(tasks.setAvailable).toHaveBeenLastCalledWith(true);
+    const presence = vi.mocked(startPresenceReporter).mock.results.at(-1)!.value;
+    expect(vi.mocked(startPresenceReporter).mock.calls.at(-1)?.[1]).toBe("/tmp/radium");
+    expect(presence.setAvailable).toHaveBeenLastCalledWith(true);
     process.emit("SIGTERM");
     await running;
     expect(tasks.close).toHaveBeenCalledTimes(1);
+    expect(presence.close).toHaveBeenCalledTimes(1);
     expect(tasks.close.mock.invocationCallOrder[0]).toBeLessThan(
       close.mock.invocationCallOrder[0]!,
     );

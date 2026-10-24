@@ -4,6 +4,7 @@ import {
   ActivityIcon,
   ArrowLeftIcon,
   BoxesIcon,
+  CpuIcon,
   RadioTowerIcon,
   ScrollTextIcon,
   ShieldIcon,
@@ -32,38 +33,64 @@ type NavItem = {
   matchNested?: boolean;
 };
 
-// Workspace pages apply only to the workspace chosen in the section heading; the order follows
-// setup (configure, connect, run), then the owner's operational views.
-const workspaceItems: NavItem[] = [
-  { label: "General", searchText: "General", icon: BoxesIcon, href: "/settings/workspace" },
-  ...gatewaySections.map((section) => ({
-    label: section.label,
-    searchText: section.label,
-    icon: section.icon,
-    href: `/gateway/${section.value}`,
-  })),
-  ...chatroomSections.map((section) => ({
+type NavGroup = { label: string; items: NavItem[] };
+
+function chatroomItem(section: (typeof chatroomSections)[number]): NavItem {
+  return {
     label: section.label,
     searchText: section.label,
     icon: section.icon,
     href: `/chatroom/${section.value}`,
-  })),
-  { label: "Activity", searchText: "Activity", icon: ActivityIcon, href: "/gateway/activity" },
-  { label: "Logs", searchText: "Logs", icon: ScrollTextIcon, href: "/gateway/logs" },
+  };
+}
+
+// Workspace pages apply only to the workspace chosen in the section heading. Subgroups follow
+// setup (the workspace and its machines, model routing, chat behavior), then the owner's
+// operational views. Workers is a Chatroom route but configures the workspace's machines.
+const workspaceGroups: NavGroup[] = [
   {
-    label: "Telemetry",
-    searchText: "Telemetry",
-    icon: RadioTowerIcon,
-    href: "/gateway/telemetry",
-    matchNested: true,
+    label: "Workspace",
+    items: [
+      { label: "General", searchText: "General", icon: BoxesIcon, href: "/settings/workspace" },
+      ...chatroomSections.filter((section) => section.value === "workers").map(chatroomItem),
+    ],
+  },
+  {
+    label: "Gateway",
+    items: gatewaySections.map((section) => ({
+      label: section.label,
+      searchText: section.label,
+      icon: section.icon,
+      href: `/gateway/${section.value}`,
+    })),
+  },
+  {
+    label: "Chat",
+    items: chatroomSections.filter((section) => section.value !== "workers").map(chatroomItem),
+  },
+  {
+    label: "Observability",
+    items: [
+      { label: "Activity", searchText: "Activity", icon: ActivityIcon, href: "/gateway/activity" },
+      { label: "Logs", searchText: "Logs", icon: ScrollTextIcon, href: "/gateway/logs" },
+      {
+        label: "Telemetry",
+        searchText: "Telemetry",
+        icon: RadioTowerIcon,
+        href: "/gateway/telemetry",
+        matchNested: true,
+      },
+    ],
   },
 ];
 
 /**
  * Settings screen (`docs/Interface_Design.md` §5.2): a 240px sidebar with `Back to app`, a
- * search over page names, the **Account** pages (Better Auth UI views, which follow the user), and
- * the workspace pages headed by the Workspace switcher. Route components render only their page
- * content (header + Group lists) as `children`. Page switches are plain navigation, so instant.
+ * search over page names, the **Account** pages (Better Auth UI views and Models, which follow
+ * the user), and the workspace pages headed by the Workspace switcher and divided into labelled
+ * subgroups. Search hides non-matching pages and any subgroup left empty. Route components render
+ * only their page content (header + Group lists) as `children`. Page switches are plain
+ * navigation, so instant.
  *
  * @param backHref - URL of the previously focused Tab or Home, owned by the Window.
  * @param wide - Lets wide tables use the full layout width instead of the 760px column.
@@ -104,14 +131,15 @@ export function SettingsLayout({
           href: `${basePaths.settings}/${plugin.viewPaths?.settings?.[settingsTab.view]}`,
         })) ?? [],
     ),
+    { label: "Models", searchText: "Models", icon: CpuIcon, href: "/settings/models" },
   ];
 
-  function renderItems(items: NavItem[]) {
-    const visibleItems = items.filter((item) =>
-      item.searchText.toLowerCase().includes(normalizedQuery),
-    );
+  function matchingItems(items: NavItem[]) {
+    return items.filter((item) => item.searchText.toLowerCase().includes(normalizedQuery));
+  }
 
-    return visibleItems.map((item) => {
+  function renderItems(items: NavItem[]) {
+    return items.map((item) => {
       const isActive =
         pathname === item.href ||
         (item.matchNested === true && pathname.startsWith(`${item.href}/`));
@@ -152,11 +180,34 @@ export function SettingsLayout({
           />
 
           <SideColumnSection title="Account">
-            <div className="flex flex-col gap-0.5">{renderItems(accountItems)}</div>
+            <div className="flex flex-col gap-0.5">{renderItems(matchingItems(accountItems))}</div>
           </SideColumnSection>
 
           <SideColumnSection title={<WorkspaceSwitcher variant="heading" />}>
-            <div className="flex flex-col gap-0.5">{renderItems(workspaceItems)}</div>
+            <div className="flex flex-col gap-3">
+              {workspaceGroups.map((group) => {
+                const items = matchingItems(group.items);
+                if (items.length === 0) return null;
+
+                const labelId = `settings-group-${group.label.toLowerCase()}`;
+                return (
+                  <div
+                    key={group.label}
+                    role="group"
+                    aria-labelledby={labelId}
+                    className="flex flex-col gap-0.5"
+                  >
+                    <div
+                      id={labelId}
+                      className="flex h-6 items-center px-3 text-xs text-subtle-foreground"
+                    >
+                      {group.label}
+                    </div>
+                    {renderItems(items)}
+                  </div>
+                );
+              })}
+            </div>
           </SideColumnSection>
         </>
       }

@@ -141,7 +141,7 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
       {
         error: {
           message:
-            "Worker tools are unavailable. Check the selected Worker, its absolute directory, and backend Worker authentication configuration.",
+            "Worker tools are unavailable. Check that the selected Worker is active and the backend Worker authentication configuration.",
           code: 400,
         },
       },
@@ -354,23 +354,33 @@ async function buildChatTools(
   let approvalSecret: Uint8Array | undefined;
   // Shared-chat membership never grants machine execution. Identity and directory
   // come from the persisted chat; dispatch rechecks configuration on every stage.
-  if (worker.userId === worker.ownerId && worker.selection?.tools.length) {
-    const workerSelection = worker.selection;
+  // Tools chosen without a Worker stay unavailable until the owner picks one.
+  const workerId = worker.selection?.workerId;
+  if (
+    worker.userId === worker.ownerId &&
+    workerId !== undefined &&
+    worker.selection?.tools.length
+  ) {
     const selection = await validateChatWorkerSelection(
-      workerSelection,
+      worker.selection,
       worker.userId,
       { id: worker.workspaceId, ownerId: worker.ownerId },
-      () =>
+      (id) =>
         ctx.runQuery(components.workerIdentity.identities.getWorkerMetadata, {
           workspaceId: worker.workspaceId,
-          workerId: workerSelection.workerId,
+          workerId: id,
         }),
     );
-    const scope = { chatId, workspaceId: worker.workspaceId, userId: worker.userId, selection };
+    const scope = {
+      chatId,
+      workspaceId: worker.workspaceId,
+      userId: worker.userId,
+      selection: { ...selection, workerId },
+    };
     const workerTools = buildWorkerChatTools(ctx, scope);
     Object.assign(tools, workerTools.tools);
     toolApproval = workerTools.toolApproval;
-    if (selection.tools.some((name) => name === "edit" || name === "create" || name === "bash")) {
+    if (Object.keys(workerTools.toolApproval).length > 0) {
       const issuerSecret = process.env.WORKER_AUTH_PRIVATE_JWK;
       if (!issuerSecret) throw new Error("Worker authentication is not configured");
       approvalSecret = await workerChatApprovalSecret(issuerSecret, scope);

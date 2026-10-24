@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useRouterState, useSearch } from "@tanstack/react-router";
 import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
@@ -8,14 +8,22 @@ import type { Id } from "backend/convex/_generated/dataModel";
 import { AgentStatus, type RunState } from "@/components/agentic/agent-status";
 import { UserButton } from "@/components/auth/user/user-button";
 import { StripTab, TabEars, stripTabClassName } from "@/components/harness/strip-tab";
+import { SessionProjectTile } from "@/components/session/run-target-picker";
 import { SessionScreen, type SessionTabHint } from "@/components/session/session-screen";
+import { pruneTabStates, removeTabState } from "@/components/session/tab-state";
 import { SettingsLayout } from "@/components/settings/settings-layout";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WorkspaceSwitcher } from "@/components/workspaces/workspace-switcher";
 import { spring, transitions } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { newTabId, readPersistedTabs, type SessionTab, writePersistedTabs } from "./window-tabs";
+import {
+  newTabId,
+  readPersistedTabs,
+  type SessionTab,
+  type TabProjectHint,
+  writePersistedTabs,
+} from "./window-tabs";
 
 /** RunStates that replace a Tab's icon with its live status. */
 const isWorkingRunState: Record<RunState, boolean> = {
@@ -57,10 +65,11 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
   });
   const href = useRouterState({ select: (state) => state.location.href });
   const params = useParams({ strict: false });
-  // Merged search of the matched chat route: `draft` on `/chat`, fork targets on `/chat/$chatId`.
-  const search: { draft?: string; model?: string; provider?: string } = useSearch({
-    strict: false,
-  });
+  // Merged search of the matched chat route: `draft`/`project` on `/chat`, fork targets on
+  // `/chat/$chatId`.
+  const search: { draft?: string; project?: string; model?: string; provider?: string } = useSearch(
+    { strict: false },
+  );
 
   const [tabs, setTabs] = useState<SessionTab[]>([]);
   const [isRestored, setIsRestored] = useState(false);
@@ -85,14 +94,20 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
   const isActiveTabOpen = activeTab ? tabs.some((tab) => tab.id === activeTab.id) : true;
   const panelTabs = activeTab && !isActiveTabOpen ? [...tabs, activeTab] : tabs;
 
-  // Restore after mount so server and client render the same initial markup.
+  // Restore after mount so server and client render the same initial markup. Per-Tab snapshots of
+  // Tabs that no longer exist (closed elsewhere, an unreadable Tab list) are dropped here.
   useEffect(() => {
     const persisted = readPersistedTabs();
+    const openTabIds = persisted.map((tab) => tab.id);
+    if (activeTab) openTabIds.push(activeTab.id);
+    pruneTabStates(openTabIds);
+
     setTabs((current) => [
       ...persisted,
       ...current.filter((tab) => !persisted.some((stored) => stored.id === tab.id)),
     ]);
     setIsRestored(true);
+    // Mount-only: later Tab changes are persisted by the effect below; `activeTab` is read once.
   }, []);
 
   useEffect(() => {
@@ -135,13 +150,15 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
     void navigate({ to: "/chat", search: { draft: tab.id } });
   }
 
-  function removeTab(tabId: string) {
+  const removeTab = useCallback((tabId: string) => {
     setTabs((current) => current.filter((tab) => tab.id !== tabId));
     setRunStates((current) => {
       const { [tabId]: _removed, ...rest } = current;
       return rest;
     });
-  }
+    // A closed or unavailable Tab's draft text and choices must not outlive it.
+    removeTabState(tabId);
+  }, []);
 
   function closeTab(tabId: string) {
     if (activeTab?.id !== tabId) {
@@ -164,39 +181,60 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
     void leave.then(() => removeTab(tabId));
   }
 
+  // The per-Tab callbacks below take the Tab id and keep one identity, so the memoized
+  // `SessionScreen`s skip re-rendering on navigation unless their own props changed.
   // Callers report on every change; return the same state when nothing differs so a re-render
   // never feeds back into another report.
   const handleTabHint = useCallback((tabId: string, hint: SessionTabHint) => {
     setTabs((current) => {
       const tab = current.find((item) => item.id === tabId);
-      // A chat that is still loading reports no title; keep the persisted hint until it has one.
-      const title = hint.title ?? tab?.title;
-      if (!tab || tab.title === title) return current;
+      if (!tab) return current;
 
-      return current.map((item) => (item.id === tabId ? { ...item, title } : item));
+      // A chat that is still loading reports no title or Project; keep the persisted hints.
+      const title = hint.title ?? tab.title;
+      let project = tab.project;
+      if (hint.project !== undefined) project = hint.project ?? undefined;
+      const isSameProject =
+        tab.project?.name === project?.name &&
+        tab.project?.color === project?.color &&
+        tab.project?.icon === project?.icon;
+      if (tab.title === title && isSameProject) return current;
+
+      return current.map((item) => (item.id === tabId ? { ...item, title, project } : item));
     });
     setRunStates((current) =>
       current[tabId] === hint.runState ? current : { ...current, [tabId]: hint.runState },
     );
   }, []);
 
-  function handleCreated(tabId: string, chatId: Id<"aisdk_chats">) {
-    // Keep the Tab id so the same SessionScreen stays mounted while the URL moves to the chat.
-    setTabs((current) => {
-      if (!current.some((tab) => tab.id === tabId)) return [...current, { id: tabId, chatId }];
-      return current.map((tab) => (tab.id === tabId ? { ...tab, chatId } : tab));
-    });
-    void navigate({ to: "/chat/$chatId", params: { chatId }, replace: true });
-  }
+  const handleCreated = useCallback(
+    (tabId: string, chatId: Id<"aisdk_chats">) => {
+      // Keep the Tab id so the same SessionScreen stays mounted while the URL moves to the chat.
+      setTabs((current) => {
+        if (!current.some((tab) => tab.id === tabId)) return [...current, { id: tabId, chatId }];
+        return current.map((tab) => (tab.id === tabId ? { ...tab, chatId } : tab));
+      });
+      void navigate({ to: "/chat/$chatId", params: { chatId }, replace: true });
+    },
+    [navigate],
+  );
 
-  function handleUnavailable(tabId: string) {
-    // A Tab whose session no longer exists or is no longer accessible is dropped (spec §4).
-    if (activeTab?.id === tabId) {
-      void navigate({ to: "/" }).then(() => removeTab(tabId));
-      return;
-    }
-    removeTab(tabId);
-  }
+  // Read at call time so `handleUnavailable` does not change identity on every navigation.
+  const activeTabIdRef = useRef(activeTab?.id);
+  useLayoutEffect(() => {
+    activeTabIdRef.current = activeTab?.id;
+  });
+  const handleUnavailable = useCallback(
+    (tabId: string) => {
+      // A Tab whose session no longer exists or is no longer accessible is dropped (spec §4).
+      if (activeTabIdRef.current === tabId) {
+        void navigate({ to: "/" }).then(() => removeTab(tabId));
+        return;
+      }
+      removeTab(tabId);
+    },
+    [navigate, removeTab],
+  );
 
   if (shell === "bare") return children;
 
@@ -265,7 +303,7 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
                     onClick={() => focusTab(tab)}
                     className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] font-medium outline-none after:absolute after:inset-0 after:rounded-t-[10px] focus-visible:after:ring-3 focus-visible:after:ring-ring/30"
                   >
-                    <TabIcon runState={runStates[tab.id] ?? "idle"} />
+                    <TabIcon runState={runStates[tab.id] ?? "idle"} project={tab.project} />
                     <span className="truncate">{title}</span>
                   </button>
                   <Button
@@ -340,9 +378,10 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
                 isActive={isActive}
                 requestedModel={isActive ? requestedSearch.model : undefined}
                 requestedProvider={isActive ? requestedSearch.provider : undefined}
-                onTabHint={(hint) => handleTabHint(tab.id, hint)}
-                onCreated={(chatId) => handleCreated(tab.id, chatId)}
-                onUnavailable={() => handleUnavailable(tab.id)}
+                requestedProject={isActive ? requestedSearch.project : undefined}
+                onTabHint={handleTabHint}
+                onCreated={handleCreated}
+                onUnavailable={handleUnavailable}
               />
             </div>
           );
@@ -358,13 +397,14 @@ function tabTitle(tab: SessionTab) {
 }
 
 /**
- * A working Tab shows its RunState; otherwise it would show its Project tile, so until Projects
- * ship it shows the new-session icon (spec §2).
+ * A working Tab shows its RunState; otherwise it shows its Project tile, or the new-session icon
+ * without a Project (spec §2).
  */
-function TabIcon({ runState }: { runState: RunState }) {
+function TabIcon({ runState, project }: { runState: RunState; project?: TabProjectHint }) {
   if (isWorkingRunState[runState]) {
     return <AgentStatus state={runState} hideLabel className="w-4 justify-center" />;
   }
+  if (project) return <SessionProjectTile project={project} />;
 
   return <SquarePenIcon className="size-3.5 shrink-0" />;
 }

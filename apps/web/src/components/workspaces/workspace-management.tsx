@@ -7,8 +7,11 @@ import { ArchiveIcon, BoxesIcon, PlusIcon, RotateCcwIcon, UsersIcon, XIcon } fro
 import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
+import type { TileColorName } from "backend/src/workspaces/colors";
+import type { WorkspaceIconName } from "backend/src/workspaces/icons";
 import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
 import { ProjectTile } from "@/components/harness/project-tile";
+import { TileAppearanceFields } from "@/components/harness/tile-appearance-fields";
 import { WorkspacePageHeader, ownerOnlyNotice } from "@/components/settings/workspace-page-header";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -39,8 +42,7 @@ import {
 } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
-import { resolveWorkspaceIconName, type WorkspaceIconName } from "backend/src/workspaces/icons";
-import { WorkspaceIcon, workspaceIconOptions } from "./workspace-icon";
+import { WorkspaceIcon } from "./workspace-icon";
 import { useWorkspace, type WorkspaceSummary } from "./workspace-provider";
 
 type WorkspaceMemberList = Exclude<FunctionReturnType<typeof api.workspaces.listMembers>, string>;
@@ -50,9 +52,10 @@ type ArchivedWorkspaceList = Exclude<
 >;
 
 /**
- * General settings of the current workspace (`docs/Interface_Design.md` §5.2): its name, icon,
- * and member access (owner-only), the user's other workspaces with switching and creation, and
- * archived workspaces to restore. Members see the current workspace without editing controls.
+ * General settings of the current workspace (`docs/Interface_Design.md` §5.2): its name, its
+ * appearance (tile icon and color, saved on pick), member access (owner-only), the user's other
+ * workspaces with switching and creation, archived workspaces to restore, and archiving the
+ * current one. Members see the current workspace without editing controls.
  */
 export function WorkspaceManagement() {
   const {
@@ -69,6 +72,7 @@ export function WorkspaceManagement() {
   const createWorkspace = useMutation(api.workspaces.create);
   const renameWorkspace = useMutation(api.workspaces.rename);
   const setWorkspaceIcon = useMutation(api.workspaces.setIcon);
+  const setWorkspaceColor = useMutation(api.workspaces.setColor);
   const archiveWorkspace = useMutation(api.workspaces.archive);
   const restoreWorkspace = useMutation(api.workspaces.restore);
   const addMember = useMutation(api.workspaces.addMember);
@@ -91,7 +95,7 @@ export function WorkspaceManagement() {
   const [nameDialog, setNameDialog] = useState<"create" | "rename" | null>(null);
   const [renameTarget, setRenameTarget] = useState<WorkspaceSummary | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<WorkspaceSummary | null>(null);
-  const [isIconPickerOpen, setIsIconPickerOpen] = useState(false);
+  const [isAppearanceOpen, setIsAppearanceOpen] = useState(false);
   const [name, setName] = useState("");
   const [memberEmail, setMemberEmail] = useState("");
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -152,15 +156,21 @@ export function WorkspaceManagement() {
     }
   }
 
-  async function updateWorkspaceIcon(target: WorkspaceSummary, icon: WorkspaceIconName) {
-    if (pendingAction) return;
-    setPendingAction(`icon:${target._id}`);
+  // Appearance saves on every pick so the tile in the row (and the Tab strip) previews it live;
+  // the popover stays open to pick the other attribute.
+  async function saveAppearance(change: { icon: WorkspaceIconName } | { color: TileColorName }) {
+    if (!workspace || pendingAction) return;
+    setPendingAction("appearance");
     try {
-      await setWorkspaceIcon({ workspace: target._id, icon });
-      setIsIconPickerOpen(false);
-      toast.success("Workspace icon updated.");
+      if ("icon" in change) {
+        await setWorkspaceIcon({ workspace: workspace._id, icon: change.icon });
+      } else {
+        await setWorkspaceColor({ workspace: workspace._id, color: change.color });
+      }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to update workspace icon.");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to update workspace appearance.",
+      );
     } finally {
       setPendingAction(null);
     }
@@ -245,84 +255,57 @@ export function WorkspaceManagement() {
               </Button>
             ) : null}
           </Row>
+        </GroupList>
+      ) : null}
+
+      {workspace ? (
+        <GroupList title="Appearance">
           <Row
             leading={
-              <ProjectTile>
+              <ProjectTile color={workspace.color}>
                 <WorkspaceIcon name={workspace.icon} />
               </ProjectTile>
             }
-            title="Icon"
-            description="Shown in the Tab strip, Home, and Settings."
+            title="Icon and color"
+            description={
+              isOwner
+                ? "Shown in the Tab strip, Home, and Settings."
+                : "Shown in the Tab strip, Home, and Settings. Set by the workspace owner."
+            }
           >
             {isOwner ? (
               <Popover
-                open={isIconPickerOpen}
-                onOpenChange={(open) => !pendingAction && setIsIconPickerOpen(open)}
+                open={isAppearanceOpen}
+                onOpenChange={(open) => !pendingAction && setIsAppearanceOpen(open)}
               >
                 <PopoverTrigger asChild>
-                  <Button variant="outline" size="sm" disabled={pendingAction !== null}>
+                  <Button variant="outline" size="sm">
                     Change
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent
                   align="end"
                   className="w-64"
-                  aria-labelledby="workspace-icon-title"
-                  aria-describedby="workspace-icon-description"
+                  aria-labelledby="workspace-appearance-title"
+                  aria-describedby="workspace-appearance-description"
                 >
                   <PopoverHeader>
-                    <PopoverTitle id="workspace-icon-title">Workspace icon</PopoverTitle>
-                    <PopoverDescription id="workspace-icon-description">
-                      Choose an icon for {workspace.name}.
+                    <PopoverTitle id="workspace-appearance-title">Appearance</PopoverTitle>
+                    <PopoverDescription id="workspace-appearance-description">
+                      Choose a color and an icon for {workspace.name}.
                     </PopoverDescription>
                   </PopoverHeader>
-                  <div className="grid grid-cols-6 place-items-center gap-1">
-                    {workspaceIconOptions.map((option) => {
-                      const selected = resolveWorkspaceIconName(workspace.icon) === option.name;
-                      const isSaving = pendingAction === `icon:${workspace._id}` && selected;
-
-                      return (
-                        <Button
-                          key={option.name}
-                          variant={selected ? "secondary" : "ghost"}
-                          size="icon-sm"
-                          title={option.label}
-                          disabled={pendingAction !== null}
-                          onClick={() => void updateWorkspaceIcon(workspace, option.name)}
-                          aria-label={`Use ${option.label} icon`}
-                          aria-pressed={selected}
-                        >
-                          {isSaving ? <Spinner /> : <option.icon />}
-                          {selected ? <span className="sr-only">Selected</span> : null}
-                        </Button>
-                      );
-                    })}
-                  </div>
+                  <TileAppearanceFields
+                    color={workspace.color}
+                    icon={workspace.icon}
+                    disabled={pendingAction !== null}
+                    onColorChange={(color) => void saveAppearance({ color })}
+                    onIconChange={(icon) => void saveAppearance({ icon })}
+                  />
                 </PopoverContent>
               </Popover>
             ) : null}
           </Row>
-          {isOwner ? (
-            <Row
-              icon={ArchiveIcon}
-              title="Archive workspace"
-              description={
-                ownedWorkspaceCount <= 1
-                  ? "Your only owned workspace cannot be archived."
-                  : "Hide it from the workspace list. You can restore it here later."
-              }
-            >
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-destructive"
-                disabled={ownedWorkspaceCount <= 1 || pendingAction !== null}
-                onClick={() => setArchiveTarget(workspace)}
-              >
-                Archive
-              </Button>
-            </Row>
-          ) : null}
         </GroupList>
       ) : null}
 
@@ -412,6 +395,31 @@ export function WorkspaceManagement() {
             pendingAction={pendingAction}
             onRestore={(target) => void restore(target)}
           />
+        </GroupList>
+      ) : null}
+
+      {/* Archiving is rare and disruptive, so it sits alone at the end, away from routine edits. */}
+      {workspace && isOwner ? (
+        <GroupList>
+          <Row
+            icon={ArchiveIcon}
+            title="Archive workspace"
+            description={
+              ownedWorkspaceCount <= 1
+                ? "Your only owned workspace cannot be archived."
+                : "Hide it from the workspace list. You can restore it here later."
+            }
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-destructive"
+              disabled={ownedWorkspaceCount <= 1 || pendingAction !== null}
+              onClick={() => setArchiveTarget(workspace)}
+            >
+              Archive
+            </Button>
+          </Row>
         </GroupList>
       ) : null}
 
@@ -571,7 +579,7 @@ function WorkspaceRows({
       <Row
         key={item._id}
         leading={
-          <ProjectTile>
+          <ProjectTile color={item.color}>
             <WorkspaceIcon name={item.icon} />
           </ProjectTile>
         }

@@ -107,6 +107,18 @@
   --signal-running: oklch(0.6 0.15 235);
   --signal-awaiting: oklch(0.72 0.17 70);
   --signal-success: oklch(0.6 0.15 152);
+  /* Workspace and Project tile colors (`backend/src/workspaces/colors.ts`); white glyphs sit on them. */
+  --tile-brand: var(--brand);
+  --tile-red: oklch(0.6 0.2 25);
+  --tile-amber: oklch(0.66 0.16 70);
+  --tile-lime: oklch(0.64 0.17 130);
+  --tile-green: oklch(0.6 0.15 152);
+  --tile-teal: oklch(0.6 0.11 190);
+  --tile-sky: oklch(0.64 0.13 230);
+  --tile-blue: oklch(0.56 0.19 260);
+  --tile-violet: oklch(0.56 0.2 295);
+  --tile-pink: oklch(0.62 0.2 350);
+  --tile-slate: oklch(0.55 0.02 260);
 }
 
 .dark {

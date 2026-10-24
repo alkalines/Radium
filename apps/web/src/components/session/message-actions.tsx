@@ -3,6 +3,7 @@ import { CheckIcon, CopyIcon, GitBranchIcon, PencilIcon, RefreshCcwIcon } from "
 
 import type { ModelOption } from "@/components/models/model-options";
 import { ModelList } from "@/components/models/model-list";
+import { useModelPreferences } from "@/components/models/model-preferences";
 import { Button } from "@/components/ui/button";
 import { MessageFooter } from "@/components/ui/message";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -30,8 +31,9 @@ function MessageAction({
  * Footer under one turn (shadcn Message pattern). User turns: fork with another model, edit
  * (when `onEdit` is given), copy. Assistant turns: retry, copy, fork, then the generation
  * performance. Actions reveal on hover or focus; `disabled` (a request is in flight) blocks
- * everything except copy. Fork opens a model list and hands the chosen slug to `onFork`; the
- * caller decides what forking a user versus an assistant turn means.
+ * everything except copy. Fork opens a model list (the user's pinned models first, hidden ones
+ * left out) and hands the chosen slug to `onFork`; the caller decides what forking a user versus
+ * an assistant turn means.
  */
 export function MessageActions({
   role,
@@ -54,6 +56,7 @@ export function MessageActions({
 }) {
   const [isCopied, setIsCopied] = useState(false);
   const [isForkOpen, setIsForkOpen] = useState(false);
+  const { pinnedModels, hiddenModels } = useModelPreferences();
   const isUser = role === "user";
 
   useEffect(() => {
@@ -100,6 +103,8 @@ export function MessageActions({
       >
         <ModelList
           models={forkModels ?? []}
+          pinnedSlugs={pinnedModels}
+          hiddenSlugs={hiddenModels}
           heading="Fork with model"
           placeholder="Pick a model to fork with…"
           onSelect={(model) => {

@@ -4,15 +4,21 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { FunctionReturnType } from "convex/server";
 import {
+  FolderMinusIcon,
   FolderPlusIcon,
   MessageSquareDashedIcon,
   MessageSquareTextIcon,
+  MessagesSquareIcon,
   RotateCcwIcon,
   SquarePenIcon,
 } from "lucide-react";
 
 import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 import { AgentStatus } from "@/components/agentic/agent-status";
+import { ProjectActionsMenu } from "@/components/projects/project-actions-menu";
+import { ProjectDialog } from "@/components/projects/project-dialog";
+import { ProjectGlyph, type ProjectSummary } from "@/components/projects/project-glyph";
 import {
   SideColumnItem,
   SideColumnLayout,
@@ -46,9 +52,16 @@ const day = 24 * hour;
 const week = 7 * day;
 
 /**
+ * A Home session filter, remembered with the workspace it was picked in. `project: null` is the
+ * `No project` filter (sessions outside every Project).
+ */
+type ProjectSelection = { workspace: Id<"workspaces">; project: Id<"projects"> | null };
+
+/**
  * Home (`docs/Interface_Design.md` §5.1): a side column with `New session`, a small search, and
- * Projects (planned), plus the current workspace's sessions grouped by recency as plain Rows on
- * the Panel. Opening a Row navigates to its session, which focuses or appends its Tab.
+ * the workspace's Projects, plus its sessions grouped by recency as plain Rows on the Panel.
+ * Selecting a Project, or `No project`, filters the list (selecting it again, or `All sessions`,
+ * clears the filter). Opening a Row navigates to its session, which focuses or appends its Tab.
  */
 export function HomeScreen() {
   const navigate = useNavigate();
@@ -60,12 +73,35 @@ export function HomeScreen() {
     provisionError,
     retryProvisioning,
   } = useWorkspace();
-  const { data: chats, error: chatsError } = useQuery(
-    convexQuery(api.aisdk.ListChats, workspaceId ? { workspace: workspaceId } : "skip"),
-  );
   const [query, setQuery] = useState("");
+  const [projectSelection, setProjectSelection] = useState<ProjectSelection | null>(null);
+  const [isCreateProjectOpen, setIsCreateProjectOpen] = useState(false);
   const now = useMinuteClock();
 
+  const { data: projectsData, error: projectsError } = useQuery(
+    convexQuery(api.projects.list, workspaceId ? { workspace: workspaceId } : "skip"),
+  );
+  const projects = Array.isArray(projectsData) ? projectsData : [];
+  // A selection made in another workspace, or of a Project deleted since, shows all sessions.
+  const isSelectionCurrent =
+    projectSelection !== null && projectSelection.workspace === workspaceId;
+  const isNoProjectSelected = isSelectionCurrent && projectSelection.project === null;
+  let selectedProject: ProjectSummary | undefined;
+  if (isSelectionCurrent) {
+    selectedProject = projects.find((project) => project._id === projectSelection.project);
+  }
+  // `undefined` lists every session; `null` lists sessions without a Project.
+  let projectFilter: Id<"projects"> | null | undefined = selectedProject?._id;
+  if (isNoProjectSelected) projectFilter = null;
+
+  const { data: chats, error: chatsError } = useQuery(
+    convexQuery(
+      api.aisdk.ListChats,
+      workspaceId ? { workspace: workspaceId, project: projectFilter } : "skip",
+    ),
+  );
+
+  const isOwner = workspace?.role === "owner";
   const workspaceName = workspace?.name ?? "workspace";
   const normalizedQuery = query.trim().toLowerCase();
   const sessions = Array.isArray(chats) ? chats : [];
@@ -73,9 +109,20 @@ export function HomeScreen() {
     sessionTitle(session).toLowerCase().includes(normalizedQuery),
   );
   const groups = groupByRecency(matches, now);
+  const projectsById = new Map(projects.map((project) => [project._id, project]));
 
-  function openNewSession() {
-    void navigate({ to: "/chat", search: { draft: newTabId() } });
+  /** Starts a draft Tab; with `project`, the Session screen seeds the draft's Project from it. */
+  function openNewSession(project?: Id<"projects">) {
+    void navigate({ to: "/chat", search: { draft: newTabId(), project } });
+  }
+
+  /** Selects a Project (or `null`, No project); selecting the current filter again clears it. */
+  function toggleProject(project: Id<"projects"> | null) {
+    if (!workspaceId || (projectFilter !== undefined && projectFilter === project)) {
+      setProjectSelection(null);
+      return;
+    }
+    setProjectSelection({ workspace: workspaceId, project });
   }
 
   let content;
@@ -104,6 +151,30 @@ export function HomeScreen() {
     );
   } else if (isWorkspaceLoading || isProvisioning || !workspaceId || chats === undefined) {
     content = <SessionListSkeleton />;
+  } else if (sessions.length === 0 && selectedProject) {
+    content = (
+      <Empty className="border-0">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <MessageSquareDashedIcon />
+          </EmptyMedia>
+          <EmptyTitle>No sessions in {selectedProject.name}</EmptyTitle>
+          <EmptyDescription>Start one here, or move a session in from its … menu.</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  } else if (sessions.length === 0 && isNoProjectSelected) {
+    content = (
+      <Empty className="border-0">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <MessageSquareDashedIcon />
+          </EmptyMedia>
+          <EmptyTitle>Every session is in a project</EmptyTitle>
+          <EmptyDescription>Sessions without a project appear here.</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
   } else if (sessions.length === 0) {
     content = (
       <Empty className="border-0">
@@ -115,7 +186,7 @@ export function HomeScreen() {
           <EmptyDescription>Sessions in {workspaceName} appear here.</EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <Button size="sm" onClick={openNewSession}>
+          <Button size="sm" onClick={() => openNewSession()}>
             <SquarePenIcon data-icon="inline-start" />
             New session
           </Button>
@@ -133,11 +204,51 @@ export function HomeScreen() {
         {/* Rows sit directly on the Panel; only the hovered or menu-open Row gets a surface. */}
         <ul className="flex flex-col">
           {group.sessions.map((session) => (
-            <SessionRow key={session.id} session={session} now={now} />
+            <SessionRow
+              key={session.id}
+              session={session}
+              project={session.project ? projectsById.get(session.project) : undefined}
+              projects={projects}
+              now={now}
+            />
           ))}
         </ul>
       </div>
     ));
+  }
+
+  let projectList;
+  if (projectsError || typeof projectsData === "string") {
+    projectList = <p className="px-3 text-sm text-muted-foreground">Projects unavailable</p>;
+  } else if (projectsData !== undefined && projects.length === 0) {
+    projectList = <p className="px-3 text-sm text-muted-foreground">No projects yet</p>;
+  } else if (projects.length > 0) {
+    projectList = (
+      <>
+        <SideColumnItem
+          isActive={projectFilter === undefined}
+          onClick={() => setProjectSelection(null)}
+        >
+          <MessagesSquareIcon />
+          All sessions
+        </SideColumnItem>
+        <SideColumnItem isActive={isNoProjectSelected} onClick={() => toggleProject(null)}>
+          <FolderMinusIcon />
+          No project
+        </SideColumnItem>
+        {projects.map((project) => (
+          <SideColumnItem
+            key={project._id}
+            isActive={project._id === selectedProject?._id}
+            title={project.name}
+            onClick={() => toggleProject(project._id)}
+          >
+            <ProjectGlyph project={project} />
+            <span className="truncate">{project.name}</span>
+          </SideColumnItem>
+        ))}
+      </>
+    );
   }
 
   return (
@@ -145,7 +256,7 @@ export function HomeScreen() {
       side={
         <>
           <div className="flex flex-col gap-2">
-            <SideColumnItem onClick={openNewSession}>
+            <SideColumnItem onClick={() => openNewSession()}>
               <SquarePenIcon />
               New session
             </SideColumnItem>
@@ -162,32 +273,92 @@ export function HomeScreen() {
             action={
               <Tooltip>
                 <TooltipTrigger asChild>
-                  {/* Disabled buttons do not fire pointer events; the span keeps the tooltip reachable. */}
-                  <span tabIndex={0}>
-                    <Button variant="ghost" size="icon-xs" disabled aria-label="New project">
-                      <FolderPlusIcon />
-                    </Button>
-                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="New project"
+                    disabled={!workspaceId}
+                    onClick={() => setIsCreateProjectOpen(true)}
+                  >
+                    <FolderPlusIcon />
+                  </Button>
                 </TooltipTrigger>
-                <TooltipContent>Projects are planned</TooltipContent>
+                <TooltipContent>New project</TooltipContent>
               </Tooltip>
             }
-          />
+          >
+            {projectList}
+          </SideColumnSection>
+
+          {workspaceId ? (
+            <ProjectDialog
+              open={isCreateProjectOpen}
+              onOpenChange={setIsCreateProjectOpen}
+              workspaceId={workspaceId}
+              isOwner={isOwner}
+              onCreated={(project) => setProjectSelection({ workspace: workspaceId, project })}
+            />
+          ) : null}
         </>
       }
       contentClassName="gap-6"
     >
+      {selectedProject && workspaceId ? (
+        <header className="flex h-10 items-center gap-2.5 pr-1.5 pl-3">
+          <ProjectGlyph project={selectedProject} />
+          <h1
+            className="min-w-0 flex-1 truncate text-base font-medium"
+            title={selectedProject.name}
+          >
+            {selectedProject.name}
+          </h1>
+          <Button variant="ghost" size="sm" onClick={() => openNewSession(selectedProject._id)}>
+            <SquarePenIcon data-icon="inline-start" />
+            New session
+          </Button>
+          {selectedProject.canManage ? (
+            <ProjectActionsMenu
+              project={selectedProject}
+              workspaceId={workspaceId}
+              isOwner={isOwner}
+            />
+          ) : null}
+        </header>
+      ) : null}
+      {isNoProjectSelected ? (
+        <header className="flex h-10 items-center gap-2.5 pr-1.5 pl-3">
+          <FolderMinusIcon className="size-4 shrink-0 text-muted-foreground" />
+          <h1 className="min-w-0 flex-1 truncate text-base font-medium">No project</h1>
+          <Button variant="ghost" size="sm" onClick={() => openNewSession()}>
+            <SquarePenIcon data-icon="inline-start" />
+            New session
+          </Button>
+          {/* Keeps the New session button where it sits in a Project header with a … menu. */}
+          <span aria-hidden="true" className="size-8 shrink-0" />
+        </header>
+      ) : null}
       {content}
     </SideColumnLayout>
   );
 }
 
-function SessionRow({ session, now }: { session: HomeSession; now: number }) {
+function SessionRow({
+  session,
+  project,
+  projects,
+  now,
+}: {
+  session: HomeSession;
+  /** The session's Project, when it has one and it is in the list. */
+  project: ProjectSummary | undefined;
+  projects: ProjectSummary[];
+  now: number;
+}) {
   const title = sessionTitle(session);
 
   return (
     <li className="group/session relative flex h-10 items-center gap-2.5 rounded-xl pr-1.5 pl-3 text-sm transition-colors hover:bg-accent has-data-[state=open]:bg-accent">
-      <SessionGlyph session={session} />
+      <SessionGlyph session={session} project={project} />
       {/* The overlay makes the whole Row open the session; the menu sits above it. */}
       <Link
         to="/chat/$chatId"
@@ -205,7 +376,7 @@ function SessionRow({ session, now }: { session: HomeSession; now: number }) {
         {formatRelativeTime(session.lastInteractionAt, now)}
       </time>
       {session.canManage ? (
-        <SessionActionsMenu session={session} />
+        <SessionActionsMenu session={session} projects={projects} />
       ) : (
         // Keeps the time aligned with Rows that have a menu.
         <span aria-hidden="true" className="size-6 shrink-0" />
@@ -215,14 +386,24 @@ function SessionRow({ session, now }: { session: HomeSession; now: number }) {
 }
 
 /**
- * Leading visual of a Row. A streaming session shows its RunState; otherwise the slot would hold
- * the Project tile, so until Projects ship the generated chat emoji stands in when present.
+ * Leading visual of a Row: a streaming session shows its RunState, a session in a Project shows
+ * the Project tile, and otherwise the generated chat emoji (or a plain session icon).
  */
-function SessionGlyph({ session }: { session: HomeSession }) {
+function SessionGlyph({
+  session,
+  project,
+}: {
+  session: HomeSession;
+  project: ProjectSummary | undefined;
+}) {
   if (session.activeStream) {
     return (
       <AgentStatus state="streaming" label="Generating" hideLabel className="w-4 justify-center" />
     );
+  }
+
+  if (project) {
+    return <ProjectGlyph project={project} />;
   }
 
   if (session.emoji) {

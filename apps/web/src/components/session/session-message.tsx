@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 import type { ToolUIPart, UIMessage } from "ai";
 import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
@@ -94,8 +94,11 @@ export type SessionMessageProps = {
  * One turn of a Session. User turns are a secondary Bubble at the end of the column (an inline
  * editor while edited); assistant turns are unboxed Markdown with Trace steps for reasoning and
  * tool calls, Approval gates inline, and footer actions once the turn is complete.
+ *
+ * Memoized: the Session passes stable callbacks, so finished turns skip re-rendering when only
+ * the Tab's focus or the live turn changes.
  */
-export function SessionMessage(props: SessionMessageProps) {
+export const SessionMessage = memo(function SessionMessage(props: SessionMessageProps) {
   const { message, isLive, isEditing } = props;
   const showActions = !isLive && !isEditing && message.role !== "system";
 
@@ -150,7 +153,7 @@ export function SessionMessage(props: SessionMessageProps) {
       </MessageContent>
     </Message>
   );
-}
+});
 
 function AssistantParts({
   message,

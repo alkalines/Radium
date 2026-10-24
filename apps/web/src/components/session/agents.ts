@@ -6,6 +6,12 @@ import type { api } from "backend/convex/_generated/api";
 export type SessionWorker = FunctionReturnType<typeof api.workers.list>[number];
 
 /**
+ * A Project of the Session's workspace as listed by `api.projects.list`. `folder` (the Worker and
+ * directory new Sessions in it default to) is only returned to the workspace owner.
+ */
+export type SessionProject = FunctionReturnType<typeof api.projects.list>[number];
+
+/**
  * The harness that runs a Session (`docs/Interface_Design.md` §2, Agent).
  *
  * - `built-in`: the Radium agent. It runs in Convex (`POST /api/aisdk/chat`) and only reaches the
@@ -46,4 +52,13 @@ export const builtInAgent: SessionAgent = {
  */
 export function agentsOnWorker(_worker: SessionWorker | undefined): SessionAgent[] {
   return [builtInAgent];
+}
+
+/**
+ * The agent a restored Tab chose, by id. Only the built-in agent exists today, so every id
+ * resolves to it; once ACP agents ship, an id whose agent is not installed on the Session's Worker
+ * must also fall back to the built-in agent.
+ */
+export function sessionAgentById(_id: string): SessionAgent {
+  return builtInAgent;
 }

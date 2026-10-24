@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { ChevronDownIcon, RotateCcwIcon, SettingsIcon } from "lucide-react";
+import { ChevronsUpDownIcon, RotateCcwIcon, SettingsIcon } from "lucide-react";
 
 import { ProjectTile } from "@/components/harness/project-tile";
 import { Button } from "@/components/ui/button";
@@ -52,11 +52,12 @@ export function WorkspaceSwitcher({ variant }: { variant: "chip" | "heading" }) 
             aria-label={label}
             className="max-w-48 min-w-0 text-muted-foreground hover:text-foreground data-[state=open]:text-foreground"
           >
-            <ProjectTile>
+            <ProjectTile color={workspace?.color}>
               <WorkspaceIcon name={workspace?.icon} />
             </ProjectTile>
             {/* The tile alone identifies the workspace where the Tab strip has no room. */}
             <span className="truncate max-sm:sr-only">{name}</span>
+            <ChevronsUpDownIcon data-icon="inline-end" className="size-3 opacity-70" />
           </Button>
         ) : (
           <button
@@ -65,7 +66,7 @@ export function WorkspaceSwitcher({ variant }: { variant: "chip" | "heading" }) 
             className="-mx-1 flex min-w-0 items-center gap-1 rounded-md px-1 text-sm text-subtle-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/30 data-[state=open]:text-foreground"
           >
             <span className="truncate">{name}</span>
-            <ChevronDownIcon className="size-3.5 shrink-0" />
+            <ChevronsUpDownIcon className="size-3.5 shrink-0" />
           </button>
         )}
       </DropdownMenuTrigger>
@@ -88,7 +89,7 @@ export function WorkspaceSwitcher({ variant }: { variant: "chip" | "heading" }) 
         >
           {workspaces.map((candidate) => (
             <DropdownMenuRadioItem key={candidate._id} value={candidate._id}>
-              <ProjectTile>
+              <ProjectTile color={candidate.color}>
                 <WorkspaceIcon name={candidate.icon} />
               </ProjectTile>
               <span className="min-w-0 flex-1 truncate">{candidate.name}</span>

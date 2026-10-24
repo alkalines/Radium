@@ -29,7 +29,7 @@ export function WorkspacePageHeader({
       scope={
         workspace ? (
           <>
-            <ProjectTile>
+            <ProjectTile color={workspace.color}>
               <WorkspaceIcon name={workspace.icon} />
             </ProjectTile>
             <span className="truncate">{workspace.name}</span>

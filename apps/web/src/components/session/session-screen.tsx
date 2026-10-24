@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DefaultChatTransport, type ChatStatus, type FileUIPart, type UIMessage } from "ai";
 import { useChat } from "@ai-sdk/react";
 import { convexQuery } from "@convex-dev/react-query";
@@ -9,11 +9,12 @@ import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import type { ToolSelection } from "backend/src/chatroom/tools";
 import type { ChatWorkerSelection } from "backend/src/worker/chat-config";
+import { isWorkerOnline } from "backend/src/worker/presence";
 import type { RunState } from "@/components/agentic/agent-status";
 import { RadiumWordmark } from "@/components/agentic/radium-wordmark";
 import { SessionAmbient } from "@/components/agentic/session-ambient";
-import { ChatToolsMenu } from "@/components/chat/chat-tools-menu";
 import { ContextUsage } from "@/components/session/context-usage";
 import {
   getApprovalContinuationKey,
@@ -27,21 +28,33 @@ import {
 import { SessionThread } from "@/components/session/session-thread";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Spinner } from "@/components/ui/spinner";
+import type { TabProjectHint } from "@/components/window/window-tabs";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { authClient } from "@/lib/auth-client";
 import { cn } from "@/lib/utils";
-import { builtInAgent, type SessionAgent } from "./agents";
+import { builtInAgent, sessionAgentById, type SessionAgent, type SessionProject } from "./agents";
 import {
   Composer,
   ConversationVisibilityMenu,
   type ChatScope,
   type ComposerMessage,
+  type ComposerTextStore,
 } from "./composer";
 import { ModelPicker, validReasoningEffort } from "./model-picker";
 import { SessionContext } from "./session-context";
+import { patchTabState, readTabState, type DraftTabSnapshot } from "./tab-state";
+import { workerToolsFor } from "@/components/chatroom/tool-catalog";
+import { ToolsDialog } from "./tools-dialog";
 
-/** Display hints a Session reports to its Tab in the Tab strip. */
-export type SessionTabHint = { title?: string; runState: RunState };
+/**
+ * Display hints a Session reports to its Tab in the Tab strip. `project` is `null` without a
+ * Project and `undefined` while it is not known yet (the Tab keeps its persisted hint).
+ */
+export type SessionTabHint = {
+  title?: string;
+  runState: RunState;
+  project?: TabProjectHint | null;
+};
 
 /**
  * One Session Tab: the empty draft (New session) and the active conversation in one tree, so the
@@ -57,14 +70,27 @@ export type SessionTabHint = { title?: string; runState: RunState };
  *   `onUnavailable` once.
  *
  * The Window keeps every open Tab mounted, so streams continue in background Tabs; `isActive`
- * gates autofocus and approval shortcuts. `onTabHint` reports title and RunState on change.
+ * gates autofocus and approval shortcuts. `onTabHint` reports title, RunState, and Project on
+ * change. The callbacks take the Tab id so the Window can pass the same functions to every Tab:
+ * the screen is memoized, and with stable props a navigation re-renders only the Tabs whose
+ * `isActive` (or requested model/Project) changed.
+ *
+ * Per-Tab state: what Convex cannot give back (Composer text, model/provider/reasoning choices,
+ * the agent, and a draft's workspace, visibility, Worker, Project, and tool override) is kept in
+ * the Tab's snapshot (`tab-state.ts`), keyed strictly by `tabId`. It is restored once after mount
+ * and rewritten on change; it never writes workspace or user defaults. Saved chats take
+ * visibility, Worker, Project, and tools from Convex, never from the snapshot.
+ *
+ * The client never sends a Worker directory: the backend derives it from the Project folder or the
+ * Worker's temp directory.
  */
-export function SessionScreen({
+export const SessionScreen = memo(function SessionScreen({
   tabId,
   chatId,
   isActive,
   requestedModel,
   requestedProvider,
+  requestedProject,
   onTabHint,
   onCreated,
   onUnavailable,
@@ -74,9 +100,11 @@ export function SessionScreen({
   isActive: boolean;
   requestedModel?: string;
   requestedProvider?: string;
-  onTabHint: (hint: SessionTabHint) => void;
-  onCreated: (chatId: Id<"aisdk_chats">) => void;
-  onUnavailable: () => void;
+  /** Project id a new draft starts in (`/chat?project=`); ignored when the Tab restores choices. */
+  requestedProject?: string;
+  onTabHint: (tabId: string, hint: SessionTabHint) => void;
+  onCreated: (tabId: string, chatId: Id<"aisdk_chats">) => void;
+  onUnavailable: (tabId: string) => void;
 }) {
   const navigate = useNavigate();
   const { workspaceId, workspaces } = useWorkspace();
@@ -91,6 +119,7 @@ export function SessionScreen({
   const forkChat = useMutation(api.aisdk.ForkChat);
   const setChatScope = useMutation(api.aisdk.SetChatScope);
   const setChatWorker = useMutation(api.aisdk.SetChatWorker);
+  const setChatProject = useMutation(api.aisdk.SetChatProject);
 
   // An existing chat's settings belong to its own workspace; a draft uses the current one.
   const settingsWorkspaceId = chat?.workspace ?? workspaceId;
@@ -103,16 +132,22 @@ export function SessionScreen({
   const [providerOverride, setProviderOverride] = useState(requestedProvider);
   const [reasoningEffort, setReasoningEffort] = useState("medium");
   const [reasoningBudget, setReasoningBudget] = useState<number>();
-  const [choiceWorkspaceId, setChoiceWorkspaceId] = useState(settingsWorkspaceId);
+  const [choiceWorkspaceId, setChoiceWorkspaceId] = useState<string | undefined>(
+    settingsWorkspaceId,
+  );
   const [draftScope, setDraftScope] = useState<ChatScope>("personal");
   const [draftWorker, setDraftWorker] = useState<ChatWorkerSelection | null>(null);
+  const [draftProject, setDraftProject] = useState<string | null>(null);
+  const [draftTools, setDraftTools] = useState<ToolSelection | null>(null);
   const [agent, setAgent] = useState<SessionAgent>(builtInAgent);
+  const [isTabStateRestored, setIsTabStateRestored] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState<string>();
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isScopeSaving, setIsScopeSaving] = useState(false);
   const [isWorkerSaving, setIsWorkerSaving] = useState(false);
+  const [isProjectSaving, setIsProjectSaving] = useState(false);
 
   const {
     data: models,
@@ -136,16 +171,186 @@ export function SessionScreen({
       signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
     ),
   );
+  const { data: projects } = useQuery(
+    convexQuery(
+      api.projects.list,
+      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
+  );
+  const { data: workerToolDefaults } = useQuery(
+    convexQuery(
+      api.chatroom.getWorkerToolDefaults,
+      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
+  );
+  // Owner-only; the same query the Session context uses, so it is fetched once.
+  const { data: workers, error: workersError } = useQuery(
+    convexQuery(
+      api.workers.list,
+      isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
+  );
 
-  // Model and Worker choices of a draft belong to a workspace; discard them as it changes.
-  const choicesAreStale = chatId === undefined && choiceWorkspaceId !== settingsWorkspaceId;
+  // Restore this Tab's snapshot once, after mount, so server and client render the same markup.
+  // A `/chat?project=` request only seeds a draft that had no saved choices.
+  const restoredTabId = useRef<string>(undefined);
+  const seedProjectId = useRef(requestedProject);
+  useEffect(() => {
+    if (restoredTabId.current === tabId) return;
+    restoredTabId.current = tabId;
+
+    const snapshot = readTabState(tabId);
+    if (snapshot) {
+      if (snapshot.model) setModelOverride(snapshot.model);
+      if (snapshot.provider) setProviderOverride(snapshot.provider);
+      if (snapshot.reasoningEffort) setReasoningEffort(snapshot.reasoningEffort);
+      if (snapshot.reasoningBudget) setReasoningBudget(snapshot.reasoningBudget);
+      if (snapshot.agentId) setAgent(sessionAgentById(snapshot.agentId));
+    }
+    if (chatId === undefined && snapshot?.draft) {
+      const draft = snapshot.draft;
+      seedProjectId.current = undefined;
+      setChoiceWorkspaceId(draft.workspaceId);
+      setDraftScope(draft.scope);
+      setDraftWorker(draft.worker);
+      setDraftProject(draft.project);
+      setDraftTools(draft.tools);
+    }
+    setIsTabStateRestored(true);
+  }, [chatId, tabId]);
+
+  // Model, Worker, Project, and tool choices of a draft belong to a workspace; discard them as it
+  // changes. An unknown current workspace (still loading) is not a change: restored choices wait.
+  const choicesAreStale =
+    chatId === undefined &&
+    settingsWorkspaceId !== undefined &&
+    choiceWorkspaceId !== settingsWorkspaceId;
   useEffect(() => {
     if (!choicesAreStale) return;
     setChoiceWorkspaceId(settingsWorkspaceId);
     setModelOverride(undefined);
     setProviderOverride(undefined);
     setDraftWorker(null);
+    setDraftProject(null);
+    setDraftTools(null);
   }, [choicesAreStale, settingsWorkspaceId]);
+
+  // Persist on change, never before the restore (that would overwrite the snapshot with defaults).
+  useEffect(() => {
+    if (!isTabStateRestored) return;
+
+    let draft: DraftTabSnapshot | undefined;
+    if (chatId === undefined && choiceWorkspaceId !== undefined && !choicesAreStale) {
+      draft = {
+        workspaceId: choiceWorkspaceId,
+        scope: draftScope,
+        worker: draftWorker,
+        project: draftProject,
+        tools: draftTools,
+      };
+    }
+    patchTabState(tabId, {
+      model: modelOverride,
+      provider: providerOverride,
+      reasoningEffort,
+      reasoningBudget,
+      agentId: agent.id,
+      draft,
+    });
+  }, [
+    agent.id,
+    chatId,
+    choiceWorkspaceId,
+    choicesAreStale,
+    draftProject,
+    draftScope,
+    draftTools,
+    draftWorker,
+    isTabStateRestored,
+    modelOverride,
+    providerOverride,
+    reasoningBudget,
+    reasoningEffort,
+    tabId,
+  ]);
+
+  // The Composer writes its text straight to the snapshot on every change, so typing re-renders
+  // only the Composer instead of this whole screen; the write is a small synchronous localStorage
+  // update, which also means a reload right after typing keeps the text.
+  const composerTextStore = useMemo<ComposerTextStore>(
+    () => ({
+      read: () => readTabState(tabId)?.text ?? "",
+      write: (text) => patchTabState(tabId, { text: text || undefined }),
+    }),
+    [tabId],
+  );
+
+  // Saved chats read their Project from Convex; a draft's Project must exist in its workspace.
+  let projectId: string | null = chat?.project ?? null;
+  if (chatId === undefined) projectId = choicesAreStale ? null : draftProject;
+  const selectedProject = projects?.find((candidate) => candidate._id === projectId) ?? null;
+
+  // A draft's Project can disappear (deleted, or never in this workspace after a restore).
+  useEffect(() => {
+    if (chatId || !draftProject || !projects || choicesAreStale) return;
+    if (projects.some((candidate) => candidate._id === draftProject)) return;
+    setDraftProject(null);
+  }, [chatId, choicesAreStale, draftProject, projects]);
+
+  /**
+   * Puts the draft in a Project. For owners, the Project also picks the draft's Worker: its only
+   * Worker folder, else its default Worker, and only while that Worker is online; otherwise the
+   * draft runs on no Worker. Tools already chosen are kept and merged with the Worker tool
+   * defaults. `No project` leaves the Worker as it is.
+   */
+  const selectDraftProject = useCallback(
+    (project: SessionProject | null) => {
+      setDraftProject(project?._id ?? null);
+      if (!project || !isOwner) return;
+
+      const folders = project.folders ?? [];
+      const candidateId = folders.length === 1 ? folders[0]?.workerId : project.defaultWorkerId;
+      const candidate = workers?.find(
+        (worker) => worker.workerId === candidateId && worker.status === "active",
+      );
+      const isOnline = candidate !== undefined && isWorkerOnline(candidate.lastSeenAt, Date.now());
+
+      setDraftWorker((current) => {
+        const chosenTools = current?.tools ?? [];
+        if (candidate && isOnline) {
+          return {
+            workerId: candidate.workerId,
+            tools: workerToolsFor(workerToolDefaults ?? [], chosenTools),
+          };
+        }
+        // No Worker: keep the tools chosen so far as a Worker-less selection.
+        return chosenTools.length > 0 ? { tools: chosenTools } : null;
+      });
+    },
+    [isOwner, workerToolDefaults, workers],
+  );
+
+  // Apply a `/chat?project=` request once the Projects (and, for owners, the Workers and Worker
+  // tool defaults the automatic Worker needs) have loaded for the draft's workspace.
+  useEffect(() => {
+    const requested = seedProjectId.current;
+    if (!requested || chatId || !isTabStateRestored || choicesAreStale || !projects) return;
+    if (isOwner && workerToolDefaults === undefined) return;
+    if (isOwner && workers === undefined && !workersError) return;
+    seedProjectId.current = undefined;
+    const project = projects.find((candidate) => candidate._id === requested);
+    if (project) selectDraftProject(project);
+  }, [
+    chatId,
+    choicesAreStale,
+    isOwner,
+    isTabStateRestored,
+    projects,
+    selectDraftProject,
+    workerToolDefaults,
+    workers,
+    workersError,
+  ]);
 
   // A draft's explicit model can disappear from the refreshed list (e.g. provider disabled).
   useEffect(() => {
@@ -283,8 +488,8 @@ export function SessionScreen({
   useEffect(() => {
     if (!isChatUnavailable || reportedUnavailable.current) return;
     reportedUnavailable.current = true;
-    onUnavailable();
-  }, [isChatUnavailable, onUnavailable]);
+    onUnavailable(tabId);
+  }, [isChatUnavailable, onUnavailable, tabId]);
 
   // The submitted or queued prompt shows as the user turn until the conversation has messages.
   let visiblePendingPrompt: string | undefined;
@@ -295,9 +500,18 @@ export function SessionScreen({
 
   const submittedTitle = pendingPrompt?.split("\n")[0]?.trim() || undefined;
   const title = chat?.title ?? submittedTitle;
+
+  // `undefined` while a saved chat or the Projects list is still loading, so the Tab keeps its hint.
+  const isProjectKnown =
+    (chatId === undefined || chat !== undefined) && (projectId === null || projects !== undefined);
+  const projectHint = useMemo((): TabProjectHint | null | undefined => {
+    if (!isProjectKnown) return undefined;
+    if (!selectedProject) return null;
+    return { name: selectedProject.name, color: selectedProject.color, icon: selectedProject.icon };
+  }, [isProjectKnown, selectedProject]);
   useEffect(() => {
-    onTabHint({ title, runState });
-  }, [onTabHint, runState, title]);
+    onTabHint(tabId, { title, runState, project: projectHint });
+  }, [onTabHint, projectHint, runState, tabId, title]);
 
   /** Send body for one model, omitting reasoning options it does not support. */
   const buildSendBody = useCallback(
@@ -322,7 +536,8 @@ export function SessionScreen({
       throw new Error("Chat is not ready.");
     }
 
-    const workerSelection = isOwner ? draftWorker : null;
+    const workerSelection = isOwner && !choicesAreStale ? withoutDirectory(draftWorker) : null;
+    const toolOverride = choicesAreStale ? null : draftTools;
     setCreateError(null);
     setIsCreating(true);
     setPendingPrompt(text);
@@ -331,6 +546,17 @@ export function SessionScreen({
         workspace: settingsWorkspaceId,
         scope: draftScope,
         ...(workerSelection ? { worker: workerSelection } : {}),
+        ...(selectedProject ? { project: selectedProject._id } : {}),
+        // Only a draft whose tools were changed carries an override; otherwise the chat follows
+        // the workspace defaults. MCP server ids round-trip as strings and Convex narrows them.
+        ...(toolOverride
+          ? {
+              tools: {
+                builtinToolSets: toolOverride.builtinToolSets,
+                mcpServers: toolOverride.mcpServers as Id<"mcp_servers">[],
+              },
+            }
+          : {}),
         messages_queue: {
           text,
           files,
@@ -341,7 +567,7 @@ export function SessionScreen({
           webSearch: false,
         },
       });
-      onCreated(createdChatId);
+      onCreated(tabId, createdChatId);
     } catch (caughtError) {
       setPendingPrompt(undefined);
       setCreateError(caughtError instanceof Error ? caughtError.message : "Something went wrong.");
@@ -354,11 +580,6 @@ export function SessionScreen({
   function submitTurn({ text, files }: ComposerMessage) {
     if ((!text && files.length === 0) || !selectedModel) return;
     void sendMessage({ text, files }, { body: buildSendBody(selectedModel) });
-  }
-
-  function handleCopy(message: UIMessage) {
-    const text = getMessageText(message);
-    if (text) void navigator.clipboard?.writeText(text);
   }
 
   function handleRetry(message: UIMessage) {
@@ -391,6 +612,7 @@ export function SessionScreen({
       newChatId = await forkChat({
         workspace: settingsWorkspaceId,
         scope: chat?.scope,
+        project: chat?.project ?? undefined,
         messages: messages.slice(0, index + 1),
       });
     } else {
@@ -401,6 +623,7 @@ export function SessionScreen({
       newChatId = await forkChat({
         workspace: settingsWorkspaceId,
         scope: chat?.scope,
+        project: chat?.project ?? undefined,
         messages: messages.slice(0, index),
         messages_queue: {
           text: getMessageText(message),
@@ -440,20 +663,64 @@ export function SessionScreen({
   }
 
   async function changeWorker(selection: ChatWorkerSelection | null) {
+    const next = withoutDirectory(selection);
     if (!chatId) {
-      setDraftWorker(selection);
+      setDraftWorker(next);
       return;
     }
     if (!chat?.canManage || isWorkerSaving) return;
     setIsWorkerSaving(true);
     try {
-      await setChatWorker({ chatId, selection });
+      await setChatWorker({ chatId, selection: next });
     } catch (caughtError) {
       toast.error(caughtError instanceof Error ? caughtError.message : "Failed to update Worker.");
     } finally {
       setIsWorkerSaving(false);
     }
   }
+
+  async function changeProject(project: SessionProject | null) {
+    if (!chatId) {
+      selectDraftProject(project);
+      return;
+    }
+    if (!chat?.canManage || isProjectSaving) return;
+    setIsProjectSaving(true);
+    try {
+      await setChatProject({ chatId, project: project?._id ?? null });
+    } catch (caughtError) {
+      toast.error(caughtError instanceof Error ? caughtError.message : "Failed to update Project.");
+    } finally {
+      setIsProjectSaving(false);
+    }
+  }
+
+  // Thread callbacks keep one identity for the Tab's lifetime and call the latest handlers, so a
+  // Tab switch (only `isActive` changes) does not re-render every memoized message.
+  const latestThreadHandlers = useRef({ handleRetry, handleEditSubmit, handleFork });
+  useLayoutEffect(() => {
+    latestThreadHandlers.current = { handleRetry, handleEditSubmit, handleFork };
+  });
+  const threadActions = useMemo(
+    () => ({
+      onCopy: copyMessageText,
+      onEditStart: (message: UIMessage) => setEditingId(message.id),
+      onEditCancel: () => setEditingId(null),
+      onEditSubmit: (message: UIMessage, nextText: string) =>
+        latestThreadHandlers.current.handleEditSubmit(message, nextText),
+      onRetry: (message: UIMessage) => latestThreadHandlers.current.handleRetry(message),
+      onFork: (message: UIMessage, forkModel: string) => {
+        void latestThreadHandlers.current
+          .handleFork(message, forkModel)
+          .catch((caughtError: unknown) => {
+            toast.error(
+              caughtError instanceof Error ? caughtError.message : "Failed to fork chat.",
+            );
+          });
+      },
+    }),
+    [],
+  );
 
   if (isChatUnavailable) {
     return (
@@ -479,7 +746,10 @@ export function SessionScreen({
     (provider) => provider.id === selectedProvider,
   )?.context;
   const canManageChat = chatId === undefined || chat?.canManage === true;
-  const workerSelection = chatId === undefined ? draftWorker : (chat?.worker ?? null);
+  let workerSelection: ChatWorkerSelection | null = chat?.worker ?? null;
+  if (chatId === undefined) workerSelection = choicesAreStale ? null : draftWorker;
+  const isRunTargetFixed = messages.length > 0 && agent.protocol === "acp";
+  const isWorkerBusy = isWorkerSaving || (chatId !== undefined && status !== "ready");
 
   return (
     <div className="relative flex h-full flex-col">
@@ -502,18 +772,12 @@ export function SessionScreen({
               editingId={editingId}
               canEdit={status === "ready" && Boolean(selectedModel)}
               onApprovalResponse={addToolApprovalResponse}
-              onCopy={handleCopy}
-              onEditStart={(message) => setEditingId(message.id)}
-              onEditCancel={() => setEditingId(null)}
-              onEditSubmit={handleEditSubmit}
-              onRetry={handleRetry}
-              onFork={(message, forkModel) => {
-                void handleFork(message, forkModel).catch((caughtError: unknown) => {
-                  toast.error(
-                    caughtError instanceof Error ? caughtError.message : "Failed to fork chat.",
-                  );
-                });
-              }}
+              onCopy={threadActions.onCopy}
+              onEditStart={threadActions.onEditStart}
+              onEditCancel={threadActions.onEditCancel}
+              onEditSubmit={threadActions.onEditSubmit}
+              onRetry={threadActions.onRetry}
+              onFork={threadActions.onFork}
             />
           )}
         </>
@@ -580,40 +844,68 @@ export function SessionScreen({
             ) : null
           }
           menuItems={
-            <>
-              <ConversationVisibilityMenu
-                scope={chat?.scope ?? draftScope}
-                isDraft={chatId === undefined}
-                canChange={
-                  chatId === undefined || (chat?.canManageScope === true && !isScopeSaving)
-                }
-                onChange={(scope) => void changeScope(scope)}
-              />
-              {isOwner && canManageChat ? (
-                <ChatToolsMenu workspace={settingsWorkspaceId} chatId={chatId} />
-              ) : null}
-            </>
+            <ConversationVisibilityMenu
+              scope={chat?.scope ?? draftScope}
+              isDraft={chatId === undefined}
+              canChange={chatId === undefined || (chat?.canManageScope === true && !isScopeSaving)}
+              onChange={(scope) => void changeScope(scope)}
+            />
           }
+          toolbarControls={
+            isOwner && canManageChat ? (
+              <ToolsDialog
+                workspace={settingsWorkspaceId}
+                chatId={chatId}
+                draftTools={choicesAreStale ? null : draftTools}
+                onDraftToolsChange={setDraftTools}
+                workerSelection={workerSelection}
+                isWorkerLocked={isWorkerBusy || isRunTargetFixed}
+                onWorkerSelectionChange={(selection) => void changeWorker(selection)}
+              />
+            ) : null
+          }
+          textStore={composerTextStore}
         />
 
         {/* Deviation from §2 (Session context is fixed after the first message): the built-in agent
             runs in Convex and only calls Worker tools, so chat managers may still change the
-            Worker, Directory, and Tools through SetChatWorker. The row must lock once
+            Project, Worker, and Directory (and Worker tools in the Tools Dialog) through
+            SetChatProject/SetChatWorker. The Worker part must lock once
             `agent.protocol === "acp"`, because an ACP agent process lives on its Worker. */}
         <SessionContext
           workspaceId={settingsWorkspaceId}
           isOwner={isOwner}
           canManage={canManageChat}
-          isFixed={messages.length > 0 && agent.protocol === "acp"}
-          isSaving={isWorkerSaving || (chatId !== undefined && status !== "ready")}
+          isFixed={isRunTargetFixed}
+          isSaving={isWorkerBusy || isProjectSaving}
+          projects={projects}
+          project={selectedProject}
           selection={workerSelection}
+          defaultWorkerTools={workerToolDefaults ?? []}
           agent={agent}
+          onProjectChange={(project) => void changeProject(project)}
           onSelectionChange={(selection) => void changeWorker(selection)}
           onAgentChange={setAgent}
         />
       </div>
     </div>
   );
+});
+
+/** Copies a turn's text; it needs nothing from the Session, so its identity never changes. */
+function copyMessageText(message: UIMessage) {
+  const text = getMessageText(message);
+  if (text) void navigator.clipboard?.writeText(text);
+}
+
+/**
+ * The selection as the client may send or keep it: the Worker directory is derived by the backend
+ * and never chosen here, so a stored or restored one is dropped.
+ */
+function withoutDirectory(selection: ChatWorkerSelection | null): ChatWorkerSelection | null {
+  if (!selection) return null;
+  if (selection.workerId === undefined) return { tools: selection.tools };
+  return { workerId: selection.workerId, tools: selection.tools };
 }
 
 /** Tab RunState from the chat lifecycle; the one place UI status is derived for a Session. */

@@ -3,6 +3,7 @@ export {
   createEnrollment,
   current,
   list,
+  reportPresence,
   revoke,
   revokeEnrollment,
 } from "../src/worker/management";

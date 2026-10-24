@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import {
   FolderInputIcon,
+  FolderMinusIcon,
   MoreHorizontalIcon,
   PencilIcon,
   PinIcon,
@@ -13,7 +14,7 @@ import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { Tag } from "@/components/harness/group-list";
+import { ProjectGlyph, type ProjectSummary } from "@/components/projects/project-glyph";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -39,7 +40,12 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -48,20 +54,31 @@ import { Input } from "@/components/ui/input";
 /** Matches the backend's title length limit for user-chosen titles. */
 const maxTitleLength = 32;
 
+/** Radio value for "No project"; Project ids never collide with it. */
+const noProject = "none";
+
 /** What the actions need to know about one session; `ListChats` items satisfy it. */
 export type SessionActionsTarget = {
   id: Id<"aisdk_chats">;
   title?: string;
   pinnedAt?: number;
+  project?: Id<"projects">;
 };
 
 /**
  * The `…` menu of a Home session Row (`docs/Interface_Design.md` §5.1): Pin, Rename, Regenerate
- * title, Move to project (planned), Delete. Only rendered for sessions the user can manage; the
- * backend re-checks every mutation and returns a string on refusal, which is shown as a toast.
+ * title, Move to project, Delete. Only rendered for sessions the user can manage; the backend
+ * re-checks every mutation and returns a string on refusal, which is shown as a toast.
+ * `projects` is the workspace's Project list, passed in once by Home rather than queried per Row.
  * The trigger is revealed by the Row on hover/focus and stays visible while open.
  */
-export function SessionActionsMenu({ session }: { session: SessionActionsTarget }) {
+export function SessionActionsMenu({
+  session,
+  projects,
+}: {
+  session: SessionActionsTarget;
+  projects: ProjectSummary[];
+}) {
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [title, setTitle] = useState(session.title?.trim() ?? "");
@@ -71,6 +88,7 @@ export function SessionActionsMenu({ session }: { session: SessionActionsTarget 
   const renameChat = useMutation(api.aisdk.RenameChat);
   const regenerateTitle = useMutation(api.aisdk.RegenerateChatTitle);
   const deleteChat = useMutation(api.aisdk.DeleteChat);
+  const setChatProject = useMutation(api.aisdk.SetChatProject);
 
   // Reopening Rename starts from the current title, including one regenerated meanwhile.
   useEffect(() => {
@@ -107,6 +125,21 @@ export function SessionActionsMenu({ session }: { session: SessionActionsTarget 
   async function regenerate() {
     const succeeded = await run("regenerate", () => regenerateTitle({ chatId: session.id }));
     if (succeeded) toast.success("Regenerating the session title.");
+  }
+
+  async function moveToProject(value: string) {
+    if (value === (session.project ?? noProject)) return;
+    const target = projects.find((project) => project._id === value) ?? null;
+
+    const succeeded = await run("move", () =>
+      setChatProject({ chatId: session.id, project: target?._id ?? null }),
+    );
+    if (!succeeded) return;
+    if (target) {
+      toast.success(`Moved to ${target.name}.`);
+    } else {
+      toast.success("Removed from its project.");
+    }
   }
 
   async function submitRename(event: FormEvent<HTMLFormElement>) {
@@ -157,11 +190,30 @@ export function SessionActionsMenu({ session }: { session: SessionActionsTarget 
               <SparklesIcon />
               Regenerate title
             </DropdownMenuItem>
-            <DropdownMenuItem disabled>
-              <FolderInputIcon />
-              Move to project
-              <Tag className="ml-auto">Planned</Tag>
-            </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger disabled={isBusy}>
+                <FolderInputIcon />
+                Move to project
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                <DropdownMenuRadioGroup
+                  value={session.project ?? noProject}
+                  onValueChange={(value) => void moveToProject(value)}
+                >
+                  <DropdownMenuRadioItem value={noProject}>
+                    <FolderMinusIcon />
+                    No project
+                  </DropdownMenuRadioItem>
+                  {projects.length > 0 ? <DropdownMenuSeparator /> : null}
+                  {projects.map((project) => (
+                    <DropdownMenuRadioItem key={project._id} value={project._id}>
+                      <ProjectGlyph project={project} />
+                      <span className="truncate">{project.name}</span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuGroup>

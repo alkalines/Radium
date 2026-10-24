@@ -15,8 +15,8 @@ import {
  * Worker. The name is Machine text and truncates (full name in `title`). Editable before the first
  * message when `branches` and `onBranchChange` are given; a plain label once `isFixed`.
  *
- * Renders nothing without a `branch`. Branches come from the Worker checkout of a Project, and
- * Projects are planned, so Sessions pass `branch={undefined}` today and the chip stays hidden.
+ * Renders nothing without a `branch`. Branches will come from the Worker checkout of a Project's
+ * folder; nothing reads that checkout yet, so Sessions pass `branch={undefined}` and the chip stays hidden.
  */
 export function SessionBranch({
   branch,

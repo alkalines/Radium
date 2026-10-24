@@ -217,14 +217,23 @@ test("a failed preview cannot advance to filesystem application", async () => {
   expect(f.runMutation).toHaveBeenCalledTimes(1);
 });
 
-test("execution requires an absolute directory and approval signatures change with assignment", async () => {
+test("without a directory, tools report it and never dispatch; approval signatures change with assignment", async () => {
   const f = fixture([]);
-  expect(() =>
-    buildWorkerChatTools(f.ctx, {
-      ...scope,
-      selection: { ...scope.selection, directory: undefined },
-    }),
-  ).toThrow("absolute Worker directory");
+  const unavailable = buildWorkerChatTools(f.ctx, {
+    ...scope,
+    selection: { ...scope.selection, directory: undefined },
+  });
+  expect(unavailable.toolApproval).toEqual({});
+  await expect(
+    unavailable.tools.worker_read!.execute!(
+      { path: "a.ts" },
+      {
+        toolCallId: "call",
+        messages: [],
+      },
+    ),
+  ).resolves.toMatchObject({ ok: false, code: "WORKER_DIRECTORY_UNAVAILABLE" });
+  expect(f.runMutation).not.toHaveBeenCalled();
   const first = await workerChatApprovalSecret("test-only-issuer-secret", scope);
   const changed = await workerChatApprovalSecret("test-only-issuer-secret", {
     ...scope,
