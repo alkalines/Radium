@@ -35,6 +35,16 @@
 - For multi-phase logic, a brief comment can orient the reader at a non-obvious transition; do not label every statement or use comments to excuse tangled code. Prefer clearer names or a simpler structure first. Keep comments accurate when behavior changes; remove stale comments and commented-out code you encounter in the touched logic.
 - `docs/` is for plans, decisions, product context, operational guides, and handoffs—not exhaustive function/API descriptions. Keep deployment instructions and environment examples aligned with executable config; link to code rather than duplicating its behavior. Do not hard-wrap prose for visual spacing.
 
+## Interface and motion
+
+- New web UI follows `docs/Interface_Design.md` (the "harness surface" spec; RFC 2119 keywords, its MUST rules block review). Read the spec before building or restyling a screen; unmigrated screens are not a template.
+- Radium is a tool, not a landing page: quiet, dense, flat, neutral. OpenCode and Lumo inspired the initial layout; Radium develops its own style, so do not copy their branding. No hero sections, eyebrow labels, taglines, stat strips, gradients, added shadows, or decorative grids on product screens. The only decorative element is the empty-Session ambient glow.
+- Layout model: Window → 44px Tab strip (Home button, session Tabs, `+`) → one inset Panel. No persistent sidebar. Open Tabs are client state persisted in `localStorage`, never Convex. Home is the home screen (Projects column, planned, and session list); Settings use a 240px nav plus Group lists of Rows. Migrated screens render inside `data-design="harness"` and use only semantic tokens.
+- Compose from `@/components/ui` (shadcn/ui, `radix-rhea`) and the shadcn registry chat parts (`message`, `bubble`, `trace`, `marker`, `code-block`, `attachment`, `message-scroller`). `components/ai-elements/` is legacy: no new imports where a registry equivalent exists. After `shadcn add`, rewrite any `import { cn } from "cn"` to `@/lib/utils` and remove the stray `cn` npm dependency.
+- Status is a typed `RunState` (`components/agentic/agent-status.tsx`) rendered through Signal tokens with a label or icon; never derive it from ad-hoc booleans. Mono (`font-mono`) is only for Machine text: code, commands, paths, branches, model IDs, shortcuts.
+- Animation uses **Motion** (`motion` package; `import * as m from "motion/react-m"` under the global `LazyMotion`). Never add `framer-motion`. All timing comes from `apps/web/src/lib/motion.tsx`; no raw numbers in `transition` props.
+- Motion is causal: animate only a state change or direct input. Tab, settings-page, and Home navigation is instant. Animate `opacity`/`transform`/small `blur`/`clip-path` only; size and position changes use `layout`. Content present at load renders with `initial={false}`. Infinite indicators are CSS keyframes with a `motion-reduce:` fallback and stop on terminal states.
+
 ## Verification
 
 - Test observable behavior and meaningful failure/security boundaries, not implementation details, mock call counts, or library behavior. Extend focused coverage for actual regressions; do not add suites simply to increase test count. Preserve useful coverage when consolidating redundant tests.
