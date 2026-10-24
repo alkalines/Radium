@@ -16,8 +16,10 @@ import {
 } from "@/components/ui/item";
 import { Spinner } from "@/components/ui/spinner";
 
-function timeAgo(date: Date) {
-  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+// Typed as `Date`, but the Convex Better Auth adapter delivers session timestamps over JSON as
+// epoch milliseconds or ISO strings, so normalize before reading the time.
+function timeAgo(date: Date | string | number) {
+  const seconds = Math.floor((Date.now() - new Date(date).getTime()) / 1000);
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
   const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [

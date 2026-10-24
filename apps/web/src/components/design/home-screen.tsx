@@ -27,7 +27,7 @@ import {
   type DemoSession,
   type DemoWorkspace,
 } from "./demo-data";
-import { ProjectTile } from "./project-tile";
+import { ProjectTile } from "@/components/harness/project-tile";
 
 const groupOrder: DemoSession["group"][] = ["Today", "Yesterday", "Older"];
 
@@ -91,7 +91,7 @@ export function HomeScreen({
                     </Button>
                   </span>
                 </TooltipTrigger>
-                <TooltipContent data-design="harness">Projects are planned</TooltipContent>
+                <TooltipContent>Projects are planned</TooltipContent>
               </Tooltip>
             </div>
             {demoProjects.map((project) => (
@@ -161,7 +161,7 @@ function SessionMenu({ title }: { title: string }) {
           <MoreHorizontalIcon />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent data-design="harness" align="end" className="w-44">
+      <DropdownMenuContent align="end" className="w-44">
         <DropdownMenuGroup>
           <DropdownMenuItem>
             <PencilIcon />

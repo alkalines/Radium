@@ -1,65 +1,14 @@
-import { Link } from "@tanstack/react-router";
-import { ActivityIcon, KeyRoundIcon, KeySquareIcon, RouteIcon, ScrollTextIcon } from "lucide-react";
+import { KeyRoundIcon, KeySquareIcon, RouteIcon } from "lucide-react";
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ProvidersPanel } from "./providers-panel";
-import { CredentialsPanel } from "./credentials-panel";
-import { KeysPanel } from "./keys-panel";
-import { LogsPanel } from "./logs-panel";
-import { ActivityPanel } from "./activity-panel";
-
+/**
+ * Gateway settings pages served by `/gateway/$section`, which render in the 760px settings
+ * column. Drives route validation and their Settings sidebar entries (labels and icons). Wide
+ * pages (Activity, Logs, Telemetry) have their own routes so they can opt into `settingsWidth`.
+ */
 export const gatewaySections = [
-  { value: "activity", label: "Activity", icon: ActivityIcon, hidden: false },
-  { value: "providers", label: "Providers", icon: RouteIcon, hidden: false },
-  { value: "credentials", label: "Credentials", icon: KeyRoundIcon, hidden: false },
-  { value: "keys", label: "API Keys", icon: KeySquareIcon, hidden: false },
-  { value: "logs", label: "Logs", icon: ScrollTextIcon, hidden: false },
+  { value: "providers", label: "Providers", icon: RouteIcon },
+  { value: "credentials", label: "Credentials", icon: KeyRoundIcon },
+  { value: "keys", label: "API keys", icon: KeySquareIcon },
 ] as const;
 
 export type GatewaySection = (typeof gatewaySections)[number]["value"];
-
-export function GatewaySettings({
-  section,
-  hideNav,
-}: {
-  section: GatewaySection;
-  /** When `true`, hides the top tab navigation (used when nav lives in the sidebar). */
-  hideNav?: boolean;
-}) {
-  return (
-    <Tabs value={section} className="w-full gap-4 md:gap-6">
-      <TabsList aria-label="Gateway settings" className={hideNav ? "hidden" : undefined}>
-        {gatewaySections
-          .filter((entry) => !entry.hidden)
-          .map((entry) => (
-            <TabsTrigger key={entry.value} value={entry.value} asChild>
-              <Link to="/gateway/$section" params={{ section: entry.value }} className="gap-1.5">
-                <entry.icon className="text-muted-foreground" />
-                {entry.label}
-              </Link>
-            </TabsTrigger>
-          ))}
-      </TabsList>
-
-      <TabsContent value="providers" tabIndex={-1}>
-        {section === "providers" && <ProvidersPanel />}
-      </TabsContent>
-
-      <TabsContent value="activity" tabIndex={-1}>
-        {section === "activity" && <ActivityPanel />}
-      </TabsContent>
-
-      <TabsContent value="credentials" tabIndex={-1}>
-        {section === "credentials" && <CredentialsPanel />}
-      </TabsContent>
-
-      <TabsContent value="keys" tabIndex={-1}>
-        {section === "keys" && <KeysPanel />}
-      </TabsContent>
-
-      <TabsContent value="logs" tabIndex={-1}>
-        {section === "logs" && <LogsPanel />}
-      </TabsContent>
-    </Tabs>
-  );
-}

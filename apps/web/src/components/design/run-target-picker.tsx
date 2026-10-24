@@ -23,7 +23,7 @@ import {
   type DemoWorker,
   type DemoWorkspace,
 } from "./demo-data";
-import { ProjectTile } from "./project-tile";
+import { ProjectTile } from "@/components/harness/project-tile";
 
 /** Agents a Worker can run: the built-in one everywhere, ACP agents only where installed. */
 export function agentsOn(worker: DemoWorker) {
@@ -99,7 +99,6 @@ export function RunTargetPicker({
         side keeps the popover from flipping when a drill-down list is taller than the summary.
       */}
       <PopoverContent
-        data-design="harness"
         side="top"
         align="center"
         className="w-80 gap-0 overflow-hidden rounded-2xl p-0"

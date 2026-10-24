@@ -12,13 +12,11 @@ import {
   CircleAlertIcon,
   CircleCheckIcon,
   CopyIcon,
-  DatabaseIcon,
   FileIcon,
   FlagIcon,
   HistoryIcon,
   LinkIcon,
   MessageSquareIcon,
-  RouteIcon,
   ShieldIcon,
   TextIcon,
   UserRoundIcon,
@@ -26,16 +24,31 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
-import { CodeBlock, CodeBlockCopyButton } from "@/components/ai-elements/code-block";
+import { AgentStatus } from "@/components/agentic/agent-status";
+import { WorkspacePageHeader } from "@/components/settings/workspace-page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  CodeBlock,
+  CodeBlockActions,
+  CodeBlockContent,
+  CodeBlockCopyButton,
+  CodeBlockLine,
+} from "@/components/ui/code-block";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useHighlightedCode } from "@/hooks/use-highlighted-code";
 import { cn } from "@/lib/utils";
 import { api } from "backend/convex/_generated/api";
+import { DataSection } from "./data-section";
 import { ProviderLogo } from "./provider-logo";
-import { formatTelemetryDate, formatTelemetryDuration, formatTokenCount } from "./telemetry-utils";
+import {
+  formatTelemetryDate,
+  formatTelemetryDuration,
+  formatTokenCount,
+  traceRunState,
+} from "./telemetry-utils";
 
 type TraceResult = Exclude<FunctionReturnType<typeof api.observability.aiTraces.getTrace>, null>;
 type Span = TraceResult["spans"][number];
@@ -50,11 +63,14 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
 
   if (error) {
     return (
-      <Alert variant="destructive">
-        <CircleAlertIcon />
-        <AlertTitle>Could not load trace</AlertTitle>
-        <AlertDescription>{error.message}</AlertDescription>
-      </Alert>
+      <>
+        <WorkspacePageHeader title="Trace" action={<AllTracesLink />} />
+        <Alert variant="destructive">
+          <CircleAlertIcon />
+          <AlertTitle>Could not load trace</AlertTitle>
+          <AlertDescription>{error.message}</AlertDescription>
+        </Alert>
+      </>
     );
   }
 
@@ -62,12 +78,15 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
 
   if (data === null) {
     return (
-      <Alert>
-        <AlertTitle>Trace not found</AlertTitle>
-        <AlertDescription>
-          This trace was deleted or does not belong to your workspace.
-        </AlertDescription>
-      </Alert>
+      <>
+        <WorkspacePageHeader title="Trace" action={<AllTracesLink />} />
+        <Alert>
+          <AlertTitle>Trace not found</AlertTitle>
+          <AlertDescription>
+            This trace was deleted or does not belong to your workspace.
+          </AlertDescription>
+        </Alert>
+      </>
     );
   }
 
@@ -78,42 +97,27 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
   const title = getRunTitle(data.inputJson, steps[0]?.model?.inputJson) ?? trace.functionId;
 
   return (
-    <div className="flex flex-col gap-3">
-      <Button variant="ghost" size="sm" className="mr-auto -ml-2" asChild>
-        <Link to="/gateway/telemetry">
-          <ArrowLeftIcon data-icon="inline-start" />
-          All traces
-        </Link>
-      </Button>
-
-      <header className="flex flex-col gap-3 px-0.5 pb-2">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div className="flex min-w-0 items-center gap-2">
-            <h1 className="truncate font-sans text-sm font-medium">{title}</h1>
-            <RunStatus status={trace.status} />
-          </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted-foreground lg:justify-end">
-            <span>
-              {displaySteps.length} {displaySteps.length === 1 ? "step" : "steps"}
-            </span>
-            <span aria-hidden>·</span>
-            <span>{formatTelemetryDuration(trace.durationMs)}</span>
-            <span aria-hidden>·</span>
-            <span>
-              input: {formatTokenCount(trace.usage?.inputTokens ?? 0)} → output:{" "}
-              {formatTokenCount(trace.usage?.outputTokens ?? 0)}
-            </span>
-            <span aria-hidden>·</span>
+    <>
+      <WorkspacePageHeader
+        title={title}
+        description={
+          <span className="font-mono text-xs">
+            {displaySteps.length} {displaySteps.length === 1 ? "step" : "steps"} ·{" "}
+            {formatTelemetryDuration(trace.durationMs)} · input:{" "}
+            {formatTokenCount(trace.usage?.inputTokens ?? 0)} → output:{" "}
+            {formatTokenCount(trace.usage?.outputTokens ?? 0)} ·{" "}
             <time dateTime={new Date(trace.startedAt).toISOString()}>
               {formatTelemetryDate(trace.startedAt)}
             </time>
-            <span aria-hidden>·</span>
-            <span className="flex items-center gap-1.5">
-              <RouteIcon className="size-3" /> Timeline
-            </span>
-          </div>
-        </div>
-      </header>
+          </span>
+        }
+        action={
+          <>
+            <RunStatus status={trace.status} />
+            <AllTracesLink />
+          </>
+        }
+      />
 
       {data.truncated && (
         <Alert>
@@ -124,7 +128,7 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
         </Alert>
       )}
 
-      <section aria-label="Execution steps" className="flex flex-col gap-2.5">
+      <DataSection title="Steps" description="Execution steps, in time order.">
         {displaySteps.map((step, index) => (
           <StepCard
             key={step.model?._id ?? `trace-${index}`}
@@ -135,10 +139,21 @@ export function TelemetryDetail({ traceId }: { traceId: Id<"telemetry_traces"> }
             trace={trace}
           />
         ))}
-      </section>
+      </DataSection>
 
       <RunDetails data={data} />
-    </div>
+    </>
+  );
+}
+
+function AllTracesLink() {
+  return (
+    <Button variant="outline" size="sm" asChild>
+      <Link to="/gateway/telemetry">
+        <ArrowLeftIcon data-icon="inline-start" />
+        All traces
+      </Link>
+    </Button>
   );
 }
 
@@ -169,10 +184,7 @@ function StepCard({
     <Collapsible
       open={open}
       onOpenChange={setOpen}
-      className={cn(
-        "overflow-hidden rounded-xl border bg-card shadow-xs",
-        error && "border-destructive/35",
-      )}
+      className={cn("border-b last:border-b-0", error && "bg-destructive/5")}
     >
       <CollapsibleTrigger className="group flex w-full items-center gap-2.5 px-3 py-3 text-left sm:px-4">
         <span className="w-4 shrink-0 font-mono text-[11px] text-muted-foreground">
@@ -763,54 +775,39 @@ function InputSummary({ value }: { value?: string }) {
 
 function RunStatus({ status }: { status: TraceResult["trace"]["status"] }) {
   if (status === "ok") return null;
-  return <Badge variant={status === "error" ? "destructive" : "outline"}>{status}</Badge>;
+  return <AgentStatus state={traceRunState(status)} label={status} />;
 }
 
 function RunDetails({ data }: { data: TraceResult }) {
-  const [open, setOpen] = useState(false);
   const { trace, completion } = data;
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="mt-1 rounded-xl border bg-card">
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-4 py-2.5 text-left text-xs text-muted-foreground">
-        <DatabaseIcon className="size-3.5" />
-        Run details
-        {completion && (
-          <span className="ml-2 font-mono text-[10px]">
-            Estimated ${completion.response.pricing.cost.toFixed(6)}
-          </span>
-        )}
-        <ChevronDownIcon className="ml-auto size-3.5 transition-transform group-data-[state=open]:rotate-180" />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="collapsible-content border-t">
-        <div className="grid gap-x-8 gap-y-2 p-4 text-xs sm:grid-cols-2 lg:grid-cols-3">
-          <Detail label="Trace ID" value={trace._id} copy />
-          <Detail label="Request ID" value={trace.requestId} copy />
-          <Detail label="Call ID" value={trace.callId} copy />
-          <Detail label="Function" value={trace.functionId} />
-          <Detail label="Operation" value={trace.operationId} />
-          <Detail label="Finish reason" value={trace.finishReason ?? "-"} />
-          <Detail
-            label="Reasoning tokens"
-            value={formatTokenCount(trace.usage?.reasoningTokens ?? 0)}
-          />
-          <Detail label="Cache read" value={formatTokenCount(trace.usage?.cacheReadTokens ?? 0)} />
-          <Detail
-            label="Cache write"
-            value={formatTokenCount(trace.usage?.cacheWriteTokens ?? 0)}
-          />
-          {completion && <Detail label="Generation ID" value={completion.response.genId} copy />}
-          {completion && (
-            <Detail label="TTFT" value={formatTelemetryDuration(completion.response.ttft)} />
-          )}
-          {completion && (
-            <Detail
-              label="Generation"
-              value={formatTelemetryDuration(completion.response.gen_time)}
-            />
-          )}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+    <DataSection
+      title="Run details"
+      description={
+        completion ? `Estimated $${completion.response.pricing.cost.toFixed(6)}` : undefined
+      }
+      contentClassName="grid gap-x-8 gap-y-2 p-4 text-xs sm:grid-cols-2 lg:grid-cols-3"
+    >
+      <Detail label="Trace ID" value={trace._id} copy />
+      <Detail label="Request ID" value={trace.requestId} copy />
+      <Detail label="Call ID" value={trace.callId} copy />
+      <Detail label="Function" value={trace.functionId} />
+      <Detail label="Operation" value={trace.operationId} />
+      <Detail label="Finish reason" value={trace.finishReason ?? "-"} />
+      <Detail
+        label="Reasoning tokens"
+        value={formatTokenCount(trace.usage?.reasoningTokens ?? 0)}
+      />
+      <Detail label="Cache read" value={formatTokenCount(trace.usage?.cacheReadTokens ?? 0)} />
+      <Detail label="Cache write" value={formatTokenCount(trace.usage?.cacheWriteTokens ?? 0)} />
+      {completion && <Detail label="Generation ID" value={completion.response.genId} copy />}
+      {completion && (
+        <Detail label="TTFT" value={formatTelemetryDuration(completion.response.ttft)} />
+      )}
+      {completion && (
+        <Detail label="Generation" value={formatTelemetryDuration(completion.response.gen_time)} />
+      )}
+    </DataSection>
   );
 }
 
@@ -877,13 +874,18 @@ function JsonSection({
 
 function JsonBlock({ value }: { value: unknown }) {
   const code = prettyJson(value);
+  const highlighted = useHighlightedCode(code, "json");
+
   return (
-    <CodeBlock
-      code={code}
-      language="json"
-      className="bg-background/60 [&_code]:text-[10px]! [&_pre]:p-2.5! [&_pre]:text-[10px]!"
-    >
-      <CodeBlockCopyButton size="icon-xs" aria-label="Copy JSON" />
+    <CodeBlock size="sm">
+      <CodeBlockActions>
+        <CodeBlockCopyButton value={code} />
+      </CodeBlockActions>
+      <CodeBlockContent>
+        {highlighted.map((line, index) => (
+          <CodeBlockLine key={index}>{line}</CodeBlockLine>
+        ))}
+      </CodeBlockContent>
     </CodeBlock>
   );
 }
@@ -1115,14 +1117,13 @@ function compactJson(value: unknown): string {
 
 function TelemetryDetailSkeleton() {
   return (
-    <div className="flex flex-col gap-3">
-      <Skeleton className="h-7 w-24" />
-      <div className="flex items-center justify-between gap-4 py-2">
-        <Skeleton className="h-5 w-56" />
-        <Skeleton className="hidden h-4 w-96 md:block" />
-      </div>
-      <Skeleton className="h-64 rounded-xl" />
-      <Skeleton className="h-64 rounded-xl" />
-    </div>
+    <>
+      <WorkspacePageHeader title="Trace" action={<AllTracesLink />} />
+      <DataSection title="Steps" contentClassName="flex flex-col gap-2 p-4">
+        <Skeleton className="h-6" />
+        <Skeleton className="h-6" />
+        <Skeleton className="h-6" />
+      </DataSection>
+    </>
   );
 }

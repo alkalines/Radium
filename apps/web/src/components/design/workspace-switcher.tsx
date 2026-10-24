@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { demoWorkspaces, type DemoWorkspace } from "./demo-data";
-import { ProjectTile } from "./project-tile";
+import { ProjectTile } from "@/components/harness/project-tile";
 
 /**
  * Changes the current workspace, which is Window state (spec §4). `chip` is the flat Tab strip
@@ -51,11 +51,7 @@ export function WorkspaceSwitcher({
           </button>
         )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent
-        data-design="harness"
-        align={variant === "chip" ? "end" : "start"}
-        className="w-56"
-      >
+      <DropdownMenuContent align={variant === "chip" ? "end" : "start"} className="w-56">
         <DropdownMenuLabel>Workspaces</DropdownMenuLabel>
         <DropdownMenuRadioGroup
           value={workspace.id}

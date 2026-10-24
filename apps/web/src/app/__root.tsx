@@ -12,8 +12,8 @@ import {
 import { createServerFn } from "@tanstack/react-start";
 import type { ReactNode } from "react";
 
-import { AppShell } from "@/components/app-shell";
 import { Providers } from "@/components/providers";
+import { HarnessWindow } from "@/components/window/harness-window";
 import { Toaster } from "@/components/ui/sonner";
 import { getToken } from "@/lib/auth-server";
 import appCss from "@/styles/app.css?url";
@@ -38,7 +38,7 @@ export const Route = createRootRouteWithContext<{
         content: "width=device-width, initial-scale=1",
       },
       {
-        title: "Alkalines Radium",
+        title: "Radium",
       },
     ],
     links: [
@@ -70,9 +70,9 @@ function RootRouteComponent() {
 
   return (
     <Providers convexClient={context.convexQueryClient.convexClient} initialToken={context.token}>
-      <AppShell>
+      <HarnessWindow>
         <Outlet />
-      </AppShell>
+      </HarnessWindow>
     </Providers>
   );
 }

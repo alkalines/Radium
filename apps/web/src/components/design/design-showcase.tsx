@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
 import {
@@ -34,7 +34,8 @@ import {
   type DemoSession,
 } from "./demo-data";
 import { HomeScreen } from "./home-screen";
-import { ProjectTile } from "./project-tile";
+import { ProjectTile } from "@/components/harness/project-tile";
+import { StripTab, TabEars, stripTabClassName } from "@/components/harness/strip-tab";
 import { SessionScreen } from "./session-screen";
 import { SettingsScreen } from "./settings-screen";
 import { WorkspaceSwitcher } from "./workspace-switcher";
@@ -174,7 +175,7 @@ export function DesignShowcase() {
 
   return (
     <div
-      data-design="harness"
+      data-slot="harness-window"
       className="flex h-svh flex-col overflow-hidden bg-chrome text-sm text-foreground"
     >
       {/* Home sits flush with the Panel's left edge so, when open, its side continues the Panel. */}
@@ -193,7 +194,7 @@ export function DesignShowcase() {
                 <HouseIcon />
               </Button>
             </TooltipTrigger>
-            <TooltipContent data-design="harness">Home</TooltipContent>
+            <TooltipContent>Home</TooltipContent>
           </Tooltip>
         </StripTab>
 
@@ -280,7 +281,7 @@ export function DesignShowcase() {
                 <PlusIcon />
               </Button>
             </TooltipTrigger>
-            <TooltipContent data-design="harness">New session</TooltipContent>
+            <TooltipContent>New session</TooltipContent>
           </Tooltip>
         </div>
 
@@ -338,60 +339,6 @@ export function DesignShowcase() {
   );
 }
 
-/**
- * Shape shared by everything that can own the Panel (Home, session Tabs, Settings). The active one
- * takes the Panel's surface and rounded top, so it reads as the Panel growing up into the strip.
- */
-function stripTabClassName(isActive: boolean) {
-  return cn(
-    "relative flex h-9 shrink-0 items-center rounded-t-[10px] transition-colors",
-    isActive ? "bg-background text-foreground" : "text-subtle-foreground",
-  );
-}
-
-function StripTab({
-  isActive,
-  flushStart = false,
-  className,
-  children,
-}: {
-  isActive: boolean;
-  /** The item sits on the Panel's left edge: no left ear, and the Panel squares that corner. */
-  flushStart?: boolean;
-  className?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div
-      className={cn(stripTabClassName(isActive), !isActive && "text-muted-foreground", className)}
-    >
-      {isActive ? <TabEars hideStart={flushStart} /> : null}
-      {children}
-    </div>
-  );
-}
-
-/**
- * Concave corners at the active Tab's base that curve into the Panel's top edge. The mask cuts a
- * quarter circle out of a Panel-colored square; it shapes the surface and paints no gradient.
- */
-function TabEars({ hideStart = false }: { hideStart?: boolean }) {
-  return (
-    <>
-      {hideStart ? null : (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute bottom-0 -left-2 size-2 bg-background mask-[radial-gradient(circle_at_0_0,transparent_8px,black_8.5px)]"
-        />
-      )}
-      <span
-        aria-hidden="true"
-        className="pointer-events-none absolute -right-2 bottom-0 size-2 bg-background mask-[radial-gradient(circle_at_100%_0,transparent_8px,black_8.5px)]"
-      />
-    </>
-  );
-}
-
 /** Account entry in the Tab strip: who is signed in, Settings, Help, and Sign out. */
 function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
@@ -403,7 +350,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
           </Avatar>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent data-design="harness" align="end" className="w-60">
+      <DropdownMenuContent align="end" className="w-60">
         <DropdownMenuLabel className="flex flex-col">
           <span className="text-sm font-medium text-foreground">{demoUser.name}</span>
           <span className="truncate text-xs font-normal">{demoUser.email}</span>

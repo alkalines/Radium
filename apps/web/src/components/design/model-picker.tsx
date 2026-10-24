@@ -67,7 +67,6 @@ export function ModelPicker() {
         </InputGroupButton>
       </PopoverTrigger>
       <PopoverContent
-        data-design="harness"
         align="end"
         className="w-[min(calc(100vw-2rem),26rem)] gap-0 overflow-hidden rounded-2xl p-0"
       >
@@ -163,7 +162,7 @@ function ProviderDropdown({
           <ChevronDownIcon className="size-3 shrink-0" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent data-design="harness" align="start" className="w-60">
+      <DropdownMenuContent align="start" className="w-60">
         <DropdownMenuLabel>Inference provider</DropdownMenuLabel>
         <DropdownMenuRadioGroup value={selected.id} onValueChange={onProviderChange}>
           {providers.map((provider) => (
@@ -202,7 +201,7 @@ function ReasoningDropdown({
           <ChevronDownIcon className="size-3 shrink-0" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent data-design="harness" align="end" className="w-56">
+      <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>Reasoning amount</DropdownMenuLabel>
         {supportsReasoning ? (
           <DropdownMenuRadioGroup value={effort} onValueChange={onEffortChange}>

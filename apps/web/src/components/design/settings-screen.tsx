@@ -39,7 +39,9 @@ import {
   demoWorkers,
   type DemoWorkspace,
 } from "./demo-data";
-import { ProjectTile } from "./project-tile";
+import { GroupList, Row } from "@/components/harness/group-list";
+import { PageHeader } from "@/components/harness/page-header";
+import { ProjectTile } from "@/components/harness/project-tile";
 import { WorkspaceSwitcher } from "./workspace-switcher";
 
 type SettingsPageId =
@@ -157,7 +159,7 @@ export function SettingsScreen({
           ) : null}
           {pageId === "appearance" ? <AppearancePage /> : null}
           {pageId !== "providers" && pageId !== "workers" && pageId !== "appearance" ? (
-            <PageHeader
+            <DemoPageHeader
               title={pageLabel ?? ""}
               workspace={isWorkspacePage ? workspace : undefined}
               description="Not part of the design reference. Providers, Workers, and Appearance show the patterns."
@@ -217,8 +219,8 @@ function NavList({
   );
 }
 
-/** Screen title. Workspace pages prefix it with the workspace so the scope is never ambiguous. */
-function PageHeader({
+/** Workspace pages prefix the title with the demo workspace so the scope is never ambiguous. */
+function DemoPageHeader({
   title,
   description,
   workspace,
@@ -228,67 +230,18 @@ function PageHeader({
   workspace?: DemoWorkspace;
 }) {
   return (
-    <header className="flex flex-col gap-0.5 px-4">
-      <h1 className="flex min-w-0 items-center gap-1.5 text-base font-medium">
-        {workspace ? (
+    <PageHeader
+      title={title}
+      description={description}
+      scope={
+        workspace ? (
           <>
             <ProjectTile initial={workspace.initial} />
-            <span className="truncate text-muted-foreground">{workspace.name}</span>
-            <span className="text-subtle-foreground">/</span>
+            <span className="truncate">{workspace.name}</span>
           </>
-        ) : null}
-        <span className="truncate">{title}</span>
-      </h1>
-      <p className="text-sm text-muted-foreground">{description}</p>
-    </header>
-  );
-}
-
-/** Section heading followed by one Group list. Children are Rows. */
-function GroupList({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="flex flex-col gap-3">
-      <h2 className="px-4 text-sm font-medium">{title}</h2>
-      <ul className="flex flex-col rounded-2xl border bg-card px-4">{children}</ul>
-    </section>
-  );
-}
-
-function Row({
-  icon: Icon,
-  title,
-  tag,
-  description,
-  children,
-}: {
-  icon?: LucideIcon;
-  title: ReactNode;
-  tag?: string;
-  description?: string;
-  children?: ReactNode;
-}) {
-  return (
-    <li className="flex min-h-12 items-center gap-3 border-b py-2.5 last:border-b-0">
-      {Icon ? <Icon className="size-4 shrink-0 text-muted-foreground" /> : null}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm font-medium">{title}</span>
-          {tag ? <Tag>{tag}</Tag> : null}
-        </div>
-        {description ? (
-          <p className="truncate text-sm text-muted-foreground">{description}</p>
-        ) : null}
-      </div>
-      {children ? <div className="flex shrink-0 items-center gap-1">{children}</div> : null}
-    </li>
-  );
-}
-
-function Tag({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex h-4 shrink-0 items-center rounded-[2px] border bg-tag px-1 text-[11px] leading-none font-medium text-muted-foreground">
-      {children}
-    </span>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -300,7 +253,7 @@ function RowMenu({ label }: { label: string }) {
           <MoreHorizontalIcon />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent data-design="harness" align="end">
+      <DropdownMenuContent align="end">
         <DropdownMenuGroup>
           <DropdownMenuItem>Edit</DropdownMenuItem>
           <DropdownMenuItem variant="destructive">Disconnect</DropdownMenuItem>
@@ -317,7 +270,7 @@ const memberNotice = "Only workspace owners can change this. You can use what th
 function ProvidersPage({ workspace, canManage }: { workspace: DemoWorkspace; canManage: boolean }) {
   return (
     <>
-      <PageHeader
+      <DemoPageHeader
         title="Providers"
         workspace={workspace}
         description={
@@ -369,7 +322,7 @@ function ProvidersPage({ workspace, canManage }: { workspace: DemoWorkspace; can
 function WorkersPage({ workspace, canManage }: { workspace: DemoWorkspace; canManage: boolean }) {
   return (
     <>
-      <PageHeader
+      <DemoPageHeader
         title="Workers"
         workspace={workspace}
         description={
@@ -414,7 +367,7 @@ function AppearancePage() {
 
   return (
     <>
-      <PageHeader title="Appearance" description="How Radium looks on this device." />
+      <DemoPageHeader title="Appearance" description="How Radium looks on this device." />
 
       <GroupList title="Theme">
         <Row title="Color scheme" description="Follow the system, or pin light or dark.">

@@ -1,55 +1,13 @@
-import { Link } from "@tanstack/react-router";
 import { BotIcon, SlidersHorizontalIcon, WrenchIcon } from "lucide-react";
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { WorkerManagement } from "@/components/workspaces/worker-management";
-import { ToolsPanel } from "./tools-panel";
-import { PreferencesPanel } from "./preferences-panel";
-
 /**
- * Chatroom sections. Mirrors {@link gatewaySections}: a typed array that drives
- * both the `/chatroom/$section` route and the Chatroom sidebar navigation.
+ * Chatroom settings pages served by `/chatroom/$section`. Drives route validation and the
+ * Settings sidebar entries (labels and icons); each section renders its own panel.
  */
 export const chatroomSections = [
-  { value: "preferences", label: "Preferences", icon: SlidersHorizontalIcon },
-  { value: "tools", label: "Tools", icon: WrenchIcon },
   { value: "workers", label: "Workers", icon: BotIcon },
+  { value: "preferences", label: "Chat defaults", icon: SlidersHorizontalIcon },
+  { value: "tools", label: "Tools", icon: WrenchIcon },
 ] as const;
 
 export type ChatroomSection = (typeof chatroomSections)[number]["value"];
-
-export function ChatroomSettings({
-  section,
-  hideNav,
-}: {
-  section: ChatroomSection;
-  /** When `true`, hides the top tab navigation (used when nav lives in the sidebar). */
-  hideNav?: boolean;
-}) {
-  return (
-    <Tabs value={section} className="w-full gap-4 md:gap-6">
-      <TabsList aria-label="Chatroom settings" className={hideNav ? "hidden" : undefined}>
-        {chatroomSections.map((entry) => (
-          <TabsTrigger key={entry.value} value={entry.value} asChild>
-            <Link to="/chatroom/$section" params={{ section: entry.value }} className="gap-1.5">
-              <entry.icon className="text-muted-foreground" />
-              {entry.label}
-            </Link>
-          </TabsTrigger>
-        ))}
-      </TabsList>
-
-      <TabsContent value="preferences" tabIndex={-1}>
-        {section === "preferences" && <PreferencesPanel />}
-      </TabsContent>
-
-      <TabsContent value="tools" tabIndex={-1}>
-        {section === "tools" && <ToolsPanel />}
-      </TabsContent>
-
-      <TabsContent value="workers" tabIndex={-1}>
-        {section === "workers" && <WorkerManagement />}
-      </TabsContent>
-    </Tabs>
-  );
-}

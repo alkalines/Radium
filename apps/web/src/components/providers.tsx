@@ -34,7 +34,7 @@ export function Providers({
       <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
         <AuthProvider
           authClient={authClient}
-          redirectTo="/settings/account"
+          redirectTo="/"
           navigate={navigate}
           plugins={[themePlugin({ useTheme })]}
           Link={Link}

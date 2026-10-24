@@ -6,8 +6,9 @@ import type { FunctionReturnType } from "convex/server";
 import { CheckIcon, CopyIcon, KeySquareIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
+import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
+import { WorkspacePageHeader } from "@/components/settings/workspace-page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -50,19 +51,17 @@ export function KeysPanel() {
   const [deleting, setDeleting] = useState<KeyRow | null>(null);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-lg font-semibold tracking-tight">API keys</h2>
-          <p className="text-sm text-muted-foreground">
-            Issue and manage keys for calling models through the Radium Gateway.
-          </p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)} disabled={!workspaceId}>
-          <PlusIcon data-icon="inline-start" />
-          Create key
-        </Button>
-      </div>
+    <>
+      <WorkspacePageHeader
+        title="API keys"
+        description="Issue and manage keys for calling models through the Radium Gateway."
+        action={
+          <Button onClick={() => setCreateOpen(true)} disabled={!workspaceId}>
+            <PlusIcon data-icon="inline-start" />
+            Create key
+          </Button>
+        }
+      />
 
       {!workspaceId && (
         <Alert>
@@ -72,10 +71,13 @@ export function KeysPanel() {
       )}
 
       {workspaceId && keys === undefined ? (
-        <div className="flex flex-col gap-2">
-          <Skeleton className="h-16" />
-          <Skeleton className="h-16" />
-        </div>
+        <GroupList title="Keys">
+          {[0, 1].map((placeholder) => (
+            <RowBlock key={placeholder}>
+              <Skeleton className="h-6" />
+            </RowBlock>
+          ))}
+        </GroupList>
       ) : workspaceId && keys && keys.length === 0 ? (
         <Empty className="border border-dashed">
           <EmptyHeader>
@@ -91,30 +93,27 @@ export function KeysPanel() {
           </Button>
         </Empty>
       ) : workspaceId && keys ? (
-        <div className="flex flex-col divide-y rounded-lg border">
+        <GroupList title="Keys">
           {keys.map((key) => (
-            <div key={key._id} className="flex items-center gap-3 p-3">
-              <div className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate font-medium">{key.name}</span>
-                <span className="truncate font-mono text-xs text-muted-foreground">
-                  {key.preview ?? "rad-sk-…"}
-                </span>
-              </div>
-              <Badge variant={key.source === "legacy" ? "secondary" : "outline"}>
-                {key.source === "legacy" ? "Historical" : "Workspace"}
-              </Badge>
+            <Row
+              key={key._id}
+              icon={KeySquareIcon}
+              title={key.name}
+              tag={key.source === "legacy" ? "Historical" : "Workspace"}
+              description={<span className="font-mono text-xs">{key.preview ?? "rad-sk-…"}</span>}
+            >
               <Button
                 variant="ghost"
-                size="icon"
+                size="icon-xs"
                 className="text-muted-foreground hover:text-destructive"
                 onClick={() => setDeleting(key)}
                 aria-label={`Revoke ${key.name}`}
               >
                 <Trash2Icon />
               </Button>
-            </div>
+            </Row>
           ))}
-        </div>
+        </GroupList>
       ) : null}
 
       <CreateKeyDialog open={createOpen} onOpenChange={setCreateOpen} workspaceId={workspaceId} />
@@ -123,7 +122,7 @@ export function KeysPanel() {
         workspaceId={workspaceId}
         onOpenChange={(open) => !open && setDeleting(null)}
       />
-    </div>
+    </>
   );
 }
 

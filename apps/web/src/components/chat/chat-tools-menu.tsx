@@ -93,7 +93,7 @@ export function ChatToolsMenu({
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <WrenchIcon className="size-4" />
+        <WrenchIcon />
         Tools
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="w-60">
@@ -135,7 +135,7 @@ export function ChatToolsMenu({
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link to="/chatroom/$section" params={{ section: "tools" }}>
-            <SettingsIcon className="size-4" />
+            <SettingsIcon />
             Configure tools
           </Link>
         </DropdownMenuItem>

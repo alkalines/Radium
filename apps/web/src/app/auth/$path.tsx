@@ -12,6 +12,8 @@ const validAuthPathSegments = new Set([
 export const Route = createFileRoute("/auth/$path")({
   staticData: {
     pageTitle: "Authentication",
+    // Signed-out screens have no Tabs, workspace, or account menu, so they skip the Window.
+    shell: "bare",
   },
   beforeLoad({ params: { path } }) {
     if (!validAuthPathSegments.has(path)) {
@@ -25,8 +27,8 @@ function AuthPage() {
   const { path } = Route.useParams();
 
   return (
-    <div className="flex justify-center my-auto p-4 md:p-6">
+    <main className="flex min-h-svh items-center justify-center bg-chrome p-4 md:p-6">
       <Auth path={path} />
-    </div>
+    </main>
   );
 }

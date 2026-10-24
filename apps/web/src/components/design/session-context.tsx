@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { demoAgents, demoProjects, demoWorkers, type DemoWorkspace } from "./demo-data";
-import { ProjectTile } from "./project-tile";
+import { ProjectTile } from "@/components/harness/project-tile";
 import { agentsOn, RunTargetPicker } from "./run-target-picker";
 
 const builtInAgent = demoAgents.find((agent) => agent.protocol === "built-in") ?? demoAgents[0];
@@ -119,7 +119,7 @@ export function SessionContext({
               <ChevronDownIcon data-icon="inline-end" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent data-design="harness" align="start" className="max-w-80">
+          <DropdownMenuContent align="start" className="max-w-80">
             <DropdownMenuLabel>Branches on {worker.name}</DropdownMenuLabel>
             <DropdownMenuRadioGroup value={branch} onValueChange={setBranch}>
               {project.branches.map((candidate) => (
