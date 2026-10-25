@@ -18,6 +18,11 @@ import {
   providerNpmValidator,
   providerSnapshotValidator,
 } from "../src/workspaces/provider";
+import {
+  cooldownReasonValidator,
+  providerRoutingValidator,
+  routingSettingsValidator,
+} from "../src/routing/settings";
 
 export default defineSchema({
   /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
@@ -100,6 +105,8 @@ export default defineSchema({
     snapshot: v.optional(providerSnapshotValidator),
     /** Explicit deletion/disable tombstone that blocks legacy resurrection. */
     deletedAt: v.optional(v.number()),
+    /** Owner routing overrides (priority, weight, cooling, error rules); absent means defaults. */
+    routing: v.optional(providerRoutingValidator),
   })
     .index("by_workspace", ["workspace"])
     .index("by_workspace_and_provider", ["workspace", "provider"]),
@@ -137,6 +144,8 @@ export default defineSchema({
     mcpServers: v.array(v.id("mcp_servers")),
     /** Worker tools preselected when a Worker is picked for a new chat; absent means none. */
     workerTools: v.optional(v.array(chatWorkerToolValidator)),
+    /** Gateway routing strategy, session affinity, retry, and cooldown; absent means defaults. */
+    routing: v.optional(routingSettingsValidator),
   }).index("by_workspace", ["workspace"]),
   /**
    * Folder-like grouping of chats inside a workspace. Deleting a Project detaches its chats;
@@ -300,6 +309,41 @@ export default defineSchema({
     value: v.any(),
     expiresAt: v.optional(v.number()),
   }).index("by_provider_namespace_key", ["provider", "namespace", "key"]),
+  /**
+   * Provider (model `""`) or provider+model exclusion after upstream failures. Expired rows
+   * keep `backoffLevel` until a success clears them or the prune cron removes them.
+   */
+  routing_cooldowns: defineTable({
+    workspace: v.id("workspaces"),
+    provider: v.string(),
+    model: v.string(),
+    reason: cooldownReasonValidator,
+    nextRetryAt: v.number(),
+    backoffLevel: v.number(),
+    status: v.optional(v.number()),
+    /** Bounded upstream error message; never prompt or response content. */
+    message: v.optional(v.string()),
+    /** Successes dispatched before this time cannot clear the cooldown. */
+    recordedAt: v.number(),
+  })
+    .index("by_workspace_provider_model", ["workspace", "provider", "model"])
+    .index("by_nextRetryAt", ["nextRetryAt"]),
+  /** Session-affinity binding from a session key (`<session>::<model>`) to a provider. */
+  routing_sessions: defineTable({
+    workspace: v.id("workspaces"),
+    key: v.string(),
+    provider: v.string(),
+    expiresAt: v.number(),
+  })
+    .index("by_workspace_key", ["workspace", "key"])
+    .index("by_expiresAt", ["expiresAt"]),
+  /** Round-robin and smooth weighted round-robin cursor per workspace and model. */
+  routing_cursors: defineTable({
+    workspace: v.id("workspaces"),
+    model: v.string(),
+    lastProvider: v.optional(v.string()),
+    weighted: v.array(v.object({ provider: v.string(), current: v.number(), weight: v.number() })),
+  }).index("by_workspace_model", ["workspace", "model"]),
   authors: defineTable({
     name: v.string(),
     slug: v.string(),

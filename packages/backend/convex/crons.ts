@@ -9,4 +9,5 @@ crons.interval(
   {},
 );
 crons.interval("terminal worker tasks", { minutes: 5 }, internal.worker_tasks.prune, {});
+crons.interval("expired routing state", { minutes: 10 }, internal.routing.prune, {});
 export default crons;

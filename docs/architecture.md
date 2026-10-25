@@ -5,9 +5,10 @@ backend. The browser uses both of them.
 
 The web application lives in `apps/web/`; Convex functions and components live in
 `packages/backend/convex/`. Reusable backend modules live directly under
-`packages/backend/src/` by domain (`chatroom/`, `logging/`, `telemetry/`,
-`translators/`, `types/`, and `workspaces/`), with provider and routing helpers at
-the `src/` root. Web code imports shared contracts from `backend/src/`.
+`packages/backend/src/` by domain (`chatroom/`, `logging/`, `routing/`, `telemetry/`,
+`translators/`, `types/`, and `workspaces/`), with provider adapters at the `src/`
+root. Gateway provider selection, retries, and cooldowns live in `routing/`; see
+[Gateway routing](Radium_Gateway/LoadBalancer.md). Web code imports shared contracts from `backend/src/`.
 
 ## Runtime Boundaries
 

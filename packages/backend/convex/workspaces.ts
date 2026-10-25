@@ -90,6 +90,8 @@ export async function loadWorkspaceSettings(
     mcpServers: settings?.mcpServers ?? [],
     // Legacy user settings predate Worker tools, so only workspace rows can set them.
     ...(settings?.workerTools !== undefined ? { workerTools: settings.workerTools } : {}),
+    // Legacy user settings predate routing, so only workspace rows can set it.
+    ...(settings?.routing !== undefined ? { routing: settings.routing } : {}),
   };
 }
 

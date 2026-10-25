@@ -24,16 +24,18 @@ start.
 - [Gateway and Chatroom AI telemetry](Radium_Gateway/Telemetry.md)
 - [Observability and usage](observability.md)
 - [Gateway subscription providers](Radium_Gateway/Subscriptions.md)
+- [Gateway routing](Radium_Gateway/LoadBalancer.md) — strategies, session affinity, retries, cooldowns, error rules, and request provider preferences
 
-| Guide                                                        | Contents                                                                                |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| [Architecture](architecture.md)                              | Runtime boundaries, request flow, data ownership, and repository layout                 |
-| [API reference](api.md)                                      | OpenAI-compatible endpoints, authentication, requests, streaming, and errors            |
-| [Deployment and configuration](deployment.md)                | Environment variables, Convex Cloud, containers, and releases                           |
-| [Operational logging](logging.md)                            | Local structured logging, ingestion limits, privacy, and known gaps                     |
-| [Backend pre-rewrite handoff](Backend_Pre_Rewrite_Report.md) | Source snapshot, persisted contracts, ownership bridge, and rewrite migration checklist |
-| [Convex reuse research](research/Convex_Reuse.md)            | Helper/component candidates and adoption caveats                                        |
-| [Future agent tasks](tasks/README.md)                        | Separate scoped sessions for architecture debt, rollout, and product work               |
+| Guide                                                             | Contents                                                                                |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| [Architecture](architecture.md)                                   | Runtime boundaries, request flow, data ownership, and repository layout                 |
+| [API reference](api.md)                                           | OpenAI-compatible endpoints, authentication, requests, streaming, and errors            |
+| [Deployment and configuration](deployment.md)                     | Environment variables, Convex Cloud, containers, and releases                           |
+| [Operational logging](logging.md)                                 | Local structured logging, ingestion limits, privacy, and known gaps                     |
+| [Backend pre-rewrite handoff](Backend_Pre_Rewrite_Report.md)      | Source snapshot, persisted contracts, ownership bridge, and rewrite migration checklist |
+| [Convex reuse research](research/Convex_Reuse.md)                 | Helper/component candidates and adoption caveats                                        |
+| [Gateway auto-routing research](research/Gateway_Auto_Routing.md) | Proposed cache-affine, quota-aware routing algorithm and prerequisites                  |
+| [Future agent tasks](tasks/README.md)                             | Separate scoped sessions for architecture debt, rollout, and product work               |
 
 ## Growing The Docs
 

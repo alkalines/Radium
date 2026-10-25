@@ -86,14 +86,35 @@ curl -N "$RADIUM_URL/api/openai/v1/chat/completions" \
 ```
 
 Each event contains an OpenAI-compatible JSON chunk prefixed with `data:`. The
-stream terminates with `data: [DONE]`.
+stream terminates with `data: [DONE]`. If the selected provider fails after the
+first chunk, the stream ends with a `data: {"error": {"message", "code", "provider"}}`
+event and no `[DONE]`.
 
 ## Provider Selection
 
-By default, Radium resolves an enabled provider configured for the key's
-workspace that offers the requested model and has matching BYOK credentials.
-Requests may include a `provider` slug to constrain routing to a specific
-configured provider.
+Radium routes among the enabled providers configured for the key's workspace
+that offer the requested model and have matching BYOK credentials, using the
+workspace's routing strategy, priorities, session affinity, retries, and
+cooldowns. See [Gateway routing](Radium_Gateway/LoadBalancer.md).
+
+`provider` accepts a configured provider slug, which pins the request to that
+provider without fallbacks, or an OpenRouter-compatible object:
+
+```json
+{
+  "provider": {
+    "order": ["openai"],
+    "allow_fallbacks": true,
+    "ignore": ["slow"],
+    "sort": "throughput"
+  }
+}
+```
+
+Supported fields are `order`, `allow_fallbacks`, `only`, `ignore`, and `sort`
+(`price`, `throughput`, `latency`, or `{ "by": … }`); slugs name the workspace's
+providers. Session affinity reads `session_id` from the body, client session
+headers such as `X-Session-ID`, or `prompt_cache_key`.
 
 Provider-specific model IDs are internal catalogue configuration. API callers
 send the global Radium model slug returned by the models endpoint.
@@ -116,16 +137,19 @@ Files, Fine-tuning, or Batch endpoints.
 
 ## Errors
 
-| Status | Meaning                                                           |
-| ------ | ----------------------------------------------------------------- |
-| `400`  | The JSON body failed request validation                           |
-| `401`  | The bearer token is missing or invalid                            |
-| `500`  | Routing, provider execution, or another internal operation failed |
+| Status | Meaning                                                      |
+| ------ | ------------------------------------------------------------ |
+| `400`  | The JSON body failed validation, or the provider rejected it |
+| `401`  | The bearer token is missing or invalid                       |
+| `429`  | Every eligible provider is cooling down; see `Retry-After`   |
+| `500`  | Routing configuration or another internal operation failed   |
+| other  | Last upstream status after routing exhausted its retries     |
 
-Provider/model configuration failures currently surface through the generic
-server error path. There is no prepaid-credit or balance-required error in the
-new workspace path. Do not depend on a stable error envelope beyond the explicit
-authentication and validation errors.
+Upstream failures after routing return `{"error": {"message", "code", "provider"}}`
+with the last provider's status. Provider/model configuration failures (unknown
+model, no credentialed provider, a pinned provider that cannot serve the model)
+still surface through the generic server error path. There is no prepaid-credit
+or balance-required error in the new workspace path.
 
 Usage and `cost` values in completion records are operational upstream estimates.
 They are not invoices, prepaid credits, or a debit against the workspace.

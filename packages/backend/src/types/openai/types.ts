@@ -11,6 +11,22 @@ import {
  * Validators
  */
 
+const providerSort = z.enum(["price", "throughput", "latency"]);
+
+/** OpenRouter-compatible `provider` preferences supported by Radium routing. */
+export const ProviderPreferences = z.object({
+  order: z.optional(z.array(z.string())),
+  allow_fallbacks: z.optional(z.boolean()),
+  only: z.optional(z.array(z.string())),
+  ignore: z.optional(z.array(z.string())),
+  sort: z.optional(
+    z.union([
+      providerSort,
+      z.object({ by: providerSort, partition: z.optional(z.enum(["model", "none"])) }),
+    ]),
+  ),
+});
+
 export const ChatCompletions_RequestBody = z.object({
   messages: z.array(
     z.union([
@@ -23,7 +39,13 @@ export const ChatCompletions_RequestBody = z.object({
     ]),
   ),
   model: z.string(),
-  provider: z.optional(z.string()),
+  /**
+   * Radium routing preferences: a provider slug pins the request to that provider; the
+   * OpenRouter-compatible object filters and orders the workspace's providers.
+   */
+  provider: z.optional(z.union([z.string(), ProviderPreferences])),
+  /** OpenRouter-compatible session identity used for session-affinity routing. */
+  session_id: z.optional(z.string()),
   audio: z.nullish(
     z.object({
       // https://platform.openai.com/docs/api-reference/chat/create#chat-create-audio

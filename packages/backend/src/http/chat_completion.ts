@@ -4,14 +4,19 @@ import {
   type ChatCompletions_RequestBody_Type,
   type ChatCompletions_Streaming_Chunk_Type,
 } from "@/types/openai/types";
-import AIBalancer from "@/ai_balancer";
 import * as z from "zod";
+import type { TelemetryOptions } from "ai";
 import {
+  CompletionStreamError,
   NonStreamingCompletion,
   StreamCompletion,
   type genCallbackType,
 } from "@/translators/openai";
-import { convertStreamToAsyncIterator } from "@/tools/chunkReader";
+import type { RoutedProvider } from "@/routing/connector";
+import { RoutingError, routeWithFailover, type RoutingRequest } from "@/routing/execute";
+import { upstreamFailureFromError, type UpstreamFailure } from "@/routing/failures";
+import { routingPreferencesFromRequest } from "@/routing/preferences";
+import { extractRoutingSession } from "@/routing/session";
 import type { ActionCtx } from "../../convex/_generated/server";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
@@ -28,6 +33,8 @@ type CompletionInfo = {
   legacyKeyId?: Id<"keys">;
   chatContext?: ChatRequestContext;
   byok: boolean;
+  /** Client request headers, used only to derive the session-affinity key. */
+  headers?: Headers;
   onGeneration?: (generation: Parameters<genCallbackType>[0]) => void;
   telemetry?: TelemetryRequestContext;
   abortSignal?: AbortSignal | null;
@@ -89,7 +96,6 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
       );
     }
 
-    const provider = await AIBalancer(ctx, workspaceId, reqData);
     const telemetrySettings = await ctx.runQuery(
       internal.observability.aiTraces.getSettingsForWorkspace,
       {
@@ -97,8 +103,9 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
       },
     );
     // TODO: Check the model's maximum input and output limits before dispatch.
-    return createCompletion(reqData, provider, {
+    return createCompletion(reqData, {
       ctx,
+      headers: req.headers,
       workspaceId,
       apiKeyId: apiKey,
       legacyBalanceId: legacyBalance,
@@ -138,12 +145,11 @@ export const Internal_Chat_Completion = async (
   abortSignal?: AbortSignal | null,
   chatContext?: ChatRequestContext,
 ) => {
-  const provider = await AIBalancer(ctx, workspaceId, reqData);
   const effectiveChatContext =
     chatContext ??
     (telemetry?.chatId ? { actor: telemetry.userId, chatId: telemetry.chatId } : undefined);
   // TODO: Check the model's maximum input and output limits before dispatch.
-  return createCompletion(reqData, provider, {
+  return createCompletion(reqData, {
     ctx,
     workspaceId,
     byok: true,
@@ -157,7 +163,7 @@ export const Internal_Chat_Completion = async (
 /** Persist shared completion attribution and usage after the caller notifies its generation listener. */
 async function recordCompletion(
   requestBody: ChatCompletions_RequestBody_Type,
-  provider: Awaited<ReturnType<typeof AIBalancer>>,
+  provider: RoutedProvider,
   info: CompletionInfo,
   generation: Parameters<genCallbackType>[0],
   details: CompletionRecordDetails,
@@ -202,9 +208,13 @@ async function recordCompletion(
   });
 }
 
+/**
+ * Route the request and produce the OpenAI-compatible response. Streaming attempts commit on
+ * the provider's first payload, so earlier failures fail over and later ones are reported to
+ * the client as an SSE error event. Routing exhaustion maps to the last upstream status.
+ */
 const createCompletion = async (
   reqData: ChatCompletions_RequestBody_Type,
-  provider: Awaited<ReturnType<typeof AIBalancer>>,
   info: CompletionInfo,
 ): Promise<Response> => {
   const generationId = `gen-${crypto.randomUUID()}`;
@@ -222,85 +232,189 @@ const createCompletion = async (
         }),
       }
     : { isEnabled: false };
+  const routing: RoutingRequest = {
+    workspace: info.workspaceId,
+    model: reqData.model,
+    preferences: routingPreferencesFromRequest(reqData.provider),
+    session: extractRoutingSession(reqData, info.headers, info.chatContext?.chatId),
+    signal: info.abortSignal,
+  };
 
-  if (reqData.stream) {
-    let originalProviderGenerationId: string | undefined;
-    let finishReason: string | undefined;
-    let streamCanceled = false;
+  try {
+    if (reqData.stream) {
+      return await createStreamingCompletion(reqData, info, routing, generationId, aiSdkTelemetry);
+    }
 
-    const providerGen = await StreamCompletion(
-      reqData,
-      provider,
-      async (genCompletion) => {
-        // The listener may synchronously cancel the stream; read its state afterward.
-        info.onGeneration?.(genCompletion);
-        await recordCompletion(reqData, provider, info, genCompletion, {
-          generationId,
-          originalProviderGenerationId,
-          finishReason,
-          canceled: streamCanceled,
-        });
-      },
-      aiSdkTelemetry,
-      info.abortSignal,
-    );
-
-    const sseStream = new ReadableStream({
-      async start(controller) {
-        const enqueueSseEvent = (text: string) =>
-          controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
-
-        for await (const providerChunk of convertStreamToAsyncIterator<string>(providerGen)) {
-          try {
-            const chunk = JSON.parse(providerChunk) as ChatCompletions_Streaming_Chunk_Type;
-            if (!originalProviderGenerationId) originalProviderGenerationId = chunk.id;
-            if (chunk.choices[0].finish_reason) finishReason = chunk.choices[0].finish_reason;
-
-            chunk.id = generationId;
-            chunk.provider = provider.info.slug;
-            enqueueSseEvent(JSON.stringify(chunk));
-          } catch {
-            // The inner translator's [DONE] marker is not a JSON chunk; emit the SSE sentinel below.
-          }
-        }
-
-        enqueueSseEvent("[DONE]");
-        controller.close();
-      },
-      async cancel(reason?) {
-        streamCanceled = true;
-        await (providerGen as ReadableStream<any>).cancel(reason);
-      },
+    const routed = await routeWithFailover(info.ctx, routing, async (provider) => {
+      try {
+        const generation = await NonStreamingCompletion(
+          reqData,
+          provider,
+          async (genCompletion) => {
+            info.onGeneration?.(genCompletion);
+            await recordCompletion(reqData, provider, info, genCompletion, {
+              generationId,
+              canceled: false,
+            });
+          },
+          aiSdkTelemetry,
+          info.abortSignal,
+        );
+        return { ok: true as const, value: generation };
+      } catch (error) {
+        return { ok: false as const, failure: completionFailure(error, false) };
+      }
     });
 
-    return new Response(sseStream, {
-      headers: {
-        Connection: "keep-alive",
-        "Content-Encoding": "none",
-        "Cache-Control": "no-cache, no-transform",
-        "Content-Type": "text/event-stream; charset=utf-8",
-      },
-    });
-  } else {
-    const generation = await NonStreamingCompletion(
-      reqData,
-      provider,
-      async (genCompletion) => {
-        info.onGeneration?.(genCompletion);
-        await recordCompletion(reqData, provider, info, genCompletion, {
-          generationId,
-          canceled: false,
-        });
-      },
-      aiSdkTelemetry,
-      info.abortSignal,
-    );
+    const generation = routed.value;
     generation.id = generationId;
-    generation.provider = provider.info.slug;
-
+    generation.provider = routed.provider.info.slug;
     return Response.json(generation);
+  } catch (error) {
+    if (error instanceof RoutingError) return routingErrorResponse(error);
+    throw error;
   }
 };
+
+async function createStreamingCompletion(
+  reqData: ChatCompletions_RequestBody_Type,
+  info: CompletionInfo,
+  routing: RoutingRequest,
+  generationId: string,
+  aiSdkTelemetry: TelemetryOptions,
+): Promise<Response> {
+  let originalProviderGenerationId: string | undefined;
+  let finishReason: string | undefined;
+  let streamCanceled = false;
+
+  const routed = await routeWithFailover(info.ctx, routing, async (provider) => {
+    // Only the committed attempt may record usage; failed attempts are retried elsewhere.
+    let committed = false;
+    try {
+      const providerGen = await StreamCompletion(
+        reqData,
+        provider,
+        async (genCompletion) => {
+          if (!committed) return;
+          // The listener may synchronously cancel the stream; read its state afterward.
+          info.onGeneration?.(genCompletion);
+          await recordCompletion(reqData, provider, info, genCompletion, {
+            generationId,
+            originalProviderGenerationId,
+            finishReason,
+            canceled: streamCanceled,
+          });
+        },
+        aiSdkTelemetry,
+        info.abortSignal,
+      );
+      const reader = providerGen.getReader();
+      const first = await reader.read();
+      if (first.done) {
+        const failure: UpstreamFailure = {
+          kind: "empty_stream",
+          message: "Upstream returned an empty stream.",
+          outputStarted: false,
+        };
+        return { ok: false as const, failure };
+      }
+      committed = true;
+      return { ok: true as const, value: { reader, first: first.value } };
+    } catch (error) {
+      return { ok: false as const, failure: completionFailure(error, false) };
+    }
+  });
+
+  const { reader, first } = routed.value;
+  const providerSlug = routed.provider.info.slug;
+  const sseStream = new ReadableStream({
+    async start(controller) {
+      const enqueueSseEvent = (text: string) =>
+        controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
+      const forward = (providerChunk: unknown) => {
+        if (typeof providerChunk !== "string") return;
+        let chunk: ChatCompletions_Streaming_Chunk_Type;
+        try {
+          chunk = JSON.parse(providerChunk) as ChatCompletions_Streaming_Chunk_Type;
+        } catch {
+          // The inner translator's [DONE] marker is not a JSON chunk; emit the SSE sentinel below.
+          return;
+        }
+        if (!originalProviderGenerationId) originalProviderGenerationId = chunk.id;
+        if (chunk.choices[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
+
+        chunk.id = generationId;
+        chunk.provider = providerSlug;
+        enqueueSseEvent(JSON.stringify(chunk));
+      };
+
+      try {
+        forward(first);
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          forward(next.value);
+        }
+        enqueueSseEvent("[DONE]");
+      } catch (error) {
+        if (!streamCanceled) {
+          // Output already reached the client, so the failure is reported, never retried.
+          const failure = completionFailure(error, true);
+          await routed.reportLateFailure(failure);
+          enqueueSseEvent(
+            JSON.stringify({
+              error: {
+                message: failure.message,
+                code: failure.status ?? 502,
+                provider: providerSlug,
+              },
+            }),
+          );
+        }
+      }
+      controller.close();
+    },
+    async cancel(reason?) {
+      streamCanceled = true;
+      await reader.cancel(reason);
+    },
+  });
+
+  return new Response(sseStream, {
+    headers: {
+      Connection: "keep-alive",
+      "Content-Encoding": "none",
+      "Cache-Control": "no-cache, no-transform",
+      "Content-Type": "text/event-stream; charset=utf-8",
+    },
+  });
+}
+
+/** Unwrap translator stream errors so routing sees the upstream status and headers. */
+function completionFailure(error: unknown, outputStarted: boolean) {
+  if (error instanceof CompletionStreamError) {
+    return upstreamFailureFromError(error.upstreamError, outputStarted || error.outputStarted);
+  }
+  return upstreamFailureFromError(error, outputStarted);
+}
+
+/** OpenAI-style error body with the last upstream status; cooling exhaustion adds Retry-After. */
+function routingErrorResponse(error: RoutingError) {
+  const headers = new Headers();
+  if (error.retryAfterMs !== undefined) {
+    headers.set("Retry-After", String(Math.max(1, Math.ceil(error.retryAfterMs / 1000))));
+  }
+  return Response.json(
+    {
+      error: {
+        message: error.message,
+        code: error.status,
+        ...(error.provider ? { provider: error.provider } : {}),
+      },
+    },
+    { status: error.status, headers },
+  );
+}
 
 function completionBill(info: {
   workspaceId: Id<"workspaces">;

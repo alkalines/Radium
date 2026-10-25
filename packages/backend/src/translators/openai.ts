@@ -9,7 +9,7 @@ import {
 } from "ai";
 import z from "zod";
 import type { completionUsage } from "../usage/completion";
-import AIBalancer from "../ai_balancer";
+import type { RoutedProvider } from "../routing/connector";
 import { convertStreamToAsyncIterator } from "../tools/chunkReader";
 import type { ToolsSchema } from "../types/openai/tools";
 import type {
@@ -24,6 +24,28 @@ const emptyGenerationUsage = {
   outputTokens: 0,
   outputTokenDetails: { reasoningTokens: null },
 };
+
+/**
+ * An upstream error reported inside the AI SDK stream. `outputStarted` is true once content
+ * was produced, which makes the request unsafe to retry on another provider.
+ */
+export class CompletionStreamError extends Error {
+  constructor(
+    readonly upstreamError: unknown,
+    readonly outputStarted: boolean,
+  ) {
+    super(upstreamError instanceof Error ? upstreamError.message : String(upstreamError));
+    this.name = "CompletionStreamError";
+  }
+}
+
+/** Keep the raw AI SDK error for routing while the UI stream carries only its message. */
+function captureStreamError(onError: (error: unknown) => void) {
+  return (error: unknown) => {
+    onError(error);
+    return error instanceof Error ? error.message : String(error);
+  };
+}
 
 function parseTools(request: ChatCompletions_RequestBody_Type) {
   const tools: Record<string, any> = {};
@@ -195,7 +217,7 @@ function parseToolInput(input: string) {
 
 function getAISDKStream(
   reqData: ChatCompletions_RequestBody_Type,
-  provider: Awaited<ReturnType<typeof AIBalancer>>,
+  provider: RoutedProvider,
   abortSignal: AbortSignal,
   telemetry?: TelemetryOptions,
   onProviderCall?: () => void,
@@ -263,7 +285,7 @@ export type genCallbackType = (genCompletion: {
  */
 export async function StreamCompletion(
   reqData: ChatCompletions_RequestBody_Type,
-  provider: Awaited<ReturnType<typeof AIBalancer>>,
+  provider: RoutedProvider,
   genCallback: genCallbackType,
   telemetry?: TelemetryOptions,
   requestSignal?: AbortSignal | null,
@@ -291,10 +313,13 @@ export async function StreamCompletion(
     lastTokenAt = now;
   };
   let completionSettlement: Promise<void> | undefined;
+  let streamError: unknown;
   const endOfCompletion = () => {
     if (completionSettlement) return completionSettlement;
 
     const settlement = (async () => {
+      // An attempt that failed before any output is retried elsewhere; record only the winner.
+      if (streamError !== undefined && firstTokenAt === undefined) return;
       const usage = await Promise.resolve(result.usage).catch(() => {
         // Some adapters reject usage after dispatch; retain the zero-usage fallback only then.
         if (!providerDispatched) return;
@@ -330,7 +355,12 @@ export async function StreamCompletion(
     return settlement;
   };
 
-  const aiSdkResponse = toUIMessageStream({ stream: result.stream });
+  const aiSdkResponse = toUIMessageStream({
+    stream: result.stream,
+    onError: captureStreamError((error) => {
+      streamError = error;
+    }),
+  });
   const uiMessageChunks = (async function* () {
     try {
       yield* convertStreamToAsyncIterator<UIMessageChunk>(aiSdkResponse);
@@ -352,6 +382,11 @@ export async function StreamCompletion(
       for await (const chunk of uiMessageChunks) {
         // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
         switch (chunk.type) {
+          case "error":
+            throw new CompletionStreamError(
+              streamError ?? new Error(chunk.errorText),
+              firstTokenAt !== undefined,
+            );
           case "reasoning-start":
             if (!generationId) generationId = chunk.id;
 
@@ -620,7 +655,7 @@ export async function StreamCompletion(
 /** Adapt an OpenAI-compatible request to a non-streaming completion response using the AI SDK. */
 export async function NonStreamingCompletion(
   reqData: ChatCompletions_RequestBody_Type,
-  provider: Awaited<ReturnType<typeof AIBalancer>>,
+  provider: RoutedProvider,
   genCallback: genCallbackType,
   telemetry?: TelemetryOptions,
   requestSignal?: AbortSignal | null,
@@ -648,10 +683,13 @@ export async function NonStreamingCompletion(
     lastTokenAt = now;
   };
   let completionSettlement: Promise<void> | undefined;
+  let streamError: unknown;
   const endOfCompletion = () => {
     if (completionSettlement) return completionSettlement;
 
     const settlement = (async () => {
+      // An attempt that failed before any output is retried elsewhere; record only the winner.
+      if (streamError !== undefined && firstTokenAt === undefined) return;
       const usage = await Promise.resolve(result.usage).catch(() => {
         // Some adapters reject usage after dispatch; retain the zero-usage fallback only then.
         if (!providerDispatched) return;
@@ -687,7 +725,12 @@ export async function NonStreamingCompletion(
     return settlement;
   };
 
-  const aiSdkResponse = toUIMessageStream({ stream: result.stream });
+  const aiSdkResponse = toUIMessageStream({
+    stream: result.stream,
+    onError: captureStreamError((error) => {
+      streamError = error;
+    }),
+  });
   const uiMessageChunks = (async function* () {
     try {
       yield* convertStreamToAsyncIterator<UIMessageChunk>(aiSdkResponse);
@@ -720,6 +763,11 @@ export async function NonStreamingCompletion(
   for await (const chunk of uiMessageChunks) {
     // https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
     switch (chunk.type) {
+      case "error":
+        throw new CompletionStreamError(
+          streamError ?? new Error(chunk.errorText),
+          firstTokenAt !== undefined,
+        );
       case "reasoning-start":
         if (openAIResponse.id === "") openAIResponse.id = chunk.id;
         if (!reqData.reasoning?.exclude) openAIResponse.choices[0].message.reasoning = "";

@@ -1,9 +1,8 @@
 import { v } from "convex/values";
 import { credentialPreview } from "@/credential_preview";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   internalMutation,
-  internalQuery,
   mutation,
   query,
   type MutationCtx,
@@ -29,6 +28,7 @@ import {
   type ProviderSnapshot,
 } from "../src/workspaces/provider";
 import { canAccessWorkspace } from "../src/workspaces/policy";
+import { resolveProviderRouting, type ProviderRouting } from "../src/routing/settings";
 
 type SecretReadResult = Awaited<ReturnType<typeof secrets.get>>;
 type SecretContext = QueryCtx | MutationCtx;
@@ -121,7 +121,12 @@ export const list = query({
   },
 });
 
-async function requireWorkspaceProvider(
+/**
+ * Resolve an owner-configured workspace provider for a mutation, materializing the first local
+ * configuration for legacy workspaces. Throws when the caller does not own the workspace or the
+ * provider is not configured.
+ */
+export async function requireWorkspaceProvider(
   ctx: MutationCtx,
   workspaceId: Id<"workspaces">,
   slug: string,
@@ -685,89 +690,98 @@ export const unbindOAuthCredential = internalMutation({
   },
 });
 
-/** Resolve credentialed, enabled workspace providers for internal model routing. */
-export const resolveProviderCandidatesForModel = internalQuery({
-  args: {
-    workspace: v.id("workspaces"),
-    modelSlug: v.string(),
-    providerSlug: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const workspace = await ctx.db.get("workspaces", args.workspace);
-    if (!workspace || workspace.archivedAt !== undefined) throw new Error("Workspace not found.");
+/** A credentialed, enabled workspace provider that offers the requested model. */
+export type RoutableProvider = {
+  slug: string;
+  name: string;
+  npm: ProviderSnapshot["npm"];
+  env: string[];
+  doc?: string;
+  baseURL?: string;
+  /** Upstream model ID sent to the provider. */
+  modelId: string;
+  pricing: ProviderSnapshot["models"][number]["pricing"];
+  routing: ProviderRouting;
+  credentials: Record<string, string>;
+};
 
-    const model = await ctx.db
-      .query("models")
-      .withIndex("by_slug", (q) => q.eq("slug", args.modelSlug))
-      .unique();
+/**
+ * Resolve credentialed, enabled workspace providers that offer `modelSlug`, with their owner
+ * routing overrides. Callers apply request preferences, cooldowns, and selection. Throws when
+ * the model is unknown or no provider can serve it, so callers can report configuration errors.
+ */
+export async function resolveRoutableProviders(
+  ctx: SecretContext,
+  workspace: Doc<"workspaces">,
+  modelSlug: string,
+): Promise<RoutableProvider[]> {
+  if (workspace.archivedAt !== undefined) throw new Error("Workspace not found.");
 
-    if (!model) throw new Error(`Unknown model: ${args.modelSlug}`);
+  const model = await ctx.db
+    .query("models")
+    .withIndex("by_slug", (q) => q.eq("slug", modelSlug))
+    .unique();
 
-    const providerRecords = (await workspaceProviderRecords(ctx, workspace)).filter(
-      (record) =>
-        (!args.providerSlug || record.provider.slug === args.providerSlug) &&
-        isWorkspaceProviderEnabled(record),
-    );
-    const modelProviders = providerRecords.flatMap(({ provider }) => {
-      const model = provider.models.find((candidate) => candidate.model === args.modelSlug);
-      return model ? [{ provider, model }] : [];
+  if (!model) throw new Error(`Unknown model: ${modelSlug}`);
+
+  const modelProviders = (await workspaceProviderRecords(ctx, workspace))
+    .filter(isWorkspaceProviderEnabled)
+    .flatMap((record) => {
+      const providerModel = record.provider.models.find(
+        (candidate) => candidate.model === modelSlug,
+      );
+      return providerModel ? [{ record, providerModel }] : [];
     });
 
-    if (modelProviders.length === 0) {
-      throw new Error(
-        args.providerSlug
-          ? `Model ${args.modelSlug} is not available on provider ${args.providerSlug}.`
-          : `Model ${args.modelSlug} has no configured providers.`,
-      );
-    }
+  if (modelProviders.length === 0) {
+    throw new Error(`Model ${modelSlug} has no configured providers.`);
+  }
 
-    const candidates = [];
+  const candidates = [];
 
-    for (const modelProvider of modelProviders) {
-      const credentials = await readSecret(
-        ctx,
-        {
-          namespace: workspaceProviderSecretNamespace(args.workspace, modelProvider.provider.slug),
-          name: modelProvider.provider.slug,
-        },
-        `workspace provider ${modelProvider.provider.slug} credential`,
-      );
+  for (const { record, providerModel } of modelProviders) {
+    const provider = record.provider;
+    const credentials = await readSecret(
+      ctx,
+      {
+        namespace: workspaceProviderSecretNamespace(workspace._id, provider.slug),
+        name: provider.slug,
+      },
+      `workspace provider ${provider.slug} credential`,
+    );
 
-      const legacyCredentials =
-        !credentials.ok && workspace.legacyBalance
-          ? await readSecret(
-              ctx,
-              {
-                namespace: providerSecretNamespace(modelProvider.provider.slug),
-                name: balanceSecretName(workspace.legacyBalance),
-              },
-              `legacy provider ${modelProvider.provider.slug} credential`,
-            )
-          : null;
+    const legacyCredentials =
+      !credentials.ok && workspace.legacyBalance
+        ? await readSecret(
+            ctx,
+            {
+              namespace: providerSecretNamespace(provider.slug),
+              name: balanceSecretName(workspace.legacyBalance),
+            },
+            `legacy provider ${provider.slug} credential`,
+          )
+        : null;
 
-      const storedCredentials = credentials.ok ? credentials : legacyCredentials;
-      if (!storedCredentials?.ok) continue;
+    const storedCredentials = credentials.ok ? credentials : legacyCredentials;
+    if (!storedCredentials?.ok) continue;
 
-      candidates.push({
-        slug: modelProvider.provider.slug,
-        name: modelProvider.provider.name,
-        npm: modelProvider.provider.npm,
-        env: modelProvider.provider.env,
-        doc: modelProvider.provider.doc,
-        baseURL: modelProvider.provider.api,
-        modelId: modelProvider.model!.upstream_model_id ?? model.slug,
-        credentials: parseProviderCredentials(modelProvider.provider.slug, storedCredentials.value),
-      });
-    }
+    candidates.push({
+      slug: provider.slug,
+      name: provider.name,
+      npm: provider.npm,
+      env: provider.env,
+      doc: provider.doc,
+      baseURL: provider.api,
+      modelId: providerModel.upstream_model_id ?? model.slug,
+      pricing: providerModel.pricing,
+      routing: resolveProviderRouting(record.configuration?.routing),
+      credentials: parseProviderCredentials(provider.slug, storedCredentials.value),
+    });
+  }
 
-    if (candidates.length === 0) {
-      throw new Error(
-        args.providerSlug
-          ? `No BYOK credentials configured for provider ${args.providerSlug}.`
-          : `No BYOK credentials configured for model ${args.modelSlug}.`,
-      );
-    }
+  if (candidates.length === 0) {
+    throw new Error(`No BYOK credentials configured for model ${modelSlug}.`);
+  }
 
-    return candidates;
-  },
-});
+  return candidates;
+}
