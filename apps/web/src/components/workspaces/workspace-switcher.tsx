@@ -60,17 +60,28 @@ export function WorkspaceSwitcher({ variant }: { variant: "chip" | "heading" }) 
             <ChevronsUpDownIcon data-icon="inline-end" className="size-3 opacity-70" />
           </Button>
         ) : (
+          // Spans the section heading row (cancelling its `pl-3 pr-1`) so the tile lines up with
+          // the page icons below.
           <button
             type="button"
             aria-label={label}
-            className="-mx-1 flex min-w-0 items-center gap-1 rounded-md px-1 text-sm text-subtle-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/30 data-[state=open]:text-foreground"
+            className="group/workspace -mr-1 -ml-3 flex h-8 min-w-0 flex-1 items-center gap-2.5 rounded-xl px-3 text-sm transition-colors outline-none hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/30 data-[state=open]:bg-accent"
           >
-            <span className="truncate">{name}</span>
-            <ChevronsUpDownIcon className="size-3.5 shrink-0" />
+            <ProjectTile color={workspace?.color}>
+              <WorkspaceIcon name={workspace?.icon} />
+            </ProjectTile>
+            <span className="flex min-w-0 flex-1 items-baseline gap-1">
+              <span className="shrink-0 text-subtle-foreground">Workspace:</span>
+              <span className="truncate font-medium text-foreground">{name}</span>
+            </span>
+            <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover/workspace:text-foreground group-data-[state=open]/workspace:text-foreground" />
           </button>
         )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align={variant === "chip" ? "end" : "start"} className="w-60">
+      <DropdownMenuContent
+        align={variant === "chip" ? "end" : "start"}
+        className={variant === "chip" ? "w-60" : "w-(--radix-dropdown-menu-trigger-width) min-w-60"}
+      >
         <DropdownMenuLabel>Workspaces</DropdownMenuLabel>
         {provisionError ? (
           <DropdownMenuGroup>

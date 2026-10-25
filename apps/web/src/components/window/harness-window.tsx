@@ -62,7 +62,11 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
     select: (state) =>
       state.matches.findLast((match) => match.staticData.pageTitle)?.staticData.pageTitle,
   });
-  const href = useRouterState({ select: (state) => state.location.href });
+  // Only a settled location: mid-navigation `location` already holds the destination while
+  // `matches` (so `screen`) still describe the page being left.
+  const settledHref = useRouterState({
+    select: (state) => (state.status === "idle" ? state.location.href : undefined),
+  });
   const params = useParams({ strict: false });
   // Merged search of the matched chat route: `draft`/`project` on `/chat`, fork targets on
   // `/chat/$chatId`.
@@ -129,8 +133,8 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
 
   // `Back to app` in Settings returns to the previously focused Tab or Home (spec §4).
   useEffect(() => {
-    if (screen === "home" || isSessionScreen) setLastAppHref(href);
-  }, [href, isSessionScreen, screen]);
+    if (settledHref && (screen === "home" || isSessionScreen)) setLastAppHref(settledHref);
+  }, [settledHref, isSessionScreen, screen]);
 
   const activeTitle = activeTab ? tabTitle(activeTab) : pageTitle;
   useEffect(() => {

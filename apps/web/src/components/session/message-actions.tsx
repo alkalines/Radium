@@ -1,13 +1,22 @@
-import { useEffect, useState, type ComponentProps } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ComponentProps,
+  type FocusEvent,
+} from "react";
+import * as m from "motion/react-m";
 import { CheckIcon, CopyIcon, GitBranchIcon, RefreshCcwIcon, Undo2Icon } from "lucide-react";
 
-import type { ModelOption } from "@/components/models/model-options";
+import { modelDisplayName, type ModelOption } from "@/components/models/model-options";
 import { ModelList } from "@/components/models/model-list";
 import { useModelPreferences } from "@/components/models/model-preferences";
 import { Button } from "@/components/ui/button";
 import { MessageFooter } from "@/components/ui/message";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { spring, transitions } from "@/lib/motion";
 import type { MessagePerformance } from "./message-parts";
 
 function MessageAction({
@@ -30,11 +39,13 @@ function MessageAction({
 /**
  * Footer under one turn (shadcn Message pattern). User turns: fork with another model, revert
  * (when `onRevert` is given), copy; they reveal on hover or focus. Assistant turns: retry, copy,
- * fork, then who answered (the agent name, then the model ID as Machine text) and the generation
- * performance; the buttons lead the line, so they stay visible. `disabled` (a request is in
- * flight) blocks everything except copy. Fork opens a model list (the user's pinned models first,
- * hidden ones left out) and hands the chosen slug to `onFork`; the caller decides what forking a
- * user versus an assistant turn means.
+ * fork, then who answered (the agent name, then the model as `Lab: Model`) and the generation
+ * performance. The assistant buttons reveal while the pointer is over the turn, keyboard focus is
+ * inside the footer, or the fork list is open (always on touch); hidden, they leave the flow and
+ * the details slide into their place. `disabled` (a request is in flight) blocks everything except
+ * copy. Fork opens a model list (the user's pinned models first, hidden ones left out) and hands
+ * the chosen slug to `onFork`; the caller decides what forking a user versus an assistant turn
+ * means.
  */
 export function MessageActions({
   role,
@@ -53,7 +64,7 @@ export function MessageActions({
   disabled: boolean;
   /** The agent that answered an assistant turn (`Radium` or an ACP agent). */
   agentName?: string;
-  /** Model ID an assistant turn recorded. */
+  /** Model ID an assistant turn recorded; named from `forkModels` when the workspace lists it. */
   model?: string;
   performance?: MessagePerformance;
   onCopy: () => void;
@@ -63,8 +74,35 @@ export function MessageActions({
 }) {
   const [isCopied, setIsCopied] = useState(false);
   const [isForkOpen, setIsForkOpen] = useState(false);
+  const [isPointerNear, setIsPointerNear] = useState(false);
+  const [hasKeyboardFocus, setHasKeyboardFocus] = useState(false);
+  const footerRef = useRef<HTMLDivElement>(null);
+  const isCoarsePointer = useSyncExternalStore(
+    subscribeCoarsePointer,
+    readCoarsePointer,
+    () => false,
+  );
   const { pinnedModels, hiddenModels } = useModelPreferences();
   const isUser = role === "user";
+
+  // "Near" is the whole turn: the footer sits under it, so the pointer reaches the turn first.
+  // The footer mounts when a streamed turn finishes, often under a pointer that never re-enters.
+  useEffect(() => {
+    if (isUser) return;
+    const turn = footerRef.current?.closest<HTMLElement>('[data-slot="message"]');
+    if (!turn) return;
+
+    if (turn.matches(":hover")) setIsPointerNear(true);
+
+    const enter = () => setIsPointerNear(true);
+    const leave = () => setIsPointerNear(false);
+    turn.addEventListener("pointerenter", enter);
+    turn.addEventListener("pointerleave", leave);
+    return () => {
+      turn.removeEventListener("pointerenter", enter);
+      turn.removeEventListener("pointerleave", leave);
+    };
+  }, [isUser]);
 
   useEffect(() => {
     if (!isCopied) return;
@@ -139,11 +177,12 @@ export function MessageActions({
     );
   }
 
+  const modelOption = model ? forkModels?.find((candidate) => candidate.slug === model) : undefined;
   const details = [
     agentName ? <span key="agent">{agentName}</span> : null,
     model ? (
-      <span key="model" className="truncate font-mono" title={model}>
-        {model}
+      <span key="model" className={modelOption ? "truncate" : "truncate font-mono"} title={model}>
+        {modelOption ? modelDisplayName(modelOption) : model}
       </span>
     ) : null,
     performance ? (
@@ -162,9 +201,39 @@ export function MessageActions({
     ) : null,
   ].filter((detail) => detail !== null);
 
+  const isRevealed = isPointerNear || hasKeyboardFocus || isForkOpen || isCoarsePointer;
+
+  // Mouse clicks focus the buttons too; only keyboard focus should hold them open.
+  function handleFocus(event: FocusEvent<HTMLDivElement>) {
+    if (event.target.matches(":focus-visible")) setHasKeyboardFocus(true);
+  }
+
+  function handleBlur(event: FocusEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget)) setHasKeyboardFocus(false);
+  }
+
   return (
-    <MessageFooter className="min-w-0 gap-2 px-0">
-      <div className="flex shrink-0 items-center">
+    <MessageFooter
+      ref={footerRef}
+      className="relative min-h-7 min-w-0 px-0"
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+    >
+      {/* Hidden buttons stay mounted (out of the flow, still focusable) so keyboard users reach
+          them; focusing one reveals the row. */}
+      <m.div
+        initial={false}
+        animate={
+          isRevealed
+            ? { opacity: 1, x: 0, filter: "blur(0px)", transition: transitions.enter }
+            : { opacity: 0, x: -4, filter: "blur(2px)", transition: transitions.exit }
+        }
+        className={
+          isRevealed
+            ? "flex shrink-0 items-center pr-2"
+            : "pointer-events-none absolute inset-y-0 left-0 flex items-center"
+        }
+      >
         {onRetry ? (
           <MessageAction label="Retry" disabled={disabled} onClick={onRetry}>
             <RefreshCcwIcon />
@@ -172,19 +241,36 @@ export function MessageActions({
         ) : null}
         {copyAction}
         {forkAction}
-      </div>
+      </m.div>
       {details.length > 0 ? (
-        <span className="flex min-w-0 items-center gap-2 font-normal">
+        <m.span
+          layout="position"
+          transition={{ layout: spring.snap }}
+          className="flex min-w-0 items-center gap-2 font-normal"
+        >
           {details.map((detail, index) => (
             <span key={detail.key} className="flex min-w-0 items-center gap-2">
               {index > 0 ? <span aria-hidden="true">·</span> : null}
               {detail}
             </span>
           ))}
-        </span>
+        </m.span>
       ) : null}
     </MessageFooter>
   );
+}
+
+const coarsePointerQuery = "(pointer: coarse)";
+
+/** Touch screens have no hover, so the assistant buttons stay visible there. */
+function subscribeCoarsePointer(onChange: () => void) {
+  const query = window.matchMedia(coarsePointerQuery);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+function readCoarsePointer() {
+  return window.matchMedia(coarsePointerQuery).matches;
 }
 
 function formatTps(value: number) {
