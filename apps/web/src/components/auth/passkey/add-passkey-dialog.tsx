@@ -1,4 +1,4 @@
-import { isSessionNotFreshError } from "@better-auth-ui/core";
+import { isReauthenticationRequiredError } from "@better-auth-ui/core";
 import type { AddPasskeyParams, PasskeyAuthClient } from "@better-auth-ui/core/plugins/passkey";
 import { useAuth, useAuthPlugin } from "@better-auth-ui/react";
 import { useAddPasskey } from "@better-auth-ui/react/plugins/passkey";
@@ -60,7 +60,7 @@ export function AddPasskeyDialog({ open, onOpenChange }: AddPasskeyDialogProps) 
     } as AddPasskeyParams<PasskeyAuthClient>);
   };
 
-  const needsFreshSession = isSessionNotFreshError(addPasskey.error);
+  const needsFreshSession = isReauthenticationRequiredError(addPasskey.error);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>

@@ -2,7 +2,7 @@ import {
   type AuthSocialProvider,
   getProviderId,
   getProviderName,
-  isSessionNotFreshError,
+  isReauthenticationRequiredError,
 } from "@better-auth-ui/core";
 import {
   renderProviderIcon,
@@ -71,7 +71,7 @@ export function LinkedAccount({ account, canUnlink = true, provider }: LinkedAcc
     accountInfo?.user?.name ||
     account?.accountId;
 
-  const needsFreshSession = isSessionNotFreshError(unlinkAccount.error);
+  const needsFreshSession = isReauthenticationRequiredError(unlinkAccount.error);
 
   return (
     <>
