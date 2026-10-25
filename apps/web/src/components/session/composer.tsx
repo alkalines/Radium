@@ -3,7 +3,9 @@ import {
   type DragEvent,
   type KeyboardEvent,
   type ReactNode,
+  type Ref,
   useEffect,
+  useImperativeHandle,
   useRef,
   useState,
 } from "react";
@@ -64,19 +66,30 @@ type PendingAttachment = { id: string; file: File; url: string };
  */
 export type ComposerTextStore = { read: () => string; write: (text: string) => void };
 
+/** Text plus attached files: what the Composer holds before a submit. */
+export type ComposerDraft = { text: string; files: File[] };
+
+/** Imperative access for flows that put a draft back into the Composer, such as a revert. */
+export type ComposerHandle = {
+  /** Replaces the Composer's text and files, focuses it, and returns what it held before. */
+  swapDraft: (next: ComposerDraft) => ComposerDraft;
+};
+
 /**
  * The Session prompt input (`docs/Interface_Design.md` §2, Composer): textarea plus a toolbar with
- * the `+` menu and `toolbarControls` (Tools) leading and the Model control, context usage, voice
- * input, and send/stop trailing. Enter sends, Shift+Enter adds a line. Files come from the `+`
- * menu, paste, or a drop onto the Composer; Backspace in an empty textarea removes the last one.
+ * the `+` menu and `toolbarControls` (Tools) leading and the Model control, voice input, and
+ * send/stop trailing. Enter sends, Shift+Enter adds a line. Files come from the `+` menu, paste,
+ * or a drop onto the Composer; Backspace in an empty textarea removes the last one.
  *
  * Submitting clears the input immediately. When `onSubmit` throws or rejects, the text and files
- * are restored so the user can retry; it is called at most once per submit.
+ * are restored so the user can retry; it is called at most once per submit. `ref` exposes
+ * `swapDraft` for callers that put a draft back (reverting a turn).
  *
  * `layoutId` is shared by the empty and docked positions so the Composer moves (Reflow) instead of
  * remounting, which keeps the draft text and the model choice.
  */
 export function Composer({
+  ref,
   layoutId,
   autoFocus,
   canSend,
@@ -84,11 +97,11 @@ export function Composer({
   onSubmit,
   onStop,
   modelControl,
-  contextUsage,
   menuItems,
   toolbarControls,
   textStore,
 }: {
+  ref?: Ref<ComposerHandle>;
   layoutId: string;
   autoFocus: boolean;
   /** False while a model is not chosen yet or a turn cannot start; typing stays enabled. */
@@ -98,7 +111,6 @@ export function Composer({
   onSubmit: (message: ComposerMessage) => void | Promise<void>;
   onStop: () => void;
   modelControl: ReactNode;
-  contextUsage?: ReactNode;
   /** Extra `+` menu entries (submenus) after "Add photos & files". */
   menuItems?: ReactNode;
   /** Toolbar buttons right after the `+` menu, such as the Tools control. */
@@ -111,8 +123,15 @@ export function Composer({
   const [isComposing, setIsComposing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { attachments, addFiles, removeAttachment, takeAttachments, restoreAttachments } =
-    useFileAttachments();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const {
+    attachments,
+    addFiles,
+    removeAttachment,
+    takeAttachments,
+    restoreAttachments,
+    replaceFiles,
+  } = useFileAttachments();
   const hasContent = value.trim().length > 0 || attachments.length > 0;
   const isSendEnabled = canSend && hasContent && !isRunning;
 
@@ -132,6 +151,15 @@ export function Composer({
     valueRef.current = stored;
     setValue(stored);
   }, []);
+
+  useImperativeHandle(ref, () => ({
+    swapDraft(next) {
+      const previous = { text: valueRef.current, files: replaceFiles(next.files) };
+      updateValue(next.text);
+      textareaRef.current?.focus();
+      return previous;
+    },
+  }));
 
   async function submit() {
     if (!isSendEnabled) return;
@@ -234,6 +262,7 @@ export function Composer({
             </InputGroupAddon>
           ) : null}
           <InputGroupTextarea
+            ref={textareaRef}
             value={value}
             autoFocus={autoFocus}
             aria-label="Message"
@@ -262,11 +291,7 @@ export function Composer({
             </DropdownMenu>
             {toolbarControls}
 
-            <div className="ml-auto flex min-w-0 items-center gap-1">
-              {modelControl}
-              {/* Usage is secondary; at phone width the Model control and send keep the room. */}
-              {contextUsage ? <div className="shrink-0 max-sm:hidden">{contextUsage}</div> : null}
-            </div>
+            <div className="ml-auto flex min-w-0 items-center gap-1">{modelControl}</div>
 
             <VoiceInputButton
               onTranscript={(transcript) =>
@@ -373,7 +398,24 @@ function useFileAttachments() {
     setAttachments((current) => [...restored, ...current]);
   }
 
-  return { attachments, addFiles, removeAttachment, takeAttachments, restoreAttachments };
+  /** Swaps every pending file for `files` and returns the files it removed. */
+  function replaceFiles(files: File[]) {
+    const removed = attachmentsRef.current;
+    for (const attachment of removed) URL.revokeObjectURL(attachment.url);
+    setAttachments(
+      files.map((file) => ({ id: crypto.randomUUID(), file, url: URL.createObjectURL(file) })),
+    );
+    return removed.map((attachment) => attachment.file);
+  }
+
+  return {
+    attachments,
+    addFiles,
+    removeAttachment,
+    takeAttachments,
+    restoreAttachments,
+    replaceFiles,
+  };
 }
 
 /** AI SDK file part with the file inlined as a data URL; keeps the blob URL if reading fails. */

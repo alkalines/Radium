@@ -74,6 +74,11 @@ export function getPerformanceMetadata(
   return performance as MessagePerformance;
 }
 
+/** The model slug one message recorded (assistant turns), if any. */
+export function getMessageModel(message: UIMessage) {
+  return isModelMetadata(message.metadata) ? message.metadata.model : undefined;
+}
+
 /** The model slug of the most recent message that recorded one, scanning from the end. */
 export function getLastMessageModel(messages: UIMessage[]) {
   for (let index = messages.length - 1; index >= 0; index--) {
@@ -153,15 +158,18 @@ export function getApprovalContinuationKey(messages: UIMessage[]) {
 }
 
 /**
- * True when the conversation is waiting on the user: the last message is an assistant turn with
- * a tool call in `approval-requested`. Maps to the `awaiting` RunState at the data boundary.
+ * Tool calls the conversation waits on the user for: the `approval-requested` calls of the last
+ * message when it is an assistant turn, in call order. Non-empty maps to the `awaiting` RunState
+ * at the data boundary.
  */
-export function hasPendingApproval(messages: UIMessage[]) {
+export function getPendingApprovals(
+  messages: UIMessage[],
+): (ToolUIPart & { state: "approval-requested" })[] {
   const message = messages.at(-1);
+  if (!message || message.role !== "assistant") return [];
 
-  if (!message || message.role !== "assistant") {
-    return false;
-  }
-
-  return message.parts.some((part) => isToolPart(part) && part.state === "approval-requested");
+  return message.parts.filter(
+    (part): part is ToolUIPart & { state: "approval-requested" } =>
+      isToolPart(part) && part.state === "approval-requested",
+  );
 }

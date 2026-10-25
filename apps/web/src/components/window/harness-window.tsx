@@ -1,7 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useRouterState, useSearch } from "@tanstack/react-router";
-import { AnimatePresence } from "motion/react";
-import * as m from "motion/react-m";
+import { AnimatePresence, Reorder } from "motion/react";
 import { HouseIcon, PlusIcon, SquarePenIcon, XIcon } from "lucide-react";
 
 import type { Id } from "backend/convex/_generated/dataModel";
@@ -269,8 +268,14 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
         {/*
           pl-2 keeps the first Tab's left ear inside the scroll container; the negative margin
           cancels it and the header gap, so Home sits one Tab gap (2px) from the first Tab.
+          Tabs reorder by dragging along the strip; the order is the persisted Tab list.
         */}
-        <div
+        <Reorder.Group
+          as="div"
+          axis="x"
+          values={panelTabs}
+          onReorder={setTabs}
+          layoutScroll
           role="tablist"
           aria-label="Open sessions"
           className="-ml-2.5 flex min-w-0 items-end gap-0.5 overflow-x-auto px-2 [scrollbar-width:none]"
@@ -281,9 +286,10 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
               const title = tabTitle(tab);
 
               return (
-                <m.div
+                <Reorder.Item
+                  as="div"
                   key={tab.id}
-                  layout
+                  value={tab}
                   initial={{ opacity: 0, scale: 0.98 }}
                   animate={{ opacity: 1, scale: 1, transition: spring.snap }}
                   exit={{ opacity: 0, scale: 0.98, transition: transitions.exit }}
@@ -318,11 +324,11 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
                   >
                     <XIcon />
                   </Button>
-                </m.div>
+                </Reorder.Item>
               );
             })}
           </AnimatePresence>
-        </div>
+        </Reorder.Group>
 
         <div className="flex h-9 shrink-0 items-center">
           <Tooltip>

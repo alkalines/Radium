@@ -3,7 +3,7 @@ import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import { ArchiveIcon, BoxesIcon, PlusIcon, RotateCcwIcon, UsersIcon, XIcon } from "lucide-react";
+import { ArchiveIcon, PlusIcon, RotateCcwIcon, UsersIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
@@ -23,13 +23,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -53,22 +46,14 @@ type ArchivedWorkspaceList = Exclude<
 
 /**
  * General settings of the current workspace (`docs/Interface_Design.md` §5.2): its name, its
- * appearance (tile icon and color, saved on pick), member access (owner-only), the user's other
- * workspaces with switching and creation, archived workspaces to restore, and archiving the
- * current one. Members see the current workspace without editing controls.
+ * appearance (tile icon and color, saved on pick), member access (owner-only), workspace
+ * creation, archived workspaces to restore, and archiving the current one. Switching between
+ * workspaces lives in the tab-strip switcher. Members see the current workspace without editing
+ * controls.
  */
 export function WorkspaceManagement() {
-  const {
-    workspaces,
-    workspace,
-    workspaceId,
-    isLoading,
-    error,
-    isProvisioning,
-    provisionError,
-    retryProvisioning,
-    setWorkspace,
-  } = useWorkspace();
+  const { workspaces, workspace, workspaceId, isLoading, error, isProvisioning, setWorkspace } =
+    useWorkspace();
   const createWorkspace = useMutation(api.workspaces.create);
   const renameWorkspace = useMutation(api.workspaces.rename);
   const setWorkspaceIcon = useMutation(api.workspaces.setIcon);
@@ -371,18 +356,6 @@ export function WorkspaceManagement() {
         </GroupList>
       ) : null}
 
-      <GroupList title="Your workspaces" description="Choose which workspace Radium shows.">
-        <WorkspaceRows
-          workspaces={workspaces}
-          currentWorkspaceId={workspaceId}
-          isLoading={isListLoading}
-          hasError={error !== null}
-          provisionError={provisionError}
-          onRetryProvisioning={retryProvisioning}
-          onSwitch={setWorkspace}
-        />
-      </GroupList>
-
       {archivedData === undefined || archivedError || archived.length > 0 ? (
         <GroupList
           title="Archived"
@@ -511,91 +484,6 @@ function SkeletonRows() {
       <Skeleton className="h-8" />
     </RowBlock>
   );
-}
-
-function WorkspaceRows({
-  workspaces,
-  currentWorkspaceId,
-  isLoading,
-  hasError,
-  provisionError,
-  onRetryProvisioning,
-  onSwitch,
-}: {
-  workspaces: WorkspaceSummary[];
-  currentWorkspaceId?: WorkspaceSummary["_id"];
-  isLoading: boolean;
-  hasError: boolean;
-  provisionError: Error | null;
-  onRetryProvisioning: () => void;
-  onSwitch: (workspaceId: WorkspaceSummary["_id"]) => void;
-}) {
-  if (hasError) {
-    return (
-      <RowBlock>
-        <p className="text-sm text-destructive">
-          Radium could not load your workspaces. Try refreshing the page.
-        </p>
-      </RowBlock>
-    );
-  }
-
-  if (isLoading) {
-    return <SkeletonRows />;
-  }
-
-  if (workspaces.length === 0) {
-    return (
-      <RowBlock>
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <BoxesIcon />
-            </EmptyMedia>
-            <EmptyTitle>
-              {provisionError ? "Workspace setup failed" : "Preparing your workspace"}
-            </EmptyTitle>
-            <EmptyDescription>
-              {provisionError
-                ? "Radium could not create the personal workspace for this account."
-                : "Radium is creating the personal workspace for this account."}
-            </EmptyDescription>
-          </EmptyHeader>
-          {provisionError ? (
-            <Button variant="outline" size="sm" onClick={onRetryProvisioning}>
-              <RotateCcwIcon data-icon="inline-start" />
-              Retry setup
-            </Button>
-          ) : null}
-        </Empty>
-      </RowBlock>
-    );
-  }
-
-  return workspaces.map((item) => {
-    const isCurrent = item._id === currentWorkspaceId;
-
-    return (
-      <Row
-        key={item._id}
-        leading={
-          <ProjectTile color={item.color}>
-            <WorkspaceIcon name={item.icon} />
-          </ProjectTile>
-        }
-        title={item.name}
-        tag={item.role === "owner" ? "Owner" : "Member"}
-      >
-        {isCurrent ? (
-          <span className="px-2 text-sm text-muted-foreground">Current</span>
-        ) : (
-          <Button variant="outline" size="sm" onClick={() => onSwitch(item._id)}>
-            Switch
-          </Button>
-        )}
-      </Row>
-    );
-  });
 }
 
 function MemberRows({

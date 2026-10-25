@@ -1,5 +1,5 @@
 import { useEffect, useState, type ComponentProps } from "react";
-import { CheckIcon, CopyIcon, GitBranchIcon, PencilIcon, RefreshCcwIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, GitBranchIcon, RefreshCcwIcon, Undo2Icon } from "lucide-react";
 
 import type { ModelOption } from "@/components/models/model-options";
 import { ModelList } from "@/components/models/model-list";
@@ -28,29 +28,36 @@ function MessageAction({
 }
 
 /**
- * Footer under one turn (shadcn Message pattern). User turns: fork with another model, edit
- * (when `onEdit` is given), copy. Assistant turns: retry, copy, fork, then the generation
- * performance. Actions reveal on hover or focus; `disabled` (a request is in flight) blocks
- * everything except copy. Fork opens a model list (the user's pinned models first, hidden ones
- * left out) and hands the chosen slug to `onFork`; the caller decides what forking a user versus
- * an assistant turn means.
+ * Footer under one turn (shadcn Message pattern). User turns: fork with another model, revert
+ * (when `onRevert` is given), copy; they reveal on hover or focus. Assistant turns: retry, copy,
+ * fork, then who answered (the agent name, then the model ID as Machine text) and the generation
+ * performance; the buttons lead the line, so they stay visible. `disabled` (a request is in
+ * flight) blocks everything except copy. Fork opens a model list (the user's pinned models first,
+ * hidden ones left out) and hands the chosen slug to `onFork`; the caller decides what forking a
+ * user versus an assistant turn means.
  */
 export function MessageActions({
   role,
   forkModels,
   disabled,
+  agentName,
+  model,
   performance,
   onCopy,
-  onEdit,
+  onRevert,
   onRetry,
   onFork,
 }: {
   role: "user" | "assistant";
   forkModels: ModelOption[] | undefined;
   disabled: boolean;
+  /** The agent that answered an assistant turn (`Radium` or an ACP agent). */
+  agentName?: string;
+  /** Model ID an assistant turn recorded. */
+  model?: string;
   performance?: MessagePerformance;
   onCopy: () => void;
-  onEdit?: () => void;
+  onRevert?: () => void;
   onRetry?: () => void;
   onFork: (modelSlug: string) => void;
 }) {
@@ -116,40 +123,66 @@ export function MessageActions({
     </Popover>
   );
 
+  if (isUser) {
+    return (
+      <MessageFooter className="gap-2 px-0">
+        <div className="flex items-center opacity-0 transition-opacity group-hover/message:opacity-100 focus-within:opacity-100 has-[[data-state=open]]:opacity-100 pointer-coarse:opacity-100">
+          {forkAction}
+          {onRevert ? (
+            <MessageAction label="Revert to this message" disabled={disabled} onClick={onRevert}>
+              <Undo2Icon />
+            </MessageAction>
+          ) : null}
+          {copyAction}
+        </div>
+      </MessageFooter>
+    );
+  }
+
+  const details = [
+    agentName ? <span key="agent">{agentName}</span> : null,
+    model ? (
+      <span key="model" className="truncate font-mono" title={model}>
+        {model}
+      </span>
+    ) : null,
+    performance ? (
+      <span
+        key="tps"
+        className="tabular-nums"
+        title={`Average across ${performance.requestCount} API requests`}
+      >
+        {formatTps(performance.averageTps)} tokens/s
+      </span>
+    ) : null,
+    performance ? (
+      <span key="time" className="tabular-nums" title="Total generation time">
+        {formatDuration(performance.generationTimeMs)}
+      </span>
+    ) : null,
+  ].filter((detail) => detail !== null);
+
   return (
-    <MessageFooter className="gap-2 px-0">
-      {performance ? (
-        <span className="flex items-center gap-2 font-normal tabular-nums">
-          <span title={`Average across ${performance.requestCount} API requests`}>
-            {formatTps(performance.averageTps)} tokens/s
-          </span>
-          <span aria-hidden="true">·</span>
-          <span title="Total generation time">{formatDuration(performance.generationTimeMs)}</span>
+    <MessageFooter className="min-w-0 gap-2 px-0">
+      <div className="flex shrink-0 items-center">
+        {onRetry ? (
+          <MessageAction label="Retry" disabled={disabled} onClick={onRetry}>
+            <RefreshCcwIcon />
+          </MessageAction>
+        ) : null}
+        {copyAction}
+        {forkAction}
+      </div>
+      {details.length > 0 ? (
+        <span className="flex min-w-0 items-center gap-2 font-normal">
+          {details.map((detail, index) => (
+            <span key={detail.key} className="flex min-w-0 items-center gap-2">
+              {index > 0 ? <span aria-hidden="true">·</span> : null}
+              {detail}
+            </span>
+          ))}
         </span>
       ) : null}
-      <div className="flex items-center opacity-0 transition-opacity group-hover/message:opacity-100 focus-within:opacity-100 has-[[data-state=open]]:opacity-100 pointer-coarse:opacity-100">
-        {isUser ? (
-          <>
-            {forkAction}
-            {onEdit ? (
-              <MessageAction label="Edit" disabled={disabled} onClick={onEdit}>
-                <PencilIcon />
-              </MessageAction>
-            ) : null}
-            {copyAction}
-          </>
-        ) : (
-          <>
-            {onRetry ? (
-              <MessageAction label="Retry" disabled={disabled} onClick={onRetry}>
-                <RefreshCcwIcon />
-              </MessageAction>
-            ) : null}
-            {copyAction}
-            {forkAction}
-          </>
-        )}
-      </div>
     </MessageFooter>
   );
 }

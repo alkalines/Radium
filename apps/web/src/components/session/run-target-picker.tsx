@@ -28,6 +28,16 @@ const addProjectValue = "__add-project__";
 
 type View = "summary" | "project" | "worker" | "agent";
 
+/** The Project part of the Run target picker; only a draft offers it (saved Sessions keep theirs). */
+export type RunTargetProjectChoice = {
+  /** Workspace new Projects are created in; without it `+ Add project` is hidden. */
+  workspaceId: Id<"workspaces"> | undefined;
+  /** Projects of the Session's workspace; `undefined` while loading. */
+  projects: SessionProject[] | undefined;
+  project: SessionProject | null;
+  onProjectChange: (project: SessionProject | null) => void;
+};
+
 /** Agent artwork inside the picker: ACP agents use their provider logo, Radium its letter. */
 export function AgentLogo({ agent, className }: { agent: SessionAgent; className?: string }) {
   if (agent.logo) return <ProviderLogo slug={agent.logo} className={className} />;
@@ -50,61 +60,65 @@ export function SessionProjectTile({
 }
 
 /**
- * Picks where a Session runs: Project, Worker, and the Agent. A summary of rows drills into one
- * view per part; picking returns to the summary, Backspace in an empty search steps back, and
- * closing resets to the summary. View switches are instant. Worker tools are picked in the Tools
- * Dialog, and the Worker directory is derived by the backend (the Project's folder for that
- * Worker, else the Worker's temp directory), so neither is chosen here.
+ * Picks where a Session runs. A summary of rows drills into one view per part; picking returns to
+ * the summary, Backspace in an empty search steps back, and closing resets to the summary. View
+ * switches are instant. Worker tools are picked in the Tools Dialog, and the Worker directory is
+ * derived by the backend (the Project's folder for that Worker, else the Worker's temp directory),
+ * so neither is chosen here.
  *
- * Workers are listed as active (selectable, with their online state from the last heartbeat) or
- * revoked (disabled). Every Worker change reports a complete `ChatWorkerSelection` without a
- * directory (or `null` for no Worker and no tools) through `onSelectionChange`; a newly picked
- * Worker gets the workspace's `defaultWorkerTools` plus the tools already chosen. The caller
- * decides whether changes are local draft state or persisted chat settings. `+ Add project` opens
- * the `ProjectDialog` and selects the new Project once the list has it.
+ * - A New session (under its Composer, opening upward) passes `projectChoice` and gets Project,
+ *   Worker, and Agent rows. `+ Add project` opens the `ProjectDialog` and selects the new Project
+ *   once the list has it.
+ * - Inside a chat (the Panel's top-right corner, opening downward) only Worker and Agent show, and
+ *   `isAgentFixed` makes the Agent row a plain label: a Session keeps its harness and only switches
+ *   models within it.
+ *
+ * Only active Workers are listed, with their online state from the last heartbeat; revoked ones
+ * never show. Every Worker change reports a complete `ChatWorkerSelection` without a directory (or
+ * `null` for no Worker and no tools) through `onSelectionChange`; a newly picked Worker gets the
+ * workspace's `defaultWorkerTools` plus the tools already chosen. The caller decides whether
+ * changes are local draft state or persisted chat settings.
  */
 export function RunTargetPicker({
   trigger,
   triggerLabel,
-  workspaceId,
-  projects,
-  project,
+  side,
+  projectChoice,
   workers,
   selection,
   defaultWorkerTools,
   agent,
   agents,
+  isAgentFixed,
   disabled,
-  onProjectChange,
   onSelectionChange,
   onAgentChange,
 }: {
   trigger: ReactNode;
   /** Accessible name of the trigger, e.g. `Run on build-box with Radium`. */
   triggerLabel: string;
-  /** Workspace new Projects are created in; without it `+ Add project` is hidden. */
-  workspaceId: Id<"workspaces"> | undefined;
-  /** Projects of the Session's workspace; `undefined` while loading. */
-  projects: SessionProject[] | undefined;
-  project: SessionProject | null;
+  /** `top` under the New session Composer, `bottom` in the chat's top-right corner. */
+  side: "top" | "bottom";
+  projectChoice?: RunTargetProjectChoice;
   workers: SessionWorker[];
   selection: ChatWorkerSelection | null;
   defaultWorkerTools: ChatWorkerTool[];
   agent: SessionAgent;
   agents: SessionAgent[];
+  isAgentFixed: boolean;
   disabled?: boolean;
-  onProjectChange: (project: SessionProject | null) => void;
   onSelectionChange: (selection: ChatWorkerSelection | null) => void;
   onAgentChange: (agent: SessionAgent) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [view, setView] = useState<View>("summary");
   const [isProjectDialogOpen, setIsProjectDialogOpen] = useState(false);
-  const selectProjectWhenListed = usePendingProjectSelection(projects, onProjectChange);
+  const selectProjectWhenListed = usePendingProjectSelection(projectChoice?.projects, (project) =>
+    projectChoice?.onProjectChange(project),
+  );
   const now = useWorkerPresenceClock();
 
   const activeWorkers = workers.filter((candidate) => candidate.status === "active");
-  const revokedWorkers = workers.filter((candidate) => candidate.status !== "active");
   const selectedWorker = activeWorkers.find(
     (candidate) => candidate.workerId === selection?.workerId,
   );
@@ -149,6 +163,8 @@ export function RunTargetPicker({
     workerValue = <span className="text-muted-foreground">Worker unavailable</span>;
   }
 
+  const project = projectChoice?.project ?? null;
+
   return (
     <>
       <Popover open={isOpen} onOpenChange={handleOpenChange}>
@@ -164,52 +180,51 @@ export function RunTargetPicker({
             <ChevronDownIcon data-icon="inline-end" />
           </Button>
         </PopoverTrigger>
-        {/*
-          Opens upward: the row sits under the Composer and near the bottom once docked, and a
-          fixed side keeps the popover from flipping when a drill-down view is taller.
-        */}
+        {/* A fixed side keeps the popover from flipping when a drill-down view is taller. */}
         <PopoverContent
-          side="top"
-          align="center"
+          side={side}
+          align={side === "top" ? "center" : "end"}
           className="w-80 gap-0 overflow-hidden rounded-2xl p-0"
         >
           {view === "summary" ? (
             <div className="flex flex-col p-1">
-              <SummaryRow
-                label="Project"
-                disabled={projects === undefined}
-                onOpen={() => setView("project")}
-              >
-                {project ? (
-                  <>
-                    <SessionProjectTile project={project} />
-                    <span className="truncate">{project.name}</span>
-                  </>
-                ) : (
-                  <span className="truncate text-muted-foreground">No project</span>
-                )}
-              </SummaryRow>
+              {projectChoice ? (
+                <SummaryRow
+                  label="Project"
+                  disabled={projectChoice.projects === undefined}
+                  onOpen={() => setView("project")}
+                >
+                  {project ? (
+                    <>
+                      <SessionProjectTile project={project} />
+                      <span className="truncate">{project.name}</span>
+                    </>
+                  ) : (
+                    <span className="truncate text-muted-foreground">No project</span>
+                  )}
+                </SummaryRow>
+              ) : null}
               <SummaryRow label="Worker" onOpen={() => setView("worker")}>
                 {workerValue}
               </SummaryRow>
-              <SummaryRow label="Agent" onOpen={() => setView("agent")}>
+              <SummaryRow label="Agent" onOpen={isAgentFixed ? undefined : () => setView("agent")}>
                 <AgentLogo agent={agent} className="size-4" />
                 <span className="truncate">{agent.name}</span>
               </SummaryRow>
             </div>
           ) : null}
 
-          {view === "project" ? (
+          {view === "project" && projectChoice ? (
             <DrillList
               title="Projects"
               placeholder="Search projects…"
               onBack={() => setView("summary")}
             >
               <ProjectOptions
-                projects={projects ?? []}
+                projects={projectChoice.projects ?? []}
                 project={project}
-                onSelect={(next) => pick(() => onProjectChange(next))}
-                onAddProject={workspaceId ? openProjectDialog : undefined}
+                onSelect={(next) => pick(() => projectChoice.onProjectChange(next))}
+                onAddProject={projectChoice.workspaceId ? openProjectDialog : undefined}
               />
             </DrillList>
           ) : null}
@@ -249,26 +264,11 @@ export function RunTargetPicker({
                     </CommandItem>
                   ))}
                 </CommandGroup>
-              ) : null}
-              {revokedWorkers.length > 0 ? (
-                <CommandGroup heading="Revoked">
-                  {revokedWorkers.map((candidate) => (
-                    <CommandItem
-                      key={candidate.workerId}
-                      value={candidate.workerId}
-                      keywords={[candidate.name]}
-                      disabled
-                    >
-                      <span className="truncate">{candidate.name}</span>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              ) : null}
-              {activeWorkers.length === 0 ? (
+              ) : (
                 <p className="px-3 pb-3 text-xs text-muted-foreground">
                   No active Workers in this workspace. Enroll one in Settings → Workers.
                 </p>
-              ) : null}
+              )}
             </DrillList>
           ) : null}
 
@@ -301,11 +301,11 @@ export function RunTargetPicker({
         </PopoverContent>
       </Popover>
 
-      {workspaceId ? (
+      {projectChoice?.workspaceId ? (
         <ProjectDialog
           open={isProjectDialogOpen}
           onOpenChange={setIsProjectDialogOpen}
-          workspaceId={workspaceId}
+          workspaceId={projectChoice.workspaceId}
           isOwner
           onCreated={selectProjectWhenListed}
         />

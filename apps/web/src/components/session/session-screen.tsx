@@ -5,6 +5,9 @@ import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation } from "convex/react";
+import { AnimatePresence } from "motion/react";
+import * as m from "motion/react-m";
+import { RotateCcwIcon, Undo2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
@@ -22,29 +25,40 @@ import {
   getLastMessageProvider,
   getMessageFiles,
   getMessageText,
+  getPendingApprovals,
   getUsageMetadata,
-  hasPendingApproval,
 } from "@/components/session/message-parts";
 import { SessionThread } from "@/components/session/session-thread";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { TabProjectHint } from "@/components/window/window-tabs";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { authClient } from "@/lib/auth-client";
+import { variants } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { builtInAgent, sessionAgentById, type SessionAgent, type SessionProject } from "./agents";
+import { ApprovalPrompt } from "./approval-gate";
 import {
   Composer,
   ConversationVisibilityMenu,
   type ChatScope,
+  type ComposerDraft,
+  type ComposerHandle,
   type ComposerMessage,
   type ComposerTextStore,
 } from "./composer";
 import { ModelPicker, validReasoningEffort } from "./model-picker";
-import { SessionContext } from "./session-context";
+import { SessionContext, SessionWorkerControl } from "./session-context";
 import { patchTabState, readTabState, type DraftTabSnapshot } from "./tab-state";
 import { workerToolsFor } from "@/components/chatroom/tool-catalog";
 import { ToolsDialog } from "./tools-dialog";
+
+/**
+ * A user turn the Session reverted to: the messages as they were before (restorable until the next
+ * send) and the Composer draft the revert replaced.
+ */
+type PendingRevert = { messages: UIMessage[]; draft: ComposerDraft };
 
 /**
  * Display hints a Session reports to its Tab in the Tab strip. `project` is `null` without a
@@ -61,25 +75,31 @@ export type SessionTabHint = {
  * Composer stays mounted (draft text and model choice survive) and docks through a shared
  * `layoutId` when the first message is sent (`docs/Interface_Design.md` §5.3).
  *
- * - Draft (`chatId` undefined): wordmark, ambient glow, Composer, and Session context, centered.
+ * - Draft (`chatId` undefined): wordmark, ambient glow, Composer, and Project line, centered.
  *   Submitting persists the chat with `api.aisdk.CreateChat` (prompt in `messages_queue`) and calls
- *   `onCreated`; the prompt stays visible as a pending turn until the chat's messages arrive.
+ *   `onCreated`; the prompt stays visible as a pending turn until the chat's messages arrive, and
+ *   the draft's own choices stay on screen until the created chat loads.
  * - Active: loads `api.aisdk.GetChat`, seeds `useChat` once from the persisted messages, sends a
  *   queued prompt once, then streams turns from `POST /api/aisdk/chat` on the Convex site.
  *   A chat that errors or is no longer accessible shows an inline notice and calls
  *   `onUnavailable` once.
+ * - A pending tool approval takes the Composer's place (`ApprovalPrompt`) until it is answered.
+ * - Reverting to a user turn drops it and everything after it, puts its text and files back in
+ *   the Composer, and offers a Restore card until the next send makes the revert durable.
  *
  * The Window keeps every open Tab mounted, so streams continue in background Tabs; `isActive`
- * gates autofocus and approval shortcuts. `onTabHint` reports title, RunState, and Project on
- * change. The callbacks take the Tab id so the Window can pass the same functions to every Tab:
- * the screen is memoized, and with stable props a navigation re-renders only the Tabs whose
+ * gates autofocus and approval shortcuts. The Worker and context usage sit in the Panel's
+ * top-right corner. `onTabHint` reports title, RunState, and Project on change.
+ * The callbacks take the Tab id so the Window can pass the same functions to every Tab: the
+ * screen is memoized, and with stable props a navigation re-renders only the Tabs whose
  * `isActive` (or requested model/Project) changed.
  *
  * Per-Tab state: what Convex cannot give back (Composer text, model/provider/reasoning choices,
  * the agent, and a draft's workspace, visibility, Worker, Project, and tool override) is kept in
  * the Tab's snapshot (`tab-state.ts`), keyed strictly by `tabId`. It is restored once after mount
  * and rewritten on change; it never writes workspace or user defaults. Saved chats take
- * visibility, Worker, Project, and tools from Convex, never from the snapshot.
+ * visibility, Worker, Project, and tools from Convex, never from the snapshot, and never change
+ * Project here (that is a confirmed Home action).
  *
  * The client never sends a Worker directory: the backend derives it from the Project folder or the
  * Worker's temp directory.
@@ -119,7 +139,6 @@ export const SessionScreen = memo(function SessionScreen({
   const forkChat = useMutation(api.aisdk.ForkChat);
   const setChatScope = useMutation(api.aisdk.SetChatScope);
   const setChatWorker = useMutation(api.aisdk.SetChatWorker);
-  const setChatProject = useMutation(api.aisdk.SetChatProject);
 
   // An existing chat's settings belong to its own workspace; a draft uses the current one.
   const settingsWorkspaceId = chat?.workspace ?? workspaceId;
@@ -143,11 +162,18 @@ export const SessionScreen = memo(function SessionScreen({
   const [isTabStateRestored, setIsTabStateRestored] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState<string>();
   const [isCreating, setIsCreating] = useState(false);
+  const [createdChatId, setCreatedChatId] = useState<string>();
   const [createError, setCreateError] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [pendingRevert, setPendingRevert] = useState<PendingRevert | null>(null);
   const [isScopeSaving, setIsScopeSaving] = useState(false);
   const [isWorkerSaving, setIsWorkerSaving] = useState(false);
-  const [isProjectSaving, setIsProjectSaving] = useState(false);
+  const composerRef = useRef<ComposerHandle>(null);
+
+  // The chat this Tab's draft just created keeps showing the draft's own choices (Project, Worker,
+  // tools, model) until Convex returns it, so sending never flashes a loading state in between.
+  const isLoadingCreatedChat =
+    chatId !== undefined && chatId === createdChatId && chat === undefined && !isChatUnavailable;
+  const usesDraftChoices = chatId === undefined || isLoadingCreatedChat;
 
   const {
     data: models,
@@ -287,7 +313,7 @@ export const SessionScreen = memo(function SessionScreen({
 
   // Saved chats read their Project from Convex; a draft's Project must exist in its workspace.
   let projectId: string | null = chat?.project ?? null;
-  if (chatId === undefined) projectId = choicesAreStale ? null : draftProject;
+  if (usesDraftChoices) projectId = choicesAreStale ? null : draftProject;
   const selectedProject = projects?.find((candidate) => candidate._id === projectId) ?? null;
 
   // A draft's Project can disappear (deleted, or never in this workspace after a restore).
@@ -372,7 +398,8 @@ export const SessionScreen = memo(function SessionScreen({
   const hasModels = Boolean(models?.length);
   const isModelListLoading =
     models === undefined || (chatId === undefined && (modelsFetching || choicesAreStale));
-  const isWaitingForChat = chatId !== undefined && chatResult === undefined && !chatError;
+  const isWaitingForChat =
+    chatId !== undefined && chatResult === undefined && !chatError && !isLoadingCreatedChat;
   const isWaitingForDefault =
     !(chatModel || queuedModel) &&
     (userInfo === undefined || (signedIn && defaultModelQuery.isPending));
@@ -491,9 +518,16 @@ export const SessionScreen = memo(function SessionScreen({
     onUnavailable(tabId);
   }, [isChatUnavailable, onUnavailable, tabId]);
 
+  // Once the conversation has had messages, an empty list means every turn was reverted: the
+  // first submitted or queued prompt must not come back as a pending turn that blocks sending.
+  const [hasHadMessages, setHasHadMessages] = useState(false);
+  if (!hasHadMessages && messages.length > 0) setHasHadMessages(true);
+
   // The submitted or queued prompt shows as the user turn until the conversation has messages.
   let visiblePendingPrompt: string | undefined;
-  if (messages.length === 0) visiblePendingPrompt = pendingPrompt ?? chat?.messages_queue?.text;
+  if (messages.length === 0 && !hasHadMessages) {
+    visiblePendingPrompt = pendingPrompt ?? chat?.messages_queue?.text;
+  }
   const isStarting = isCreating || visiblePendingPrompt !== undefined;
   const isEmpty = chatId === undefined && pendingPrompt === undefined;
   const runState = sessionRunState(status, messages, isStarting);
@@ -503,7 +537,7 @@ export const SessionScreen = memo(function SessionScreen({
 
   // `undefined` while a saved chat or the Projects list is still loading, so the Tab keeps its hint.
   const isProjectKnown =
-    (chatId === undefined || chat !== undefined) && (projectId === null || projects !== undefined);
+    (usesDraftChoices || chat !== undefined) && (projectId === null || projects !== undefined);
   const projectHint = useMemo((): TabProjectHint | null | undefined => {
     if (!isProjectKnown) return undefined;
     if (!selectedProject) return null;
@@ -567,6 +601,7 @@ export const SessionScreen = memo(function SessionScreen({
           webSearch: false,
         },
       });
+      setCreatedChatId(createdChatId);
       onCreated(tabId, createdChatId);
     } catch (caughtError) {
       setPendingPrompt(undefined);
@@ -579,22 +614,43 @@ export const SessionScreen = memo(function SessionScreen({
 
   function submitTurn({ text, files }: ComposerMessage) {
     if ((!text && files.length === 0) || !selectedModel) return;
+    // Sending makes a revert durable: the request carries the shortened history.
+    setPendingRevert(null);
     void sendMessage({ text, files }, { body: buildSendBody(selectedModel) });
   }
 
   function handleRetry(message: UIMessage) {
     if (!selectedModel) return;
+    setPendingRevert(null);
     void regenerate({ messageId: message.id, body: buildSendBody(selectedModel) });
   }
 
-  function handleEditSubmit(message: UIMessage, nextText: string) {
-    if (!selectedModel) return;
+  /**
+   * Reverts to a user turn: it and every later message leave the thread, and its text and files
+   * replace the Composer draft. Nothing is persisted until the next send, so the first revert's
+   * snapshot (messages and the draft it replaced) stays restorable across further reverts.
+   */
+  async function handleRevert(message: UIMessage) {
+    if (status !== "ready") return;
     const index = messages.findIndex((candidate) => candidate.id === message.id);
     if (index === -1) return;
-    const files = getMessageFiles(message);
-    setEditingId(null);
+
+    const files = await Promise.all(getMessageFiles(message).map(toComposerFile));
+    const replacedDraft = composerRef.current?.swapDraft({
+      text: getMessageText(message),
+      files: files.filter((file) => file !== null),
+    });
+    setPendingRevert(
+      (current) => current ?? { messages, draft: replacedDraft ?? { text: "", files: [] } },
+    );
     setMessages(messages.slice(0, index));
-    void sendMessage({ text: nextText, files }, { body: buildSendBody(selectedModel) });
+  }
+
+  function restoreRevert() {
+    if (!pendingRevert) return;
+    setMessages(pendingRevert.messages);
+    composerRef.current?.swapDraft(pendingRevert.draft);
+    setPendingRevert(null);
   }
 
   /**
@@ -679,35 +735,18 @@ export const SessionScreen = memo(function SessionScreen({
     }
   }
 
-  async function changeProject(project: SessionProject | null) {
-    if (!chatId) {
-      selectDraftProject(project);
-      return;
-    }
-    if (!chat?.canManage || isProjectSaving) return;
-    setIsProjectSaving(true);
-    try {
-      await setChatProject({ chatId, project: project?._id ?? null });
-    } catch (caughtError) {
-      toast.error(caughtError instanceof Error ? caughtError.message : "Failed to update Project.");
-    } finally {
-      setIsProjectSaving(false);
-    }
-  }
-
   // Thread callbacks keep one identity for the Tab's lifetime and call the latest handlers, so a
   // Tab switch (only `isActive` changes) does not re-render every memoized message.
-  const latestThreadHandlers = useRef({ handleRetry, handleEditSubmit, handleFork });
+  const latestThreadHandlers = useRef({ handleRetry, handleRevert, handleFork });
   useLayoutEffect(() => {
-    latestThreadHandlers.current = { handleRetry, handleEditSubmit, handleFork };
+    latestThreadHandlers.current = { handleRetry, handleRevert, handleFork };
   });
   const threadActions = useMemo(
     () => ({
       onCopy: copyMessageText,
-      onEditStart: (message: UIMessage) => setEditingId(message.id),
-      onEditCancel: () => setEditingId(null),
-      onEditSubmit: (message: UIMessage, nextText: string) =>
-        latestThreadHandlers.current.handleEditSubmit(message, nextText),
+      onRevert: (message: UIMessage) => {
+        void latestThreadHandlers.current.handleRevert(message);
+      },
       onRetry: (message: UIMessage) => latestThreadHandlers.current.handleRetry(message),
       onFork: (message: UIMessage, forkModel: string) => {
         void latestThreadHandlers.current
@@ -745,15 +784,46 @@ export const SessionScreen = memo(function SessionScreen({
   const maxTokens = selectedModelData?.providers.find(
     (provider) => provider.id === selectedProvider,
   )?.context;
-  const canManageChat = chatId === undefined || chat?.canManage === true;
+  const canManageChat = usesDraftChoices || chat?.canManage === true;
   let workerSelection: ChatWorkerSelection | null = chat?.worker ?? null;
-  if (chatId === undefined) workerSelection = choicesAreStale ? null : draftWorker;
+  if (usesDraftChoices) workerSelection = choicesAreStale ? null : draftWorker;
   const isRunTargetFixed = messages.length > 0 && agent.protocol === "acp";
   const isWorkerBusy = isWorkerSaving || (chatId !== undefined && status !== "ready");
+  const pendingApprovals = getPendingApprovals(messages);
+  const currentApproval = pendingApprovals[0];
+  const revertedCount = pendingRevert ? pendingRevert.messages.length - messages.length : 0;
 
   return (
     <div className="relative flex h-full flex-col">
       {isEmpty ? <SessionAmbient /> : null}
+
+      {/* Inside a chat, its Worker and context usage sit in the Panel's top-right corner, under
+          the User menu; a New session keeps them in the line under its Composer. Deviation from
+          §2 (Session context is fixed after the first message): the built-in agent runs in
+          Convex and only calls Worker tools, so chat managers may still change the Worker (and
+          Worker tools in the Tools Dialog) through SetChatWorker. The Worker must lock once
+          `agent.protocol === "acp"`, because an ACP agent process lives on its Worker. */}
+      {isEmpty ? null : (
+        <div className="relative flex h-11 shrink-0 items-center justify-end gap-1 px-3">
+          {latestUsage && maxTokens ? (
+            <div className="shrink-0 max-sm:hidden">
+              <ContextUsage usage={latestUsage} maxTokens={maxTokens} modelId={selectedModel} />
+            </div>
+          ) : null}
+          <SessionWorkerControl
+            workspaceId={settingsWorkspaceId}
+            isOwner={isOwner}
+            canManage={canManageChat}
+            isFixed={isRunTargetFixed}
+            isSaving={isWorkerBusy}
+            selection={workerSelection}
+            defaultWorkerTools={workerToolDefaults ?? []}
+            agent={agent}
+            onSelectionChange={(selection) => void changeWorker(selection)}
+            onAgentChange={setAgent}
+          />
+        </div>
+      )}
 
       {isEmpty ? null : (
         <>
@@ -765,17 +835,13 @@ export const SessionScreen = memo(function SessionScreen({
             <SessionThread
               messages={messages}
               status={status}
-              isActive={isActive}
               pendingPrompt={visiblePendingPrompt || undefined}
               showChainOfThought={chainOfThoughtEnabled}
               forkModels={models}
-              editingId={editingId}
-              canEdit={status === "ready" && Boolean(selectedModel)}
-              onApprovalResponse={addToolApprovalResponse}
+              agentName={agent.name}
+              canRevert={status === "ready" && chat !== undefined}
               onCopy={threadActions.onCopy}
-              onEditStart={threadActions.onEditStart}
-              onEditCancel={threadActions.onEditCancel}
-              onEditSubmit={threadActions.onEditSubmit}
+              onRevert={threadActions.onRevert}
               onRetry={threadActions.onRetry}
               onFork={threadActions.onFork}
             />
@@ -817,76 +883,118 @@ export const SessionScreen = memo(function SessionScreen({
           </Alert>
         ) : null}
 
-        <Composer
-          layoutId={`composer-${tabId}`}
-          autoFocus={isEmpty && isActive}
-          canSend={canSend}
-          isRunning={isRunning}
-          onSubmit={chatId === undefined ? submitDraft : submitTurn}
-          onStop={() => void stop()}
-          modelControl={
-            <ModelPicker
-              models={models}
-              isLoading={isModelLoading}
-              selectedModel={selectedModel}
-              selectedProvider={selectedProvider}
-              reasoningEffort={selectedEffort}
-              reasoningBudget={reasoningBudget}
-              onModelChange={setModelOverride}
-              onProviderChange={setProviderOverride}
-              onReasoningEffortChange={setReasoningEffort}
-              onReasoningBudgetChange={setReasoningBudget}
-            />
-          }
-          contextUsage={
-            latestUsage && maxTokens ? (
-              <ContextUsage usage={latestUsage} maxTokens={maxTokens} modelId={selectedModel} />
-            ) : null
-          }
-          menuItems={
-            <ConversationVisibilityMenu
-              scope={chat?.scope ?? draftScope}
-              isDraft={chatId === undefined}
-              canChange={chatId === undefined || (chat?.canManageScope === true && !isScopeSaving)}
-              onChange={(scope) => void changeScope(scope)}
-            />
-          }
-          toolbarControls={
-            isOwner && canManageChat ? (
-              <ToolsDialog
-                workspace={settingsWorkspaceId}
-                chatId={chatId}
-                draftTools={choicesAreStale ? null : draftTools}
-                onDraftToolsChange={setDraftTools}
-                workerSelection={workerSelection}
-                isWorkerLocked={isWorkerBusy || isRunTargetFixed}
-                onWorkerSelectionChange={(selection) => void changeWorker(selection)}
-              />
-            ) : null
-          }
-          textStore={composerTextStore}
-        />
+        <AnimatePresence initial={false}>
+          {pendingRevert && !currentApproval ? (
+            <m.div
+              key="revert"
+              variants={variants.reveal}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              className="flex items-center gap-2 rounded-xl border border-border bg-card py-1 pr-1 pl-3 text-xs text-muted-foreground"
+            >
+              <Undo2Icon className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">
+                Reverted {revertedCount} {revertedCount === 1 ? "message" : "messages"}. Sending
+                replaces them.
+              </span>
+              <Button variant="ghost" size="xs" onClick={restoreRevert}>
+                <RotateCcwIcon data-icon="inline-start" />
+                Restore
+              </Button>
+            </m.div>
+          ) : null}
+        </AnimatePresence>
 
-        {/* Deviation from §2 (Session context is fixed after the first message): the built-in agent
-            runs in Convex and only calls Worker tools, so chat managers may still change the
-            Project, Worker, and Directory (and Worker tools in the Tools Dialog) through
-            SetChatProject/SetChatWorker. The Worker part must lock once
-            `agent.protocol === "acp"`, because an ACP agent process lives on its Worker. */}
-        <SessionContext
-          workspaceId={settingsWorkspaceId}
-          isOwner={isOwner}
-          canManage={canManageChat}
-          isFixed={isRunTargetFixed}
-          isSaving={isWorkerBusy || isProjectSaving}
-          projects={projects}
-          project={selectedProject}
-          selection={workerSelection}
-          defaultWorkerTools={workerToolDefaults ?? []}
-          agent={agent}
-          onProjectChange={(project) => void changeProject(project)}
-          onSelectionChange={(selection) => void changeWorker(selection)}
-          onAgentChange={setAgent}
-        />
+        {/* A pending approval takes the Composer's place; the Composer stays mounted (hidden) so
+            its draft text, files, and model choice survive the answer. */}
+        <AnimatePresence initial={false}>
+          {currentApproval ? (
+            <m.div
+              key="approval"
+              variants={variants.swap}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+            >
+              <ApprovalPrompt
+                part={currentApproval}
+                total={pendingApprovals.length}
+                shortcutsEnabled={isActive}
+                onApprovalResponse={addToolApprovalResponse}
+              />
+            </m.div>
+          ) : null}
+        </AnimatePresence>
+
+        <div hidden={currentApproval !== undefined}>
+          <Composer
+            ref={composerRef}
+            layoutId={`composer-${tabId}`}
+            autoFocus={isEmpty && isActive}
+            canSend={canSend}
+            isRunning={isRunning}
+            onSubmit={chatId === undefined ? submitDraft : submitTurn}
+            onStop={() => void stop()}
+            modelControl={
+              <ModelPicker
+                models={models}
+                isLoading={isModelLoading}
+                selectedModel={selectedModel}
+                selectedProvider={selectedProvider}
+                reasoningEffort={selectedEffort}
+                reasoningBudget={reasoningBudget}
+                onModelChange={setModelOverride}
+                onProviderChange={setProviderOverride}
+                onReasoningEffortChange={setReasoningEffort}
+                onReasoningBudgetChange={setReasoningBudget}
+              />
+            }
+            menuItems={
+              <ConversationVisibilityMenu
+                scope={chat?.scope ?? draftScope}
+                isDraft={chatId === undefined}
+                canChange={
+                  chatId === undefined || (chat?.canManageScope === true && !isScopeSaving)
+                }
+                onChange={(scope) => void changeScope(scope)}
+              />
+            }
+            toolbarControls={
+              isOwner && canManageChat ? (
+                <ToolsDialog
+                  workspace={settingsWorkspaceId}
+                  chatId={chatId}
+                  draftTools={choicesAreStale ? null : draftTools}
+                  onDraftToolsChange={setDraftTools}
+                  workerSelection={workerSelection}
+                  isWorkerLocked={isWorkerBusy || isRunTargetFixed}
+                  onWorkerSelectionChange={(selection) => void changeWorker(selection)}
+                />
+              ) : null
+            }
+            textStore={composerTextStore}
+          />
+        </div>
+
+        {/* Only a New session shows its context under the Composer; a chat's Worker sits in the
+            Panel corner and its Project never changes from the Session. */}
+        {isEmpty ? (
+          <SessionContext
+            workspaceId={settingsWorkspaceId}
+            isOwner={isOwner}
+            canManage={canManageChat}
+            isSaving={isWorkerBusy}
+            projects={projects}
+            project={selectedProject}
+            selection={workerSelection}
+            defaultWorkerTools={workerToolDefaults ?? []}
+            agent={agent}
+            onProjectChange={selectDraftProject}
+            onSelectionChange={(selection) => void changeWorker(selection)}
+            onAgentChange={setAgent}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -911,7 +1019,7 @@ function withoutDirectory(selection: ChatWorkerSelection | null): ChatWorkerSele
 /** Tab RunState from the chat lifecycle; the one place UI status is derived for a Session. */
 function sessionRunState(status: ChatStatus, messages: UIMessage[], isStarting: boolean): RunState {
   if (status === "error") return "failed";
-  if (hasPendingApproval(messages)) return "awaiting";
+  if (getPendingApprovals(messages).length > 0) return "awaiting";
   if (status === "streaming") return "streaming";
   if (status === "submitted") return "thinking";
   if (isStarting) return "queued";
@@ -930,6 +1038,17 @@ function findLatestUsage(messages: UIMessage[]) {
 /** Queued attachments without a URL cannot be represented as AI SDK file parts. */
 function hasFileUrl<T extends { url?: string }>(file: T): file is T & FileUIPart {
   return Boolean(file.url);
+}
+
+/** A sent file part back as a `File` for the Composer; a part that cannot be read is dropped. */
+async function toComposerFile(part: FileUIPart): Promise<File | null> {
+  try {
+    const response = await fetch(part.url);
+    const blob = await response.blob();
+    return new File([blob], part.filename ?? "attachment", { type: part.mediaType });
+  } catch {
+    return null;
+  }
 }
 
 /** Chatroom's AI SDK endpoint lives on the Convex site origin, not the web origin. */

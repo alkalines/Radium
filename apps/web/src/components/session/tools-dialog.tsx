@@ -34,12 +34,11 @@ import { InputGroupButton } from "@/components/ui/input-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 
 /**
- * The Composer's Tools control: a toolbar button (wrench plus the number of enabled tools) that
- * opens a Dialog. Built-in and Worker tools share one flat list (icon, raw tool id as Machine
- * text, description, Switch); MCP servers follow as their own group.
+ * The Composer's Tools control: a toolbar wrench button that opens a Dialog. Built-in and Worker
+ * tools share one flat list (icon, raw tool id as Machine text, description, Switch); MCP servers
+ * follow as their own group.
  *
  * - Saved chat (`chatId`): built-in/MCP toggles write the chat's own override through
  *   `api.chatroom.setChatTools` (reading `getChatTools`, which falls back to the workspace
@@ -92,13 +91,6 @@ export function ToolsDialog({
 
   const hasWorker = Boolean(workerSelection?.workerId);
   const workerTools = workerSelection?.tools ?? [];
-  // Count what the list shows: `write` is one choice for two backend tools, `Soon` sets never run.
-  const enabledCount =
-    BUILTIN_TOOL_SETS.filter(
-      (toolSet) => toolSet.available && selection?.builtinToolSets.includes(toolSet.id),
-    ).length +
-    (selection?.mcpServers.length ?? 0) +
-    workerToolOptions.filter((option) => isWorkerToolOptionEnabled(option, workerTools)).length;
 
   async function changeTools(next: ToolSelection) {
     if (!chatId) {
@@ -144,16 +136,8 @@ export function ToolsDialog({
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>
-        <InputGroupButton
-          size="icon-sm"
-          aria-label="Tools"
-          title="Tools"
-          className={cn(enabledCount > 0 && "w-auto gap-1 has-[>svg]:px-2")}
-        >
+        <InputGroupButton size="icon-sm" aria-label="Tools" title="Tools">
           <WrenchIcon />
-          {enabledCount > 0 ? (
-            <span className="text-xs text-muted-foreground tabular-nums">{enabledCount}</span>
-          ) : null}
         </InputGroupButton>
       </DialogTrigger>
       <DialogContent className="max-h-[calc(100svh-4rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-4 sm:max-w-lg">

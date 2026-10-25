@@ -21,8 +21,6 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
-import type { ApprovalResponse } from "./approval-gate";
-import { isToolPart } from "./message-parts";
 import { Reveal, SessionMessage } from "./session-message";
 
 const PENDING_PROMPT_ID = "pending-prompt";
@@ -35,39 +33,30 @@ const PENDING_PROMPT_ID = "pending-prompt";
  *
  * Turns present when the thread first shows content (history, restored Tabs) render in place;
  * only turns and steps that arrive afterwards reveal. `pendingPrompt` shows the just-sent prompt
- * while `messages` is still empty (between creating the chat and the first send). `isActive`
- * gives the visible Tab's first pending approval the ⌘/Ctrl+Enter and Esc shortcuts.
+ * while `messages` is still empty (between creating the chat and the first send).
  */
 export function SessionThread({
   messages,
   status,
-  isActive,
   pendingPrompt,
   showChainOfThought,
   forkModels,
-  editingId,
-  canEdit,
-  onApprovalResponse,
+  agentName,
+  canRevert,
   onCopy,
-  onEditStart,
-  onEditCancel,
-  onEditSubmit,
+  onRevert,
   onRetry,
   onFork,
 }: {
   messages: UIMessage[];
   status: ChatStatus;
-  isActive: boolean;
   pendingPrompt?: string;
   showChainOfThought: boolean;
   forkModels?: ModelOption[];
-  editingId: string | null;
-  canEdit: boolean;
-  onApprovalResponse: (response: ApprovalResponse) => void;
+  agentName: string;
+  canRevert: boolean;
   onCopy: (message: UIMessage) => void;
-  onEditStart: (message: UIMessage) => void;
-  onEditCancel: () => void;
-  onEditSubmit: (message: UIMessage, text: string) => void;
+  onRevert: (message: UIMessage) => void;
   onRetry: (message: UIMessage) => void;
   onFork: (message: UIMessage, modelSlug: string) => void;
 }) {
@@ -83,7 +72,6 @@ export function SessionThread({
   const showPendingPrompt = messages.length === 0 && pendingPrompt !== undefined;
   const isWaitingForReply =
     showPendingPrompt || (status === "submitted" && lastMessage?.role === "user");
-  const shortcutApprovalId = isActive ? getFirstPendingApprovalId(lastMessage) : undefined;
 
   if (messages.length === 0 && !showPendingPrompt) {
     return (
@@ -139,14 +127,10 @@ export function SessionThread({
                       actionsDisabled={isBusy}
                       showChainOfThought={showChainOfThought}
                       forkModels={forkModels}
-                      isEditing={editingId === message.id}
-                      canEdit={canEdit}
-                      shortcutApprovalId={isLast ? shortcutApprovalId : undefined}
-                      onApprovalResponse={onApprovalResponse}
+                      agentName={agentName}
+                      canRevert={canRevert}
                       onCopy={onCopy}
-                      onEditStart={onEditStart}
-                      onEditCancel={onEditCancel}
-                      onEditSubmit={onEditSubmit}
+                      onRevert={onRevert}
                       onRetry={onRetry}
                       onFork={onFork}
                     />
@@ -168,17 +152,4 @@ export function SessionThread({
       </MessageScroller>
     </MessageScrollerProvider>
   );
-}
-
-/** The first tool call in the last turn that waits for approval; it owns the keyboard shortcuts. */
-function getFirstPendingApprovalId(message: UIMessage | undefined) {
-  if (message?.role !== "assistant") return undefined;
-
-  for (const part of message.parts) {
-    if (isToolPart(part) && part.state === "approval-requested") {
-      return part.approval.id;
-    }
-  }
-
-  return undefined;
 }

@@ -19,10 +19,14 @@ import {
   TraceTitle,
 } from "@/components/ui/trace";
 import { variants } from "@/lib/motion";
-import { ApprovalGate, DeniedMarker, type ApprovalResponse } from "./approval-gate";
+import { DeniedMarker } from "./approval-gate";
 import { MessageActions } from "./message-actions";
-import { MessageEditor } from "./message-editor";
-import { getMessageText, getPerformanceMetadata, isToolPart } from "./message-parts";
+import {
+  getMessageModel,
+  getMessageText,
+  getPerformanceMetadata,
+  isToolPart,
+} from "./message-parts";
 import { getToolRunState, hasRenderableAssistantContent, isDeniedTool } from "./tool-parts";
 import { ToolStep, traceStatusFor } from "./tool-step";
 
@@ -77,30 +81,27 @@ export type SessionMessageProps = {
   actionsDisabled: boolean;
   showChainOfThought: boolean;
   forkModels: ModelOption[] | undefined;
-  isEditing: boolean;
-  canEdit: boolean;
-  /** The approval id that owns the ⌘/Ctrl+Enter and Esc shortcuts, if any. */
-  shortcutApprovalId: string | undefined;
-  onApprovalResponse: (response: ApprovalResponse) => void;
+  /** Name of the agent that answers this Session's turns, shown in the assistant footer. */
+  agentName: string;
+  canRevert: boolean;
   onCopy: (message: UIMessage) => void;
-  onEditStart: (message: UIMessage) => void;
-  onEditCancel: () => void;
-  onEditSubmit: (message: UIMessage, text: string) => void;
+  onRevert: (message: UIMessage) => void;
   onRetry: (message: UIMessage) => void;
   onFork: (message: UIMessage, modelSlug: string) => void;
 };
 
 /**
- * One turn of a Session. User turns are a secondary Bubble at the end of the column (an inline
- * editor while edited); assistant turns are unboxed Markdown with Trace steps for reasoning and
- * tool calls, Approval gates inline, and footer actions once the turn is complete.
+ * One turn of a Session. User turns are a secondary Bubble at the end of the column; assistant
+ * turns are unboxed Markdown with Trace steps for reasoning and tool calls, a denial Marker after
+ * a rejected call (pending approvals take the Composer's place instead), and footer actions once
+ * the turn is complete.
  *
  * Memoized: the Session passes stable callbacks, so finished turns skip re-rendering when only
  * the Tab's focus or the live turn changes.
  */
 export const SessionMessage = memo(function SessionMessage(props: SessionMessageProps) {
-  const { message, isLive, isEditing } = props;
-  const showActions = !isLive && !isEditing && message.role !== "system";
+  const { message, isLive } = props;
+  const showActions = !isLive && message.role !== "system";
 
   if (message.role === "user") {
     const text = getMessageText(message);
@@ -108,14 +109,7 @@ export const SessionMessage = memo(function SessionMessage(props: SessionMessage
     return (
       <Message align="end">
         <MessageContent className="gap-2">
-          {isEditing ? (
-            <MessageEditor
-              defaultValue={text}
-              onCancel={props.onEditCancel}
-              onSubmit={(nextText) => props.onEditSubmit(message, nextText)}
-            />
-          ) : null}
-          {!isEditing && text ? (
+          {text ? (
             <Bubble variant="secondary" align="end">
               <BubbleContent className="whitespace-pre-wrap">{text}</BubbleContent>
             </Bubble>
@@ -126,7 +120,7 @@ export const SessionMessage = memo(function SessionMessage(props: SessionMessage
               forkModels={props.forkModels}
               disabled={props.actionsDisabled}
               onCopy={() => props.onCopy(message)}
-              onEdit={props.canEdit ? () => props.onEditStart(message) : undefined}
+              onRevert={props.canRevert ? () => props.onRevert(message) : undefined}
               onFork={(modelSlug) => props.onFork(message, modelSlug)}
             />
           ) : null}
@@ -144,6 +138,8 @@ export const SessionMessage = memo(function SessionMessage(props: SessionMessage
             role="assistant"
             forkModels={props.forkModels}
             disabled={props.actionsDisabled}
+            agentName={props.agentName}
+            model={getMessageModel(message)}
             performance={getPerformanceMetadata(message.metadata)}
             onCopy={() => props.onCopy(message)}
             onRetry={() => props.onRetry(message)}
@@ -155,13 +151,7 @@ export const SessionMessage = memo(function SessionMessage(props: SessionMessage
   );
 });
 
-function AssistantParts({
-  message,
-  isLive,
-  showChainOfThought,
-  shortcutApprovalId,
-  onApprovalResponse,
-}: SessionMessageProps) {
+function AssistantParts({ message, isLive, showChainOfThought }: SessionMessageProps) {
   // Parts that exist when the message mounts are history (or covered by the message's own
   // reveal); only parts appended afterwards, such as steps after an approval, reveal.
   const [mountedPartCount] = useState(message.parts.length);
@@ -213,7 +203,7 @@ function AssistantParts({
           <Trace>{steps}</Trace>
         )}
         <AnimatePresence mode="popLayout" initial={false}>
-          {tools.map((part) => approvalSlot(part, shortcutApprovalId, onApprovalResponse))}
+          {tools.map(deniedSlot)}
         </AnimatePresence>
       </div>
     );
@@ -221,49 +211,24 @@ function AssistantParts({
 }
 
 /**
- * Swap pattern for one tool call: a pending approval shows the gate; a denial replaces it with an
- * outcome Marker; an approval removes it and the tool's Trace step carries on. A plain function,
- * not a component, because `AnimatePresence` must see the keyed motion elements (or their
- * absence) as its direct children to run exits and measure for `popLayout`.
+ * Swap pattern for one tool call: a denial shows an outcome Marker. A plain function, not a
+ * component, because `AnimatePresence` must see the keyed motion elements (or their absence) as
+ * its direct children to run exits and measure for `popLayout`.
  */
-function approvalSlot(
-  part: ToolUIPart,
-  shortcutApprovalId: string | undefined,
-  onApprovalResponse: (response: ApprovalResponse) => void,
-) {
-  if (part.state === "approval-requested") {
-    return (
-      <m.div
-        key={`gate-${part.toolCallId}`}
-        variants={variants.swap}
-        initial="hidden"
-        animate="visible"
-        exit="exit"
-      >
-        <ApprovalGate
-          part={part}
-          shortcutsEnabled={part.approval.id === shortcutApprovalId}
-          onApprovalResponse={onApprovalResponse}
-        />
-      </m.div>
-    );
-  }
+function deniedSlot(part: ToolUIPart) {
+  if (!isDeniedTool(part)) return null;
 
-  if (isDeniedTool(part)) {
-    return (
-      <m.div
-        key={`denied-${part.toolCallId}`}
-        variants={variants.swap}
-        initial="hidden"
-        animate="visible"
-        exit="exit"
-      >
-        <DeniedMarker part={part} />
-      </m.div>
-    );
-  }
-
-  return null;
+  return (
+    <m.div
+      key={`denied-${part.toolCallId}`}
+      variants={variants.swap}
+      initial="hidden"
+      animate="visible"
+      exit="exit"
+    >
+      <DeniedMarker part={part} />
+    </m.div>
+  );
 }
 
 /** One reasoning or tool step; inside a chain of thought, reasoning is plain text under the summary. */

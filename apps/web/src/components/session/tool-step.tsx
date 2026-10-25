@@ -143,8 +143,8 @@ function toolObject(part: ToolUIPart, kind: ToolKind): ReactNode {
 /**
  * One tool call as a Trace step: verb + subject, with the call's input and output in a
  * collapsible body. The body is open while the call runs and closes once it is answered,
- * produces output, or later content follows; the reader can reopen it. Approval prompts render
- * outside the step (`ApprovalGate`), so an awaiting call stays a closed line.
+ * produces output, or later content follows; the reader can reopen it. Approval prompts take the
+ * Composer's place (`ApprovalPrompt`), so an awaiting call stays a closed line.
  */
 export function ToolStep({
   part,

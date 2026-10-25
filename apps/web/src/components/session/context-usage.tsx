@@ -95,7 +95,9 @@ export function ContextUsage({
             {compactNumber.format(usedTokens)} / {compactNumber.format(maxTokens)}
           </span>
         </div>
-        <Progress value={usedShare * 100} aria-label="Context used" />
+        {/* `bg-muted` matches the popover surface in the dark theme, so the unused part of the
+            track would be invisible; `bg-accent` stays distinct on popovers in both themes. */}
+        <Progress value={usedShare * 100} aria-label="Context used" className="bg-accent" />
         {rows.length > 0 ? (
           <dl className="flex flex-col gap-1">
             {rows.map((row) => (

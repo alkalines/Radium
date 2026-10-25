@@ -69,6 +69,8 @@ export type SessionActionsTarget = {
  * The `…` menu of a Home session Row (`docs/Interface_Design.md` §5.1): Pin, Rename, Regenerate
  * title, Move to project, Delete. Only rendered for sessions the user can manage; the backend
  * re-checks every mutation and returns a string on refusal, which is shown as a toast.
+ * Moving to a Project (or out of one) asks for confirmation first, since the session's next turns
+ * run in the target's context; this menu is the only place a saved session changes Project.
  * `projects` is the workspace's Project list, passed in once by Home rather than queried per Row.
  * The trigger is revealed by the Row on hover/focus and stays visible while open.
  */
@@ -81,6 +83,11 @@ export function SessionActionsMenu({
 }) {
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  // The target outlives the open state so the dialog keeps its text while it animates closed.
+  const [moveTarget, setMoveTarget] = useState<{ id: Id<"projects"> | null; name: string } | null>(
+    null,
+  );
+  const [isMoveOpen, setIsMoveOpen] = useState(false);
   const [title, setTitle] = useState(session.title?.trim() ?? "");
   const [pendingAction, setPendingAction] = useState<string | null>(null);
 
@@ -97,6 +104,7 @@ export function SessionActionsMenu({
 
   const isBusy = pendingAction !== null;
   const displayTitle = session.title?.trim() || "Untitled session";
+  const currentProject = projects.find((project) => project._id === session.project);
 
   /** Runs one mutation; a string result is a backend refusal, a throw is a failure. */
   async function run(action: string, mutate: () => Promise<unknown>) {
@@ -127,19 +135,26 @@ export function SessionActionsMenu({
     if (succeeded) toast.success("Regenerating the session title.");
   }
 
-  async function moveToProject(value: string) {
+  /** Picking a Project only stages the move; `confirmMove` applies it. */
+  function requestMove(value: string) {
     if (value === (session.project ?? noProject)) return;
     const target = projects.find((project) => project._id === value) ?? null;
+    setMoveTarget({ id: target?._id ?? null, name: target?.name ?? "No project" });
+    setIsMoveOpen(true);
+  }
 
+  async function confirmMove() {
+    if (!moveTarget) return;
     const succeeded = await run("move", () =>
-      setChatProject({ chatId: session.id, project: target?._id ?? null }),
+      setChatProject({ chatId: session.id, project: moveTarget.id }),
     );
     if (!succeeded) return;
-    if (target) {
-      toast.success(`Moved to ${target.name}.`);
+    if (moveTarget.id) {
+      toast.success(`Moved to ${moveTarget.name}.`);
     } else {
       toast.success("Removed from its project.");
     }
+    setIsMoveOpen(false);
   }
 
   async function submitRename(event: FormEvent<HTMLFormElement>) {
@@ -198,7 +213,7 @@ export function SessionActionsMenu({
               <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
                 <DropdownMenuRadioGroup
                   value={session.project ?? noProject}
-                  onValueChange={(value) => void moveToProject(value)}
+                  onValueChange={requestMove}
                 >
                   <DropdownMenuRadioItem value={noProject}>
                     <FolderMinusIcon />
@@ -282,6 +297,40 @@ export function SessionActionsMenu({
               }}
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={isMoveOpen}
+        onOpenChange={(open) => {
+          if (!open && !isBusy) setIsMoveOpen(false);
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {moveTarget?.id === null ? "Remove from project?" : "Move session?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {moveTarget?.id === null
+                ? `Remove “${displayTitle}” from ${currentProject?.name ?? "its project"}? Its next turns run without that project's folders and Worker.`
+                : `Move “${displayTitle}” to ${moveTarget?.name}? Its next turns run in that project's context (folders and Worker).`}{" "}
+              Existing messages are kept.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isBusy}
+              onClick={(event) => {
+                // Stay open until the mutation settles so a refusal is visible in context.
+                event.preventDefault();
+                void confirmMove();
+              }}
+            >
+              {moveTarget?.id === null ? "Remove from project" : "Move"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
