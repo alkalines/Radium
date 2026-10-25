@@ -175,6 +175,7 @@ curl "$VITE_CONVEX_SITE_URL/api/openai/v1/chat/completions" \
 - [Deployment and configuration](docs/deployment.md)
 - [Gateway ownership](docs/Radium_Gateway/Ownership.md)
 - [Chatroom](docs/Radium_Chatroom.md)
+- [Interface design](docs/Interface_Design.md)
 - [Offline API binding codegen](docs/deployment.md#offline-api-binding-codegen)
 
 ## Commands

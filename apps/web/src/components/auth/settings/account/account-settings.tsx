@@ -39,7 +39,7 @@ export function AccountSettings({
   const showChangeEmail = emailAndPassword?.enabled || hasMagicLink || Boolean(ChangeEmailOverride);
 
   return (
-    <div className={cn("flex w-full flex-col gap-4 md:gap-6", className)} {...props}>
+    <div className={cn("flex w-full flex-col gap-8", className)} {...props}>
       <UserProfile />
       {showChangeEmail && <ChangeEmailCard />}
       {plugins.flatMap(

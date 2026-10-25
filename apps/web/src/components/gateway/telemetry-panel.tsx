@@ -15,17 +15,12 @@ import {
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { AgentStatus } from "@/components/agentic/agent-status";
+import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
+import { WorkspacePageHeader } from "@/components/settings/workspace-page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { useIsHydrated } from "@/components/auth/use-is-hydrated";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Empty,
   EmptyDescription,
@@ -33,13 +28,6 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
-import {
-  Field,
-  FieldContent,
-  FieldDescription,
-  FieldGroup,
-  FieldTitle,
-} from "@/components/ui/field";
 import {
   Select,
   SelectContent,
@@ -60,8 +48,14 @@ import {
 } from "@/components/ui/table";
 import { api } from "backend/convex/_generated/api";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
+import { DataSection } from "./data-section";
 import { ProviderLogo } from "./provider-logo";
-import { formatTelemetryDate, formatTelemetryDuration, formatTokenCount } from "./telemetry-utils";
+import {
+  formatTelemetryDate,
+  formatTelemetryDuration,
+  formatTokenCount,
+  traceRunState,
+} from "./telemetry-utils";
 
 type Trace = FunctionReturnType<typeof api.observability.aiTraces.listTraces>[number];
 type TraceStatus = "all" | Trace["status"];
@@ -132,69 +126,60 @@ export function TelemetryPanel() {
     : 0;
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <div className="flex items-center gap-2">
-          <RadioTowerIcon className="size-5 text-primary" />
-          <h1 className="text-xl font-semibold tracking-tight">AI SDK telemetry</h1>
-        </div>
-        <p className="max-w-3xl text-sm text-muted-foreground">
-          Inspect every model call, step, tool execution, payload, and gateway completion.
-        </p>
-      </header>
+    <>
+      <WorkspacePageHeader
+        title="Telemetry"
+        description="Inspect every model call, step, tool execution, payload, and gateway completion."
+      />
 
-      <Card size="sm">
-        <CardHeader>
-          <CardTitle>Collection</CardTitle>
-          <CardDescription>
-            Telemetry is private to your account and disabled by default.
-          </CardDescription>
-          <CardAction>
-            <Badge variant={settings?.enabled ? "default" : "outline"}>
-              {settings?.enabled ? "Recording" : "Disabled"}
-            </Badge>
-          </CardAction>
-        </CardHeader>
-        <CardContent>
-          {settings === undefined ? (
-            <Skeleton className="h-32" />
-          ) : (
-            <FieldGroup className="gap-4 md:grid md:grid-cols-3">
-              <TelemetrySwitch
-                title="Telemetry"
-                description="Record timings, usage, spans, and request identifiers."
-                checked={settings.enabled}
-                disabled={saving}
-                onCheckedChange={(enabled) =>
-                  void updateSettings({
-                    enabled,
-                    recordInputs: enabled && settings.recordInputs,
-                    recordOutputs: enabled && settings.recordOutputs,
-                  })
-                }
-              />
-              <TelemetrySwitch
-                title="Record inputs"
-                description="Persist prompts, messages, and tool arguments."
-                checked={settings.recordInputs}
-                disabled={saving || !settings.enabled}
-                onCheckedChange={(recordInputs) =>
-                  void updateSettings({ ...settings, recordInputs })
-                }
-              />
-              <TelemetrySwitch
-                title="Record outputs"
-                description="Persist model content, tool results, and errors."
-                checked={settings.recordOutputs}
-                disabled={saving || !settings.enabled}
-                onCheckedChange={(recordOutputs) =>
-                  void updateSettings({ ...settings, recordOutputs })
-                }
-              />
-            </FieldGroup>
-          )}
-        </CardContent>
-      </Card>
+      <GroupList
+        title="Collection"
+        description="Telemetry is private to your account and disabled by default."
+        action={
+          <AgentStatus
+            state={settings?.enabled ? "executing" : "idle"}
+            label={settings?.enabled ? "Recording" : "Disabled"}
+          />
+        }
+      >
+        {settings === undefined ? (
+          <RowBlock>
+            <Skeleton className="h-6" />
+          </RowBlock>
+        ) : (
+          <>
+            <TelemetrySwitch
+              title="Telemetry"
+              description="Record timings, usage, spans, and request identifiers."
+              checked={settings.enabled}
+              disabled={saving}
+              onCheckedChange={(enabled) =>
+                void updateSettings({
+                  enabled,
+                  recordInputs: enabled && settings.recordInputs,
+                  recordOutputs: enabled && settings.recordOutputs,
+                })
+              }
+            />
+            <TelemetrySwitch
+              title="Record inputs"
+              description="Persist prompts, messages, and tool arguments."
+              checked={settings.recordInputs}
+              disabled={saving || !settings.enabled}
+              onCheckedChange={(recordInputs) => void updateSettings({ ...settings, recordInputs })}
+            />
+            <TelemetrySwitch
+              title="Record outputs"
+              description="Persist model content, tool results, and errors."
+              checked={settings.recordOutputs}
+              disabled={saving || !settings.enabled}
+              onCheckedChange={(recordOutputs) =>
+                void updateSettings({ ...settings, recordOutputs })
+              }
+            />
+          </>
+        )}
+      </GroupList>
 
       {!workspaceId && (
         <Alert>
@@ -207,7 +192,10 @@ export function TelemetryPanel() {
 
       {workspaceId && (
         <>
-          <div className="grid gap-px overflow-hidden rounded-xl border bg-border sm:grid-cols-2 xl:grid-cols-4">
+          <DataSection
+            title="Summary"
+            contentClassName="grid gap-px bg-border sm:grid-cols-2 xl:grid-cols-4"
+          >
             <Metric
               icon={ActivityIcon}
               label="Requests"
@@ -228,18 +216,14 @@ export function TelemetryPanel() {
               label="Tokens"
               value={formatTokenCount(summary?.summary.totalTokens ?? 0)}
             />
-          </div>
+          </DataSection>
 
-          <section className="flex flex-col gap-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <div className="flex flex-col gap-1">
-                <h2 className="text-base font-semibold">Request log</h2>
-                <p className="text-xs text-muted-foreground">
-                  Up to 200 requests in the selected window. Nested gateway calls are grouped into
-                  their chatroom request.
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2 sm:ml-auto">
+          <DataSection
+            title="Request log"
+            description="Up to 200 requests in the selected window. Nested gateway calls are grouped into their chatroom request."
+            contentClassName="overflow-x-auto"
+            action={
+              <div className="flex flex-wrap gap-2">
                 <FilterSelect
                   value={range}
                   onValueChange={(value) => setRange(value as Range)}
@@ -272,21 +256,21 @@ export function TelemetryPanel() {
                   <SelectItem value="running">Running</SelectItem>
                 </FilterSelect>
               </div>
-            </div>
-
+            }
+          >
             {tracesError ? (
-              <Alert variant="destructive">
+              <Alert variant="destructive" className="border-0">
                 <AlertTitle>Could not load telemetry</AlertTitle>
                 <AlertDescription>{tracesError.message}</AlertDescription>
               </Alert>
             ) : traces === undefined ? (
-              <div className="flex flex-col gap-2">
-                <Skeleton className="h-11" />
-                <Skeleton className="h-11" />
-                <Skeleton className="h-11" />
+              <div className="flex flex-col gap-2 p-4">
+                <Skeleton className="h-6" />
+                <Skeleton className="h-6" />
+                <Skeleton className="h-6" />
               </div>
             ) : filtered?.length === 0 ? (
-              <Empty className="border py-14">
+              <Empty className="py-14">
                 <EmptyHeader>
                   <EmptyMedia variant="icon">
                     <RouteIcon />
@@ -300,33 +284,31 @@ export function TelemetryPanel() {
                 </EmptyHeader>
               </Empty>
             ) : (
-              <div className="overflow-x-auto rounded-xl border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Started</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Source</TableHead>
-                      <TableHead>Model</TableHead>
-                      <TableHead>Request ID</TableHead>
-                      <TableHead>Completion ID</TableHead>
-                      <TableHead className="text-right">Latency</TableHead>
-                      <TableHead className="text-right">Tokens</TableHead>
-                      <TableHead className="w-8" />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filtered?.map((trace) => (
-                      <TraceRow key={trace._id} trace={trace} />
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Started</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Source</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead>Request ID</TableHead>
+                    <TableHead>Completion ID</TableHead>
+                    <TableHead className="text-right">Latency</TableHead>
+                    <TableHead className="text-right">Tokens</TableHead>
+                    <TableHead className="w-8" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filtered?.map((trace) => (
+                    <TraceRow key={trace._id} trace={trace} />
+                  ))}
+                </TableBody>
+              </Table>
             )}
-          </section>
+          </DataSection>
         </>
       )}
-    </div>
+    </>
   );
 }
 
@@ -336,17 +318,9 @@ function TelemetrySwitch({
   ...props
 }: { title: string; description: string } & React.ComponentProps<typeof Switch>) {
   return (
-    <Field
-      orientation="horizontal"
-      data-disabled={props.disabled}
-      className="rounded-lg border p-3"
-    >
-      <FieldContent>
-        <FieldTitle>{title}</FieldTitle>
-        <FieldDescription>{description}</FieldDescription>
-      </FieldContent>
+    <Row title={title} description={description} data-disabled={props.disabled}>
       <Switch aria-label={title} {...props} />
-    </Field>
+    </Row>
   );
 }
 
@@ -396,7 +370,7 @@ function TraceRow({ trace }: { trace: Trace }) {
         {formatTelemetryDate(trace.startedAt)}
       </TableCell>
       <TableCell>
-        <StatusBadge status={trace.status} />
+        <TraceStatusLabel status={trace.status} />
       </TableCell>
       <TableCell>
         <Badge variant="outline">{trace.source}</Badge>
@@ -433,7 +407,6 @@ function TraceRow({ trace }: { trace: Trace }) {
   );
 }
 
-export function StatusBadge({ status }: { status: Trace["status"] }) {
-  const variant = status === "error" ? "destructive" : status === "ok" ? "secondary" : "outline";
-  return <Badge variant={variant}>{status === "ok" ? "success" : status}</Badge>;
+function TraceStatusLabel({ status }: { status: Trace["status"] }) {
+  return <AgentStatus state={traceRunState(status)} label={status === "ok" ? "success" : status} />;
 }

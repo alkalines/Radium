@@ -228,12 +228,15 @@ test("chat Worker configuration is owner-only, workspace-bound, and requires an 
       selection: { ...selection, tools: ["read", "read"] },
     }),
   ).rejects.toThrow("Worker tools must be unique.");
-  await expect(
-    f.owner.mutation(api.aisdk.SetChatWorker, {
-      chatId,
-      selection: { ...selection, directory: "relative/path" },
-    }),
-  ).rejects.toThrow("Worker directory must be an absolute path on the Worker.");
+  // Client directories are ignored; without a Project folder or presence report none is stored.
+  await f.owner.mutation(api.aisdk.SetChatWorker, {
+    chatId,
+    selection: { workerId: identity.workerId, directory: "relative/path", tools: ["read"] },
+  });
+  expect((await f.t.run((ctx) => ctx.db.get(chatId)))?.worker).toEqual({
+    workerId: identity.workerId,
+    tools: ["read"],
+  });
 
   await f.owner.mutation(api.aisdk.SetChatWorker, {
     chatId,
@@ -279,6 +282,43 @@ test("chat Worker selection rejects a Worker from a different workspace", async 
   await expect(f.owner.mutation(api.aisdk.SetChatWorker, { chatId, selection })).rejects.toThrow(
     "Worker must be active in this workspace.",
   );
+});
+
+test("Project folders require an active Worker in the Project's workspace", async () => {
+  const f = await setup();
+  const { identity } = await enroll(f);
+  const folders = [{ workerId: identity.workerId, directory: "/srv/radium" }];
+  const otherWorkspace = await f.t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Other" }),
+  );
+
+  const project = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "Radium",
+    folders,
+    defaultWorkerId: identity.workerId,
+  });
+  await expect(f.owner.query(api.projects.list, { workspace: f.workspace })).resolves.toEqual([
+    expect.objectContaining({ _id: project, folders, defaultWorkerId: identity.workerId }),
+  ]);
+  await expect(
+    f.owner.mutation(api.projects.create, { workspace: otherWorkspace, name: "Foreign", folders }),
+  ).rejects.toThrow("Worker must be active in this workspace.");
+
+  await f.owner.mutation(api.workers.revoke, {
+    workspace: f.workspace,
+    workerId: identity.workerId,
+  });
+  // Unchanged folders are not rechecked, so renaming still works; a changed folder is rejected.
+  await expect(
+    f.owner.mutation(api.projects.update, { project, name: "Renamed", folders }),
+  ).resolves.toBeNull();
+  await expect(
+    f.owner.mutation(api.projects.update, {
+      project,
+      folders: [{ ...folders[0]!, directory: "/srv/other" }],
+    }),
+  ).rejects.toThrow("Worker must be active in this workspace.");
 });
 
 test("HTTP proofs reject wrong key/audience/context, consume once, and recover after setup expiry without token", async () => {

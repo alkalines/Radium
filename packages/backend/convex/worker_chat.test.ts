@@ -662,3 +662,144 @@ test("chat-call cleanup waits for deletion, drains batches and leaves no late re
     ),
   ).toEqual([]);
 });
+
+const queued = { text: "", files: [], model: "test-model", webSearch: false };
+
+async function storedWorker(f: Awaited<ReturnType<typeof fixture>>, chatId: Id<"aisdk_chats">) {
+  return (await f.t.run((ctx) => ctx.db.get(chatId)))?.worker;
+}
+
+test("Worker presence is machine-reported, owner-listed, and dropped on revoke", async () => {
+  const f = await fixture();
+  const firstId = f.first.identity.workerId;
+
+  await expect(
+    f.owner.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/radium" }),
+  ).rejects.toThrow();
+  await expect(
+    f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "tmp/radium" }),
+  ).rejects.toThrow("Worker temp directory must be an absolute path.");
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/radium" });
+
+  const workers = await f.owner.query(api.workers.list, { workspace: f.workspace });
+  expect(workers.find((worker) => worker.workerId === firstId)).toMatchObject({
+    lastSeenAt: expect.any(Number),
+    tempDirectory: "/tmp/radium",
+  });
+  expect(
+    workers.find((worker) => worker.workerId === f.second.identity.workerId),
+  ).not.toHaveProperty("lastSeenAt");
+
+  await f.owner.mutation(api.workers.revoke, { workspace: f.workspace, workerId: firstId });
+  const afterRevoke = await f.owner.query(api.workers.list, { workspace: f.workspace });
+  expect(afterRevoke.find((worker) => worker.workerId === firstId)).not.toHaveProperty(
+    "lastSeenAt",
+  );
+});
+
+test("chat Worker directories are derived server-side: Project folder, then temp directory", async () => {
+  const f = await fixture();
+  const firstId = f.first.identity.workerId;
+  const secondId = f.second.identity.workerId;
+
+  // Client directories are ignored; nothing is stored before the Worker reports one.
+  const chatId = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    messages_queue: queued,
+    worker: { workerId: firstId, directory: "/client/chosen", tools: ["read"] },
+  });
+  expect(await storedWorker(f, chatId)).toEqual({ workerId: firstId, tools: ["read"] });
+
+  // A missing directory is derived on the next change, from the Worker's temp directory.
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/first" });
+  await f.owner.mutation(api.aisdk.SetChatWorker, {
+    chatId,
+    selection: { workerId: firstId, tools: ["read", "bash"] },
+  });
+  expect(await storedWorker(f, chatId)).toEqual({
+    workerId: firstId,
+    directory: "/tmp/first",
+    tools: ["read", "bash"],
+  });
+
+  // Toggling tools keeps the stored directory even after the Worker reports a new one.
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/first-new" });
+  await f.owner.mutation(api.aisdk.SetChatWorker, {
+    chatId,
+    selection: { workerId: firstId, directory: "/client/ignored", tools: ["read"] },
+  });
+  expect(await storedWorker(f, chatId)).toMatchObject({ directory: "/tmp/first" });
+
+  // Changing the Worker re-derives; a Worker without reports leaves the directory unset.
+  await f.owner.mutation(api.aisdk.SetChatWorker, {
+    chatId,
+    selection: { workerId: secondId, tools: ["read"] },
+  });
+  expect(await storedWorker(f, chatId)).toEqual({ workerId: secondId, tools: ["read"] });
+
+  const project = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "Radium",
+    folders: [
+      { workerId: firstId, directory: "/srv/first" },
+      { workerId: secondId, directory: "/srv/second" },
+    ],
+    defaultWorkerId: secondId,
+  });
+
+  // Moving into a Project uses its folder for the chat's Worker; leaving it falls back to temp.
+  await f.owner.mutation(api.aisdk.SetChatProject, { chatId, project });
+  expect(await storedWorker(f, chatId)).toMatchObject({ directory: "/srv/second" });
+  await f.owner.mutation(api.aisdk.SetChatWorker, {
+    chatId,
+    selection: { workerId: firstId, tools: ["read"] },
+  });
+  expect(await storedWorker(f, chatId)).toMatchObject({ directory: "/srv/first" });
+  await f.owner.mutation(api.aisdk.SetChatProject, { chatId, project: null });
+  expect(await storedWorker(f, chatId)).toMatchObject({ directory: "/tmp/first-new" });
+
+  // The Project folder wins over the temp directory for new chats too.
+  const projectChat = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    messages_queue: queued,
+    project,
+    worker: { workerId: firstId, tools: ["edit"] },
+  });
+  expect(await storedWorker(f, projectChat)).toEqual({
+    workerId: firstId,
+    directory: "/srv/first",
+    tools: ["edit"],
+  });
+});
+
+test("Worker tools can be stored without a Worker, owner-only, and never dispatch", async () => {
+  const f = await fixture();
+  await f.t.run((ctx) =>
+    ctx.db.insert("workspace_members", {
+      workspace: f.workspace,
+      userId: "member",
+      role: "member",
+    }),
+  );
+  const member = f.t.withIdentity({ subject: "member" });
+
+  const chatId = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    messages_queue: queued,
+    worker: { directory: "/client/ignored", tools: ["read", "edit"] },
+  });
+  expect(await storedWorker(f, chatId)).toEqual({ tools: ["read", "edit"] });
+  await expect(
+    member.mutation(api.aisdk.CreateChat, {
+      workspace: f.workspace,
+      messages_queue: queued,
+      worker: { tools: ["read"] },
+    }),
+  ).rejects.toThrow("Only the workspace owner can configure a Worker for chats.");
+
+  // Even with a directory present, a selection without a Worker is denied at dispatch.
+  await f.t.run((ctx) =>
+    ctx.db.patch(f.chatId, { worker: { directory: f.worker.directory, tools: ["read"] } }),
+  );
+  await expect(f.dispatch()).rejects.toThrow();
+});

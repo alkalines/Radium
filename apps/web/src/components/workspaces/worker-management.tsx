@@ -1,14 +1,21 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useAction, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import { BotIcon, CheckIcon, CopyIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import {
+  CheckIcon,
+  CopyIcon,
+  MoreHorizontalIcon,
+  PlusIcon,
+  ServerIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AgentStatus } from "@/components/agentic/agent-status";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -17,8 +24,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
+import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
+import { ownerOnlyNotice, WorkspacePageHeader } from "@/components/settings/workspace-page-header";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -211,67 +226,38 @@ export function WorkerManagement() {
       ? enrollmentCode
       : null;
 
+  const headerAction = isOwner ? (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={openEnrollmentDialog}
+      disabled={!workspaceId || pendingAction !== null}
+    >
+      <PlusIcon data-icon="inline-start" />
+      Add Worker
+    </Button>
+  ) : undefined;
+
   return (
     <>
-      <section className="flex flex-col gap-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex flex-col gap-1">
-            <h2 className="text-lg font-semibold tracking-tight">Workers</h2>
-            <p className="text-sm text-muted-foreground">
-              Add and manage your workspace's Workers.
-            </p>
-          </div>
-          {isOwner ? (
-            <Button
-              onClick={openEnrollmentDialog}
-              disabled={!workspaceId || pendingAction !== null}
-            >
-              <PlusIcon data-icon="inline-start" />
-              Add Worker
-            </Button>
-          ) : null}
-        </div>
+      <WorkspacePageHeader
+        title="Workers"
+        description={
+          isOwner ? "Machines that run files, folders, and commands for agents." : ownerOnlyNotice
+        }
+        action={headerAction}
+      />
 
-        {!workspace || !isOwner ? (
-          <Alert>
-            <AlertTitle>Owner access required</AlertTitle>
-            <AlertDescription>Only the workspace owner can manage Workers.</AlertDescription>
-          </Alert>
-        ) : error ? (
-          <Alert variant="destructive">
-            <AlertTitle>Workers unavailable</AlertTitle>
-            <AlertDescription>Could not load Workers. Try refreshing the page.</AlertDescription>
-          </Alert>
-        ) : data === undefined ? (
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-16" />
-            <Skeleton className="h-16" />
-          </div>
-        ) : workers.length === 0 ? (
-          <Empty className="border border-dashed">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <BotIcon />
-              </EmptyMedia>
-              <EmptyTitle>No Workers</EmptyTitle>
-              <EmptyDescription>
-                Add a Worker to connect a machine to this workspace.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <div className="flex flex-col divide-y rounded-lg border">
-            {workers.map((worker) => (
-              <WorkerRow
-                key={worker.workerId}
-                worker={worker}
-                disabled={pendingAction !== null}
-                onRevoke={() => setRevokeTarget(worker)}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      <GroupList title="Enrolled">
+        <WorkerRows
+          canManage={Boolean(workspace) && isOwner}
+          hasError={Boolean(error)}
+          isLoading={data === undefined}
+          workers={workers}
+          disabled={pendingAction !== null}
+          onRevoke={setRevokeTarget}
+        />
+      </GroupList>
 
       <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
         <DialogContent className="sm:max-w-md">
@@ -430,53 +416,119 @@ export function WorkerManagement() {
   );
 }
 
-/** Keep optional details/alerts below the row's identity and action controls. */
+function WorkerRows({
+  canManage,
+  hasError,
+  isLoading,
+  workers,
+  disabled,
+  onRevoke,
+}: {
+  canManage: boolean;
+  hasError: boolean;
+  isLoading: boolean;
+  workers: WorkerList;
+  disabled: boolean;
+  onRevoke: (worker: WorkerList[number]) => void;
+}) {
+  if (!canManage) {
+    return (
+      <RowBlock className="text-sm text-muted-foreground">
+        Only the workspace owner can manage Workers.
+      </RowBlock>
+    );
+  }
+
+  if (hasError) {
+    return (
+      <RowBlock className="text-sm text-destructive">
+        Could not load Workers. Try refreshing the page.
+      </RowBlock>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <RowBlock>
+        <Skeleton className="h-8" />
+        <Skeleton className="h-8" />
+      </RowBlock>
+    );
+  }
+
+  if (workers.length === 0) {
+    return (
+      <RowBlock>
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <ServerIcon />
+            </EmptyMedia>
+            <EmptyTitle>No Workers</EmptyTitle>
+            <EmptyDescription>
+              Add a Worker to connect a machine to this workspace.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      </RowBlock>
+    );
+  }
+
+  return workers.map((worker) => (
+    <WorkerRow
+      key={worker.workerId}
+      worker={worker}
+      disabled={disabled}
+      onRevoke={() => onRevoke(worker)}
+    />
+  ));
+}
+
+/** One Worker identity: name, id, authorization status, and owner actions in a `…` menu. */
 function WorkerRow({
   worker,
   disabled,
   onRevoke,
-  children,
 }: {
   worker: WorkerList[number];
   disabled: boolean;
   onRevoke: () => void;
-  children?: ReactNode;
 }) {
+  const isActive = worker.status === "active";
+
   return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-3 p-3">
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
-          <BotIcon className="size-4" />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate font-medium">{worker.name}</span>
-          <span className="truncate font-mono text-xs text-muted-foreground">
-            {worker.workerId}
-          </span>
-        </div>
-        <Badge
-          variant={worker.status === "active" ? "secondary" : "outline"}
-          title="Identity authorization status"
-          className="shrink-0"
-        >
-          {worker.status === "active" ? "Authorized" : "Revoked"}
-        </Badge>
-        {worker.status === "active" ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-muted-foreground hover:text-destructive"
-            onClick={onRevoke}
-            disabled={disabled}
-            aria-label={`Revoke ${worker.name}`}
-            title={`Revoke ${worker.name}`}
-          >
-            <Trash2Icon />
-          </Button>
-        ) : null}
-      </div>
-      {children ? <div className="px-3 pb-3">{children}</div> : null}
-    </div>
+    <Row
+      icon={ServerIcon}
+      title={worker.name}
+      description={<span className="font-mono text-[13px]">{worker.workerId}</span>}
+    >
+      <AgentStatus
+        state={isActive ? "succeeded" : "idle"}
+        label={isActive ? "Authorized" : "Revoked"}
+        title="Identity authorization status"
+      />
+      {isActive ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              disabled={disabled}
+              aria-label={`${worker.name} actions`}
+            >
+              <MoreHorizontalIcon />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuGroup>
+              <DropdownMenuItem variant="destructive" onSelect={onRevoke}>
+                Revoke
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+    </Row>
   );
 }
 

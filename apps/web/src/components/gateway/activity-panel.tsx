@@ -7,7 +7,6 @@ import {
   BracesIcon,
   CircleDollarSignIcon,
   DatabaseZapIcon,
-  KeyRoundIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
@@ -23,16 +22,9 @@ import {
   YAxis,
 } from "recharts";
 
+import { GroupList, Row } from "@/components/harness/group-list";
+import { WorkspacePageHeader } from "@/components/settings/workspace-page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   ChartContainer,
   ChartTooltip,
@@ -51,6 +43,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "backend/convex/_generated/api";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
+import { DataSection } from "./data-section";
 
 const DAY = 24 * 60 * 60 * 1000;
 const RANGE_OPTIONS = [
@@ -121,29 +114,27 @@ export function ActivityPanel() {
     : 0;
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-lg font-semibold tracking-tight">Activity</h2>
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            Estimated upstream cost, traffic, and token behavior across your Radium Gateway.
-          </p>
-        </div>
-        <Select value={range} onValueChange={setRange}>
-          <SelectTrigger className="w-40" size="sm" aria-label="Activity date range">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              {RANGE_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-      </div>
+    <>
+      <WorkspacePageHeader
+        title="Activity"
+        description="Estimated upstream cost, traffic, and token behavior across your Radium Gateway."
+        action={
+          <Select value={range} onValueChange={setRange}>
+            <SelectTrigger className="w-40" size="sm" aria-label="Activity date range">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {RANGE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        }
+      />
 
       {!workspaceId && (
         <Alert>
@@ -165,70 +156,67 @@ export function ActivityPanel() {
             </Alert>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <MetricCard
+          <DataSection
+            title="Summary"
+            contentClassName="grid gap-px bg-border sm:grid-cols-2 xl:grid-cols-4"
+          >
+            <Metric
               title="Estimated cost"
               value={formatCurrency(activity.summary.spend)}
               detail={`Across ${range} days`}
               icon={CircleDollarSignIcon}
             />
-            <MetricCard
+            <Metric
               title="Requests"
               value={formatCompact(activity.summary.requests)}
               detail={`${(activity.summary.requests / Number(range)).toFixed(1)} daily average`}
               icon={ActivityIcon}
             />
-            <MetricCard
+            <Metric
               title="Token volume"
               value={formatCompact(totalTokens)}
               detail={`${formatCompact(activity.summary.promptTokens)} prompt tokens`}
               icon={BracesIcon}
             />
-            <MetricCard
+            <Metric
               title="Cache hit rate"
               value={`${cacheHitRate.toFixed(1)}%`}
               detail={`${formatCompact(activity.summary.cachedTokens)} cached tokens`}
               icon={DatabaseZapIcon}
             />
-          </div>
+          </DataSection>
 
-          <div className="grid gap-4 xl:grid-cols-5">
+          <div className="grid gap-6 xl:grid-cols-5">
             <DailyCostChart data={activity.daily} />
             <UsageTypeChart usageTypes={activity.usageTypes} />
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-6 xl:grid-cols-2">
             <ModelUsageChart models={activity.models} />
             <RequestVolumeChart daily={activity.daily} models={activity.models} />
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-3">
+          <div className="grid gap-6 xl:grid-cols-3">
             <TokenBreakdownCard summary={activity.summary} />
             <PromptCachingCard summary={activity.summary} hitRate={cacheHitRate} />
             <TopKeysCard keys={activity.apiKeys} />
           </div>
 
-          <Card className="border-dashed" size="sm">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <BlocksIcon className="size-4 text-muted-foreground" />
-                Top Apps
-              </CardTitle>
-              <CardDescription>
-                Attribute gateway requests to products, agents, and environments.
-              </CardDescription>
-              <CardAction>
-                <Badge variant="secondary">Planned</Badge>
-              </CardAction>
-            </CardHeader>
-          </Card>
+          <GroupList>
+            <Row
+              icon={BlocksIcon}
+              title="Top Apps"
+              tag="Planned"
+              description="Attribute gateway requests to products, agents, and environments."
+            />
+          </GroupList>
         </>
       ) : null}
-    </div>
+    </>
   );
 }
 
-function MetricCard({
+function Metric({
   title,
   value,
   detail,
@@ -240,64 +228,56 @@ function MetricCard({
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
 }) {
   return (
-    <Card size="sm">
-      <CardHeader>
-        <CardDescription>{title}</CardDescription>
-        <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
-        <CardAction>
-          <Icon className="size-4 text-muted-foreground" />
-        </CardAction>
-      </CardHeader>
-      <CardContent className="text-xs text-muted-foreground">{detail}</CardContent>
-    </Card>
+    <div className="flex flex-col gap-1 bg-card p-4">
+      <div className="flex items-center justify-between gap-2 text-sm text-muted-foreground">
+        {title}
+        <Icon className="size-4" />
+      </div>
+      <span className="text-xl font-medium tabular-nums">{value}</span>
+      <span className="text-xs text-muted-foreground">{detail}</span>
+    </div>
   );
 }
 
 function DailyCostChart({ data }: { data: Array<{ date: string; cost: number }> }) {
   return (
-    <Card className="xl:col-span-3">
-      <CardHeader>
-        <CardTitle>Estimated daily cost</CardTitle>
-        <CardDescription>Estimated upstream cost over the selected period</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <ChartContainer config={dailyCostConfig} className="h-64 w-full">
-          <AreaChart accessibilityLayer data={data} margin={{ left: 4, right: 4 }}>
-            <defs>
-              <linearGradient id="dailyCostFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="var(--color-cost)" stopOpacity={0.35} />
-                <stop offset="95%" stopColor="var(--color-cost)" stopOpacity={0.02} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid vertical={false} />
-            <XAxis
-              dataKey="date"
-              axisLine={false}
-              tickLine={false}
-              tickMargin={10}
-              minTickGap={24}
-              tickFormatter={formatDay}
-            />
-            <YAxis
-              axisLine={false}
-              tickLine={false}
-              tickFormatter={(value) => `$${formatCompact(Number(value))}`}
-              width={48}
-            />
-            <ChartTooltip
-              content={<ChartTooltipContent labelFormatter={(label) => formatDay(String(label))} />}
-            />
-            <Area
-              dataKey="cost"
-              type="monotone"
-              fill="url(#dailyCostFill)"
-              stroke="var(--color-cost)"
-              strokeWidth={2}
-            />
-          </AreaChart>
-        </ChartContainer>
-      </CardContent>
-    </Card>
+    <DataSection
+      className="xl:col-span-3"
+      contentClassName="p-4"
+      title="Estimated daily cost"
+      description="Estimated upstream cost over the selected period"
+    >
+      <ChartContainer config={dailyCostConfig} className="h-64 w-full">
+        <AreaChart accessibilityLayer data={data} margin={{ left: 4, right: 4 }}>
+          <CartesianGrid vertical={false} />
+          <XAxis
+            dataKey="date"
+            axisLine={false}
+            tickLine={false}
+            tickMargin={10}
+            minTickGap={24}
+            tickFormatter={formatDay}
+          />
+          <YAxis
+            axisLine={false}
+            tickLine={false}
+            tickFormatter={(value) => `$${formatCompact(Number(value))}`}
+            width={48}
+          />
+          <ChartTooltip
+            content={<ChartTooltipContent labelFormatter={(label) => formatDay(String(label))} />}
+          />
+          <Area
+            dataKey="cost"
+            type="monotone"
+            fill="var(--color-cost)"
+            fillOpacity={0.15}
+            stroke="var(--color-cost)"
+            strokeWidth={2}
+          />
+        </AreaChart>
+      </ChartContainer>
+    </DataSection>
   );
 }
 
@@ -320,38 +300,35 @@ function UsageTypeChart({
   const total = data.reduce((sum, entry) => sum + entry.requests, 0);
 
   return (
-    <Card className="xl:col-span-2">
-      <CardHeader>
-        <CardTitle>Usage source</CardTitle>
-        <CardDescription>
-          All requests use credentials configured in this workspace.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex items-center gap-4">
-        <ChartContainer config={usageTypeConfig} className="h-56 min-w-0 flex-1">
-          <PieChart accessibilityLayer>
-            <ChartTooltip content={<ChartTooltipContent nameKey="type" hideLabel />} />
-            <Pie data={data} dataKey="requests" nameKey="type" innerRadius={54} outerRadius={78}>
-              {data.map((entry) => (
-                <Cell key={entry.type} fill={entry.fill} />
-              ))}
-            </Pie>
-          </PieChart>
-        </ChartContainer>
-        <div className="flex min-w-28 flex-col gap-3 text-sm">
-          {data.map((entry) => (
-            <div key={entry.type} className="flex flex-col gap-0.5">
-              <span className="text-muted-foreground">
-                {entry.type === "byok" ? "BYOK" : "Historical credits"}
-              </span>
-              <span className="font-medium tabular-nums">
-                {total ? ((entry.requests / total) * 100).toFixed(1) : "0.0"}%
-              </span>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+    <DataSection
+      className="xl:col-span-2"
+      contentClassName="flex items-center gap-4 p-4"
+      title="Usage source"
+      description="All requests use credentials configured in this workspace."
+    >
+      <ChartContainer config={usageTypeConfig} className="h-56 min-w-0 flex-1">
+        <PieChart accessibilityLayer>
+          <ChartTooltip content={<ChartTooltipContent nameKey="type" hideLabel />} />
+          <Pie data={data} dataKey="requests" nameKey="type" innerRadius={54} outerRadius={78}>
+            {data.map((entry) => (
+              <Cell key={entry.type} fill={entry.fill} />
+            ))}
+          </Pie>
+        </PieChart>
+      </ChartContainer>
+      <div className="flex min-w-28 flex-col gap-3 text-sm">
+        {data.map((entry) => (
+          <div key={entry.type} className="flex flex-col gap-0.5">
+            <span className="text-muted-foreground">
+              {entry.type === "byok" ? "BYOK" : "Historical credits"}
+            </span>
+            <span className="font-medium tabular-nums">
+              {total ? ((entry.requests / total) * 100).toFixed(1) : "0.0"}%
+            </span>
+          </div>
+        ))}
+      </div>
+    </DataSection>
   );
 }
 
@@ -367,35 +344,28 @@ function ModelUsageChart({
   const config = { tokens: { label: "Tokens", color: "var(--chart-3)" } } satisfies ChartConfig;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Usage by model</CardTitle>
-        <CardDescription>Token volume across your most-used models</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <ChartContainer config={config} className="h-72 w-full">
-          <BarChart
-            accessibilityLayer
-            data={data}
-            layout="vertical"
-            margin={{ left: 8, right: 12 }}
-          >
-            <CartesianGrid horizontal={false} />
-            <XAxis type="number" axisLine={false} tickLine={false} tickFormatter={formatCompact} />
-            <YAxis
-              type="category"
-              dataKey="displayName"
-              axisLine={false}
-              tickLine={false}
-              width={118}
-              tick={{ fontSize: 11 }}
-            />
-            <ChartTooltip content={<ChartTooltipContent hideLabel />} />
-            <Bar dataKey="tokens" fill="var(--color-tokens)" radius={4} />
-          </BarChart>
-        </ChartContainer>
-      </CardContent>
-    </Card>
+    <DataSection
+      contentClassName="p-4"
+      title="Usage by model"
+      description="Token volume across your most-used models"
+    >
+      <ChartContainer config={config} className="h-72 w-full">
+        <BarChart accessibilityLayer data={data} layout="vertical" margin={{ left: 8, right: 12 }}>
+          <CartesianGrid horizontal={false} />
+          <XAxis type="number" axisLine={false} tickLine={false} tickFormatter={formatCompact} />
+          <YAxis
+            type="category"
+            dataKey="displayName"
+            axisLine={false}
+            tickLine={false}
+            width={118}
+            tick={{ fontSize: 11 }}
+          />
+          <ChartTooltip content={<ChartTooltipContent hideLabel />} />
+          <Bar dataKey="tokens" fill="var(--color-tokens)" radius={4} />
+        </BarChart>
+      </ChartContainer>
+    </DataSection>
   );
 }
 
@@ -419,39 +389,37 @@ function RequestVolumeChart({
   ) satisfies ChartConfig;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Request volume by model</CardTitle>
-        <CardDescription>Daily request mix for the top five models</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <ChartContainer config={config} className="h-72 w-full">
-          <BarChart accessibilityLayer data={data} margin={{ left: 0, right: 4 }}>
-            <CartesianGrid vertical={false} />
-            <XAxis
-              dataKey="date"
-              axisLine={false}
-              tickLine={false}
-              minTickGap={24}
-              tickFormatter={formatDay}
+    <DataSection
+      contentClassName="p-4"
+      title="Request volume by model"
+      description="Daily request mix for the top five models"
+    >
+      <ChartContainer config={config} className="h-72 w-full">
+        <BarChart accessibilityLayer data={data} margin={{ left: 0, right: 4 }}>
+          <CartesianGrid vertical={false} />
+          <XAxis
+            dataKey="date"
+            axisLine={false}
+            tickLine={false}
+            minTickGap={24}
+            tickFormatter={formatDay}
+          />
+          <YAxis axisLine={false} tickLine={false} width={32} allowDecimals={false} />
+          <ChartTooltip
+            content={<ChartTooltipContent labelFormatter={(label) => formatDay(String(label))} />}
+          />
+          {topModels.map((model, index) => (
+            <Bar
+              key={model.id}
+              dataKey={model.id}
+              stackId="requests"
+              fill={`var(--color-${model.id})`}
+              radius={index === topModels.length - 1 ? [3, 3, 0, 0] : 0}
             />
-            <YAxis axisLine={false} tickLine={false} width={32} allowDecimals={false} />
-            <ChartTooltip
-              content={<ChartTooltipContent labelFormatter={(label) => formatDay(String(label))} />}
-            />
-            {topModels.map((model, index) => (
-              <Bar
-                key={model.id}
-                dataKey={model.id}
-                stackId="requests"
-                fill={`var(--color-${model.id})`}
-                radius={index === topModels.length - 1 ? [3, 3, 0, 0] : 0}
-              />
-            ))}
-          </BarChart>
-        </ChartContainer>
-      </CardContent>
-    </Card>
+          ))}
+        </BarChart>
+      </ChartContainer>
+    </DataSection>
   );
 }
 
@@ -474,42 +442,35 @@ function TokenBreakdownCard({ summary }: { summary: ActivitySummary }) {
   ];
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Token breakdown</CardTitle>
-        <CardDescription>Prompt and generated token composition</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-5">
-        <ChartContainer config={tokenConfig} className="h-24 w-full">
-          <BarChart accessibilityLayer data={data} layout="vertical">
-            <XAxis type="number" hide />
-            <YAxis type="category" dataKey="name" hide />
-            <ChartTooltip content={<ChartTooltipContent hideLabel />} />
-            <Bar
-              dataKey="prompt"
-              stackId="tokens"
-              fill="var(--color-prompt)"
-              radius={[4, 0, 0, 4]}
-            />
-            <Bar dataKey="completion" stackId="tokens" fill="var(--color-completion)" />
-            <Bar
-              dataKey="reasoning"
-              stackId="tokens"
-              fill="var(--color-reasoning)"
-              radius={[0, 4, 4, 0]}
-            />
-          </BarChart>
-        </ChartContainer>
-        <div className="grid grid-cols-2 gap-3 text-xs">
-          <BreakdownValue label="Prompt" value={summary.promptTokens} />
-          <BreakdownValue
-            label="Completion"
-            value={Math.max(0, summary.completionTokens - summary.reasoningTokens)}
+    <DataSection
+      contentClassName="flex flex-col gap-5 p-4"
+      title="Token breakdown"
+      description="Prompt and generated token composition"
+    >
+      <ChartContainer config={tokenConfig} className="h-24 w-full">
+        <BarChart accessibilityLayer data={data} layout="vertical">
+          <XAxis type="number" hide />
+          <YAxis type="category" dataKey="name" hide />
+          <ChartTooltip content={<ChartTooltipContent hideLabel />} />
+          <Bar dataKey="prompt" stackId="tokens" fill="var(--color-prompt)" radius={[4, 0, 0, 4]} />
+          <Bar dataKey="completion" stackId="tokens" fill="var(--color-completion)" />
+          <Bar
+            dataKey="reasoning"
+            stackId="tokens"
+            fill="var(--color-reasoning)"
+            radius={[0, 4, 4, 0]}
           />
-          <BreakdownValue label="Reasoning" value={summary.reasoningTokens} />
-        </div>
-      </CardContent>
-    </Card>
+        </BarChart>
+      </ChartContainer>
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <BreakdownValue label="Prompt" value={summary.promptTokens} />
+        <BreakdownValue
+          label="Completion"
+          value={Math.max(0, summary.completionTokens - summary.reasoningTokens)}
+        />
+        <BreakdownValue label="Reasoning" value={summary.reasoningTokens} />
+      </div>
+    </DataSection>
   );
 }
 
@@ -523,39 +484,32 @@ function PromptCachingCard({ summary, hitRate }: { summary: ActivitySummary; hit
   ];
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Prompt token caching</CardTitle>
-        <CardDescription>How much prompt context was served from cache</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-5">
-        <div className="flex items-end justify-between gap-3">
-          <span className="text-3xl font-semibold tabular-nums">{hitRate.toFixed(1)}%</span>
-          <span className="text-xs text-muted-foreground">
-            {formatCompact(summary.writtenCacheTokens)} cache writes
-          </span>
-        </div>
-        <ChartContainer config={cachingConfig} className="h-24 w-full">
-          <BarChart accessibilityLayer data={data} layout="vertical">
-            <XAxis type="number" hide />
-            <YAxis type="category" dataKey="name" hide />
-            <ChartTooltip content={<ChartTooltipContent hideLabel />} />
-            <Bar
-              dataKey="cached"
-              stackId="cache"
-              fill="var(--color-cached)"
-              radius={[4, 0, 0, 4]}
-            />
-            <Bar
-              dataKey="uncached"
-              stackId="cache"
-              fill="var(--color-uncached)"
-              radius={[0, 4, 4, 0]}
-            />
-          </BarChart>
-        </ChartContainer>
-      </CardContent>
-    </Card>
+    <DataSection
+      contentClassName="flex flex-col gap-5 p-4"
+      title="Prompt token caching"
+      description="How much prompt context was served from cache"
+    >
+      <div className="flex items-end justify-between gap-3">
+        <span className="text-xl font-medium tabular-nums">{hitRate.toFixed(1)}%</span>
+        <span className="text-xs text-muted-foreground">
+          {formatCompact(summary.writtenCacheTokens)} cache writes
+        </span>
+      </div>
+      <ChartContainer config={cachingConfig} className="h-24 w-full">
+        <BarChart accessibilityLayer data={data} layout="vertical">
+          <XAxis type="number" hide />
+          <YAxis type="category" dataKey="name" hide />
+          <ChartTooltip content={<ChartTooltipContent hideLabel />} />
+          <Bar dataKey="cached" stackId="cache" fill="var(--color-cached)" radius={[4, 0, 0, 4]} />
+          <Bar
+            dataKey="uncached"
+            stackId="cache"
+            fill="var(--color-uncached)"
+            radius={[0, 4, 4, 0]}
+          />
+        </BarChart>
+      </ChartContainer>
+    </DataSection>
   );
 }
 
@@ -568,35 +522,30 @@ function TopKeysCard({
   const maxRequests = topKeys[0]?.requests ?? 0;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <KeyRoundIcon className="size-4 text-muted-foreground" />
-          Top API keys
-        </CardTitle>
-        <CardDescription>Ranked by request volume</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        {topKeys.length ? (
-          topKeys.map((key) => (
-            <div key={key.id} className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="truncate font-medium">{key.name}</span>
-                <span className="shrink-0 tabular-nums text-muted-foreground">
-                  {key.requests.toLocaleString()} · {formatCurrency(key.cost)}
-                </span>
-              </div>
-              <Progress value={maxRequests ? (key.requests / maxRequests) * 100 : 0} />
+    <DataSection
+      contentClassName="flex flex-col gap-4 p-4"
+      title="Top API keys"
+      description="Ranked by request volume"
+    >
+      {topKeys.length ? (
+        topKeys.map((key) => (
+          <div key={key.id} className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between gap-3 text-xs">
+              <span className="truncate font-medium">{key.name}</span>
+              <span className="shrink-0 tabular-nums text-muted-foreground">
+                {key.requests.toLocaleString()} · {formatCurrency(key.cost)}
+              </span>
             </div>
-          ))
-        ) : (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <ArrowUpRightIcon className="size-4" />
-            Requests from API keys will appear here.
+            <Progress value={maxRequests ? (key.requests / maxRequests) * 100 : 0} />
           </div>
-        )}
-      </CardContent>
-    </Card>
+        ))
+      ) : (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <ArrowUpRightIcon className="size-4" />
+          Requests from API keys will appear here.
+        </div>
+      )}
+    </DataSection>
   );
 }
 
@@ -611,16 +560,14 @@ function BreakdownValue({ label, value }: { label: string; value: number }) {
 
 function ActivitySkeleton() {
   return (
-    <div className="flex flex-col gap-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <Skeleton key={index} className="h-28" />
-        ))}
+    <>
+      <DataSection title="Summary" contentClassName="p-4">
+        <Skeleton className="h-16" />
+      </DataSection>
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Skeleton className="h-80 rounded-2xl" />
+        <Skeleton className="h-80 rounded-2xl" />
       </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Skeleton className="h-80" />
-        <Skeleton className="h-80" />
-      </div>
-    </div>
+    </>
   );
 }

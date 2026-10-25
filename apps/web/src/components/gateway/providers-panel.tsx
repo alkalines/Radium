@@ -3,7 +3,7 @@ import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
 import {
-  MoreVerticalIcon,
+  MoreHorizontalIcon,
   PlusIcon,
   RouteIcon,
   SlidersHorizontalIcon,
@@ -11,16 +11,9 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
+import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
+import { WorkspacePageHeader } from "@/components/settings/workspace-page-header";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -130,25 +123,26 @@ export function ProvidersPanel() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-lg font-semibold tracking-tight">Providers</h2>
-          <p className="text-sm text-muted-foreground">
-            Connect upstream providers, manage their models, and choose which to expose.
-          </p>
-        </div>
-        <Button onClick={() => setImportOpen(true)}>
-          <PlusIcon data-icon="inline-start" />
-          Add provider
-        </Button>
-      </div>
+    <>
+      <WorkspacePageHeader
+        title="Providers"
+        description="Connect upstream providers, manage their models, and choose which to expose."
+        action={
+          <Button onClick={() => setImportOpen(true)}>
+            <PlusIcon data-icon="inline-start" />
+            Add provider
+          </Button>
+        }
+      />
 
       {showSkeleton || providers === undefined ? (
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Skeleton className="h-40" />
-          <Skeleton className="h-40" />
-        </div>
+        <GroupList title="Connected">
+          {[0, 1].map((placeholder) => (
+            <RowBlock key={placeholder}>
+              <Skeleton className="h-6" />
+            </RowBlock>
+          ))}
+        </GroupList>
       ) : providers.length === 0 ? (
         <Empty className="border border-dashed">
           <EmptyHeader>
@@ -166,76 +160,59 @@ export function ProvidersPanel() {
           </Button>
         </Empty>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <GroupList title="Connected">
           {providers.map((provider) => {
             const needsKey = provider.env.length > 0;
             const disconnected = needsKey && !connectedSlugs.has(provider.slug);
             return (
-              <Card
+              <Row
                 key={provider._id}
                 data-disabled={!provider.enabled}
                 className="data-[disabled=true]:opacity-60"
+                leading={<ProviderLogo slug={provider.slug} className="size-8" />}
+                title={provider.name}
+                tag={disconnected ? "Not connected" : undefined}
+                description={
+                  <>
+                    <span className="font-mono text-xs">{provider.slug}</span> ·{" "}
+                    {provider.models.length} models
+                  </>
+                }
               >
-                <CardHeader>
-                  <div className="flex items-center gap-3">
-                    <ProviderLogo slug={provider.slug} className="size-9" />
-                    <div className="flex min-w-0 flex-col">
-                      <CardTitle className="truncate">{provider.name}</CardTitle>
-                      <CardDescription className="truncate font-mono text-xs">
-                        {provider.slug}
-                      </CardDescription>
-                    </div>
-                  </div>
-                  <CardAction className="flex items-center gap-1">
-                    <Switch
-                      checked={provider.enabled}
-                      onCheckedChange={(value) => toggle(provider.slug, value)}
-                      aria-label={`${provider.enabled ? "Disable" : "Enable"} ${provider.name}`}
-                    />
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" aria-label={`${provider.name} actions`}>
-                          <MoreVerticalIcon />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => setManagingSlug(provider.slug)}>
-                          <SlidersHorizontalIcon />
-                          Manage models
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onSelect={() => setDeletingSlug(provider.slug)}
-                        >
-                          <Trash2Icon />
-                          Delete provider
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </CardAction>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-3">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <Badge variant="secondary">{provider.models.length} models</Badge>
-                    {disconnected && <Badge variant="outline">Not connected</Badge>}
-                  </div>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => setManagingSlug(provider.slug)}
-                  >
-                    <SlidersHorizontalIcon data-icon="inline-start" />
-                    Manage models
-                  </Button>
-                </CardContent>
-              </Card>
+                <Button variant="outline" size="sm" onClick={() => setManagingSlug(provider.slug)}>
+                  <SlidersHorizontalIcon data-icon="inline-start" />
+                  Manage models
+                </Button>
+                <Switch
+                  checked={provider.enabled}
+                  onCheckedChange={(value) => toggle(provider.slug, value)}
+                  aria-label={`${provider.enabled ? "Disable" : "Enable"} ${provider.name}`}
+                />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-xs" aria-label={`${provider.name} actions`}>
+                      <MoreHorizontalIcon />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => setManagingSlug(provider.slug)}>
+                      <SlidersHorizontalIcon />
+                      Manage models
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onSelect={() => setDeletingSlug(provider.slug)}
+                    >
+                      <Trash2Icon />
+                      Delete provider
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </Row>
             );
           })}
-        </div>
+        </GroupList>
       )}
-
       <ImportProviderDialog
         open={importOpen}
         onOpenChange={setImportOpen}
@@ -253,7 +230,7 @@ export function ProvidersPanel() {
         workspaceId={workspaceId}
         onOpenChange={(open) => !open && setDeletingSlug(null)}
       />
-    </div>
+    </>
   );
 }
 

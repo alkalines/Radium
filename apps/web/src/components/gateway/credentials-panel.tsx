@@ -1,10 +1,12 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { KeyRoundIcon } from "lucide-react";
 
+import { AgentStatus } from "@/components/agentic/agent-status";
+import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
+import { WorkspacePageHeader } from "@/components/settings/workspace-page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Empty,
@@ -18,6 +20,13 @@ import { api } from "backend/convex/_generated/api";
 import { CredentialsDialog, type CredentialsTarget } from "./credentials-dialog";
 import { ProviderLogo } from "./provider-logo";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
+
+/** One-line description of what a provider needs to connect. Environment variable names are Machine text. */
+function credentialSummary(provider: { credential_type?: string; env: string[] }): ReactNode {
+  if (provider.credential_type === "oauth") return "OAuth device connection";
+  if (provider.env.length === 0) return "No credentials required";
+  return <span className="font-mono text-xs">{provider.env.join(", ")}</span>;
+}
 
 export function CredentialsPanel() {
   const { workspaceId } = useWorkspace();
@@ -37,14 +46,11 @@ export function CredentialsPanel() {
   const [target, setTarget] = useState<CredentialsTarget | null>(null);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold tracking-tight">Credentials</h2>
-        <p className="text-sm text-muted-foreground">
-          Connect API keys or subscription plans. Secrets stay encrypted and are used only for your
-          requests.
-        </p>
-      </div>
+    <>
+      <WorkspacePageHeader
+        title="Credentials"
+        description="Connect API keys or subscription plans. Secrets stay encrypted and are used only for your requests."
+      />
 
       {!workspaceId && (
         <Alert>
@@ -56,10 +62,13 @@ export function CredentialsPanel() {
       )}
 
       {providers === undefined ? (
-        <div className="flex flex-col gap-2">
-          <Skeleton className="h-14" />
-          <Skeleton className="h-14" />
-        </div>
+        <GroupList title="Providers">
+          {[0, 1].map((placeholder) => (
+            <RowBlock key={placeholder}>
+              <Skeleton className="h-6" />
+            </RowBlock>
+          ))}
+        </GroupList>
       ) : providers.length === 0 ? (
         <Empty className="border border-dashed">
           <EmptyHeader>
@@ -71,30 +80,23 @@ export function CredentialsPanel() {
           </EmptyHeader>
         </Empty>
       ) : (
-        <div className="flex flex-col divide-y rounded-lg border">
+        <GroupList title="Providers">
           {providers.map((provider) => {
             const preview = credentialsBySlug.get(provider.slug);
             return (
-              <div key={provider._id} className="flex items-center gap-3 p-3">
-                <ProviderLogo slug={provider.slug} className="size-8" />
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate font-medium">{provider.name}</span>
-                  <span className="truncate text-xs text-muted-foreground">
-                    {provider.credential_type === "oauth"
-                      ? "OAuth device connection"
-                      : provider.env.length > 0
-                        ? provider.env.join(", ")
-                        : "No credentials required"}
-                  </span>
-                </div>
+              <Row
+                key={provider._id}
+                leading={<ProviderLogo slug={provider.slug} className="size-8" />}
+                title={provider.name}
+                description={credentialSummary(provider)}
+              >
                 {preview ? (
-                  <Badge className="gap-1">
-                    <KeyRoundIcon className="size-3" /> Connected
-                  </Badge>
+                  <AgentStatus state="succeeded" label="Connected" />
                 ) : (
-                  <Badge variant="outline">
-                    {provider.credential_type === "oauth" ? "Not connected" : "No key"}
-                  </Badge>
+                  <AgentStatus
+                    state="idle"
+                    label={provider.credential_type === "oauth" ? "Not connected" : "No key"}
+                  />
                 )}
                 <Button
                   variant="outline"
@@ -112,10 +114,10 @@ export function CredentialsPanel() {
                 >
                   {preview ? "Manage" : provider.credential_type === "oauth" ? "Connect" : "Add"}
                 </Button>
-              </div>
+              </Row>
             );
           })}
-        </div>
+        </GroupList>
       )}
 
       <CredentialsDialog
@@ -125,6 +127,6 @@ export function CredentialsPanel() {
         preview={target ? credentialsBySlug.get(target.slug) : undefined}
         onOpenChange={(open) => !open && setTarget(null)}
       />
-    </div>
+    </>
   );
 }

@@ -21,7 +21,7 @@ export function SecuritySettings({ className }: SecuritySettingsProps) {
   const { emailAndPassword, plugins, socialProviders } = useAuth();
 
   return (
-    <div className={cn("flex w-full flex-col gap-4 md:gap-6", className)}>
+    <div className={cn("flex w-full flex-col gap-8", className)}>
       {emailAndPassword?.enabled && <ChangePassword />}
       {!!socialProviders?.length && <LinkedAccounts />}
       <ActiveSessions />

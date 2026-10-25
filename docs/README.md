@@ -8,6 +8,7 @@ start.
 
 - [Radium Gateway](Radium_Gateway.md)
 - [Radium Chatroom](Radium_Chatroom.md)
+- [Interface design](Interface_Design.md) — web UI spec: layout model, visual tokens, Run state, and Motion rules
 - [Worker](Worker.md) — machine authentication, identity persistence, task status coordination, and proposed execution transport
 - [Worker machine authentication](Worker/Machine_Authentication.md) — setup codes, key proofs, JWT refresh, owner management and configuration
 - [Worker identity component](Worker/Component.md) — workspace package, internal enrollment/recovery/revocation API, and integration boundary

@@ -1,51 +1,26 @@
-import { createFileRoute, notFound, redirect } from "@tanstack/react-router";
-import { createIsomorphicFn } from "@tanstack/react-start";
-import { ensureSession as ensureSessionClient } from "@better-auth-ui/core";
-import { ensureSessionServer } from "@better-auth-ui/core/server";
-import { getRequestHeaders, getRequestUrl } from "@tanstack/react-start/server";
-
 import { convexQuery } from "@convex-dev/react-query";
+import { createFileRoute, notFound } from "@tanstack/react-router";
+import type { ComponentType } from "react";
 
-import {
-  GatewaySettings,
-  gatewaySections,
-  type GatewaySection,
-} from "@/components/gateway/gateway-settings";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Skeleton } from "@/components/ui/skeleton";
-import { useWorkspace } from "@/components/workspaces/workspace-provider";
+import { CredentialsPanel } from "@/components/gateway/credentials-panel";
+import { gatewaySections, type GatewaySection } from "@/components/gateway/gateway-settings";
+import { KeysPanel } from "@/components/gateway/keys-panel";
+import { ProvidersPanel } from "@/components/gateway/providers-panel";
+import { WorkspaceSettingsGate } from "@/components/settings/workspace-settings-gate";
+import { requireSession } from "@/lib/require-session";
 import { api } from "backend/convex/_generated/api";
-import { auth } from "@/lib/auth";
-import { authClient } from "@/lib/auth-client";
 
 export const Route = createFileRoute("/gateway/$section")({
   staticData: {
     pageTitle: "Gateway",
+    screen: "settings",
   },
   async beforeLoad({ params: { section }, context: { queryClient }, location }) {
     if (!gatewaySections.some((entry) => entry.value === section)) {
       throw notFound();
     }
 
-    const ensureSession = createIsomorphicFn()
-      .server(() =>
-        ensureSessionServer(queryClient, auth as any, {
-          baseURL: getRequestUrl().origin,
-          headers: getRequestHeaders(),
-        }),
-      )
-      .client(() => ensureSessionClient(queryClient, authClient));
-
-    const session = await ensureSession();
-
-    if (!session) {
-      throw redirect({
-        to: "/auth/$path",
-        params: { path: "sign-in" },
-        search: { redirectTo: location.href },
-      });
-    }
-
+    const session = await requireSession({ queryClient, location });
     return { session };
   },
   loader: ({ context: { queryClient } }) => {
@@ -54,53 +29,29 @@ export const Route = createFileRoute("/gateway/$section")({
   component: GatewayPage,
 });
 
+// Each panel renders its own `WorkspacePageHeader`, so the route adds no heading.
+const gatewayPanels: Record<GatewaySection, ComponentType> = {
+  providers: ProvidersPanel,
+  credentials: CredentialsPanel,
+  keys: KeysPanel,
+};
+
 function GatewayPage() {
   const { section } = Route.useParams();
-  const { workspace, isLoading } = useWorkspace();
-  const isActivitySection = section === "activity";
+  const gatewaySection = gatewaySections.find((entry) => entry.value === section);
 
-  if (isLoading) {
-    return <Skeleton className="mx-auto h-32 w-full max-w-5xl" />;
+  if (!gatewaySection) {
+    throw notFound();
   }
 
-  if (!workspace) {
-    return (
-      <WorkspaceNotice
-        title="Workspace unavailable"
-        description="Select an active workspace to view Gateway settings."
-      />
-    );
-  }
-
-  if (workspace.role === "member") {
-    return (
-      <WorkspaceNotice
-        title="Gateway settings are owner-only"
-        description={`You can use models configured in ${workspace.name}, but only its owner can manage providers, credentials, API keys, logs, and activity.`}
-      />
-    );
-  }
+  const Panel = gatewayPanels[gatewaySection.value];
 
   return (
-    <div
-      className={
-        isActivitySection
-          ? "mx-auto w-full max-w-7xl p-4 md:p-6"
-          : "mx-auto w-full max-w-5xl p-4 md:p-6"
-      }
+    <WorkspaceSettingsGate
+      title={gatewaySection.label}
+      ownerOnlyDetail="Providers, credentials, and API keys stay with the workspace owner. Chats here use the models they connect."
     >
-      <GatewaySettings section={section as GatewaySection} hideNav />
-    </div>
-  );
-}
-
-function WorkspaceNotice({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="mx-auto w-full max-w-3xl p-4 md:p-6">
-      <Alert>
-        <AlertTitle>{title}</AlertTitle>
-        <AlertDescription>{description}</AlertDescription>
-      </Alert>
-    </div>
+      <Panel />
+    </WorkspaceSettingsGate>
   );
 }

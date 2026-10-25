@@ -1,43 +1,63 @@
 import { v } from "convex/values";
-import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type QueryCtx,
+} from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
-import { components, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import { requireAccessibleChat, requireChatManager } from "./workspaces";
 import { workspaceMutation, workspaceQuery } from "./helpers";
 import { firstUserMessageText } from "@/chatroom/titles";
 import { canManageChat } from "../src/workspaces/policy";
+import { chatWorkerSelectionValidator, type ChatWorkerSelection } from "../src/worker/chat-config";
 import {
-  chatWorkerSelectionValidator,
-  validateChatWorkerSelection,
-} from "../src/worker/chat-config";
+  rederiveChatWorkerDirectory,
+  resolveChatWorkerSelection,
+} from "../src/worker/chat-selection";
+import { requireWorkspaceProject } from "../src/projects/projects";
+import { sanitizeSelection, toolSelectionValidator } from "./chatroom";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
 const MAX_CHAT_CANDIDATES = 100;
 
 // Mutation
-/** Create a private-by-default chat and schedule title generation from its queued prompt. */
+/**
+ * Create a private-by-default chat and schedule title generation from its queued prompt.
+ * `project` must belong to the same workspace. `tools` becomes the chat's per-chat tool override
+ * after sanitizing, so a draft's tool choices never write workspace defaults. `worker` is
+ * owner-only; its `directory` is ignored and derived from the Project folder or the Worker's
+ * reported temp directory.
+ */
 export const CreateChat = workspaceMutation({
   args: {
     scope: v.optional(chatScopeValidator),
     messages_queue: queuedMessageSchema,
     worker: v.optional(chatWorkerSelectionValidator),
+    project: v.optional(v.id("projects")),
+    tools: v.optional(toolSelectionValidator),
   },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args): Promise<Id<"aisdk_chats">> => {
-    if (args.worker) {
-      await validateChatWorkerSelection(
-        args.worker,
-        ctx.identity._id,
-        { id: ctx.workspace._id, ownerId: ctx.workspace.ownerId },
-        () =>
-          ctx.runQuery(components.workerIdentity.identities.getWorkerMetadata, {
-            workspaceId: ctx.workspace._id,
-            workerId: args.worker!.workerId,
-          }),
-      );
+    if (args.project) {
+      await requireWorkspaceProject(ctx, args.project, ctx.workspace._id);
     }
+
+    let worker: ChatWorkerSelection | undefined;
+    if (args.worker) {
+      worker = await resolveChatWorkerSelection(ctx, {
+        requested: args.worker,
+        userId: ctx.identity._id,
+        workspace: ctx.workspace,
+        project: args.project,
+        current: undefined,
+      });
+    }
+    const tools = args.tools ? await sanitizeSelection(ctx, ctx.workspace, args.tools) : undefined;
 
     const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
@@ -45,7 +65,9 @@ export const CreateChat = workspaceMutation({
       messages_queue: args.messages_queue,
       workspace: args.workspace,
       scope: args.scope ?? "personal",
-      worker: args.worker,
+      worker,
+      project: args.project,
+      tools,
       userId: ctx.identity._id,
       activeStream: false,
       lastInteractionAt: Date.now(),
@@ -62,22 +84,29 @@ export const CreateChat = workspaceMutation({
  * Used by the message-level fork actions: assistant forks pass the history up to
  * and including the assistant turn and no queue (the user continues with a new
  * model), while user forks pass the prior history plus a `messages_queue` so the
- * forked user turn is regenerated with another model on load.
+ * forked user turn is regenerated with another model on load. `project` must belong to the
+ * same workspace.
  */
 export const ForkChat = workspaceMutation({
   args: {
     scope: v.optional(chatScopeValidator),
     messages: v.array(messageSchema),
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
+    project: v.optional(v.id("projects")),
   },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args): Promise<Id<"aisdk_chats">> => {
+    if (args.project) {
+      await requireWorkspaceProject(ctx, args.project, ctx.workspace._id);
+    }
+
     const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
       messages: args.messages,
       messages_queue: args.messages_queue ?? undefined,
       workspace: args.workspace,
       scope: args.scope ?? "personal",
+      project: args.project,
       userId: ctx.identity._id,
       activeStream: false,
       lastInteractionAt: Date.now(),
@@ -130,11 +159,16 @@ export const GetChat = query({
       activeStream: chat.activeStream,
       messages_queue: chat.messages_queue,
       worker: chat.worker,
+      project: chat.project ?? null,
     };
   },
 });
 
-/** Set (or clear) a chat's Worker configuration. Only the workspace owner may do so. */
+/**
+ * Set (or clear) a chat's Worker selection. Only the workspace owner may do so. The client
+ * `directory` is ignored: a changed Worker (or a missing stored directory) re-derives it from the
+ * chat's Project folder or the Worker's temp directory; toggling tools keeps the stored one.
+ */
 export const SetChatWorker = mutation({
   args: {
     chatId: v.id("aisdk_chats"),
@@ -144,22 +178,54 @@ export const SetChatWorker = mutation({
   handler: async (ctx, args) => {
     const { chat, workspace, userId } = await requireChatManager(ctx, args.chatId);
 
-    if (args.selection) {
-      await validateChatWorkerSelection(
-        args.selection,
-        userId,
-        { id: workspace._id, ownerId: workspace.ownerId },
-        () =>
-          ctx.runQuery(components.workerIdentity.identities.getWorkerMetadata, {
-            workspaceId: workspace._id,
-            workerId: args.selection!.workerId,
-          }),
-      );
-    } else if (workspace.ownerId !== userId) {
-      throw new Error("Only the workspace owner can configure a Worker for chats.");
+    if (!args.selection) {
+      if (workspace.ownerId !== userId) {
+        throw new Error("Only the workspace owner can configure a Worker for chats.");
+      }
+      await ctx.db.patch("aisdk_chats", chat._id, { worker: undefined });
+      return null;
     }
 
-    await ctx.db.patch("aisdk_chats", chat._id, { worker: args.selection ?? undefined });
+    const worker = await resolveChatWorkerSelection(ctx, {
+      requested: args.selection,
+      userId,
+      workspace,
+      project: chat.project,
+      current: chat.worker,
+    });
+    await ctx.db.patch("aisdk_chats", chat._id, { worker });
+    return null;
+  },
+});
+
+/**
+ * File a chat under a Project in its own workspace, or detach it with `null`. Requires chat
+ * management (creator, or workspace owner for shared chats); filing never changes visibility.
+ * A chat with a Worker gets its directory re-derived for the new Project (owner-set folders).
+ */
+export const SetChatProject = mutation({
+  args: {
+    chatId: v.id("aisdk_chats"),
+    project: v.union(v.id("projects"), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { chat, workspace } = await requireChatManager(ctx, args.chatId);
+
+    if (args.project) {
+      await requireWorkspaceProject(ctx, args.project, workspace._id);
+    }
+
+    const project = args.project ?? undefined;
+    let worker = chat.worker;
+    const needsDirectory =
+      worker?.workerId !== undefined &&
+      (chat.project !== project || worker.directory === undefined);
+    if (worker && needsDirectory) {
+      worker = await rederiveChatWorkerDirectory(ctx, workspace._id, worker, project);
+    }
+
+    await ctx.db.patch("aisdk_chats", chat._id, { project, worker });
     return null;
   },
 });
@@ -270,57 +336,103 @@ export const InternalChatInfo = internalQuery({
   },
 });
 
-export const ListChats = workspaceQuery({
-  args: {},
-  handler: async (ctx, args) => {
-    // Read creator-owned and explicitly shared chats separately: workspace
-    // membership, including ownership, must never expose another user's personal chats.
-    const [ownChats, sharedChats, legacyChats] = await Promise.all([
-      ctx.db
-        .query("aisdk_chats")
-        .withIndex("by_workspace_and_userId_and_lastInteractionAt", (q) =>
-          q.eq("workspace", args.workspace).eq("userId", ctx.identity._id),
-        )
-        .order("desc")
-        .take(MAX_CHAT_CANDIDATES),
-      ctx.db
-        .query("aisdk_chats")
-        .withIndex("by_workspace_and_scope_and_lastInteractionAt", (q) =>
-          q.eq("workspace", args.workspace).eq("scope", "workspace"),
-        )
-        .order("desc")
-        .take(MAX_CHAT_CANDIDATES),
-      ctx.workspace.legacyBalance
-        ? ctx.db
-            .query("aisdk_chats")
-            .withIndex("by_balance_and_lastInteractionAt", (q) =>
-              q.eq("balance", ctx.workspace.legacyBalance!),
-            )
-            .order("desc")
-            .take(MAX_CHAT_CANDIDATES)
-        : Promise.resolve([]),
-    ]);
+/** Match both ownership keys during the legacy migration for chats with a workspace id. */
+function chatBelongsToWorkspace(chat: Doc<"aisdk_chats">, workspace: Doc<"workspaces">) {
+  return (
+    chat.workspace === workspace._id &&
+    (chat.balance === undefined || chat.balance === workspace.legacyBalance)
+  );
+}
 
-    const chatsById = new Map<Id<"aisdk_chats">, (typeof ownChats)[number]>();
-    const belongsToWorkspace = (chat: (typeof ownChats)[number]) =>
-      chat.workspace === ctx.workspace._id &&
-      (chat.balance === undefined || chat.balance === ctx.workspace.legacyBalance);
-    for (const chat of ownChats) {
-      if (belongsToWorkspace(chat)) chatsById.set(chat._id, chat);
+/**
+ * Bounded chat candidates visible to `userId`: their own chats plus workspace-scoped chats, and
+ * their legacy balance-only chats. `project` filters to one Project's chats, `null` to chats
+ * without a Project, and `undefined` applies no Project filter.
+ */
+async function chatCandidates(
+  ctx: QueryCtx,
+  workspace: Doc<"workspaces">,
+  userId: string,
+  project: Id<"projects"> | null | undefined,
+): Promise<Doc<"aisdk_chats">[]> {
+  const projectKey = project ?? undefined;
+
+  // Read creator-owned and explicitly shared chats separately: workspace membership, including
+  // ownership, must never expose another user's personal chats, and filing a chat under a
+  // Project never shares it.
+  const ownChats =
+    project === undefined
+      ? ctx.db
+          .query("aisdk_chats")
+          .withIndex("by_workspace_and_userId_and_lastInteractionAt", (q) =>
+            q.eq("workspace", workspace._id).eq("userId", userId),
+          )
+      : ctx.db
+          .query("aisdk_chats")
+          .withIndex("by_workspace_and_userId_and_project_and_lastInteractionAt", (q) =>
+            q.eq("workspace", workspace._id).eq("userId", userId).eq("project", projectKey),
+          );
+  const sharedChats =
+    project === undefined
+      ? ctx.db
+          .query("aisdk_chats")
+          .withIndex("by_workspace_and_scope_and_lastInteractionAt", (q) =>
+            q.eq("workspace", workspace._id).eq("scope", "workspace"),
+          )
+      : ctx.db
+          .query("aisdk_chats")
+          .withIndex("by_workspace_and_scope_and_project_and_lastInteractionAt", (q) =>
+            q.eq("workspace", workspace._id).eq("scope", "workspace").eq("project", projectKey),
+          );
+
+  const [own, shared, legacy] = await Promise.all([
+    ownChats.order("desc").take(MAX_CHAT_CANDIDATES),
+    sharedChats.order("desc").take(MAX_CHAT_CANDIDATES),
+    workspace.legacyBalance
+      ? ctx.db
+          .query("aisdk_chats")
+          .withIndex("by_balance_and_lastInteractionAt", (q) =>
+            q.eq("balance", workspace.legacyBalance!),
+          )
+          .order("desc")
+          .take(MAX_CHAT_CANDIDATES)
+      : Promise.resolve([]),
+  ]);
+
+  const chatsById = new Map<Id<"aisdk_chats">, Doc<"aisdk_chats">>();
+  for (const chat of [...own, ...shared]) {
+    if (chatBelongsToWorkspace(chat, workspace)) chatsById.set(chat._id, chat);
+  }
+  for (const chat of legacy) {
+    const matchesProject = project === undefined || chat.project === projectKey;
+    if (
+      matchesProject &&
+      chat.workspace === undefined &&
+      chat.userId === userId &&
+      (chat.scope === undefined || chat.scope === "personal")
+    ) {
+      chatsById.set(chat._id, chat);
     }
-    for (const chat of sharedChats) {
-      if (belongsToWorkspace(chat)) chatsById.set(chat._id, chat);
+  }
+  return [...chatsById.values()];
+}
+
+/**
+ * List up to 30 visible chats in a workspace, pinned first then most recent. `project` narrows
+ * to that Project's chats, `project: null` to chats without a Project; the privacy filter (own
+ * chats plus workspace-scoped chats) is the same in every case.
+ */
+export const ListChats = workspaceQuery({
+  args: { project: v.optional(v.union(v.id("projects"), v.null())) },
+  handler: async (ctx, args) => {
+    if (args.project) {
+      const project = await ctx.db.get("projects", args.project);
+      // A Project deleted while a list is subscribed has no chats left; a foreign one is an error.
+      if (!project) return [];
+      if (project.workspace !== ctx.workspace._id) throw new Error("Project not found.");
     }
-    for (const chat of legacyChats) {
-      if (
-        chat.workspace === undefined &&
-        chat.userId === ctx.identity._id &&
-        (chat.scope === undefined || chat.scope === "personal")
-      ) {
-        chatsById.set(chat._id, chat);
-      }
-    }
-    const chats = [...chatsById.values()];
+
+    const chats = await chatCandidates(ctx, ctx.workspace, ctx.identity._id, args.project);
 
     return chats
       .sort((a, b) => {
@@ -337,6 +449,7 @@ export const ListChats = workspaceQuery({
         lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
         activeStream: chat.activeStream ?? false,
         canManage: canManageChat(chat, ctx.workspace, ctx.identity._id),
+        project: chat.project,
       }));
   },
 });

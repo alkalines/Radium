@@ -28,6 +28,18 @@ export function canManageChat(
   return chat.userId === userId || (chat.scope === "workspace" && workspace.ownerId === userId);
 }
 
+/**
+ * Project management (rename, appearance, delete) belongs to its creator and the workspace owner.
+ * Any workspace member may read Projects; changing a Project's Worker folder is owner-only.
+ */
+export function canManageProject(
+  project: { userId: string },
+  workspace: Pick<WorkspaceOwner, "ownerId">,
+  userId: string,
+): boolean {
+  return project.userId === userId || workspace.ownerId === userId;
+}
+
 /** Visibility and ownership fields for a chat with workspace routing metadata. */
 export type ChatOwnership = {
   userId: string;

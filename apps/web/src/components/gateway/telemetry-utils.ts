@@ -1,3 +1,20 @@
+import type { RunState } from "@/components/agentic/agent-status";
+
+/** Trace status as stored by the backend. */
+export type TraceStatusValue = "ok" | "error" | "aborted" | "running";
+
+const traceRunStates: Record<TraceStatusValue, RunState> = {
+  ok: "succeeded",
+  error: "failed",
+  aborted: "cancelled",
+  running: "executing",
+};
+
+/** Map a trace status to the shared `RunState` once at the data boundary. */
+export function traceRunState(status: TraceStatusValue): RunState {
+  return traceRunStates[status];
+}
+
 /** Format a timestamp using the browser locale and timezone. */
 export function formatTelemetryDate(timestamp: number): string {
   return new Date(timestamp).toLocaleString(undefined, {

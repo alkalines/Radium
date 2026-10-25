@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { authClient } from "@/lib/auth-client";
 import { useFrontendLogger } from "@/lib/logging";
+import { MotionProvider } from "@/lib/motion";
 import { themePlugin } from "@/lib/auth/theme-plugin";
 import { AuthProvider } from "./auth/auth-provider";
 import { WorkspaceProvider } from "./workspaces/workspace-provider";
@@ -33,7 +34,7 @@ export function Providers({
       <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
         <AuthProvider
           authClient={authClient}
-          redirectTo="/settings/account"
+          redirectTo="/"
           navigate={navigate}
           plugins={[themePlugin({ useTheme })]}
           Link={Link}
@@ -41,7 +42,9 @@ export function Providers({
           <ConvexAuthQueryCache>
             <OperationalLogging>
               <WorkspaceProvider>
-                <TooltipProvider>{children}</TooltipProvider>
+                <MotionProvider>
+                  <TooltipProvider>{children}</TooltipProvider>
+                </MotionProvider>
               </WorkspaceProvider>
             </OperationalLogging>
           </ConvexAuthQueryCache>

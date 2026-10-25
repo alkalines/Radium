@@ -5,6 +5,7 @@ import { CalendarIcon, CheckIcon, CopyIcon, ScrollTextIcon } from "lucide-react"
 import { useMemo, useState } from "react";
 import type { DateRange } from "react-day-picker";
 
+import { WorkspacePageHeader } from "@/components/settings/workspace-page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,7 @@ import { cn } from "@/lib/utils";
 import { api } from "backend/convex/_generated/api";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { ProviderLogo } from "./provider-logo";
+import { DataSection } from "./data-section";
 
 type Generation = FunctionReturnType<typeof api.observability.usage.getGenerations>[number];
 const DAY_IN_MS = 86_400_000;
@@ -122,14 +124,11 @@ export function LogsPanel() {
   }, [generations, preset, customRange]);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold tracking-tight">Logs</h2>
-        <p className="text-sm text-muted-foreground">
-          Every gateway request in this workspace. Select a row to inspect identifiers, tokens,
-          throughput, and latency.
-        </p>
-      </div>
+    <>
+      <WorkspacePageHeader
+        title="Logs"
+        description="Every gateway request in this workspace. Select a row to inspect identifiers, tokens, throughput, and latency."
+      />
 
       {!workspaceId && (
         <Alert>
@@ -196,14 +195,16 @@ export function LogsPanel() {
       )}
 
       {workspaceId && generations === undefined ? (
-        <div className="flex flex-col gap-2">
-          <Skeleton className="h-10" />
-          <Skeleton className="h-10" />
-          <Skeleton className="h-10" />
-        </div>
+        <DataSection title="Requests">
+          <div className="flex flex-col gap-2 p-4">
+            <Skeleton className="h-6" />
+            <Skeleton className="h-6" />
+            <Skeleton className="h-6" />
+          </div>
+        </DataSection>
       ) : workspaceId && filtered ? (
         filtered.length === 0 ? (
-          <Empty className="py-12">
+          <Empty className="border border-dashed py-12">
             <EmptyHeader>
               <EmptyMedia variant="icon">
                 <ScrollTextIcon />
@@ -217,7 +218,7 @@ export function LogsPanel() {
             </EmptyHeader>
           </Empty>
         ) : (
-          <div className="overflow-x-auto rounded-lg border">
+          <DataSection title="Requests" contentClassName="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -244,12 +245,12 @@ export function LogsPanel() {
                 ))}
               </TableBody>
             </Table>
-          </div>
+          </DataSection>
         )
       ) : null}
 
       <GenerationSheet generation={selected} onOpenChange={(open) => !open && setSelected(null)} />
-    </div>
+    </>
   );
 }
 
@@ -381,10 +382,8 @@ function GenerationDetail({ generation }: { generation: Generation }) {
 
 function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
-      </span>
+    <div className="flex flex-col gap-2">
+      <span className="text-sm font-medium">{title}</span>
       <dl className="flex flex-col gap-1">{children}</dl>
     </div>
   );
