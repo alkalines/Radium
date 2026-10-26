@@ -58,6 +58,12 @@ removing an account in **Gateway > Credentials** deletes its stored session. See
 cookie with a request-scoped internal proxy fetch, rather than calling the public
 login route or implementing another model router.
 
+Usage limits are read from the same session: the inference handler is built with
+a `fetch` that sees raw Codex responses, so `x-codex-*` headers reach the
+[limit snapshot](Limits.md) even though the proxy strips them, and the usage poll
+builds a separate handler with `dangerouslyAllowTokenExport` to call
+`wham/usage` from inside the backend action. Tokens never leave the backend.
+
 ### Configuration And Failures
 
 - `VITE_CONVEX_SITE_URL`: frontend server's upstream Convex HTTP site origin.

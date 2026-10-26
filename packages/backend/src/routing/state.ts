@@ -41,6 +41,8 @@ import {
   type CooldownReason,
   type RoutingSettings,
 } from "./settings";
+import { limitObservationValidator } from "../limits/meters";
+import { recordAttemptLimits } from "../limits/store";
 
 const sessionValidator = v.object({
   primary: v.string(),
@@ -254,7 +256,8 @@ export const pick = internalMutation({
  * Record one attempt outcome for a provider credential. Failures schedule cooldowns (unless
  * cooling is disabled) and drop session bindings per `sessionAffinityRebindOn`. Successes clear
  * cooldowns recorded before the attempt was dispatched, so a slow success cannot erase a newer
- * failure.
+ * failure. Usage-limit meters captured from the upstream response (`limits`) and credential
+ * health go to the credential's limit snapshot; they never affect routing.
  */
 export const reportResult = internalMutation({
   args: {
@@ -277,10 +280,19 @@ export const reportResult = internalMutation({
         message: v.string(),
       }),
     ),
+    limits: v.optional(limitObservationValidator),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     const now = Date.now();
+
+    if (args.credential) {
+      await recordAttemptLimits(
+        ctx,
+        { credential: args.credential, observation: args.limits, outcome: args.outcome },
+        now,
+      );
+    }
 
     if (args.outcome.type === "success") {
       for (const model of [args.model, ALL_MODELS]) {

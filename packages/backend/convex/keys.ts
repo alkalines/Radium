@@ -6,6 +6,7 @@ import { internal } from "./_generated/api";
 import { AddFunction, MultiplyFunction } from "@/math";
 import { canAccessWorkspace, isByokRequest } from "../src/workspaces/policy";
 import { providerSnapshotFromCatalog } from "../src/workspaces/provider";
+import { scheduleBudgetRefresh } from "../src/limits/store";
 import { authComponent } from "./auth";
 import { requireOwnedWorkspace } from "./workspaces";
 
@@ -328,6 +329,7 @@ export const recordCompletion = internalMutation({
       },
     };
     const completionId = await ctx.db.insert("chat_completions", completionRecord);
+    if (credential) await scheduleBudgetRefresh(ctx, credential, Date.now());
 
     if (args.request.telemetry_request_id) {
       const traces = resolvedWorkspace

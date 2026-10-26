@@ -142,7 +142,8 @@ describe("ChatGPT subscription handler", () => {
       userId: user._id,
       account: "account-1",
       credentials: { sessionCookie: "lwc_chatgpt_subscription=session-cookie" },
-      preview: { account: "chatgpt@example.test · plus plan" },
+      preview: { account: "chatgpt@example.test" },
+      plan: "plus",
     });
   });
 

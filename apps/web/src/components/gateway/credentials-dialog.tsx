@@ -1,11 +1,14 @@
 import {
   useCallback,
   useId,
+  useMemo,
   useState,
   type ComponentType,
   type FormEvent,
   type ReactNode,
 } from "react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import {
@@ -41,10 +44,25 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+  InputGroupText,
+} from "@/components/ui/input-group";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import {
+  CompactCredentialMeters,
+  formatPlan,
+  type BudgetPeriod,
+  type CredentialLimits,
+  type LimitSettings,
+} from "./limit-meters";
 import { ProviderLogo } from "./provider-logo";
 import { authClient } from "@/lib/auth-client";
 
@@ -439,6 +457,8 @@ function ChatGPTLogin({ state }: { state: UseLoginWithChatGPTResult }) {
  * The provider's credentials in fill-first order. Every credential with a row can be relabeled.
  * Passing `env` marks them as API keys: previews render as Machine text and values can be
  * replaced. OAuth accounts never take new values here; signing in again replaces a session.
+ * Rows show their tightest usage meters from `api.limits.list`, joined by credential id; Edit
+ * waits for that query so the budget fields start from the stored budget.
  */
 function CredentialList({
   title,
@@ -452,12 +472,23 @@ function CredentialList({
   env?: string[];
 }) {
   const [editingId, setEditingId] = useState<Id<"workspace_credentials"> | null>(null);
+  const limitsQuery = useQuery(convexQuery(api.limits.list, { workspace: workspaceId }));
+  const { data: limitSettings } = useQuery(
+    convexQuery(api.limits.getSettings, { workspace: workspaceId }),
+  );
+  const limitsByCredential = useMemo(
+    () => new Map(limitsQuery.data?.map((entry) => [entry.credential, entry])),
+    [limitsQuery.data],
+  );
+  // A failed limits query must not lock editing; the form then leaves out the limit fields.
+  const limitsSettled = limitsQuery.data !== undefined || limitsQuery.isError;
 
   return (
     <GroupList title={title}>
       {credentials.map((credential) => {
         const credentialId = credential._id;
         const key = credentialId ?? `legacy:${credential.provider}`;
+        const limits = credentialId ? limitsByCredential.get(credentialId) : undefined;
 
         // Legacy credentials (no row yet) can only be removed, so they are never editable.
         if (credentialId && credentialId === editingId) {
@@ -467,6 +498,7 @@ function CredentialList({
               workspaceId={workspaceId}
               credentialId={credentialId}
               credential={credential}
+              limits={limitsQuery.data ? (limits ?? null) : undefined}
               env={env ?? []}
               onDone={() => setEditingId(null)}
             />
@@ -478,8 +510,10 @@ function CredentialList({
             key={key}
             workspaceId={workspaceId}
             credential={credential}
+            limits={limits}
+            limitSettings={limitSettings}
             isKey={env !== undefined}
-            onEdit={credentialId ? () => setEditingId(credentialId) : undefined}
+            onEdit={credentialId && limitsSettled ? () => setEditingId(credentialId) : undefined}
           />
         );
       })}
@@ -487,14 +521,22 @@ function CredentialList({
   );
 }
 
+/**
+ * One credential: name, masked preview, placement, enable switch, and actions. When the
+ * credential has limit data, up to two compact meters sit under the preview (tooltip: every meter).
+ */
 function CredentialRow({
   workspaceId,
   credential,
+  limits,
+  limitSettings,
   isKey,
   onEdit,
 }: {
   workspaceId: Id<"workspaces">;
   credential: ProviderCredential;
+  limits?: CredentialLimits;
+  limitSettings?: LimitSettings;
   isKey: boolean;
   onEdit?: () => void;
 }) {
@@ -547,7 +589,7 @@ function CredentialRow({
     credential.priority !== 0 ? `Priority ${credential.priority}` : null,
     credential.weight !== 1 ? `Weight ${credential.weight}` : null,
   ].filter(Boolean);
-  const description =
+  const summary =
     placement.length > 0 ? (
       <>
         {preview}
@@ -557,13 +599,22 @@ function CredentialRow({
     ) : (
       preview
     );
+  const description =
+    limits && limitSettings ? (
+      <>
+        {summary ? <div className="truncate">{summary}</div> : null}
+        <CompactCredentialMeters limits={limits} settings={limitSettings} />
+      </>
+    ) : (
+      summary
+    );
 
   return (
     <Row
       data-disabled={!credential.enabled}
       className="data-[disabled=true]:opacity-60"
       title={<span title={credential.name}>{credential.name}</span>}
-      tag={credentialId ? undefined : "Legacy"}
+      tag={credentialId ? limits?.plan && formatPlan(limits.plan) : "Legacy"}
       description={description}
     >
       {credentialId ? (
@@ -603,31 +654,53 @@ function CredentialRow({
   );
 }
 
+const budgetPeriods: Array<{ value: BudgetPeriod; label: string }> = [
+  { value: "day", label: "Day" },
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" },
+];
+
 /**
  * Inline edit for one credential. Label, priority, and weight save on their own; for API keys
  * (`env` non-empty), values replace the stored ones only when every env field is filled, since
  * the backend replaces all values at once. Priority and weight rank the credential inside its
  * provider; the backend rejects out-of-range values.
+ *
+ * `limits` is the credential's `api.limits.list` entry (`null` when it has none, `undefined` when
+ * the query failed, which leaves the limit fields out). The budget (USD per UTC day, week, or
+ * month, metered from Radium usage) saves with the form; an empty amount clears it. A provider
+ * whose limit adapter declares an extra key (`limitKey`) gets a write-only field for it.
  */
 function CredentialEditForm({
   workspaceId,
   credentialId,
   credential,
+  limits,
   env,
   onDone,
 }: {
   workspaceId: Id<"workspaces">;
   credentialId: Id<"workspace_credentials">;
   credential: ProviderCredential;
+  limits: CredentialLimits | null | undefined;
   env: string[];
   onDone: () => void;
 }) {
   const updateCredential = useMutation(api.providers.updateCredential);
+  const setBudget = useMutation(api.limits.setBudget);
+  const setLimitKey = useMutation(api.limits.setLimitKey);
   const fieldId = useId();
   const [label, setLabel] = useState(credential.label ?? "");
   const [priority, setPriority] = useState(String(credential.priority));
   const [weight, setWeight] = useState(String(credential.weight));
   const [values, setValues] = useState<Record<string, string>>({});
+  const currentBudget = limits?.budget;
+  const [budgetAmount, setBudgetAmount] = useState(
+    currentBudget ? String(currentBudget.amount) : "",
+  );
+  const [budgetPeriod, setBudgetPeriod] = useState<BudgetPeriod>(currentBudget?.period ?? "month");
+  const [limitKeyValue, setLimitKeyValue] = useState("");
+  const [removingLimitKey, setRemovingLimitKey] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const filledCount = env.filter((name) => values[name]?.trim()).length;
@@ -639,8 +712,32 @@ function CredentialEditForm({
   const placementInvalid = parsedPriority === undefined || parsedWeight === undefined;
   const placementChanged =
     parsedPriority !== credential.priority || parsedWeight !== credential.weight;
+  const credentialChanged = labelChanged || replacing || placementChanged;
+
+  // Empty amount = no budget; otherwise a positive USD amount with at most two decimals.
+  const amountText = budgetAmount.trim();
+  const parsedBudget =
+    amountText === ""
+      ? null
+      : /^\d+(\.\d{1,2})?$/.test(amountText) && Number(amountText) > 0
+        ? Number(amountText)
+        : undefined;
+  const budgetInvalid = parsedBudget === undefined;
+  const budgetChanged =
+    limits !== undefined &&
+    (parsedBudget === null
+      ? currentBudget !== undefined
+      : parsedBudget !== undefined &&
+        (parsedBudget !== currentBudget?.amount || budgetPeriod !== currentBudget?.period));
+  const limitKeyChanged = limitKeyValue.trim() !== "";
+
   const canSave =
-    !submitting && !partial && !placementInvalid && (labelChanged || replacing || placementChanged);
+    !submitting &&
+    !removingLimitKey &&
+    !partial &&
+    !placementInvalid &&
+    !budgetInvalid &&
+    (credentialChanged || budgetChanged || limitKeyChanged);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -648,19 +745,48 @@ function CredentialEditForm({
 
     setSubmitting(true);
     try {
-      await updateCredential({
-        workspace: workspaceId,
-        credential: credentialId,
-        label: labelChanged ? label.trim() : undefined,
-        priority: placementChanged ? parsedPriority : undefined,
-        weight: placementChanged ? parsedWeight : undefined,
-        credentials: replacing ? values : undefined,
-      });
+      if (credentialChanged) {
+        await updateCredential({
+          workspace: workspaceId,
+          credential: credentialId,
+          label: labelChanged ? label.trim() : undefined,
+          priority: placementChanged ? parsedPriority : undefined,
+          weight: placementChanged ? parsedWeight : undefined,
+          credentials: replacing ? values : undefined,
+        });
+      }
+      if (budgetChanged) {
+        await setBudget({
+          workspace: workspaceId,
+          credential: credentialId,
+          budget: parsedBudget ? { amount: parsedBudget, period: budgetPeriod } : null,
+        });
+      }
+      if (limitKeyChanged) {
+        await setLimitKey({
+          workspace: workspaceId,
+          credential: credentialId,
+          key: limitKeyValue.trim(),
+        });
+      }
       toast.success("Saved changes.");
       onDone();
     } catch (error) {
       toast.error(errorMessage(error, "Failed to save changes."));
       setSubmitting(false);
+    }
+  }
+
+  async function removeLimitKey() {
+    if (!limits?.limitKey) return;
+    setRemovingLimitKey(true);
+    try {
+      await setLimitKey({ workspace: workspaceId, credential: credentialId, key: null });
+      toast.success(`Removed the ${limits.limitKey.label.toLowerCase()}.`);
+    } catch (error) {
+      toast.error(errorMessage(error, "Failed to remove the key."));
+    } finally {
+      setRemovingLimitKey(false);
     }
   }
 
@@ -725,6 +851,100 @@ function CredentialEditForm({
               ) : null}
             </Field>
           ))}
+          {limits !== undefined ? (
+            <Field data-invalid={budgetInvalid}>
+              <FieldLabel htmlFor={`${fieldId}-budget`}>Budget</FieldLabel>
+              <div className="flex flex-wrap items-center gap-2">
+                <InputGroup className="w-36">
+                  <InputGroupAddon>
+                    <InputGroupText>$</InputGroupText>
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    id={`${fieldId}-budget`}
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder="None"
+                    aria-invalid={budgetInvalid}
+                    className="tabular-nums"
+                    value={budgetAmount}
+                    onChange={(event) => setBudgetAmount(event.target.value)}
+                  />
+                  {budgetAmount ? (
+                    <InputGroupAddon align="inline-end">
+                      <InputGroupButton
+                        aria-label="Clear budget"
+                        onClick={() => setBudgetAmount("")}
+                      >
+                        Clear
+                      </InputGroupButton>
+                    </InputGroupAddon>
+                  ) : null}
+                </InputGroup>
+                <span className="text-sm text-muted-foreground">per</span>
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  size="sm"
+                  spacing={0}
+                  aria-label="Budget period"
+                  disabled={amountText === ""}
+                  value={budgetPeriod}
+                  onValueChange={(value) => {
+                    const period = budgetPeriods.find((entry) => entry.value === value);
+                    if (period) setBudgetPeriod(period.value);
+                  }}
+                >
+                  {budgetPeriods.map((period) => (
+                    <ToggleGroupItem key={period.value} value={period.value}>
+                      {period.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </div>
+              <FieldDescription>
+                {budgetInvalid
+                  ? "Enter a dollar amount above 0, or clear it for no budget."
+                  : "Tracks spend from Radium usage only, per UTC period. Leave empty for no budget."}
+              </FieldDescription>
+            </Field>
+          ) : null}
+          {limits?.limitKey ? (
+            <Field>
+              <FieldLabel htmlFor={`${fieldId}-limit-key`}>{limits.limitKey.label}</FieldLabel>
+              <InputGroup>
+                <InputGroupInput
+                  id={`${fieldId}-limit-key`}
+                  type="password"
+                  autoComplete="off"
+                  placeholder={limits.limitKey.preview ? "Keep current key" : "Optional"}
+                  value={limitKeyValue}
+                  onChange={(event) => setLimitKeyValue(event.target.value)}
+                />
+                {limits.limitKey.preview ? (
+                  <InputGroupAddon align="inline-end">
+                    <InputGroupButton
+                      disabled={removingLimitKey || submitting}
+                      aria-label={`Remove the ${limits.limitKey.label}`}
+                      onClick={() => void removeLimitKey()}
+                    >
+                      {removingLimitKey && <Spinner data-icon="inline-start" />}
+                      Remove
+                    </InputGroupButton>
+                  </InputGroupAddon>
+                ) : null}
+              </InputGroup>
+              <FieldDescription>
+                {limits.limitKey.description}
+                {limits.limitKey.preview ? (
+                  <>
+                    {" "}
+                    Current:{" "}
+                    <span className="font-mono text-[13px]">{limits.limitKey.preview}</span>
+                  </>
+                ) : null}
+              </FieldDescription>
+            </Field>
+          ) : null}
         </FieldGroup>
         {partial ? (
           <p className="text-sm text-muted-foreground">

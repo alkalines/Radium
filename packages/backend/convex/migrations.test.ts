@@ -151,3 +151,87 @@ test("apiKeysFromKeys propagates a source revocation to its mapped key", async (
   const apiKey = await t.run((ctx) => ctx.db.get("api_keys", ids.apiKey));
   expect(apiKey?.revokedAt).toBe(123);
 });
+
+test("credentialLimits makes credentials added before limit tracking due for polling", async () => {
+  const t = makeTest();
+  const credential = await t.run(async (ctx) => {
+    const workspace = await ctx.db.insert("workspaces", {
+      ownerType: "user",
+      ownerId: "alice",
+      name: "Alice workspace",
+    });
+    await ctx.db.insert("workspace_configurations", {
+      workspace,
+      provider: "openrouter",
+      enabled: true,
+      active: true,
+      snapshot: {
+        slug: "openrouter",
+        name: "OpenRouter",
+        npm: "@openrouter/ai-sdk-provider",
+        env: ["OPENROUTER_API_KEY"],
+        models: [],
+      },
+    });
+    return await ctx.db.insert("workspace_credentials", {
+      workspace,
+      provider: "openrouter",
+      preview: { OPENROUTER_API_KEY: "sk-or…1234" },
+      secretName: "pre-limits",
+    });
+  });
+
+  await t.mutation(anyApi.migrations.credentialLimits, oneBatch);
+
+  const row = await t.run((ctx) =>
+    ctx.db
+      .query("credential_limits")
+      .withIndex("by_credential", (q) => q.eq("credential", credential))
+      .unique(),
+  );
+  expect(row?.nextPollAt).toBeLessThanOrEqual(Date.now());
+});
+
+test("credentialLimits moves a ChatGPT login plan from the account preview to the snapshot", async () => {
+  const t = makeTest();
+  const credential = await t.run(async (ctx) => {
+    const workspace = await ctx.db.insert("workspaces", {
+      ownerType: "user",
+      ownerId: "alice",
+      name: "Alice workspace",
+    });
+    await ctx.db.insert("workspace_configurations", {
+      workspace,
+      provider: "openai-codex",
+      enabled: true,
+      active: true,
+      snapshot: {
+        slug: "openai-codex",
+        name: "ChatGPT Subscription",
+        npm: "@opencoredev/loginwithchatgpt-ai",
+        env: ["sessionCookie"],
+        credential_type: "oauth",
+        oauth_flow: "chatgpt-device",
+        models: [],
+      },
+    });
+    return await ctx.db.insert("workspace_credentials", {
+      workspace,
+      provider: "openai-codex",
+      preview: { account: "alice@example.test · plus plan" },
+      secretName: "pre-limits",
+    });
+  });
+
+  await t.mutation(anyApi.migrations.credentialLimits, oneBatch);
+
+  const stored = await t.run(async (ctx) => ({
+    credential: await ctx.db.get("workspace_credentials", credential),
+    limits: await ctx.db
+      .query("credential_limits")
+      .withIndex("by_credential", (q) => q.eq("credential", credential))
+      .unique(),
+  }));
+  expect(stored.credential?.preview).toEqual({ account: "alice@example.test" });
+  expect(stored.limits?.plan).toBe("plus");
+});

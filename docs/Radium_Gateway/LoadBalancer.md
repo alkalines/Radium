@@ -70,7 +70,7 @@ Owners edit everything in **Gateway > Routing**: workspace strategy, session aff
 ## Limitations
 
 - Credential priority and weight are scoped to their provider; there is no global credential tier across providers (CLIProxyAPI's model). Provider priority covers cross-provider ordering.
-- Quota and usage-limit data only exclude providers through cooldowns; nothing ranks providers by remaining quota (same as CLIProxyAPI). Pacing is a proposal in the research doc.
+- Quota only excludes credentials through cooldowns; the per-credential limit snapshots in [Gateway usage limits](Limits.md) are display and event data, and nothing ranks providers by remaining quota (same as CLIProxyAPI). Pacing is a proposal in the research doc.
 - Bindings target a credential, not an adapter-declared cache domain, and their lifetime is the configured TTL rather than the upstream cache lifetime.
 - Cache hints are not forwarded upstream yet (`prompt_cache_key`, OpenRouter `session_id`).
 - `pick` and `reportResult` add two mutations per attempt; the per-model cursor is a single document, so very high request rates on one model contend on it.

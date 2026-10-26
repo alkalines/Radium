@@ -23,6 +23,13 @@ import {
   providerRoutingValidator,
   routingSettingsValidator,
 } from "../src/routing/settings";
+import {
+  alertStateValidator,
+  credentialBudgetValidator,
+  limitSettingsValidator,
+  meterValidator,
+} from "../src/limits/meters";
+import { limitEventKindValidator } from "../src/limits/events";
 
 export default defineSchema({
   /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
@@ -140,6 +147,13 @@ export default defineSchema({
     priority: v.optional(v.number()),
     /** Share inside the provider for `weighted-round-robin`; 0 excludes it. Absent means 1. */
     weight: v.optional(v.number()),
+    /** Owner budget metered from Radium's own completions; absent means none. */
+    budget: v.optional(credentialBudgetValidator),
+    /**
+     * Masked preview of the adapter-declared limit key (OpenRouter management key), stored in
+     * Secret Store next to the credential; absent when none is set.
+     */
+    limitKeyPreview: v.optional(v.string()),
   }).index("by_workspace_and_provider", ["workspace", "provider"]),
   /** Gateway API keys are workspace-scoped and store only a hash and preview. */
   api_keys: defineTable({
@@ -171,6 +185,8 @@ export default defineSchema({
     workerTools: v.optional(v.array(chatWorkerToolValidator)),
     /** Gateway routing strategy, session affinity, retry, and cooldown; absent means defaults. */
     routing: v.optional(routingSettingsValidator),
+    /** Usage-limit alert thresholds; absent means defaults. */
+    limits: v.optional(limitSettingsValidator),
   }).index("by_workspace", ["workspace"]),
   /**
    * Folder-like grouping of chats inside a workspace. Deleting a Project detaches its chats;
@@ -364,6 +380,70 @@ export default defineSchema({
       "model",
     ])
     .index("by_nextRetryAt", ["nextRetryAt"]),
+  /**
+   * Usage-limit snapshot of one pooled credential: meters from response headers, error bodies,
+   * polls, and its metered budget; poll scheduling; and the alert state behind `limit_events`.
+   * Removed with the credential.
+   */
+  credential_limits: defineTable({
+    workspace: v.id("workspaces"),
+    provider: v.string(),
+    credential: v.id("workspace_credentials"),
+    meters: v.array(meterValidator),
+    /** Upstream plan, e.g. ChatGPT `plan_type`. */
+    plan: v.optional(v.string()),
+    /** Last write of the snapshot; drives write throttling. */
+    updatedAt: v.number(),
+    /** Last meters from real traffic (headers or error bodies); fresh data defers polls. */
+    passiveAt: v.optional(v.number()),
+    /** Last successful poll. */
+    polledAt: v.optional(v.number()),
+    /** Last poll attempt (scheduled or owner refresh). */
+    pollAttemptAt: v.optional(v.number()),
+    /** Next scheduled poll; absent when the provider has no pollable adapter. */
+    nextPollAt: v.optional(v.number()),
+    pollError: v.optional(
+      v.object({ message: v.string(), status: v.optional(v.number()), at: v.number() }),
+    ),
+    /** Consecutive failed polls; drives backoff and one `poll_failed` per streak. */
+    pollFailures: v.optional(v.number()),
+    /** Highest alert fired per meter since it last re-armed. */
+    alerts: v.array(alertStateValidator),
+    /** Set when `credential_expired` fired; cleared (with `credential_restored`) by a success. */
+    expiredAt: v.optional(v.number()),
+    /** Budget period end; the poll cron recomputes the budget meter once it passes. */
+    budgetResetsAt: v.optional(v.number()),
+    /** A budget recompute is scheduled; coalesces completions. */
+    budgetPendingAt: v.optional(v.number()),
+  })
+    .index("by_credential", ["credential"])
+    .index("by_workspace", ["workspace"])
+    .index("by_nextPollAt", ["nextPollAt"])
+    .index("by_budgetResetsAt", ["budgetResetsAt"]),
+  /**
+   * Usage-limit and credential-health events, each with its complete payload (meter before and
+   * after, the credential's snapshot, provider and credential identity) for later delivery
+   * channels. Kept 30 days; credential names are captured so events outlive their credential.
+   */
+  limit_events: defineTable({
+    workspace: v.id("workspaces"),
+    kind: limitEventKindValidator,
+    provider: v.string(),
+    providerName: v.string(),
+    credential: v.optional(v.id("workspace_credentials")),
+    credentialName: v.string(),
+    meter: v.optional(meterValidator),
+    previous: v.optional(meterValidator),
+    threshold: v.optional(v.number()),
+    /** Upstream HTTP status for credential and poll events. */
+    status: v.optional(v.number()),
+    message: v.string(),
+    snapshot: v.object({ meters: v.array(meterValidator), plan: v.optional(v.string()) }),
+    settings: limitSettingsValidator,
+    occurredAt: v.number(),
+  })
+    .index("by_workspace_and_occurredAt", ["workspace", "occurredAt"])
+    .index("by_occurredAt", ["occurredAt"]),
   /**
    * Session-affinity binding from a session key (`<session>::<model>`) to a provider credential.
    * `credential` is absent for a legacy credential or a binding made before credential pools; such

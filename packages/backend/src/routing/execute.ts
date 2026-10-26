@@ -1,6 +1,7 @@
 import { internal } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { ActionCtx } from "../../convex/_generated/server";
+import type { LimitObservation } from "../limits/meters";
 import { createRoutedProvider, type RoutedProvider } from "./connector";
 import {
   boundedMessage,
@@ -110,10 +111,11 @@ export async function routeWithFailover<T>(
       const attempted = { provider: target.slug, credential: target.credential.id };
       tried.push(attempted);
       const dispatchedAt = Date.now();
-      const report = (outcome: ReportOutcome) =>
-        reportOutcome(ctx, request, attempted, outcome, dispatchedAt);
-
       let routed: RoutedProvider | undefined;
+      // Meters the attempt's upstream responses carried so far; each report takes them once.
+      const report = (outcome: ReportOutcome) =>
+        reportOutcome(ctx, request, attempted, outcome, dispatchedAt, routed?.limits?.take());
+
       let outcome: AttemptOutcome<T> | undefined;
       try {
         routed = createRoutedProvider(ctx, target);
@@ -196,6 +198,7 @@ async function reportOutcome(
   target: { provider: string; credential?: Id<"workspace_credentials"> },
   outcome: ReportOutcome,
   dispatchedAt: number,
+  limits: LimitObservation | undefined,
 ) {
   // Routing state is advisory; a failed write must not fail the request itself.
   try {
@@ -207,6 +210,7 @@ async function reportOutcome(
       dispatchedAt,
       session: request.session,
       outcome,
+      ...(limits ? { limits } : {}),
     });
   } catch (error) {
     console.error("Failed to record routing outcome", { provider: target.provider, error });

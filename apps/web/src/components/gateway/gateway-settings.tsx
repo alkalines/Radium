@@ -1,4 +1,4 @@
-import { KeyRoundIcon, KeySquareIcon, RouteIcon, WaypointsIcon } from "lucide-react";
+import { GaugeIcon, KeyRoundIcon, KeySquareIcon, RouteIcon, WaypointsIcon } from "lucide-react";
 
 /**
  * Gateway settings pages served by `/gateway/$section`, which render in the 760px settings
@@ -9,6 +9,7 @@ export const gatewaySections = [
   { value: "providers", label: "Providers", icon: RouteIcon },
   { value: "credentials", label: "Credentials", icon: KeyRoundIcon },
   { value: "routing", label: "Routing", icon: WaypointsIcon },
+  { value: "limits", label: "Limits", icon: GaugeIcon },
   { value: "keys", label: "API keys", icon: KeySquareIcon },
 ] as const;
 

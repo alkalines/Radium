@@ -23,6 +23,9 @@ Chatroom uses this routing path rather than maintaining a second router.
   request provider preferences, configured in **Gateway > Routing**.
 - [Credentials](Radium_Gateway/Credentials.md): per-provider pools of API keys
   and OAuth/subscription accounts, managed in **Gateway > Credentials**.
+- [Usage limits](Radium_Gateway/Limits.md): per-credential limit and balance
+  snapshots (ChatGPT plan windows, OpenRouter key limits and balance, owner
+  budgets), shown in **Gateway > Limits**, with recorded limit events.
 
 The [Chatroom overview](Radium_Chatroom.md) describes the shared workspace chat
 surface and its owner/member behavior.
@@ -42,8 +45,8 @@ credits or charge the user.
 ## Planned And Limited
 
 Responses, Anthropic Messages, Gemini, and Grok protocol compatibility are future
-work. Routing rotates across each provider's credential pool; per-account
-usage-limit tracking and quota-aware pacing are future work. Better Auth organization
+work. Routing rotates across each provider's credential pool; quota-aware pacing
+and delivery of limit events (inbox, email, webhooks) are future work. Better Auth organization
 ownership, organization invitations, organization-derived membership, and
 broader roles are future work; direct membership is not an invitation flow.
 Application-level encryption and an optional explicit owner-auditing mode are

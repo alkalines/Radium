@@ -1,5 +1,7 @@
 import {
   createChatGPTHandler,
+  type ChatGPTTokens,
+  type CreateChatGPTHandlerOptions,
   type KeyValueStore,
   type RateLimitBucket,
   type StoredSession,
@@ -43,7 +45,14 @@ function createStore<T>(ctx: ActionCtx, namespace: SubscriptionNamespace): KeyVa
   };
 }
 
-function createHandler(ctx: ActionCtx) {
+/**
+ * `overrides.fetch` is the library's raw upstream fetch (Codex and token requests), used to read
+ * usage-limit headers the proxy drops. Token export is enabled only by {@link getChatGPTTokens}.
+ */
+function createHandler(
+  ctx: ActionCtx,
+  overrides: Pick<CreateChatGPTHandlerOptions, "fetch" | "dangerouslyAllowTokenExport"> = {},
+) {
   const secret = process.env.LWC_SECRET;
   if (!secret) {
     throw new Error("LWC_SECRET must be configured in the Convex environment.");
@@ -62,15 +71,20 @@ function createHandler(ctx: ActionCtx) {
         store: createStore<RateLimitBucket>(ctx, "rate_limit"),
       },
     },
+    ...overrides,
   });
 }
 
-/** Creates the request-scoped fetch consumed by the ChatGPT AI SDK provider. */
+/**
+ * Creates the request-scoped fetch consumed by the ChatGPT AI SDK provider. `upstreamFetch`
+ * replaces the library's raw fetch to the Codex backend.
+ */
 export function createChatGPTSubscriptionFetch(
   ctx: ActionCtx,
   sessionCookie: string,
+  upstreamFetch?: typeof fetch,
 ): typeof fetch {
-  const handler = createHandler(ctx);
+  const handler = createHandler(ctx, upstreamFetch ? { fetch: upstreamFetch } : {});
   const sourceRequest = new Request(
     `https://radium.internal${CHATGPT_SUBSCRIPTION_PATH}/responses`,
     {
@@ -80,6 +94,22 @@ export function createChatGPTSubscriptionFetch(
   const proxyFetch = handler.proxyFetch(sourceRequest);
 
   return proxyFetch;
+}
+
+/**
+ * Fresh access token and account ID of a stored ChatGPT session, for the usage poll. Tokens stay
+ * inside the calling backend action; `undefined` when the session is gone.
+ */
+export async function getChatGPTTokens(
+  ctx: ActionCtx,
+  sessionCookie: string,
+): Promise<ChatGPTTokens | undefined> {
+  const handler = createHandler(ctx, { dangerouslyAllowTokenExport: true });
+  return await handler.getTokens(
+    new Request(`https://radium.internal${CHATGPT_SUBSCRIPTION_PATH}/session`, {
+      headers: { cookie: sessionCookie },
+    }),
+  );
 }
 
 /**
@@ -128,16 +158,14 @@ export async function handleChatGPTSubscription(
   // An unauthenticated status clears it only while the request still carries its cookie.
   if (path.endsWith("/status") && body?.status === "authenticated") {
     if (sessionCookie) {
-      const label = [body.user?.email, body.user?.plan && `${body.user.plan} plan`]
-        .filter(Boolean)
-        .join(" · ");
       await ctx.runMutation(internal.providers.bindOAuthCredential, {
         workspace,
         provider: OPENAI_CODEX_SLUG,
         userId: user._id,
         account: typeof body.user?.accountId === "string" ? body.user.accountId : undefined,
         credentials: { sessionCookie },
-        preview: { account: label || "Connected ChatGPT account" },
+        preview: { account: body.user?.email || "Connected ChatGPT account" },
+        plan: typeof body.user?.plan === "string" ? body.user.plan : undefined,
       });
     }
   } else if (

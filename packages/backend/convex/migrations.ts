@@ -29,6 +29,8 @@ import {
 } from "./secrets";
 import { providerSnapshotFromCatalog } from "../src/workspaces/provider";
 import { MAX_PROVIDER_CREDENTIALS, credentialSecretName } from "../src/workspaces/credentials";
+import { loadSnapshotTarget, recordLoginPlan } from "../src/limits/store";
+import { OPENAI_CODEX_SLUG } from "../src/provider_slugs";
 
 export const migrations = new Migrations(components.migrations, { schema });
 
@@ -953,6 +955,29 @@ export const runAll = migrations.runner([
   internal.migrations.tracesToWorkspaces,
   internal.migrations.spansToWorkspaces,
 ]);
+
+/**
+ * Create limit snapshots for credentials added before usage-limit tracking, so the poll cron
+ * covers them before their next routed request, and move the plan of ChatGPT accounts bound
+ * before then out of their preview (`email · plus plan`) into the snapshot. Run once with
+ * `migrations:runCredentialLimits`.
+ */
+export const credentialLimits = migrations.define({
+  table: "workspace_credentials",
+  batchSize: 25,
+  migrateOne: async (ctx, credential) => {
+    await loadSnapshotTarget(ctx, credential, Date.now());
+    if (credential.provider !== OPENAI_CODEX_SLUG) return;
+    const legacy = /^(?:(.+) · )?(\S+) plan$/.exec(credential.preview.account ?? "");
+    if (!legacy) return;
+    await recordLoginPlan(ctx, credential._id, legacy[2]!);
+    return {
+      preview: { ...credential.preview, account: legacy[1] ?? "Connected ChatGPT account" },
+    };
+  },
+});
+
+export const runCredentialLimits = migrations.runner(internal.migrations.credentialLimits);
 
 async function verifiedWorkspaceForBalance(
   ctx: QueryCtx,

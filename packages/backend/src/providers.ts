@@ -26,6 +26,7 @@ const Providers = {
           appName: "Radium Chatroom",
           appUrl: "https://github.com/alkalines/Radium",
           headers: appHeaders,
+          fetch: config.fetch,
         }).chat(model, (settings ?? {}) as any);
     },
   },
@@ -36,6 +37,7 @@ const Providers = {
           apiKey: config.apiKey,
           baseURL: config.baseURL,
           headers: appHeaders,
+          fetch: config.fetch,
         }).chat(model as any);
     },
   },
@@ -49,6 +51,7 @@ const Providers = {
           apiKey: config.apiKey,
           baseURL: config.baseURL!,
           headers: appHeaders,
+          fetch: config.fetch,
         })(model);
     },
   },
@@ -59,6 +62,7 @@ const Providers = {
           apiKey: config.apiKey,
           baseURL: config.baseURL,
           headers: appHeaders,
+          fetch: config.fetch,
         }).chat(model as any);
     },
   },

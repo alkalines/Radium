@@ -43,6 +43,12 @@ import {
   normalizeCredentialLabel,
 } from "../src/workspaces/credentials";
 import { subscriptionAdapter } from "../src/subscriptions/registry";
+import {
+  limitKeySecretName,
+  loadSnapshotTarget,
+  recordLoginPlan,
+  removeLimitRow,
+} from "../src/limits/store";
 
 type SecretReadResult = Awaited<ReturnType<typeof secrets.get>>;
 type SecretContext = QueryCtx | MutationCtx;
@@ -616,6 +622,8 @@ export const bindOAuthCredential = internalMutation({
     account: v.optional(v.string()),
     credentials: v.record(v.string(), v.string()),
     preview: v.record(v.string(), v.string()),
+    /** Upstream plan reported at login, shown with the account's limits until live data replaces it. */
+    plan: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -665,17 +673,19 @@ export const bindOAuthCredential = internalMutation({
         preview: args.preview,
         account: args.account ?? sessionOwner.account,
       });
+      if (args.plan) await recordLoginPlan(ctx, sessionOwner._id, args.plan);
       return null;
     }
 
     const sameAccount =
       args.account === undefined ? undefined : rows.find((row) => row.account === args.account);
     if (!sameAccount) {
-      await insertCredential(ctx, args.workspace, args.provider, {
+      const credential = await insertCredential(ctx, args.workspace, args.provider, {
         values: args.credentials,
         preview: args.preview,
         account: args.account,
       });
+      if (args.plan) await recordLoginPlan(ctx, credential, args.plan);
       return null;
     }
 
@@ -695,6 +705,7 @@ export const bindOAuthCredential = internalMutation({
       },
     });
     await ctx.db.patch("workspace_credentials", sameAccount._id, { preview: args.preview });
+    if (args.plan) await recordLoginPlan(ctx, sameAccount._id, args.plan);
     if (previous) await subscriptionAdapter(provider)?.endSession(ctx, previous);
     return null;
   },
@@ -742,6 +753,8 @@ export type RoutableProvider = {
   env: string[];
   doc?: string;
   baseURL?: string;
+  /** Provider `oauth_flow`; identifies subscription limit adapters. */
+  oauthFlow?: string;
   /** Upstream model ID sent to the provider. */
   modelId: string;
   pricing: ProviderSnapshot["models"][number]["pricing"];
@@ -802,6 +815,7 @@ export async function resolveRoutableProviders(
       env: provider.env,
       doc: provider.doc,
       baseURL: provider.api,
+      oauthFlow: provider.oauth_flow,
       modelId: providerModel.upstream_model_id ?? model.slug,
       pricing: providerModel.pricing,
       routing: resolveProviderRouting(record.configuration?.routing),
@@ -951,12 +965,15 @@ async function insertCredential(
     value: JSON.stringify(credential.values),
     metadata: { kind: "provider", provider, workspace, preview: credential.preview },
   });
+  // Create its limit snapshot now so a pollable credential is polled before its first use.
+  const row = await ctx.db.get("workspace_credentials", id);
+  await loadSnapshotTarget(ctx, row!, Date.now());
   return id;
 }
 
 /**
- * Remove a credential row, its secret, and its cooldowns. For an OAuth provider with a registered
- * flow adapter, the credential's upstream session is ended too.
+ * Remove a credential with everything attached to it (see {@link removeCredentialRecord}). For an
+ * OAuth provider with a registered flow adapter, the credential's upstream session is ended too.
  */
 async function removeCredential(
   ctx: MutationCtx,
@@ -976,15 +993,16 @@ async function removeCredential(
   await removeCredentialRecord(ctx, workspace, credential);
 }
 
+/** Remove a credential row, its secret and limit key, its cooldowns, and its limit snapshot. */
 async function removeCredentialRecord(
   ctx: MutationCtx,
   workspace: Doc<"workspaces">,
   credential: Doc<"workspace_credentials">,
 ) {
-  await secrets.remove(ctx, {
-    namespace: workspaceProviderSecretNamespace(workspace._id, credential.provider),
-    name: credentialSecretName(credential),
-  });
+  const namespace = workspaceProviderSecretNamespace(workspace._id, credential.provider);
+  await secrets.remove(ctx, { namespace, name: limitKeySecretName(credential._id) });
+  await removeLimitRow(ctx, credential._id);
+  await secrets.remove(ctx, { namespace, name: credentialSecretName(credential) });
   // The provider-slug credential may have a pre-workspace copy that legacy fallback would restore.
   if (credential.secretName === undefined && workspace.legacyBalance) {
     await secrets.remove(ctx, {

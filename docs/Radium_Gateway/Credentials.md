@@ -43,7 +43,7 @@ The only registered flow is `chatgpt-device` ([Subscription providers](Subscript
 ## Limitations
 
 - OAuth accounts connected before pools have no recorded `account`, so logging into one again adds a second entry; remove the stale one.
-- Per-account usage-limit tracking is not implemented yet; completions are attributed per credential, but quota only excludes accounts through cooldowns.
+- Usage limits and balances are tracked per credential ([Gateway usage limits](Limits.md)) but only exclude accounts through cooldowns.
 - Endpoint instances (several vLLM/Ollama servers behind one provider) remain [task 04](../tasks/04_Upstream_Instances.md) work.
 
 ## Verification

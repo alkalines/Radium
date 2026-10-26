@@ -26,6 +26,7 @@ start.
 - [Gateway subscription providers](Radium_Gateway/Subscriptions.md)
 - [Gateway routing](Radium_Gateway/LoadBalancer.md) — strategies, session affinity, retries, cooldowns, error rules, and request provider preferences
 - [Gateway credentials](Radium_Gateway/Credentials.md) — per-provider pools of API keys and OAuth/subscription accounts, OAuth flow adapters, and legacy secret names
+- [Gateway usage limits](Radium_Gateway/Limits.md) — per-credential limit and balance snapshots, adapters, polling, budgets, and limit events
 
 | Guide                                                             | Contents                                                                                |
 | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
@@ -36,6 +37,7 @@ start.
 | [Backend pre-rewrite handoff](Backend_Pre_Rewrite_Report.md)      | Source snapshot, persisted contracts, ownership bridge, and rewrite migration checklist |
 | [Convex reuse research](research/Convex_Reuse.md)                 | Helper/component candidates and adoption caveats                                        |
 | [Gateway auto-routing research](research/Gateway_Auto_Routing.md) | Proposed cache-affine, quota-aware routing algorithm and prerequisites                  |
+| [Gateway usage limits research](research/Gateway_Usage_Limits.md) | Upstream limit signals per provider and the per-credential tracking design              |
 | [Future agent tasks](tasks/README.md)                             | Separate scoped sessions for architecture debt, rollout, and product work               |
 
 ## Growing The Docs
