@@ -165,15 +165,20 @@ export function resolveProviderRouting(stored: ProviderRouting | undefined): Pro
   return stored ?? DEFAULT_PROVIDER_ROUTING;
 }
 
-/** Validate owner-submitted provider overrides, including that every regex compiles. */
-export function assertValidProviderRouting(routing: ProviderRouting) {
+/** Validate a priority and weight, shared by provider and credential routing. */
+export function assertValidPlacement(placement: { priority: number; weight: number }) {
   assertInteger(
     "Priority",
-    routing.priority,
+    placement.priority,
     -ROUTING_LIMITS.maxPriority,
     ROUTING_LIMITS.maxPriority,
   );
-  assertInteger("Weight", routing.weight, 0, ROUTING_LIMITS.maxWeight);
+  assertInteger("Weight", placement.weight, 0, ROUTING_LIMITS.maxWeight);
+}
+
+/** Validate owner-submitted provider overrides, including that every regex compiles. */
+export function assertValidProviderRouting(routing: ProviderRouting) {
+  assertValidPlacement(routing);
   if (routing.errorRules.length > ROUTING_LIMITS.maxErrorRules) {
     throw new Error(`At most ${ROUTING_LIMITS.maxErrorRules} error rules are allowed.`);
   }

@@ -18,9 +18,11 @@ Chatroom uses this routing path rather than maintaining a second router.
 - [Deployment](deployment.md): runtime and exporter configuration.
 - [Subscription providers](Radium_Gateway/Subscriptions.md): device login,
   shared Hono routing, and the generic frontend backend proxy.
-- [Routing](Radium_Gateway/LoadBalancer.md): CLIProxyAPI-style provider
-  selection, session affinity, retries, cooldowns, error rules, and request
-  provider preferences, configured in **Gateway > Routing**.
+- [Routing](Radium_Gateway/LoadBalancer.md): CLIProxyAPI-style provider and
+  credential selection, session affinity, retries, cooldowns, error rules, and
+  request provider preferences, configured in **Gateway > Routing**.
+- [Credentials](Radium_Gateway/Credentials.md): per-provider pools of API keys
+  and OAuth/subscription accounts, managed in **Gateway > Credentials**.
 
 The [Chatroom overview](Radium_Chatroom.md) describes the shared workspace chat
 surface and its owner/member behavior.
@@ -40,8 +42,8 @@ credits or charge the user.
 ## Planned And Limited
 
 Responses, Anthropic Messages, Gemini, and Grok protocol compatibility are future
-work. Routing schedules one credential per provider; credential pools and
-quota-aware pacing are future work. Better Auth organization
+work. Routing rotates across each provider's credential pool; per-account
+usage-limit tracking and quota-aware pacing are future work. Better Auth organization
 ownership, organization invitations, organization-derived membership, and
 broader roles are future work; direct membership is not an invitation flow.
 Application-level encryption and an optional explicit owner-auditing mode are

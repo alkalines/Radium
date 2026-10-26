@@ -28,6 +28,7 @@ import {
   type SecretNamespace,
 } from "./secrets";
 import { providerSnapshotFromCatalog } from "../src/workspaces/provider";
+import { MAX_PROVIDER_CREDENTIALS, credentialSecretName } from "../src/workspaces/credentials";
 
 export const migrations = new Migrations(components.migrations, { schema });
 
@@ -252,21 +253,12 @@ async function workspaceConfigurationCandidatesForRead(
     .take(2);
 }
 
-async function workspaceCredentialCandidatesForRead(
+/**
+ * Credential rows occupying the provider-slug secret name. Only these mirror a legacy credential;
+ * pooled credentials have their own secret names and never conflict.
+ */
+async function providerSlugCredentials(
   ctx: QueryCtx,
-  workspace: Id<"workspaces">,
-  provider: string,
-) {
-  return await ctx.db
-    .query("workspace_credentials")
-    .withIndex("by_workspace_and_provider", (q) =>
-      q.eq("workspace", workspace).eq("provider", provider),
-    )
-    .take(2);
-}
-
-async function existingWorkspaceCredential(
-  ctx: MutationCtx,
   workspace: Id<"workspaces">,
   provider: string,
 ) {
@@ -275,7 +267,16 @@ async function existingWorkspaceCredential(
     .withIndex("by_workspace_and_provider", (q) =>
       q.eq("workspace", workspace).eq("provider", provider),
     )
-    .take(2);
+    .take(MAX_PROVIDER_CREDENTIALS);
+  return credentials.filter((credential) => credential.secretName === undefined);
+}
+
+async function existingWorkspaceCredential(
+  ctx: MutationCtx,
+  workspace: Id<"workspaces">,
+  provider: string,
+) {
+  const credentials = await providerSlugCredentials(ctx, workspace, provider);
   if (credentials.length > 1) {
     throw migrationBlocked("a workspace has duplicate provider credential metadata");
   }
@@ -1120,13 +1121,16 @@ export const verifyWorkspaceCredentials = internalQuery({
         credential.workspace,
         credential.provider,
       );
-      const credentialMetadata = await workspaceCredentialCandidatesForRead(
-        ctx,
-        credential.workspace,
-        credential.provider,
-      );
-      if (credentialMetadata.length > 1) {
-        addVerificationIssue(issues, samples, "credential_metadata_duplicate", credential._id);
+      // Only rows sharing the provider-slug secret name can be duplicates of each other.
+      if (credential.secretName === undefined) {
+        const slugCredentials = await providerSlugCredentials(
+          ctx,
+          credential.workspace,
+          credential.provider,
+        );
+        if (slugCredentials.length > 1) {
+          addVerificationIssue(issues, samples, "credential_metadata_duplicate", credential._id);
+        }
       }
       if (configurations.length === 0) {
         addVerificationIssue(issues, samples, "credential_configuration_missing", credential._id);
@@ -1137,7 +1141,7 @@ export const verifyWorkspaceCredentials = internalQuery({
       }
       const secret = await inspectSecret(ctx, {
         namespace: workspaceProviderSecretNamespace(credential.workspace, credential.provider),
-        name: credential.provider,
+        name: credentialSecretName(credential),
       });
       recordVerificationSecretFailure(
         issues,
@@ -1345,11 +1349,7 @@ export const verifyProviderSecrets = internalQuery({
         }
         if (configurations[0]?.deletedAt !== undefined) return;
 
-        const credentials = await workspaceCredentialCandidatesForRead(
-          ctx,
-          workspace._id,
-          provider.slug,
-        );
+        const credentials = await providerSlugCredentials(ctx, workspace._id, provider.slug);
         if (credentials.length > 1) {
           addVerificationIssue(issues, samples, "credential_metadata_duplicate", balance._id);
         }

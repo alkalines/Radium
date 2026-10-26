@@ -3,6 +3,7 @@ import { query, type QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import { requireOwnedWorkspace } from "../workspaces";
 import { filterVisibleCompletions, type AttributedCompletion } from "../chatroom";
+import { credentialDisplayName } from "../../src/workspaces/credentials";
 
 async function completionsForWorkspace(
   ctx: QueryCtx,
@@ -100,12 +101,17 @@ export const getGenerations = query({
         const legacyKey =
           !apiKey && completion.bill.key ? await ctx.db.get("keys", completion.bill.key) : null;
         const key = apiKey ?? legacyKey;
+        const credential = completion.request.credential
+          ? await ctx.db.get("workspace_credentials", completion.request.credential)
+          : null;
         return {
           _id: completion._id,
           _creationTime: completion._creationTime,
           apiKey: key ? { name: key.name, preview: key.preview } : null,
           request: {
             provider: completion.request.provider,
+            /** Absent when the credential was removed, legacy, or the row predates pools. */
+            credentialName: credential ? credentialDisplayName(credential) : undefined,
             byok: completion.request.byok,
             streamed: completion.request.streamed,
             canceled: completion.request.canceled,

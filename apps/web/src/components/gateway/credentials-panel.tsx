@@ -17,15 +17,51 @@ import {
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "backend/convex/_generated/api";
-import { CredentialsDialog, type CredentialsTarget } from "./credentials-dialog";
+import {
+  CredentialsDialog,
+  type CredentialsTarget,
+  type ProviderCredential,
+} from "./credentials-dialog";
 import { ProviderLogo } from "./provider-logo";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 /** One-line description of what a provider needs to connect. Environment variable names are Machine text. */
 function credentialSummary(provider: { credential_type?: string; env: string[] }): ReactNode {
-  if (provider.credential_type === "oauth") return "OAuth device connection";
+  if (provider.credential_type === "oauth") return "Account sign-in";
   if (provider.env.length === 0) return "No credentials required";
   return <span className="font-mono text-xs">{provider.env.join(", ")}</span>;
+}
+
+function countLabel(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+/**
+ * Pool status for one provider: how many enabled credentials it can route through, noting kept
+ * but disabled ones. Disabled credentials are never routed, so they do not count as connected.
+ */
+function PoolStatus({ oauth, credentials }: { oauth: boolean; credentials: ProviderCredential[] }) {
+  if (credentials.length === 0) {
+    return <AgentStatus state="idle" label={oauth ? "Not connected" : "No key"} />;
+  }
+
+  const [singular, plural] = oauth ? ["account", "accounts"] : ["key", "keys"];
+  const enabled = credentials.filter((credential) => credential.enabled).length;
+  const disabled = credentials.length - enabled;
+
+  if (enabled === 0) {
+    return (
+      <AgentStatus state="idle" label={`${countLabel(disabled, singular, plural)} disabled`} />
+    );
+  }
+
+  const label = countLabel(enabled, singular, plural);
+  return (
+    <AgentStatus
+      state="succeeded"
+      label={disabled > 0 ? `${label} · ${disabled} disabled` : label}
+    />
+  );
 }
 
 export function CredentialsPanel() {
@@ -38,8 +74,12 @@ export function CredentialsPanel() {
   );
 
   const credentialsBySlug = useMemo(() => {
-    const map = new Map<string, Record<string, string>>();
-    for (const credential of credentials ?? []) map.set(credential.provider, credential.preview);
+    const map = new Map<string, ProviderCredential[]>();
+    for (const credential of credentials ?? []) {
+      const pool = map.get(credential.provider);
+      if (pool) pool.push(credential);
+      else map.set(credential.provider, [credential]);
+    }
     return map;
   }, [credentials]);
 
@@ -49,7 +89,7 @@ export function CredentialsPanel() {
     <>
       <WorkspacePageHeader
         title="Credentials"
-        description="Connect API keys or subscription plans. Secrets stay encrypted and are used only for your requests."
+        description="Connect API keys or subscription accounts. A provider with several rotates requests across its enabled ones. Secrets stay encrypted and are never shown again."
       />
 
       {!workspaceId && (
@@ -82,7 +122,8 @@ export function CredentialsPanel() {
       ) : (
         <GroupList title="Providers">
           {providers.map((provider) => {
-            const preview = credentialsBySlug.get(provider.slug);
+            const pool = credentialsBySlug.get(provider.slug) ?? [];
+            const oauth = provider.credential_type === "oauth";
             return (
               <Row
                 key={provider._id}
@@ -90,14 +131,7 @@ export function CredentialsPanel() {
                 title={provider.name}
                 description={credentialSummary(provider)}
               >
-                {preview ? (
-                  <AgentStatus state="succeeded" label="Connected" />
-                ) : (
-                  <AgentStatus
-                    state="idle"
-                    label={provider.credential_type === "oauth" ? "Not connected" : "No key"}
-                  />
-                )}
+                <PoolStatus oauth={oauth} credentials={pool} />
                 <Button
                   variant="outline"
                   size="sm"
@@ -112,7 +146,7 @@ export function CredentialsPanel() {
                     })
                   }
                 >
-                  {preview ? "Manage" : provider.credential_type === "oauth" ? "Connect" : "Add"}
+                  {pool.length > 0 ? "Manage" : oauth ? "Connect" : "Add"}
                 </Button>
               </Row>
             );
@@ -123,8 +157,7 @@ export function CredentialsPanel() {
       <CredentialsDialog
         target={target}
         workspaceId={workspaceId}
-        hasExisting={Boolean(target && credentialsBySlug.has(target.slug))}
-        preview={target ? credentialsBySlug.get(target.slug) : undefined}
+        credentials={(target && credentialsBySlug.get(target.slug)) ?? []}
         onOpenChange={(open) => !open && setTarget(null)}
       />
     </>

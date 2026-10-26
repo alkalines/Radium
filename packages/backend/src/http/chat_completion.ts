@@ -180,6 +180,7 @@ async function recordCompletion(
       canceled: details.canceled,
       model_slug: requestBody.model,
       provider: provider.info.slug,
+      credential: provider.info.credential.id,
       stream: requestBody.stream ?? false,
       prompt_cache_key: requestBody.prompt_cache_key || requestBody.user,
       telemetry_request_id: info.telemetry?.requestId,

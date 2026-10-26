@@ -66,11 +66,11 @@ const MIN_RATE_LIMIT_RETRY_WAIT_MS = 10_000;
 const MAX_RETRY_JITTER_MS = 2_000;
 
 /**
- * Run `attempt` against routed providers until one succeeds, following CLIProxyAPI's retry
- * model: each round tries untried providers (up to `maxRetryCredentials`); after a round that
- * ended on a retryable failure, or with every provider cooling, wait for the soonest cooldown if
- * it ends within `maxRetryIntervalSeconds`, for at most `requestRetry` extra rounds. Error-rule
- * `stop`, request-invalid errors, failures after output started, and aborts end routing
+ * Run `attempt` against routed provider credentials until one succeeds, following CLIProxyAPI's
+ * retry model: each round tries untried credentials (up to `maxRetryCredentials`); after a round
+ * that ended on a retryable failure, or with every credential cooling, wait for the soonest
+ * cooldown if it ends within `maxRetryIntervalSeconds`, for at most `requestRetry` extra rounds.
+ * Error-rule `stop`, request-invalid errors, failures after output started, and aborts end routing
  * immediately. Every attempt outcome is reported for cooldown and session-affinity state.
  */
 export async function routeWithFailover<T>(
@@ -85,7 +85,7 @@ export async function routeWithFailover<T>(
   let unavailable: { retryAfterMs?: number; message: string } | undefined;
 
   for (let round = 0; ; round++) {
-    const tried: string[] = [];
+    const tried: Array<{ provider: string; credential?: Id<"workspace_credentials"> }> = [];
     unavailable = undefined;
 
     while (
@@ -107,10 +107,11 @@ export async function routeWithFailover<T>(
       }
 
       const target = pick.provider;
-      tried.push(target.slug);
+      const attempted = { provider: target.slug, credential: target.credential.id };
+      tried.push(attempted);
       const dispatchedAt = Date.now();
       const report = (outcome: ReportOutcome) =>
-        reportOutcome(ctx, request, target.slug, outcome, dispatchedAt);
+        reportOutcome(ctx, request, attempted, outcome, dispatchedAt);
 
       let routed: RoutedProvider | undefined;
       let outcome: AttemptOutcome<T> | undefined;
@@ -192,7 +193,7 @@ function failureReport(failure: UpstreamFailure, decision: FailureDecision): Rep
 async function reportOutcome(
   ctx: ActionCtx,
   request: RoutingRequest,
-  provider: string,
+  target: { provider: string; credential?: Id<"workspace_credentials"> },
   outcome: ReportOutcome,
   dispatchedAt: number,
 ) {
@@ -200,14 +201,15 @@ async function reportOutcome(
   try {
     await ctx.runMutation(internal.routing.reportResult, {
       workspace: request.workspace,
-      provider,
+      provider: target.provider,
+      credential: target.credential,
       model: request.model,
       dispatchedAt,
       session: request.session,
       outcome,
     });
   } catch (error) {
-    console.error("Failed to record routing outcome", { provider, error });
+    console.error("Failed to record routing outcome", { provider: target.provider, error });
   }
 }
 

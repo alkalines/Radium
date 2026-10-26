@@ -9,8 +9,7 @@ import { internal } from "../../convex/_generated/api";
 import type { ActionCtx } from "../../convex/_generated/server";
 import { authComponent } from "../../convex/auth";
 import { CHATGPT_SUBSCRIPTION_PATH } from "./paths";
-
-const COOKIE_NAME = "lwc_chatgpt_subscription";
+import { CHATGPT_SESSION_COOKIE, readSessionCookie } from "./chatgpt_session";
 
 type SubscriptionNamespace = "session" | "rate_limit";
 
@@ -55,7 +54,7 @@ function createHandler(ctx: ActionCtx) {
     basePath: CHATGPT_SUBSCRIPTION_PATH,
     secret,
     sessionStore: createStore<StoredSession>(ctx, "session"),
-    cookieName: COOKIE_NAME,
+    cookieName: CHATGPT_SESSION_COOKIE,
     cookie: { sameSite: "Lax", secure: siteUrl ? new URL(siteUrl).protocol === "https:" : true },
     allowedOrigins: siteUrl ? [new URL(siteUrl).origin] : [],
     responsesProxy: {
@@ -83,7 +82,12 @@ export function createChatGPTSubscriptionFetch(
   return proxyFetch;
 }
 
-/** Handles device login, session state, model discovery, logout, and inference proxying. */
+/**
+ * Handles device login, session state, model discovery, logout, and inference proxying. Each
+ * completed login adds a workspace credential: `/login` starts a fresh session whenever the
+ * browser's current session is already authenticated, so connecting another account never
+ * overwrites a connected one.
+ */
 export async function handleChatGPTSubscription(
   ctx: ActionCtx,
   request: Request,
@@ -101,10 +105,24 @@ export async function handleChatGPTSubscription(
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const response = await createHandler(ctx).handler(request);
+  const handler = createHandler(ctx);
   const path = new URL(request.url).pathname;
-  const body = await readJson(response.clone());
   const sessionCookie = readSessionCookie(request.headers.get("cookie"));
+
+  // The library restarts login inside the cookie's session, which would replace that account's
+  // tokens. Dropping the cookie makes it issue a new session; the old one stays bound.
+  let forwarded = request;
+  if (path.endsWith("/login") && sessionCookie) {
+    const current = await handler.getSession(request);
+    if (current.status === "authenticated") {
+      const headers = new Headers(request.headers);
+      headers.delete("cookie");
+      forwarded = new Request(request, { headers });
+    }
+  }
+
+  const response = await handler.handler(forwarded);
+  const body = await readJson(response.clone());
 
   // Bind authenticated sessions; clear a binding on logout or an observed expired session.
   // An unauthenticated status clears it only while the request still carries its cookie.
@@ -117,31 +135,26 @@ export async function handleChatGPTSubscription(
         workspace,
         provider: OPENAI_CODEX_SLUG,
         userId: user._id,
+        account: typeof body.user?.accountId === "string" ? body.user.accountId : undefined,
         credentials: { sessionCookie },
         preview: { account: label || "Connected ChatGPT account" },
       });
     }
   } else if (
-    path.endsWith("/logout") ||
-    ((path.endsWith("/status") || path.endsWith("/session")) &&
-      (body?.status === "expired" || (body?.status === "unauthenticated" && sessionCookie)))
+    sessionCookie &&
+    (path.endsWith("/logout") ||
+      ((path.endsWith("/status") || path.endsWith("/session")) &&
+        (body?.status === "expired" || body?.status === "unauthenticated")))
   ) {
     await ctx.runMutation(internal.providers.unbindOAuthCredential, {
       workspace,
       provider: OPENAI_CODEX_SLUG,
       userId: user._id,
+      credentials: { sessionCookie },
     });
   }
 
   return response;
-}
-
-function readSessionCookie(cookieHeader: string | null) {
-  const value = cookieHeader
-    ?.split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(`${COOKIE_NAME}=`));
-  return value;
 }
 
 async function readJson(response: Response): Promise<any> {

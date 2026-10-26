@@ -95,9 +95,12 @@ export function ProvidersPanel() {
     convexQuery(api.providers.listCredentials, workspaceId ? { workspace: workspaceId } : "skip"),
   );
 
+  // Disabled credentials are kept but never routed, so they do not make a provider connected.
   const connectedSlugs = useMemo(() => {
     const set = new Set<string>();
-    for (const credential of credentials ?? []) set.add(credential.provider);
+    for (const credential of credentials ?? []) {
+      if (credential.enabled) set.add(credential.provider);
+    }
     return set;
   }, [credentials]);
 

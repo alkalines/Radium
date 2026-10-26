@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { PlusIcon, Trash2Icon } from "lucide-react";
@@ -71,6 +71,20 @@ type RoutingDraft = {
   rules: RuleDraft[];
 };
 
+type CredentialDraft = {
+  credential: Id<"workspace_credentials">;
+  name: string;
+  enabled: boolean;
+  priority: string;
+  weight: string;
+};
+
+type CredentialPlacement = {
+  credential: Id<"workspace_credentials">;
+  priority: number;
+  weight: number;
+};
+
 /** Parses a whole number typed into a field; `undefined` when it is not an integer in range. */
 export function parseInteger(text: string, min: number, max: number): number | undefined {
   const trimmed = text.trim();
@@ -82,9 +96,10 @@ export function parseInteger(text: string, min: number, max: number): number | u
 }
 
 /**
- * Edits one provider's routing overrides (priority, weight, cooling, error rules) and saves them
- * as a full replacement through `api.routing.setProviderRouting`. Owner only; the route gates
- * members.
+ * Edits one provider's routing overrides (priority, weight, cooling, error rules) and its
+ * credentials' priority and weight inside the provider, saved together through
+ * `api.routing.setProviderRouting` (overrides as a full replacement, only changed credentials).
+ * Owner only; the route gates members.
  */
 export function ProviderRoutingDialog({
   provider,
@@ -140,6 +155,15 @@ function ProviderRoutingForm({
     initial.errorRules.map((rule, index) => ruleToDraft(rule, index)),
   );
   const nextRuleKey = useRef(initial.errorRules.length);
+  const [credentials, setCredentials] = useState<CredentialDraft[]>(() =>
+    provider.credentials.map((credential) => ({
+      credential: credential._id,
+      name: credential.name,
+      enabled: credential.enabled,
+      priority: String(credential.priority),
+      weight: String(credential.weight),
+    })),
+  );
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -159,6 +183,15 @@ function ProviderRoutingForm({
     setRules((current) => current.map((rule) => (rule.key === key ? { ...rule, ...patch } : rule)));
   }
 
+  function updateCredential(
+    credential: Id<"workspace_credentials">,
+    patch: Partial<Pick<CredentialDraft, "priority" | "weight">>,
+  ) {
+    setCredentials((current) =>
+      current.map((draft) => (draft.credential === credential ? { ...draft, ...patch } : draft)),
+    );
+  }
+
   function removeRule(key: number) {
     setRules((current) => current.filter((rule) => rule.key !== key));
   }
@@ -175,11 +208,21 @@ function ProviderRoutingForm({
       setError(routing);
       return;
     }
+    const placements = buildCredentialPlacements(credentials, provider.credentials);
+    if (typeof placements === "string") {
+      setError(placements);
+      return;
+    }
 
     setError(null);
     setSubmitting(true);
     try {
-      await save({ workspace: workspaceId, provider: provider.slug, routing });
+      await save({
+        workspace: workspaceId,
+        provider: provider.slug,
+        routing,
+        credentials: placements,
+      });
       toast.success(`Saved routing for ${provider.name}.`);
       onClose();
     } catch (saveError) {
@@ -236,6 +279,61 @@ function ProviderRoutingForm({
             </Field>
           </div>
 
+          {credentials.length > 0 ? (
+            <section className="flex flex-col gap-3">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <h3 className="text-sm font-medium">Credentials</h3>
+                <p className="text-sm text-muted-foreground">
+                  {isWeighted
+                    ? "Order and share inside this provider. Higher priority is used first; weight splits requests within a priority, and 0 skips a credential."
+                    : "Order inside this provider. Higher priority is used first; weights apply only under weighted round robin."}
+                </p>
+              </div>
+              <div className="grid grid-cols-[minmax(0,1fr)_5rem_5rem] items-center gap-x-3 gap-y-2">
+                <span />
+                <span className="text-xs text-muted-foreground">Priority</span>
+                <span
+                  data-disabled={!isWeighted}
+                  className="text-xs text-muted-foreground data-[disabled=true]:opacity-60"
+                >
+                  Weight
+                </span>
+                {credentials.map((draft) => (
+                  <Fragment key={draft.credential}>
+                    <span
+                      data-disabled={!draft.enabled}
+                      className="truncate text-sm data-[disabled=true]:opacity-60"
+                      title={draft.name}
+                    >
+                      {draft.name}
+                      {draft.enabled ? null : (
+                        <span className="text-muted-foreground"> · Disabled</span>
+                      )}
+                    </span>
+                    <Input
+                      aria-label={`${draft.name} priority`}
+                      inputMode="numeric"
+                      className="tabular-nums"
+                      value={draft.priority}
+                      onChange={(event) =>
+                        updateCredential(draft.credential, { priority: event.target.value })
+                      }
+                    />
+                    <Input
+                      aria-label={`${draft.name} weight`}
+                      inputMode="numeric"
+                      className="tabular-nums"
+                      value={draft.weight}
+                      onChange={(event) =>
+                        updateCredential(draft.credential, { weight: event.target.value })
+                      }
+                    />
+                  </Fragment>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           <Field orientation="horizontal">
             <FieldContent>
               <FieldLabel htmlFor="routing-disable-cooling">Disable cooling</FieldLabel>
@@ -255,7 +353,8 @@ function ProviderRoutingForm({
             <FieldContent>
               <FieldLabel htmlFor="routing-model-cooling">Model-level cooling</FieldLabel>
               <FieldDescription>
-                Quota errors cool down only the requested model, not the whole provider.
+                Quota errors cool down only the requested model on the failing credential, not all
+                of its models.
               </FieldDescription>
             </FieldContent>
             <Switch
@@ -271,8 +370,8 @@ function ProviderRoutingForm({
                 <h3 className="text-sm font-medium">Error rules</h3>
                 <p className="text-sm text-muted-foreground">
                   Match an upstream error by status and any body substring or regex. Stop returns it
-                  to the caller, Try next moves on to another provider, and cool down also takes
-                  this provider out of rotation.
+                  to the caller, Try next moves on to another provider, and cool down also takes the
+                  failing credential out of rotation.
                 </p>
               </div>
               <Button variant="outline" size="sm" onClick={addRule} disabled={!canAddRule}>
@@ -427,6 +526,36 @@ function patternLines(text: string): string[] {
     .filter((line) => line.trim().length > 0);
 }
 
+/**
+ * Validates credential priority and weight drafts like `assertValidPlacement` and returns only
+ * the credentials whose values changed, or a message naming the first invalid field.
+ */
+function buildCredentialPlacements(
+  drafts: CredentialDraft[],
+  saved: RoutingProvider["credentials"],
+): CredentialPlacement[] | string {
+  const placements: CredentialPlacement[] = [];
+  for (const draft of drafts) {
+    const priority = parseInteger(
+      draft.priority,
+      -ROUTING_LIMITS.maxPriority,
+      ROUTING_LIMITS.maxPriority,
+    );
+    if (priority === undefined) {
+      return `${draft.name}: priority must be a whole number from ${-ROUTING_LIMITS.maxPriority} to ${ROUTING_LIMITS.maxPriority}.`;
+    }
+    const weight = parseInteger(draft.weight, 0, ROUTING_LIMITS.maxWeight);
+    if (weight === undefined) {
+      return `${draft.name}: weight must be a whole number from 0 to ${ROUTING_LIMITS.maxWeight}.`;
+    }
+
+    const current = saved.find((credential) => credential._id === draft.credential);
+    if (current?.priority !== priority || current.weight !== weight) {
+      placements.push({ credential: draft.credential, priority, weight });
+    }
+  }
+  return placements;
+}
 /**
  * Validates the form against the backend's rules (`assertValidProviderRouting`) so most mistakes
  * get a message naming the field before the save; returns that message or the routing to save.

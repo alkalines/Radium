@@ -98,7 +98,8 @@ const reasonLabels: Record<CooldownReason, string> = {
 /**
  * Gateway routing for the current workspace (owner-only; the route gates members): the
  * workspace strategy, session affinity, retry, and cooling settings, each provider's routing
- * overrides, and the providers currently cooling down. Semantics follow CLIProxyAPI
+ * overrides, and the credentials currently cooling down. The strategy picks a provider, then
+ * requests rotate across that provider's enabled credentials. Semantics follow CLIProxyAPI
  * (`packages/backend/src/routing/settings.ts`).
  */
 export function RoutingPanel() {
@@ -115,11 +116,12 @@ export function RoutingPanel() {
   const editing =
     configuration?.providers.find((provider) => provider.slug === editingSlug) ?? null;
 
-  async function reset(provider: string, model?: string) {
+  /** Clears one cooldown row, or every cooldown of the provider when `cooldown` is omitted. */
+  async function reset(provider: string, cooldown?: Id<"routing_cooldowns">) {
     if (!workspaceId) return;
-    setResetting(cooldownKey(provider, model));
+    setResetting(cooldown ?? provider);
     try {
-      await resetCooldown({ workspace: workspaceId, provider, model });
+      await resetCooldown({ workspace: workspaceId, provider, cooldown });
     } catch (resetError) {
       toast.error(resetError instanceof Error ? resetError.message : "Failed to reset cooldown.");
     } finally {
@@ -131,7 +133,7 @@ export function RoutingPanel() {
     <>
       <WorkspacePageHeader
         title="Routing"
-        description="How the Gateway spreads requests across providers, retries failures, and cools down failing providers."
+        description="How the Gateway spreads requests across providers and their credentials, retries failures, and cools down failing credentials."
       />
 
       {error ? (
@@ -169,7 +171,7 @@ export function RoutingPanel() {
               cooldowns={configuration.cooldowns}
               now={now}
               resetting={resetting}
-              onReset={(cooldown) => void reset(cooldown.provider, cooldown.model)}
+              onReset={(cooldown) => void reset(cooldown.provider, cooldown._id)}
             />
           ) : null}
         </>
@@ -439,6 +441,7 @@ function ProviderList({
                 size="sm"
                 disabled={resetting !== null}
                 onClick={() => onReset(provider.slug)}
+                aria-label={`Reset every cooldown for ${provider.name}`}
               >
                 Reset cooldown
               </Button>
@@ -453,7 +456,10 @@ function ProviderList({
   );
 }
 
-/** Active cooldowns, soonest to end first; each Reset clears that provider and model scope. */
+/**
+ * Active cooldowns, soonest to end first. Cooldowns are per credential, optionally per model;
+ * each Reset clears that one row.
+ */
 function CooldownList({
   providers,
   cooldowns,
@@ -472,22 +478,35 @@ function CooldownList({
   return (
     <GroupList
       title="Active cooldowns"
-      description="Providers resting after failures. Reset returns them to rotation now."
+      description="Credentials resting after failures; the provider's other credentials keep serving. Reset returns one to rotation now."
     >
       {active.length === 0 ? (
         <RowBlock>
-          <p className="text-sm text-muted-foreground">No providers are cooling down.</p>
+          <p className="text-sm text-muted-foreground">No credentials are cooling down.</p>
         </RowBlock>
       ) : (
         active.map((cooldown) => {
           const provider = providers.find((entry) => entry.slug === cooldown.provider);
-          const key = cooldownKey(cooldown.provider, cooldown.model);
+          const providerName = provider?.name ?? cooldown.provider;
+          const subject = cooldown.credentialName
+            ? `${providerName} · ${cooldown.credentialName}`
+            : providerName;
 
           return (
             <Row
-              key={key}
+              key={cooldown._id}
               leading={<ProviderLogo slug={cooldown.provider} className="size-8" />}
-              title={provider?.name ?? cooldown.provider}
+              title={
+                <span title={subject}>
+                  {providerName}
+                  {cooldown.credentialName ? (
+                    <span className="font-normal text-muted-foreground">
+                      {" "}
+                      · {cooldown.credentialName}
+                    </span>
+                  ) : null}
+                </span>
+              }
               tag={reasonLabels[cooldown.reason]}
               description={
                 <span title={cooldown.message}>
@@ -512,9 +531,7 @@ function CooldownList({
                 size="sm"
                 disabled={resetting !== null}
                 onClick={() => onReset(cooldown)}
-                aria-label={`Reset cooldown for ${provider?.name ?? cooldown.provider}${
-                  cooldown.model ? ` ${cooldown.model}` : ""
-                }`}
+                aria-label={`Reset cooldown for ${subject}${cooldown.model ? ` ${cooldown.model}` : ""}`}
               >
                 Reset
               </Button>
@@ -682,17 +699,13 @@ function activeCooldowns(cooldowns: Cooldown[], now: number): Cooldown[] {
   return cooldowns.filter((cooldown) => cooldown.nextRetryAt > now);
 }
 
-function cooldownKey(provider: string, model?: string) {
-  return `${provider}:${model ?? "*"}`;
-}
-
 function providerTag(provider: RoutingProvider) {
   if (!provider.enabled) return "Disabled";
-  if (!provider.hasCredentials) return "No credentials";
+  if (!provider.credentials.some((credential) => credential.enabled)) return "No credentials";
   return undefined;
 }
 
-/** Second-line summary of a provider's routing: priority, weight, overrides, and cooling. */
+/** Second-line summary of a provider's routing: priority, weight, credentials, overrides, and cooling. */
 function providerDetails(
   provider: RoutingProvider,
   strategy: RoutingStrategy,
@@ -704,17 +717,41 @@ function providerDetails(
 
   if (strategy === "weighted-round-robin") details.push(`Weight ${routing.weight}`);
 
+  const enabledCredentials = provider.credentials.filter((credential) => credential.enabled);
+  if (enabledCredentials.length > 1) details.push(`${enabledCredentials.length} credentials`);
+
   const ruleCount = routing.errorRules.length;
   if (ruleCount > 0) details.push(`${ruleCount} error ${ruleCount === 1 ? "rule" : "rules"}`);
 
   if (routing.disableCooling) details.push("Cooling disabled");
   else if (routing.modelLevelCooling) details.push("Model-level cooling");
 
-  const providerWide = active.find((cooldown) => cooldown.model === "");
-  if (providerWide) {
-    details.push(`Cooling down, ${formatRemaining(providerWide.nextRetryAt - now)} left`);
-  } else if (active.length > 0) {
-    details.push(`${active.length} ${active.length === 1 ? "model" : "models"} cooling down`);
+  // `model === ""` blocks every model of one credential; other rows block one model of one.
+  const credentialWide = active.filter((cooldown) => cooldown.model === "");
+  const blockedCredentials = new Set(
+    credentialWide.map((cooldown) => cooldown.credential ?? "legacy"),
+  );
+  const blockedModels = new Set(
+    active.filter((cooldown) => cooldown.model !== "").map((cooldown) => cooldown.model),
+  );
+
+  // Without listed credentials (a legacy one), any credential-wide cooldown blocks the provider.
+  const allBlocked =
+    blockedCredentials.size > 0 &&
+    (enabledCredentials.length === 0 ||
+      enabledCredentials.every((credential) => blockedCredentials.has(credential._id)));
+  if (allBlocked) {
+    // Every enabled credential rests, so the provider serves again when the first one returns.
+    const nextRetryAt = Math.min(...credentialWide.map((cooldown) => cooldown.nextRetryAt));
+    details.push(`Cooling down, ${formatRemaining(nextRetryAt - now)} left`);
+  } else if (blockedCredentials.size > 0) {
+    const count = blockedCredentials.size;
+    details.push(`${count} ${count === 1 ? "credential" : "credentials"} cooling down`);
+  }
+
+  if (blockedModels.size > 0) {
+    const count = blockedModels.size;
+    details.push(`${count} ${count === 1 ? "model" : "models"} cooling down`);
   }
 
   return details;

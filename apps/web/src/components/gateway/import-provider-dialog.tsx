@@ -267,7 +267,7 @@ function ConfigureProvider({
   onDone: () => void;
 }) {
   const importProvider = useMutation(api.providers.importProvider);
-  const upsertCredentials = useMutation(api.providers.upsertCredentials);
+  const createCredential = useMutation(api.providers.createCredential);
 
   const mapped = useMemo<MappedModel[]>(
     () =>
@@ -356,7 +356,7 @@ function ConfigureProvider({
       });
 
       if (provider.credential_type !== "oauth" && addKeyNow && (provider.env?.length ?? 0) > 0) {
-        await upsertCredentials({
+        await createCredential({
           workspace: workspaceId,
           provider: provider.id,
           credentials,

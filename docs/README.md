@@ -25,6 +25,7 @@ start.
 - [Observability and usage](observability.md)
 - [Gateway subscription providers](Radium_Gateway/Subscriptions.md)
 - [Gateway routing](Radium_Gateway/LoadBalancer.md) — strategies, session affinity, retries, cooldowns, error rules, and request provider preferences
+- [Gateway credentials](Radium_Gateway/Credentials.md) — per-provider pools of API keys and OAuth/subscription accounts, OAuth flow adapters, and legacy secret names
 
 | Guide                                                             | Contents                                                                                |
 | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |

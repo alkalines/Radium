@@ -1,5 +1,4 @@
 import { v } from "convex/values";
-import { credentialPreview } from "@/credential_preview";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   internalMutation,
@@ -28,7 +27,22 @@ import {
   type ProviderSnapshot,
 } from "../src/workspaces/provider";
 import { canAccessWorkspace } from "../src/workspaces/policy";
-import { resolveProviderRouting, type ProviderRouting } from "../src/routing/settings";
+import {
+  assertValidPlacement,
+  resolveProviderRouting,
+  type ProviderRouting,
+} from "../src/routing/settings";
+import {
+  MAX_PROVIDER_CREDENTIALS,
+  assertRequiredCredentials,
+  credentialPlacement,
+  credentialDisplayName,
+  credentialSecretName,
+  isCredentialEnabled,
+  maskCredentialValues,
+  normalizeCredentialLabel,
+} from "../src/workspaces/credentials";
+import { subscriptionAdapter } from "../src/subscriptions/registry";
 
 type SecretReadResult = Awaited<ReturnType<typeof secrets.get>>;
 type SecretContext = QueryCtx | MutationCtx;
@@ -379,8 +393,8 @@ export const removeProviderModel = mutation({
 });
 
 /**
- * Tombstone a provider for this workspace and remove its credentials. Keeping
- * the row prevents legacy fallback or a later migration from restoring it.
+ * Tombstone a provider for this workspace and remove all of its credentials. Keeping the row
+ * prevents legacy fallback or a later migration from restoring it.
  */
 export const deleteProvider = mutation({
   args: {
@@ -394,23 +408,10 @@ export const deleteProvider = mutation({
       args.slug,
     );
 
-    await secrets.remove(ctx, {
-      namespace: workspaceProviderSecretNamespace(args.workspace, args.slug),
-      name: args.slug,
-    });
-    const credential = await ctx.db
-      .query("workspace_credentials")
-      .withIndex("by_workspace_and_provider", (q) =>
-        q.eq("workspace", args.workspace).eq("provider", args.slug),
-      )
-      .first();
-    if (credential) await ctx.db.delete("workspace_credentials", credential._id);
-    if (workspace.legacyBalance) {
-      await secrets.remove(ctx, {
-        namespace: providerSecretNamespace(args.slug),
-        name: balanceSecretName(workspace.legacyBalance),
-      });
+    for (const credential of await providerCredentialRows(ctx, args.workspace, args.slug)) {
+      await removeCredential(ctx, workspace, provider, credential);
     }
+    await removeLegacyCredential(ctx, workspace, args.slug);
     await ctx.db.patch("workspace_configurations", configuration._id, {
       enabled: false,
       active: false,
@@ -420,175 +421,203 @@ export const deleteProvider = mutation({
   },
 });
 
-/** List credential previews only; secret values remain write-only to clients. */
+/**
+ * List every credential of the workspace's providers as masked previews; secret values remain
+ * write-only to clients. Ordered by provider, then creation. Entries without `_id` are legacy
+ * credentials that the ownership migration has not copied yet.
+ */
 export const listCredentials = query({
   args: { workspace: v.id("workspaces") },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
-    const credentials = await ctx.db
-      .query("workspace_credentials")
-      .withIndex("by_workspace_and_provider", (q) => q.eq("workspace", args.workspace))
-      .take(200);
-    const configurations = await ctx.db
-      .query("workspace_configurations")
-      .withIndex("by_workspace", (q) => q.eq("workspace", args.workspace))
-      .take(200);
-    const deletedProviders = new Set(
-      configurations
-        .filter((configuration) => configuration.deletedAt !== undefined)
-        .map((configuration) => configuration.provider),
-    );
-    const result = new Map<
-      string,
-      { _id?: Id<"workspace_credentials">; provider: string; preview: Record<string, string> }
-    >(
-      credentials
-        .filter((credential) => !deletedProviders.has(credential.provider))
-        .map(
-          (credential) =>
-            [
-              credential.provider,
-              { _id: credential._id, provider: credential.provider, preview: credential.preview },
-            ] as const,
-        ),
-    );
+    const result: Array<{
+      _id?: Id<"workspace_credentials">;
+      provider: string;
+      name: string;
+      label?: string;
+      preview: Record<string, string>;
+      enabled: boolean;
+      priority: number;
+      weight: number;
+    }> = [];
 
-    // Keep legacy credentials visible before the Secret Store backfill completes.
-    if (workspace.legacyBalance) {
-      const providers = await ctx.db.query("providers").take(200);
-      for (const provider of providers) {
-        if (result.has(provider.slug) || deletedProviders.has(provider.slug)) continue;
-        const current = await readSecret(
-          ctx,
-          {
-            namespace: workspaceProviderSecretNamespace(workspace._id, provider.slug),
-            name: provider.slug,
-          },
-          `workspace provider ${provider.slug} credential`,
-        );
-        const legacy = !current.ok
-          ? await readSecret(
-              ctx,
-              {
-                namespace: providerSecretNamespace(provider.slug),
-                name: balanceSecretName(workspace.legacyBalance),
-              },
-              `legacy provider ${provider.slug} credential`,
-            )
-          : null;
-        const stored = current.ok ? current : legacy;
-        if (!stored?.ok) continue;
-        let preview = stored.metadata?.preview;
-        if (!preview) {
-          try {
-            preview = Object.fromEntries(
-              Object.entries(parseProviderCredentials(provider.slug, stored.value)).map(
-                ([name, value]) => [name, credentialPreview(value)],
-              ),
-            );
-          } catch {
-            continue;
-          }
-        }
-        result.set(provider.slug, { provider: provider.slug, preview });
+    for (const record of await workspaceProviderRecords(ctx, workspace)) {
+      const slug = record.provider.slug;
+      const rows = await providerCredentialRows(ctx, workspace._id, slug);
+      for (const row of rows) {
+        result.push({
+          _id: row._id,
+          provider: slug,
+          name: credentialDisplayName(row),
+          label: row.label,
+          preview: row.preview,
+          enabled: isCredentialEnabled(row),
+          ...credentialPlacement(row),
+        });
       }
+
+      if (rows.some((row) => row.secretName === undefined)) continue;
+      const legacy = await readLegacyCredential(ctx, workspace, slug);
+      if (!legacy) continue;
+      let preview = legacy.metadata?.preview;
+      if (!preview) {
+        try {
+          preview = maskCredentialValues(parseProviderCredentials(slug, legacy.value));
+        } catch {
+          continue;
+        }
+      }
+      result.push({
+        provider: slug,
+        name: credentialDisplayName({ preview }),
+        preview,
+        enabled: true,
+        ...credentialPlacement({}),
+      });
     }
 
-    return [...result.values()];
+    return result;
   },
 });
 
-/** Store credentials in Secret Store and persist only their masked preview in app data. */
-export const upsertCredentials = mutation({
+/**
+ * Add a credential (one value per provider environment variable) to a workspace provider's pool,
+ * optionally with its priority and weight inside the provider. Values go to Secret Store; app
+ * data keeps only masked previews. OAuth accounts are added through their login flow instead.
+ */
+export const createCredential = mutation({
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
+    label: v.optional(v.string()),
+    priority: v.optional(v.number()),
+    weight: v.optional(v.number()),
     credentials: v.record(v.string(), v.string()),
   },
+  returns: v.id("workspace_credentials"),
   handler: async (ctx, args) => {
     const { provider } = await requireWorkspaceProvider(ctx, args.workspace, args.provider);
-
-    for (const requiredName of provider.env) {
-      if (!args.credentials[requiredName]) {
-        throw new Error(`Missing required credential value: ${requiredName}`);
-      }
+    if (provider.credential_type === "oauth") {
+      throw new Error(`Connect ${provider.name} accounts through its login flow.`);
     }
+    assertRequiredCredentials(provider.env, args.credentials);
+    assertValidPlacement(credentialPlacement(args));
+    const label = args.label === undefined ? undefined : normalizeCredentialLabel(args.label);
 
-    const preview = Object.fromEntries(
-      Object.entries(args.credentials).map(([name, value]) => [name, credentialPreview(value)]),
-    );
-
-    await secrets.put(ctx, {
-      namespace: workspaceProviderSecretNamespace(args.workspace, args.provider),
-      name: args.provider,
-      value: JSON.stringify(args.credentials),
-      metadata: {
-        kind: "provider",
-        provider: args.provider,
-        workspace: args.workspace,
-        preview,
-      },
+    return await insertCredential(ctx, args.workspace, args.provider, {
+      values: args.credentials,
+      preview: maskCredentialValues(args.credentials),
+      label,
+      priority: args.priority,
+      weight: args.weight,
     });
-
-    const existing = await ctx.db
-      .query("workspace_credentials")
-      .withIndex("by_workspace_and_provider", (q) =>
-        q.eq("workspace", args.workspace).eq("provider", args.provider),
-      )
-      .first();
-    if (existing) {
-      await ctx.db.patch("workspace_credentials", existing._id, { preview });
-    } else {
-      await ctx.db.insert("workspace_credentials", {
-        workspace: args.workspace,
-        provider: args.provider,
-        preview,
-      });
-    }
-
-    return args.provider;
   },
 });
 
-/** Remove workspace credentials and their legacy fallback during the migration window. */
-export const deleteCredentials = mutation({
+/**
+ * Rename, enable/disable, re-rank (priority and weight inside the provider), or replace the
+ * values of one credential. Omitted fields are unchanged; an empty label clears it. Replacing
+ * values requires every provider environment variable and is not available for OAuth accounts.
+ */
+export const updateCredential = mutation({
+  args: {
+    workspace: v.id("workspaces"),
+    credential: v.id("workspace_credentials"),
+    label: v.optional(v.string()),
+    enabled: v.optional(v.boolean()),
+    priority: v.optional(v.number()),
+    weight: v.optional(v.number()),
+    credentials: v.optional(v.record(v.string(), v.string())),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { provider, credential } = await requireProviderCredential(
+      ctx,
+      args.workspace,
+      args.credential,
+    );
+    const patch: Partial<Doc<"workspace_credentials">> = {};
+
+    if (args.label !== undefined) patch.label = normalizeCredentialLabel(args.label);
+    if (args.enabled !== undefined) patch.enabled = args.enabled;
+    if (args.priority !== undefined || args.weight !== undefined) {
+      const placement = credentialPlacement({
+        priority: args.priority ?? credential.priority,
+        weight: args.weight ?? credential.weight,
+      });
+      assertValidPlacement(placement);
+      Object.assign(patch, placement);
+    }
+    if (args.credentials !== undefined) {
+      if (provider.credential_type === "oauth") {
+        throw new Error(`Reconnect ${provider.name} accounts through its login flow.`);
+      }
+      assertRequiredCredentials(provider.env, args.credentials);
+      patch.preview = maskCredentialValues(args.credentials);
+      await secrets.put(ctx, {
+        namespace: workspaceProviderSecretNamespace(args.workspace, credential.provider),
+        name: credentialSecretName(credential),
+        value: JSON.stringify(args.credentials),
+        metadata: {
+          kind: "provider",
+          provider: credential.provider,
+          workspace: args.workspace,
+          preview: patch.preview,
+        },
+      });
+    }
+
+    await ctx.db.patch("workspace_credentials", credential._id, patch);
+    return null;
+  },
+});
+
+/**
+ * Remove one credential, or the provider's legacy credential when `credential` is omitted.
+ * Removing an OAuth account also ends its upstream session when its flow has an adapter.
+ */
+export const deleteCredential = mutation({
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
+    credential: v.optional(v.id("workspace_credentials")),
   },
+  returns: v.null(),
   handler: async (ctx, args) => {
-    const workspace = await requireOwnedWorkspace(ctx, args.workspace);
-
-    await secrets.remove(ctx, {
-      namespace: workspaceProviderSecretNamespace(args.workspace, args.provider),
-      name: args.provider,
-    });
-    if (workspace.legacyBalance) {
-      await secrets.remove(ctx, {
-        namespace: providerSecretNamespace(args.provider),
-        name: balanceSecretName(workspace.legacyBalance),
-      });
+    if (args.credential === undefined) {
+      const { workspace } = await requireWorkspaceProvider(ctx, args.workspace, args.provider);
+      await removeLegacyCredential(ctx, workspace, args.provider);
+      return null;
     }
-    const credential = await ctx.db
-      .query("workspace_credentials")
-      .withIndex("by_workspace_and_provider", (q) =>
-        q.eq("workspace", args.workspace).eq("provider", args.provider),
-      )
-      .first();
-    if (credential) await ctx.db.delete("workspace_credentials", credential._id);
-    return true;
+
+    const { workspace, provider, credential } = await requireProviderCredential(
+      ctx,
+      args.workspace,
+      args.credential,
+    );
+    if (credential.provider !== args.provider) throw new Error("Credential not found.");
+    await removeCredential(ctx, workspace, provider, credential);
+    return null;
   },
 });
 
-/** Associates an opaque OAuth session with a workspace after the device flow completes. */
+/**
+ * Bind an upstream OAuth/subscription session to a workspace after a provider's login flow
+ * completes. `credentials` are the values the flow stores for that session; binding the same
+ * values again only refreshes the preview. A new session for an already connected upstream
+ * `account` replaces that account's values and ends the replaced session through the flow's
+ * adapter; any other session adds a credential to the pool.
+ */
 export const bindOAuthCredential = internalMutation({
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
     userId: v.string(),
+    account: v.optional(v.string()),
     credentials: v.record(v.string(), v.string()),
     preview: v.record(v.string(), v.string()),
   },
+  returns: v.null(),
   handler: async (ctx, args) => {
     const workspace = await ctx.db.get("workspaces", args.workspace);
     const configuration = await ctx.db
@@ -629,9 +658,34 @@ export const bindOAuthCredential = internalMutation({
       });
     }
 
+    const rows = await providerCredentialRows(ctx, args.workspace, args.provider);
+    const sessionOwner = await findCredentialByValues(ctx, rows, args.credentials);
+    if (sessionOwner) {
+      await ctx.db.patch("workspace_credentials", sessionOwner._id, {
+        preview: args.preview,
+        account: args.account ?? sessionOwner.account,
+      });
+      return null;
+    }
+
+    const sameAccount =
+      args.account === undefined ? undefined : rows.find((row) => row.account === args.account);
+    if (!sameAccount) {
+      await insertCredential(ctx, args.workspace, args.provider, {
+        values: args.credentials,
+        preview: args.preview,
+        account: args.account,
+      });
+      return null;
+    }
+
+    // Reconnecting an account: keep its row (label, routing state) and end the replaced session.
+    const namespace = workspaceProviderSecretNamespace(args.workspace, args.provider);
+    const name = credentialSecretName(sameAccount);
+    const previous = await readStoredValues(ctx, namespace, name);
     await secrets.put(ctx, {
-      namespace: workspaceProviderSecretNamespace(args.workspace, args.provider),
-      name: args.provider,
+      namespace,
+      name,
       value: JSON.stringify(args.credentials),
       metadata: {
         kind: "provider",
@@ -640,57 +694,47 @@ export const bindOAuthCredential = internalMutation({
         preview: args.preview,
       },
     });
-    const existing = await ctx.db
-      .query("workspace_credentials")
-      .withIndex("by_workspace_and_provider", (q) =>
-        q.eq("workspace", args.workspace).eq("provider", args.provider),
-      )
-      .first();
-    if (existing)
-      await ctx.db.patch("workspace_credentials", existing._id, { preview: args.preview });
-    else {
-      await ctx.db.insert("workspace_credentials", {
-        workspace: args.workspace,
-        provider: args.provider,
-        preview: args.preview,
-      });
-    }
+    await ctx.db.patch("workspace_credentials", sameAccount._id, { preview: args.preview });
+    if (previous) await subscriptionAdapter(provider)?.endSession(ctx, previous);
+    return null;
   },
 });
 
-/** Removes an OAuth workspace binding when its upstream session is disconnected. */
+/**
+ * Remove the credential holding exactly `credentials` after its upstream session logged out or
+ * expired. Other accounts of the provider are untouched.
+ */
 export const unbindOAuthCredential = internalMutation({
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
     userId: v.string(),
+    credentials: v.record(v.string(), v.string()),
   },
+  returns: v.null(),
   handler: async (ctx, args) => {
     const workspace = await ctx.db.get("workspaces", args.workspace);
     if (!workspace || !canAccessWorkspace(workspace, args.userId)) {
       throw new Error("Workspace not found.");
     }
-    await secrets.remove(ctx, {
-      namespace: workspaceProviderSecretNamespace(args.workspace, args.provider),
-      name: args.provider,
-    });
-    if (workspace.legacyBalance) {
-      await secrets.remove(ctx, {
-        namespace: providerSecretNamespace(args.provider),
-        name: balanceSecretName(workspace.legacyBalance),
-      });
-    }
-    const credential = await ctx.db
-      .query("workspace_credentials")
-      .withIndex("by_workspace_and_provider", (q) =>
-        q.eq("workspace", args.workspace).eq("provider", args.provider),
-      )
-      .first();
-    if (credential) await ctx.db.delete("workspace_credentials", credential._id);
+    const rows = await providerCredentialRows(ctx, args.workspace, args.provider);
+    const credential = await findCredentialByValues(ctx, rows, args.credentials);
+    if (credential) await removeCredentialRecord(ctx, workspace, credential);
+    return null;
   },
 });
 
-/** A credentialed, enabled workspace provider that offers the requested model. */
+/** One credential of a routable provider; `id` is absent for a legacy, not yet migrated one. */
+export type RoutableCredential = {
+  id?: Id<"workspace_credentials">;
+  /** Tier inside the provider; higher is tried first. */
+  priority: number;
+  /** Share inside the provider for `weighted-round-robin`. */
+  weight: number;
+  values: Record<string, string>;
+};
+
+/** An enabled workspace provider that offers the requested model, with its enabled credentials. */
 export type RoutableProvider = {
   slug: string;
   name: string;
@@ -702,13 +746,20 @@ export type RoutableProvider = {
   modelId: string;
   pricing: ProviderSnapshot["models"][number]["pricing"];
   routing: ProviderRouting;
-  credentials: Record<string, string>;
+  /** Never empty; in creation order, which breaks fill-first ties inside a priority tier. */
+  credentials: RoutableCredential[];
+};
+
+/** The provider credential chosen for one routing attempt. */
+export type RoutableTarget = Omit<RoutableProvider, "credentials"> & {
+  credential: RoutableCredential;
 };
 
 /**
- * Resolve credentialed, enabled workspace providers that offer `modelSlug`, with their owner
- * routing overrides. Callers apply request preferences, cooldowns, and selection. Throws when
- * the model is unknown or no provider can serve it, so callers can report configuration errors.
+ * Resolve enabled workspace providers that offer `modelSlug` with their enabled, readable
+ * credentials and owner routing overrides. Callers apply request preferences, cooldowns, and
+ * selection. Throws when the model is unknown or no provider can serve it, so callers can report
+ * configuration errors.
  */
 export async function resolveRoutableProviders(
   ctx: SecretContext,
@@ -737,33 +788,12 @@ export async function resolveRoutableProviders(
     throw new Error(`Model ${modelSlug} has no configured providers.`);
   }
 
-  const candidates = [];
+  const candidates: RoutableProvider[] = [];
 
   for (const { record, providerModel } of modelProviders) {
     const provider = record.provider;
-    const credentials = await readSecret(
-      ctx,
-      {
-        namespace: workspaceProviderSecretNamespace(workspace._id, provider.slug),
-        name: provider.slug,
-      },
-      `workspace provider ${provider.slug} credential`,
-    );
-
-    const legacyCredentials =
-      !credentials.ok && workspace.legacyBalance
-        ? await readSecret(
-            ctx,
-            {
-              namespace: providerSecretNamespace(provider.slug),
-              name: balanceSecretName(workspace.legacyBalance),
-            },
-            `legacy provider ${provider.slug} credential`,
-          )
-        : null;
-
-    const storedCredentials = credentials.ok ? credentials : legacyCredentials;
-    if (!storedCredentials?.ok) continue;
+    const credentials = await providerCredentials(ctx, workspace, provider.slug);
+    if (credentials.length === 0) continue;
 
     candidates.push({
       slug: provider.slug,
@@ -775,7 +805,7 @@ export async function resolveRoutableProviders(
       modelId: providerModel.upstream_model_id ?? model.slug,
       pricing: providerModel.pricing,
       routing: resolveProviderRouting(record.configuration?.routing),
-      credentials: parseProviderCredentials(provider.slug, storedCredentials.value),
+      credentials,
     });
   }
 
@@ -784,4 +814,250 @@ export async function resolveRoutableProviders(
   }
 
   return candidates;
+}
+
+/** A provider's credential rows in creation order. */
+async function providerCredentialRows(
+  ctx: SecretContext,
+  workspace: Id<"workspaces">,
+  provider: string,
+) {
+  return await ctx.db
+    .query("workspace_credentials")
+    .withIndex("by_workspace_and_provider", (q) =>
+      q.eq("workspace", workspace).eq("provider", provider),
+    )
+    .take(MAX_PROVIDER_CREDENTIALS);
+}
+
+/**
+ * Enabled credentials with readable values. A legacy workspace's provider-slug credential that
+ * no row owns yet is read from the workspace namespace, then the pre-workspace namespace.
+ */
+async function providerCredentials(
+  ctx: SecretContext,
+  workspace: Doc<"workspaces">,
+  provider: string,
+): Promise<RoutableCredential[]> {
+  const rows = await providerCredentialRows(ctx, workspace._id, provider);
+  const credentials: RoutableCredential[] = [];
+
+  for (const row of rows) {
+    if (!isCredentialEnabled(row)) continue;
+    const stored = await readSecret(
+      ctx,
+      {
+        namespace: workspaceProviderSecretNamespace(workspace._id, provider),
+        name: credentialSecretName(row),
+      },
+      `workspace provider ${provider} credential`,
+    );
+    if (!stored.ok) continue;
+    credentials.push({
+      id: row._id,
+      ...credentialPlacement(row),
+      values: parseProviderCredentials(provider, stored.value),
+    });
+  }
+
+  if (!rows.some((row) => row.secretName === undefined)) {
+    const legacy = await readLegacyCredential(ctx, workspace, provider);
+    if (legacy) {
+      credentials.push({
+        ...credentialPlacement({}),
+        values: parseProviderCredentials(provider, legacy.value),
+      });
+    }
+  }
+
+  return credentials;
+}
+
+/**
+ * A legacy workspace's provider-slug credential that no row owns: the workspace-namespace copy,
+ * else the pre-workspace secret. `null` outside legacy workspaces.
+ */
+async function readLegacyCredential(
+  ctx: SecretContext,
+  workspace: Doc<"workspaces">,
+  provider: string,
+): Promise<Extract<SecretReadResult, { ok: true }> | null> {
+  if (!workspace.legacyBalance) return null;
+
+  const current = await readSecret(
+    ctx,
+    { namespace: workspaceProviderSecretNamespace(workspace._id, provider), name: provider },
+    `workspace provider ${provider} credential`,
+  );
+  if (current.ok) return current;
+
+  const legacy = await readSecret(
+    ctx,
+    {
+      namespace: providerSecretNamespace(provider),
+      name: balanceSecretName(workspace.legacyBalance),
+    },
+    `legacy provider ${provider} credential`,
+  );
+  return legacy.ok ? legacy : null;
+}
+
+/** Resolve a credential row of an owned, configured workspace provider. */
+async function requireProviderCredential(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  credentialId: Id<"workspace_credentials">,
+) {
+  const credential = await ctx.db.get("workspace_credentials", credentialId);
+  if (!credential || credential.workspace !== workspaceId) {
+    throw new Error("Credential not found.");
+  }
+  const resolved = await requireWorkspaceProvider(ctx, workspaceId, credential.provider);
+  return { ...resolved, credential };
+}
+
+/** Insert a pooled credential row and its secret, named after the row ID. */
+async function insertCredential(
+  ctx: MutationCtx,
+  workspace: Id<"workspaces">,
+  provider: string,
+  credential: {
+    values: Record<string, string>;
+    preview: Record<string, string>;
+    label?: string;
+    account?: string;
+    priority?: number;
+    weight?: number;
+  },
+) {
+  const existing = await providerCredentialRows(ctx, workspace, provider);
+  if (existing.length >= MAX_PROVIDER_CREDENTIALS) {
+    throw new Error(`A provider can hold at most ${MAX_PROVIDER_CREDENTIALS} credentials.`);
+  }
+
+  const id = await ctx.db.insert("workspace_credentials", {
+    workspace,
+    provider,
+    preview: credential.preview,
+    label: credential.label,
+    account: credential.account,
+    priority: credential.priority,
+    weight: credential.weight,
+  });
+  await ctx.db.patch("workspace_credentials", id, { secretName: id });
+  await secrets.put(ctx, {
+    namespace: workspaceProviderSecretNamespace(workspace, provider),
+    name: id,
+    value: JSON.stringify(credential.values),
+    metadata: { kind: "provider", provider, workspace, preview: credential.preview },
+  });
+  return id;
+}
+
+/**
+ * Remove a credential row, its secret, and its cooldowns. For an OAuth provider with a registered
+ * flow adapter, the credential's upstream session is ended too.
+ */
+async function removeCredential(
+  ctx: MutationCtx,
+  workspace: Doc<"workspaces">,
+  provider: ProviderSnapshot,
+  credential: Doc<"workspace_credentials">,
+) {
+  const adapter = subscriptionAdapter(provider);
+  if (adapter) {
+    const values = await readStoredValues(
+      ctx,
+      workspaceProviderSecretNamespace(workspace._id, credential.provider),
+      credentialSecretName(credential),
+    );
+    if (values) await adapter.endSession(ctx, values);
+  }
+  await removeCredentialRecord(ctx, workspace, credential);
+}
+
+async function removeCredentialRecord(
+  ctx: MutationCtx,
+  workspace: Doc<"workspaces">,
+  credential: Doc<"workspace_credentials">,
+) {
+  await secrets.remove(ctx, {
+    namespace: workspaceProviderSecretNamespace(workspace._id, credential.provider),
+    name: credentialSecretName(credential),
+  });
+  // The provider-slug credential may have a pre-workspace copy that legacy fallback would restore.
+  if (credential.secretName === undefined && workspace.legacyBalance) {
+    await secrets.remove(ctx, {
+      namespace: providerSecretNamespace(credential.provider),
+      name: balanceSecretName(workspace.legacyBalance),
+    });
+  }
+
+  const cooldowns = await ctx.db
+    .query("routing_cooldowns")
+    .withIndex("by_workspace_provider_credential_model", (q) =>
+      q
+        .eq("workspace", workspace._id)
+        .eq("provider", credential.provider)
+        .eq("credential", credential._id),
+    )
+    .take(500);
+  for (const cooldown of cooldowns) await ctx.db.delete("routing_cooldowns", cooldown._id);
+
+  await ctx.db.delete("workspace_credentials", credential._id);
+}
+
+/** Remove the provider-slug credential no row owns, in both workspace and legacy namespaces. */
+async function removeLegacyCredential(
+  ctx: MutationCtx,
+  workspace: Doc<"workspaces">,
+  provider: string,
+) {
+  const owned = (await providerCredentialRows(ctx, workspace._id, provider)).some(
+    (row) => row.secretName === undefined,
+  );
+  if (!owned) {
+    await secrets.remove(ctx, {
+      namespace: workspaceProviderSecretNamespace(workspace._id, provider),
+      name: provider,
+    });
+  }
+  if (workspace.legacyBalance) {
+    await secrets.remove(ctx, {
+      namespace: providerSecretNamespace(provider),
+      name: balanceSecretName(workspace.legacyBalance),
+    });
+  }
+}
+
+/** The row whose stored values equal `values` exactly, if any. */
+async function findCredentialByValues(
+  ctx: MutationCtx,
+  rows: Doc<"workspace_credentials">[],
+  values: Record<string, string>,
+) {
+  const names = Object.keys(values);
+  for (const row of rows) {
+    const stored = await readStoredValues(
+      ctx,
+      workspaceProviderSecretNamespace(row.workspace, row.provider),
+      credentialSecretName(row),
+    );
+    if (!stored || Object.keys(stored).length !== names.length) continue;
+    if (names.every((name) => stored[name] === values[name])) return row;
+  }
+  return undefined;
+}
+
+/**
+ * A credential's stored values. Unreadable or malformed secrets read as absent so that
+ * disconnecting never gets stuck on them.
+ */
+async function readStoredValues(ctx: MutationCtx, namespace: SecretNamespace, name: string) {
+  try {
+    const stored = await secrets.get(ctx, { namespace, name });
+    return stored.ok ? parseProviderCredentials(name, stored.value) : undefined;
+  } catch {
+    return undefined;
+  }
 }

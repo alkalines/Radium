@@ -126,6 +126,8 @@ export const recordCompletion = internalMutation({
       model_slug: v.string(),
       app: v.optional(v.id("ai_apps")),
       provider: v.string(),
+      /** Credential that served the request; absent for a provider's legacy credential. */
+      credential: v.optional(v.id("workspace_credentials")),
       byok: v.boolean(),
       api: v.literal("chat_completions"),
       stream: v.boolean(),
@@ -240,6 +242,18 @@ export const recordCompletion = internalMutation({
       );
     }
 
+    // A credential removed mid-request keeps its ID for history; an existing one must match.
+    const credential = args.request.credential
+      ? await ctx.db.get("workspace_credentials", args.request.credential)
+      : null;
+    if (
+      credential &&
+      (credential.workspace !== resolvedWorkspace?._id ||
+        credential.provider !== args.request.provider)
+    ) {
+      throw new Error("Completion credential does not belong to its workspace provider.");
+    }
+
     /** Decimal arithmetic avoids making persisted usage estimates drift on floats. */
     const completionPricing = MultiplyFunction([
       args.response.usage.completion_tokens,
@@ -282,6 +296,7 @@ export const recordCompletion = internalMutation({
         canceled: args.request.canceled,
         model: modelInfo._id,
         provider: args.request.provider,
+        credential: args.request.credential,
         app: args.request.app,
       },
       response: {

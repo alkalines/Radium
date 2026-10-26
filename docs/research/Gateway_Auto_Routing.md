@@ -1,6 +1,6 @@
 # Gateway Auto-Routing Research
 
-Research snapshot: 2026-10-25. On 2026-10-25 the owner chose to implement CLIProxyAPI's model first; that slice is documented in [Gateway routing](../Radium_Gateway/LoadBalancer.md) and supersedes the "Current State" table and the CLIProxyAPI "Not Adopted" list below (it uses a fixed affinity TTL, provider-level bindings, the assistant-turn hash, and exclude-only quota). The cache-domain rendezvous placement and quota pacing in "Proposed Design" remain proposals for [task 05](../tasks/05_Gateway_Load_Balancer.md). Multi-account pools depend on the upstream-instance model in [task 04](../tasks/04_Upstream_Instances.md).
+Research snapshot: 2026-10-25. On 2026-10-25 the owner chose to implement CLIProxyAPI's model first; that slice is documented in [Gateway routing](../Radium_Gateway/LoadBalancer.md) and supersedes the "Current State" table and the CLIProxyAPI "Not Adopted" list below (it uses a fixed affinity TTL, credential-level bindings, the assistant-turn hash, and exclude-only quota). Per-provider credential pools (N API keys or subscription accounts) are implemented; see [Gateway credentials](../Radium_Gateway/Credentials.md). The cache-domain rendezvous placement and quota pacing in "Proposed Design" remain proposals for [task 05](../tasks/05_Gateway_Load_Balancer.md); endpoint instances remain [task 04](../tasks/04_Upstream_Instances.md) work.
 
 The algorithm is provider-agnostic. Provider specifics live in adapters, which
 declare cache scope, cache lifetime, cache hints, and quota signal parsers; the

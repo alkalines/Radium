@@ -110,11 +110,36 @@ export default defineSchema({
   })
     .index("by_workspace", ["workspace"])
     .index("by_workspace_and_provider", ["workspace", "provider"]),
-  /** Non-secret credential metadata. Values are encrypted in Secret Store. */
+  /**
+   * Non-secret metadata for one credential (API key set or OAuth account) of a workspace provider.
+   * A provider may hold several; each value set is encrypted in Secret Store under the
+   * workspace provider namespace.
+   */
   workspace_credentials: defineTable({
     workspace: v.id("workspaces"),
     provider: v.string(),
     preview: v.record(v.string(), v.string()),
+    /** Owner-chosen name; absent means a name derived from the preview. */
+    label: v.optional(v.string()),
+    /** Disabled credentials are kept but never routed; absent means enabled. */
+    enabled: v.optional(v.boolean()),
+    /**
+     * Secret Store name inside the provider namespace. Absent for credentials created before
+     * pools (and by the legacy migration), whose secret is named after the provider slug.
+     */
+    secretName: v.optional(v.string()),
+    /**
+     * Upstream account identity reported by an OAuth flow (for example a ChatGPT account ID), used
+     * to recognise reconnects of the same account; not a secret.
+     */
+    account: v.optional(v.string()),
+    /**
+     * Tier inside the provider: higher is tried first, lower serves only when every higher
+     * credential is blocked. Absent means 0.
+     */
+    priority: v.optional(v.number()),
+    /** Share inside the provider for `weighted-round-robin`; 0 excludes it. Absent means 1. */
+    weight: v.optional(v.number()),
   }).index("by_workspace_and_provider", ["workspace", "provider"]),
   /** Gateway API keys are workspace-scoped and store only a hash and preview. */
   api_keys: defineTable({
@@ -211,6 +236,8 @@ export default defineSchema({
     }),
     request: v.object({
       provider: v.string(),
+      /** Provider credential that served the completion; absent for legacy credentials and older rows. */
+      credential: v.optional(v.id("workspace_credentials")),
       byok: v.boolean(),
       app: v.optional(v.id("ai_apps")),
       model: v.id("models"),
@@ -229,7 +256,8 @@ export default defineSchema({
     }),
   })
     .index("by_balance", ["bill.balance"])
-    .index("by_workspace", ["bill.workspace"]),
+    .index("by_workspace", ["bill.workspace"])
+    .index("by_credential", ["request.credential"]),
   models: defineTable({
     name: v.string(),
     launch_date: v.number(), // UNIX in ms
@@ -310,12 +338,15 @@ export default defineSchema({
     expiresAt: v.optional(v.number()),
   }).index("by_provider_namespace_key", ["provider", "namespace", "key"]),
   /**
-   * Provider (model `""`) or provider+model exclusion after upstream failures. Expired rows
-   * keep `backoffLevel` until a success clears them or the prune cron removes them.
+   * Credential-wide (model `""`) or credential+model exclusion after upstream failures. Rows
+   * without `credential` belong to a provider's legacy, not yet migrated credential (or predate
+   * credential pools). Expired rows keep `backoffLevel` until a success clears them or the prune
+   * cron removes them.
    */
   routing_cooldowns: defineTable({
     workspace: v.id("workspaces"),
     provider: v.string(),
+    credential: v.optional(v.id("workspace_credentials")),
     model: v.string(),
     reason: cooldownReasonValidator,
     nextRetryAt: v.number(),
@@ -326,23 +357,50 @@ export default defineSchema({
     /** Successes dispatched before this time cannot clear the cooldown. */
     recordedAt: v.number(),
   })
-    .index("by_workspace_provider_model", ["workspace", "provider", "model"])
+    .index("by_workspace_provider_credential_model", [
+      "workspace",
+      "provider",
+      "credential",
+      "model",
+    ])
     .index("by_nextRetryAt", ["nextRetryAt"]),
-  /** Session-affinity binding from a session key (`<session>::<model>`) to a provider. */
+  /**
+   * Session-affinity binding from a session key (`<session>::<model>`) to a provider credential.
+   * `credential` is absent for a legacy credential or a binding made before credential pools; such
+   * bindings keep the provider and let the strategy choose the credential.
+   */
   routing_sessions: defineTable({
     workspace: v.id("workspaces"),
     key: v.string(),
     provider: v.string(),
+    credential: v.optional(v.id("workspace_credentials")),
     expiresAt: v.number(),
   })
     .index("by_workspace_key", ["workspace", "key"])
     .index("by_expiresAt", ["expiresAt"]),
-  /** Round-robin and smooth weighted round-robin cursor per workspace and model. */
+  /**
+   * Round-robin and smooth weighted round-robin cursor per workspace and model, plus per-provider
+   * credential rotation state.
+   */
   routing_cursors: defineTable({
     workspace: v.id("workspaces"),
     model: v.string(),
     lastProvider: v.optional(v.string()),
     weighted: v.array(v.object({ provider: v.string(), current: v.number(), weight: v.number() })),
+    /**
+     * Credential rotation per provider. Credentials are keyed by ID, with `""` for the provider's
+     * legacy credential: `last` is the last round-robin pick, `credits` the smooth weighted
+     * round-robin state.
+     */
+    credentialCursors: v.optional(
+      v.array(
+        v.object({
+          provider: v.string(),
+          last: v.optional(v.string()),
+          credits: v.array(v.object({ key: v.string(), current: v.number(), weight: v.number() })),
+        }),
+      ),
+    ),
   }).index("by_workspace_model", ["workspace", "model"]),
   authors: defineTable({
     name: v.string(),

@@ -8,6 +8,7 @@ import { CHATGPT_SUBSCRIPTION_PATH } from "./paths";
 const mocks = vi.hoisted(() => ({
   createChatGPTHandler: vi.fn(),
   handler: vi.fn(),
+  getSession: vi.fn(),
   proxyFetch: vi.fn(),
   safeGetAuthUser: vi.fn(),
 }));
@@ -45,10 +46,12 @@ describe("ChatGPT subscription handler", () => {
     vi.stubEnv("SITE_URL", "https://app.example.test");
     mocks.createChatGPTHandler.mockReset();
     mocks.handler.mockReset();
+    mocks.getSession.mockReset();
     mocks.proxyFetch.mockReset();
     mocks.safeGetAuthUser.mockReset();
     mocks.createChatGPTHandler.mockReturnValue({
       handler: mocks.handler,
+      getSession: mocks.getSession,
       proxyFetch: mocks.proxyFetch,
     });
   });
@@ -108,7 +111,7 @@ describe("ChatGPT subscription handler", () => {
     mocks.handler.mockResolvedValue(
       Response.json({
         status: "authenticated",
-        user: { email: "chatgpt@example.test", plan: "plus" },
+        user: { accountId: "account-1", email: "chatgpt@example.test", plan: "plus" },
       }),
     );
 
@@ -137,10 +140,38 @@ describe("ChatGPT subscription handler", () => {
       workspace,
       provider: OPENAI_CODEX_SLUG,
       userId: user._id,
+      account: "account-1",
       credentials: { sessionCookie: "lwc_chatgpt_subscription=session-cookie" },
       preview: { account: "chatgpt@example.test · plus plan" },
     });
   });
+
+  test.each([
+    { status: "authenticated", forwardsCookie: false },
+    { status: "pending", forwardsCookie: true },
+  ])(
+    "login with a $status session forwards the session cookie: $forwardsCookie",
+    async ({ status, forwardsCookie }) => {
+      const ctx = makeContext();
+      mocks.safeGetAuthUser.mockResolvedValue({ _id: "user_1", email: "user@example.test" });
+      ctx.runQuery.mockResolvedValue("workspace_1");
+      mocks.getSession.mockResolvedValue({ status });
+      mocks.handler.mockResolvedValue(Response.json({ status: "pending", userCode: "ABCD" }));
+
+      await handleChatGPTSubscription(
+        ctx as never,
+        makeRequest("/login?workspace=workspace_1", {
+          method: "POST",
+          headers: { Cookie: "lwc_chatgpt_subscription=session-cookie" },
+        }),
+      );
+
+      // An authenticated session belongs to a connected account; a new login must not reuse it.
+      const forwarded = mocks.handler.mock.calls[0]?.[0] as Request;
+      expect(forwarded.headers.has("cookie")).toBe(forwardsCookie);
+      expect(ctx.runMutation).not.toHaveBeenCalled();
+    },
+  );
 
   test("unbinds the existing credential when the provider logs out", async () => {
     const ctx = makeContext();
@@ -171,6 +202,7 @@ describe("ChatGPT subscription handler", () => {
       workspace,
       provider: OPENAI_CODEX_SLUG,
       userId: user._id,
+      credentials: { sessionCookie: "lwc_chatgpt_subscription=session-cookie" },
     });
   });
 });

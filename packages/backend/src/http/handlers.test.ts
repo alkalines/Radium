@@ -44,7 +44,7 @@ function isPick(fn: FunctionReference<"mutation", "internal">) {
 }
 
 function routedProvider(slug: string) {
-  return { slug, routing: { errorRules: [] } };
+  return { slug, routing: { errorRules: [] }, credential: { values: {} } };
 }
 
 /** Route every attempt to one provider and accept routing and usage writes. */
@@ -251,7 +251,9 @@ describe("moved HTTP handlers", () => {
     const providers = ["first-provider", "second-provider"];
     runMutation.mockImplementation(async (fn, args) => {
       if (!isPick(fn)) return null;
-      const next = providers.find((slug) => !args.excluded.includes(slug));
+      const next = providers.find(
+        (slug) => !args.excluded.some((target: { provider: string }) => target.provider === slug),
+      );
       if (!next) return { ok: false, message: "exhausted", settings: DEFAULT_ROUTING_SETTINGS };
       return { ok: true, provider: routedProvider(next), settings: DEFAULT_ROUTING_SETTINGS };
     });

@@ -46,41 +46,63 @@ export function pickFromTier<T extends SelectionCandidate>(
   }
 
   if (strategy === "round-robin") {
-    if (tier.length === 0) return undefined;
-    const last = cursor.lastProvider;
-    const next = last ? tier.find((candidate) => candidate.provider > last) : undefined;
-    const picked = next ?? tier[0]!;
-    return { picked, cursor: { ...cursor, lastProvider: picked.provider } };
+    const picked = roundRobinSuccessor(
+      tier,
+      (candidate) => candidate.provider,
+      cursor.lastProvider,
+    );
+    return picked ? { picked, cursor: { ...cursor, lastProvider: picked.provider } } : undefined;
   }
 
   const weighted = tier.filter((candidate) => candidate.weight > 0);
   if (weighted.length === 0) return undefined;
-  const result = pickSmoothWeighted(weighted, cursor.weighted);
-  return { picked: result.picked, cursor: { ...cursor, weighted: result.state } };
+  const result = smoothWeightedStep(
+    weighted,
+    (candidate) => candidate.provider,
+    cursor.weighted.map(({ provider, ...credit }) => ({ key: provider, ...credit })),
+  );
+  const state = result.credits.map(({ key, ...credit }) => ({ provider: key, ...credit }));
+  return { picked: result.picked, cursor: { ...cursor, weighted: state } };
 }
 
 /**
- * One nginx smooth weighted round-robin step. Credits survive while a provider is
- * temporarily excluded; they reset only when that provider's configured weight changes.
+ * The first item whose key sorts after `last`, wrapping to the first item; `items` must be sorted
+ * by key. Following the last pick's identity instead of an index keeps rotation stable when an
+ * item drops out or returns.
  */
-function pickSmoothWeighted<T extends SelectionCandidate>(
+export function roundRobinSuccessor<T>(
+  items: T[],
+  key: (item: T) => string,
+  last: string | undefined,
+): T | undefined {
+  const next = last === undefined ? undefined : items.find((item) => key(item) > last);
+  return next ?? items[0];
+}
+
+/** Smooth weighted round-robin credit of one candidate, keyed by its identity. */
+export type SmoothCredit = { key: string; current: number; weight: number };
+
+/**
+ * One nginx smooth weighted round-robin step over candidates with positive weights. Credits
+ * survive while a candidate is temporarily excluded; they reset only when its configured weight
+ * changes.
+ */
+export function smoothWeightedStep<T extends { weight: number }>(
   candidates: T[],
-  previous: WeightedState,
-): { picked: T; state: WeightedState } {
-  const credits = new Map(previous.map((entry) => [entry.provider, entry]));
+  key: (candidate: T) => string,
+  previous: SmoothCredit[],
+): { picked: T; credits: SmoothCredit[] } {
+  const credits = new Map(previous.map((entry) => [entry.key, entry]));
   let total = 0;
   let picked: T | undefined;
   let pickedCurrent = -Infinity;
 
   for (const candidate of candidates) {
-    const existing = credits.get(candidate.provider);
+    const id = key(candidate);
+    const existing = credits.get(id);
     const current =
       (existing && existing.weight === candidate.weight ? existing.current : 0) + candidate.weight;
-    credits.set(candidate.provider, {
-      provider: candidate.provider,
-      current,
-      weight: candidate.weight,
-    });
+    credits.set(id, { key: id, current, weight: candidate.weight });
     total += candidate.weight;
     if (current > pickedCurrent) {
       picked = candidate;
@@ -89,7 +111,7 @@ function pickSmoothWeighted<T extends SelectionCandidate>(
   }
 
   const chosen = picked!;
-  const chosenCredit = credits.get(chosen.provider)!;
-  credits.set(chosen.provider, { ...chosenCredit, current: chosenCredit.current - total });
-  return { picked: chosen, state: [...credits.values()] };
+  const chosenCredit = credits.get(key(chosen))!;
+  credits.set(chosenCredit.key, { ...chosenCredit, current: chosenCredit.current - total });
+  return { picked: chosen, credits: [...credits.values()] };
 }

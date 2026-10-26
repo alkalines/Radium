@@ -273,6 +273,9 @@ function GenerationRow({ generation, onSelect }: { generation: Generation; onSel
         <span className="flex items-center gap-1.5">
           <ProviderLogo slug={request.provider} className="size-4" />
           {request.provider}
+          {request.credentialName ? (
+            <span className="truncate text-muted-foreground">· {request.credentialName}</span>
+          ) : null}
         </span>
       </TableCell>
       <TableCell className="text-right tabular-nums">{response.usage.prompt_tokens}</TableCell>
@@ -324,7 +327,9 @@ function GenerationDetail({ generation }: { generation: Generation }) {
               {request.model?.name ?? request.model?.slug ?? "Unknown model"}
             </SheetTitle>
             <SheetDescription>
-              {request.provider} · {formatDate(generation._creationTime)}
+              {request.provider}
+              {request.credentialName ? ` · ${request.credentialName}` : ""} ·{" "}
+              {formatDate(generation._creationTime)}
             </SheetDescription>
           </div>
         </div>

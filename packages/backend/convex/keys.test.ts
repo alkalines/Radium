@@ -171,7 +171,22 @@ test("recordCompletion only records BYOK usage and does not debit a balance", as
         models: [providerModel],
       },
     });
-    return { balance, workspace };
+    const credential = await ctx.db.insert("workspace_credentials", {
+      workspace,
+      provider: "test-provider",
+      preview: {},
+    });
+    const otherWorkspace = await ctx.db.insert("workspaces", {
+      ownerType: "user",
+      ownerId: "other",
+      name: "Other workspace",
+    });
+    const foreignCredential = await ctx.db.insert("workspace_credentials", {
+      workspace: otherWorkspace,
+      provider: "test-provider",
+      preview: {},
+    });
+    return { balance, workspace, credential, foreignCredential };
   });
 
   const request = {
@@ -221,4 +236,25 @@ test("recordCompletion only records BYOK usage and does not debit a balance", as
     request: { byok: true },
   });
   expect(stored.credits).toBe(73);
+
+  // The serving credential is recorded for per-account usage, and must belong to the workspace.
+  const attributed = await t.mutation(anyApi.keys.recordCompletion, {
+    bill: { workspace: ids.workspace },
+    request: { ...request, byok: true, credential: ids.credential },
+    response,
+  });
+  const byCredential = await t.run((ctx) =>
+    ctx.db
+      .query("chat_completions")
+      .withIndex("by_credential", (q) => q.eq("request.credential", ids.credential))
+      .collect(),
+  );
+  expect(byCredential.map((completion) => completion._id)).toEqual([attributed]);
+  await expect(
+    t.mutation(anyApi.keys.recordCompletion, {
+      bill: { workspace: ids.workspace },
+      request: { ...request, byok: true, credential: ids.foreignCredential },
+      response,
+    }),
+  ).rejects.toThrow("Completion credential does not belong to its workspace provider.");
 });

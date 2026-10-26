@@ -5,18 +5,32 @@ import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../../convex/helper
 import {
   requireWorkspaceProvider,
   resolveRoutableProviders,
+  type RoutableCredential,
   type RoutableProvider,
+  type RoutableTarget,
 } from "../../convex/providers";
 import { workspaceProviderRecords } from "../../convex/provider_records";
 import { nextCooldown, type FailureDecision } from "./failures";
+import {
+  credentialDisplayName,
+  credentialPlacement,
+  isCredentialEnabled,
+} from "../workspaces/credentials";
 import {
   applyRoutingPreferences,
   routingPreferencesValidator,
   type ProviderMetrics,
   type RoutingPreferences,
 } from "./preferences";
-import { highestPriorityTier, pickFromTier, type SelectionCursor } from "./selection";
 import {
+  highestPriorityTier,
+  pickFromTier,
+  roundRobinSuccessor,
+  smoothWeightedStep,
+  type SelectionCursor,
+} from "./selection";
+import {
+  assertValidPlacement,
   assertValidProviderRouting,
   assertValidRoutingSettings,
   cooldownReasonValidator,
@@ -34,9 +48,15 @@ const sessionValidator = v.object({
   isSubagent: v.boolean(),
 });
 
-/** Provider-wide cooldowns use this model key. */
+/** One provider credential; `credential` is absent for the provider's legacy credential. */
+const targetValidator = v.object({
+  provider: v.string(),
+  credential: v.optional(v.id("workspace_credentials")),
+});
+
+/** Credential-wide cooldowns use this model key. */
 const ALL_MODELS = "";
-/** Cooldown reasons that mean the provider cannot serve until the owner or upstream acts. */
+/** Cooldown reasons that mean the credential cannot serve until the owner or upstream acts. */
 const HARD_BLOCK_REASONS: Record<CooldownReason, boolean> = {
   quota: true,
   unauthorized: true,
@@ -52,10 +72,10 @@ const COOLDOWN_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 /** Result of one routing decision, consumed by the action's attempt loop. */
 export type RoutingPick =
-  | { ok: true; provider: RoutableProvider; settings: RoutingSettings }
+  | { ok: true; provider: RoutableTarget; settings: RoutingSettings }
   | {
       ok: false;
-      /** Milliseconds until the soonest cooldown ends; 0 when only already-tried providers remain. */
+      /** Milliseconds until the soonest cooldown ends; 0 when only already-tried credentials remain. */
       retryAfterMs?: number;
       message: string;
       settings: RoutingSettings;
@@ -64,10 +84,12 @@ export type RoutingPick =
 type ActiveBlock = { until: number; reason: CooldownReason };
 
 /**
- * Choose the provider for the next attempt and persist strategy and session-affinity state in
- * the same transaction, so concurrent actions never reuse a stale cursor. `excluded` lists
- * providers already attempted in the current retry round. Configuration errors (unknown model,
- * no credentialed provider, a pinned provider that cannot serve the model) throw.
+ * Choose the provider credential for the next attempt and persist strategy and session-affinity
+ * state in the same transaction, so concurrent actions never reuse a stale cursor. The strategy
+ * first picks a provider among those with a usable credential, then rotates among that provider's
+ * usable credentials. `excluded` lists credentials already attempted in the current retry round.
+ * Configuration errors (unknown model, no credentialed provider, a pinned provider that cannot
+ * serve the model) throw.
  */
 export const pick = internalMutation({
   args: {
@@ -75,7 +97,7 @@ export const pick = internalMutation({
     model: v.string(),
     preferences: routingPreferencesValidator,
     session: v.optional(sessionValidator),
-    excluded: v.array(v.string()),
+    excluded: v.array(targetValidator),
   },
   handler: async (ctx, args): Promise<RoutingPick> => {
     const workspace = await ctx.db.get("workspaces", args.workspace);
@@ -100,61 +122,110 @@ export const pick = internalMutation({
     if (preferred.length === 0)
       throw new Error(noPreferredProviderMessage(args.model, args.preferences));
 
-    const blocks = await activeBlocks(
-      ctx,
-      workspace._id,
-      args.model,
-      preferred.map((candidate) => candidate.provider),
-      now,
+    const providerBySlug = new Map(providers.map((provider) => [provider.slug, provider]));
+    const preferredProviders = preferred.map((candidate) =>
+      providerBySlug.get(candidate.provider)!,
     );
-    const isAvailable = (slug: string) => !blocks.has(slug) && !args.excluded.includes(slug);
-    let available = preferred.filter((candidate) => isAvailable(candidate.provider));
+    const blocks = await activeBlocks(ctx, workspace._id, args.model, preferredProviders, now);
+    const excluded = new Set(
+      args.excluded.map((target) => targetKey(target.provider, target.credential)),
+    );
+
+    // A provider is selectable while any of its credentials is neither cooling nor tried (nor,
+    // under weighted round-robin, weighted 0).
+    const usable = new Map<string, RoutableCredential[]>();
+    for (const provider of preferredProviders) {
+      const credentials = provider.credentials.filter((credential) => {
+        const key = targetKey(provider.slug, credential.id);
+        if (blocks.has(key) || excluded.has(key)) return false;
+        return settings.strategy !== "weighted-round-robin" || credential.weight > 0;
+      });
+      usable.set(provider.slug, credentials);
+    }
+    let available = preferred.filter((candidate) => usable.get(candidate.provider)!.length > 0);
     if (settings.strategy === "weighted-round-robin") {
       available = available.filter((candidate) => candidate.weight > 0);
     }
 
     if (available.length === 0) {
-      return { ok: false, ...unavailableDetails(preferred, blocks, args.excluded, now), settings };
+      return {
+        ok: false,
+        ...unavailableDetails(preferredProviders, blocks, excluded, now),
+        settings,
+      };
     }
 
-    const providerBySlug = new Map(providers.map((provider) => [provider.slug, provider]));
-    const chosen = (slug: string): RoutingPick => ({
-      ok: true,
-      provider: providerBySlug.get(slug)!,
-      settings,
-    });
+    const target = (slug: string, credential: RoutableCredential): RoutingPick => {
+      const { credentials: _credentials, ...provider } = providerBySlug.get(slug)!;
+      return { ok: true, provider: { ...provider, credential }, settings };
+    };
+    const pickCredentialOf = async (slug: string) => {
+      const credential = await pickCredential(
+        ctx,
+        workspace._id,
+        args.model,
+        settings.strategy,
+        slug,
+        usable.get(slug)!,
+      );
+      return target(slug, credential);
+    };
+    const pickNew = async () =>
+      pickCredentialOf(await pickWithStrategy(ctx, workspace._id, args.model, settings, available));
+
+    // A binding without a credential predates credential pools (or names a legacy credential);
+    // it keeps the provider and lets the strategy choose among its credentials.
+    const reuseBinding = async (binding: Doc<"routing_sessions">) => {
+      if (!available.some((candidate) => candidate.provider === binding.provider)) return undefined;
+      if (binding.credential === undefined) return await pickCredentialOf(binding.provider);
+      const credential = usable
+        .get(binding.provider)!
+        .find((candidate) => candidate.id === binding.credential);
+      return credential ? target(binding.provider, credential) : undefined;
+    };
 
     const session = settings.sessionAffinity ? args.session : undefined;
-    if (!session) {
-      return chosen(await pickWithStrategy(ctx, workspace._id, args.model, settings, available));
-    }
+    if (!session) return await pickNew();
 
     const ttlMs = settings.sessionAffinityTtlSeconds * 1000;
     const primaryKey = sessionKey(session.primary, args.model);
     const binding = await liveBinding(ctx, workspace._id, primaryKey, now);
 
     if (binding) {
-      if (available.some((candidate) => candidate.provider === binding.provider)) {
-        await ctx.db.patch("routing_sessions", binding._id, { expiresAt: now + ttlMs });
-        return chosen(binding.provider);
+      const reused = await reuseBinding(binding);
+      if (reused?.ok) {
+        await ctx.db.patch("routing_sessions", binding._id, {
+          credential: reused.provider.credential.id,
+          expiresAt: now + ttlMs,
+        });
+        return reused;
       }
 
       // Under `quota`, a transiently unavailable binding fails over for this request only.
-      const block = blocks.get(binding.provider);
-      const configured = preferred.some((candidate) => candidate.provider === binding.provider);
+      const block = blocks.get(targetKey(binding.provider, binding.credential));
+      const boundProvider = preferredProviders.find(
+        (provider) => provider.slug === binding.provider,
+      );
+      const configured =
+        boundProvider !== undefined &&
+        (binding.credential === undefined ||
+          boundProvider.credentials.some((credential) => credential.id === binding.credential));
       const hardBlocked = !configured || (block !== undefined && HARD_BLOCK_REASONS[block.reason]);
-      const slug = await pickWithStrategy(ctx, workspace._id, args.model, settings, available);
-      if (settings.sessionAffinityRebindOn === "quota" && !hardBlocked) return chosen(slug);
+      const picked = await pickNew();
+      if (settings.sessionAffinityRebindOn === "quota" && !hardBlocked) return picked;
 
-      await ctx.db.patch("routing_sessions", binding._id, {
-        provider: slug,
-        expiresAt: now + ttlMs,
-      });
-      return chosen(slug);
+      if (picked.ok) {
+        await ctx.db.patch("routing_sessions", binding._id, {
+          provider: picked.provider.slug,
+          credential: picked.provider.credential.id,
+          expiresAt: now + ttlMs,
+        });
+      }
+      return picked;
     }
 
     // A previous-turn hash or a parent session may already be bound.
-    let slug: string | undefined;
+    let picked: RoutingPick | undefined;
     const inherit = session.fallback && (!session.isSubagent || settings.sessionAffinitySubagents);
     if (inherit) {
       const fallback = await liveBinding(
@@ -163,30 +234,33 @@ export const pick = internalMutation({
         sessionKey(session.fallback!, args.model),
         now,
       );
-      if (fallback && available.some((candidate) => candidate.provider === fallback.provider)) {
-        slug = fallback.provider;
-      }
+      if (fallback) picked = await reuseBinding(fallback);
     }
-    slug ??= await pickWithStrategy(ctx, workspace._id, args.model, settings, available);
+    picked ??= await pickNew();
+    if (!picked.ok) return picked;
 
     const keys = [primaryKey];
     // Subagents never move or extend the parent binding.
     if (session.fallback && !session.isSubagent)
       keys.push(sessionKey(session.fallback, args.model));
-    for (const key of keys) await bindSession(ctx, workspace._id, key, slug, now + ttlMs);
-    return chosen(slug);
+    for (const key of keys) {
+      await bindSession(ctx, workspace._id, key, picked.provider, now + ttlMs);
+    }
+    return picked;
   },
 });
 
 /**
- * Record one attempt outcome. Failures schedule cooldowns (unless cooling is disabled) and
- * drop session bindings per `sessionAffinityRebindOn`. Successes clear cooldowns recorded
- * before the attempt was dispatched, so a slow success cannot erase a newer failure.
+ * Record one attempt outcome for a provider credential. Failures schedule cooldowns (unless
+ * cooling is disabled) and drop session bindings per `sessionAffinityRebindOn`. Successes clear
+ * cooldowns recorded before the attempt was dispatched, so a slow success cannot erase a newer
+ * failure.
  */
 export const reportResult = internalMutation({
   args: {
     workspace: v.id("workspaces"),
     provider: v.string(),
+    credential: v.optional(v.id("workspace_credentials")),
     model: v.string(),
     dispatchedAt: v.number(),
     session: v.optional(sessionValidator),
@@ -210,9 +284,9 @@ export const reportResult = internalMutation({
 
     if (args.outcome.type === "success") {
       for (const model of [args.model, ALL_MODELS]) {
-        const record = await cooldownRecord(ctx, args.workspace, args.provider, model);
+        const record = await cooldownRecord(ctx, args.workspace, args, model);
         if (!record || record.recordedAt > args.dispatchedAt) continue;
-        // An active provider-wide quota window outlives unrelated successes.
+        // An active credential-wide quota window outlives unrelated successes.
         if (model === ALL_MODELS && record.nextRetryAt > now) continue;
         await ctx.db.delete("routing_cooldowns", record._id);
       }
@@ -237,19 +311,23 @@ export const reportResult = internalMutation({
         now,
       );
       const rebind = settings.sessionAffinityRebindOn === "any" || outcome.rebindOnQuota;
-      if (binding && binding.provider === args.provider && rebind) {
+      const boundHere =
+        binding !== null &&
+        binding.provider === args.provider &&
+        binding.credential === args.credential;
+      if (boundHere && rebind) {
         await ctx.db.delete("routing_sessions", binding._id);
       }
     }
 
     if (settings.disableCooling || providerRouting.disableCooling || !outcome.reason) return null;
 
-    const providerWide =
+    const credentialWide =
       outcome.reason === "unauthorized" ||
       outcome.reason === "payment_required" ||
       (outcome.reason === "quota" && outcome.credentialScope && !providerRouting.modelLevelCooling);
-    const model = providerWide ? ALL_MODELS : args.model;
-    const existing = await cooldownRecord(ctx, args.workspace, args.provider, model);
+    const model = credentialWide ? ALL_MODELS : args.model;
+    const existing = await cooldownRecord(ctx, args.workspace, args, model);
     const decision: FailureDecision = {
       reason: outcome.reason,
       retryAfterMs: outcome.retryAfterMs,
@@ -275,6 +353,7 @@ export const reportResult = internalMutation({
       await ctx.db.insert("routing_cooldowns", {
         workspace: args.workspace,
         provider: args.provider,
+        credential: args.credential,
         model,
         ...fields,
       });
@@ -305,8 +384,12 @@ export const prune = internalMutation({
 });
 
 const cooldownView = v.object({
+  _id: v.id("routing_cooldowns"),
   provider: v.string(),
-  /** Empty for a provider-wide cooldown. */
+  /** Absent for the provider's legacy credential. */
+  credential: v.optional(v.id("workspace_credentials")),
+  credentialName: v.optional(v.string()),
+  /** Empty for a credential-wide cooldown. */
   model: v.string(),
   reason: cooldownReasonValidator,
   nextRetryAt: v.number(),
@@ -316,8 +399,10 @@ const cooldownView = v.object({
 });
 
 /**
- * Owner view of workspace routing: effective settings, per-provider overrides, and cooldown
- * records. Clients compare `nextRetryAt` with their clock to show active cooldowns.
+ * Owner view of workspace routing: effective settings, per-provider overrides with each
+ * provider's credentials (creation order, effective priority and weight), and cooldown records.
+ * Clients compare `nextRetryAt` with their clock to show active cooldowns. Legacy credentials
+ * without a row are not listed; they route with the defaults.
  */
 export const getConfiguration = ownedWorkspaceQuery({
   args: {},
@@ -328,7 +413,15 @@ export const getConfiguration = ownedWorkspaceQuery({
         slug: v.string(),
         name: v.string(),
         enabled: v.boolean(),
-        hasCredentials: v.boolean(),
+        credentials: v.array(
+          v.object({
+            _id: v.id("workspace_credentials"),
+            name: v.string(),
+            enabled: v.boolean(),
+            priority: v.number(),
+            weight: v.number(),
+          }),
+        ),
         routing: providerRoutingValidator,
       }),
     ),
@@ -340,11 +433,11 @@ export const getConfiguration = ownedWorkspaceQuery({
     const credentials = await ctx.db
       .query("workspace_credentials")
       .withIndex("by_workspace_and_provider", (q) => q.eq("workspace", workspaceId))
-      .take(200);
-    const credentialed = new Set(credentials.map((credential) => credential.provider));
+      .take(1000);
+    const credentialById = new Map(credentials.map((credential) => [credential._id, credential]));
     const cooldowns = await ctx.db
       .query("routing_cooldowns")
-      .withIndex("by_workspace_provider_model", (q) => q.eq("workspace", workspaceId))
+      .withIndex("by_workspace_provider_credential_model", (q) => q.eq("workspace", workspaceId))
       .take(500);
 
     return {
@@ -353,18 +446,31 @@ export const getConfiguration = ownedWorkspaceQuery({
         slug: record.provider.slug,
         name: record.provider.name,
         enabled: (record.configuration?.enabled ?? true) && (record.configuration?.active ?? true),
-        hasCredentials: credentialed.has(record.provider.slug),
+        credentials: credentials
+          .filter((credential) => credential.provider === record.provider.slug)
+          .map((credential) => ({
+            _id: credential._id,
+            name: credentialDisplayName(credential),
+            enabled: isCredentialEnabled(credential),
+            ...credentialPlacement(credential),
+          })),
         routing: resolveProviderRouting(record.configuration?.routing),
       })),
-      cooldowns: cooldowns.map((cooldown) => ({
-        provider: cooldown.provider,
-        model: cooldown.model,
-        reason: cooldown.reason,
-        nextRetryAt: cooldown.nextRetryAt,
-        backoffLevel: cooldown.backoffLevel,
-        status: cooldown.status,
-        message: cooldown.message,
-      })),
+      cooldowns: cooldowns.map((cooldown) => {
+        const credential = cooldown.credential && credentialById.get(cooldown.credential);
+        return {
+          _id: cooldown._id,
+          provider: cooldown.provider,
+          credential: cooldown.credential,
+          credentialName: credential ? credentialDisplayName(credential) : undefined,
+          model: cooldown.model,
+          reason: cooldown.reason,
+          nextRetryAt: cooldown.nextRetryAt,
+          backoffLevel: cooldown.backoffLevel,
+          status: cooldown.status,
+          message: cooldown.message,
+        };
+      }),
     };
   },
 });
@@ -380,32 +486,68 @@ export const setSettings = ownedWorkspaceMutation({
   },
 });
 
-/** Replace one provider's routing overrides. Owner only; error-rule regexes must compile. */
+/**
+ * Replace one provider's routing overrides and, optionally, the priority and weight of some of
+ * its credentials, in one transaction. Owner only; error-rule regexes must compile, placements
+ * must be in range, and every credential must belong to this workspace provider.
+ */
 export const setProviderRouting = ownedWorkspaceMutation({
-  args: { provider: v.string(), routing: providerRoutingValidator },
+  args: {
+    provider: v.string(),
+    routing: providerRoutingValidator,
+    credentials: v.optional(
+      v.array(
+        v.object({
+          credential: v.id("workspace_credentials"),
+          priority: v.number(),
+          weight: v.number(),
+        }),
+      ),
+    ),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
     assertValidProviderRouting(args.routing);
     const { configuration } = await requireWorkspaceProvider(ctx, ctx.workspace._id, args.provider);
+
+    for (const placement of args.credentials ?? []) {
+      assertValidPlacement(placement);
+      const credential = await ctx.db.get("workspace_credentials", placement.credential);
+      if (credential?.workspace !== ctx.workspace._id || credential.provider !== args.provider) {
+        throw new Error("Credential not found.");
+      }
+      await ctx.db.patch("workspace_credentials", credential._id, {
+        priority: placement.priority,
+        weight: placement.weight,
+      });
+    }
+
     await ctx.db.patch("workspace_configurations", configuration._id, { routing: args.routing });
     return null;
   },
 });
 
 /**
- * Clear cooldowns for a provider (all models when `model` is omitted, provider-wide when it is
- * empty) and reset their backoff. Owner only; mirrors CLIProxyAPI's quota reset.
+ * Clear one cooldown row, or every cooldown of a provider (all credentials and models) when
+ * `cooldown` is omitted, resetting their backoff. Owner only; mirrors CLIProxyAPI's quota reset.
  */
 export const resetCooldown = ownedWorkspaceMutation({
-  args: { provider: v.string(), model: v.optional(v.string()) },
+  args: { provider: v.string(), cooldown: v.optional(v.id("routing_cooldowns")) },
   returns: v.null(),
   handler: async (ctx, args) => {
+    if (args.cooldown !== undefined) {
+      const record = await ctx.db.get("routing_cooldowns", args.cooldown);
+      if (record?.workspace === ctx.workspace._id && record.provider === args.provider) {
+        await ctx.db.delete("routing_cooldowns", record._id);
+      }
+      return null;
+    }
+
     const records = await ctx.db
       .query("routing_cooldowns")
-      .withIndex("by_workspace_provider_model", (q) => {
-        const scoped = q.eq("workspace", ctx.workspace._id).eq("provider", args.provider);
-        return args.model === undefined ? scoped : scoped.eq("model", args.model);
-      })
+      .withIndex("by_workspace_provider_credential_model", (q) =>
+        q.eq("workspace", ctx.workspace._id).eq("provider", args.provider),
+      )
       .take(500);
     for (const record of records) await ctx.db.delete("routing_cooldowns", record._id);
     return null;
@@ -420,36 +562,49 @@ async function routingSettingsFor(ctx: QueryCtx, workspace: Id<"workspaces">) {
   return resolveRoutingSettings(row?.routing);
 }
 
+/** Identity of one provider credential within a pick; legacy credentials use an empty suffix. */
+function targetKey(provider: string, credential: Id<"workspace_credentials"> | undefined) {
+  return `${provider}/${credential ?? ""}`;
+}
+
 async function cooldownRecord(
   ctx: QueryCtx,
   workspace: Id<"workspaces">,
-  provider: string,
+  target: { provider: string; credential?: Id<"workspace_credentials"> },
   model: string,
 ) {
   return await ctx.db
     .query("routing_cooldowns")
-    .withIndex("by_workspace_provider_model", (q) =>
-      q.eq("workspace", workspace).eq("provider", provider).eq("model", model),
+    .withIndex("by_workspace_provider_credential_model", (q) =>
+      q
+        .eq("workspace", workspace)
+        .eq("provider", target.provider)
+        .eq("credential", target.credential)
+        .eq("model", model),
     )
     .unique();
 }
 
-/** Latest active cooldown per provider, combining provider-wide and model-scoped rows. */
+/** Latest active cooldown per credential (keyed by {@link targetKey}), across both scopes. */
 async function activeBlocks(
   ctx: QueryCtx,
   workspace: Id<"workspaces">,
   model: string,
-  providers: string[],
+  providers: RoutableProvider[],
   now: number,
 ) {
   const blocks = new Map<string, ActiveBlock>();
   for (const provider of providers) {
-    for (const scope of [ALL_MODELS, model]) {
-      const record = await cooldownRecord(ctx, workspace, provider, scope);
-      if (!record || record.nextRetryAt <= now) continue;
-      const current = blocks.get(provider);
-      if (!current || record.nextRetryAt > current.until) {
-        blocks.set(provider, { until: record.nextRetryAt, reason: record.reason });
+    for (const credential of provider.credentials) {
+      const target = { provider: provider.slug, credential: credential.id };
+      const key = targetKey(provider.slug, credential.id);
+      for (const scope of [ALL_MODELS, model]) {
+        const record = await cooldownRecord(ctx, workspace, target, scope);
+        if (!record || record.nextRetryAt <= now) continue;
+        const current = blocks.get(key);
+        if (!current || record.nextRetryAt > current.until) {
+          blocks.set(key, { until: record.nextRetryAt, reason: record.reason });
+        }
       }
     }
   }
@@ -457,27 +612,30 @@ async function activeBlocks(
 }
 
 /**
- * Explain why no provider is available. `retryAfterMs` is 0 when an untried-this-round provider
- * would be available again immediately, otherwise the soonest cooldown end.
+ * Explain why no credential is available. `retryAfterMs` is 0 when an untried-this-round
+ * credential would be available again immediately, otherwise the soonest cooldown end.
  */
 function unavailableDetails(
-  preferred: Array<{ provider: string }>,
+  providers: RoutableProvider[],
   blocks: Map<string, ActiveBlock>,
-  excluded: string[],
+  excluded: Set<string>,
   now: number,
 ) {
-  const waits = preferred.map((candidate) => {
-    const block = blocks.get(candidate.provider);
-    return block ? block.until - now : 0;
-  });
-  const retryAfterMs = Math.min(...waits);
-  const allTried = preferred.every(
-    (candidate) => excluded.includes(candidate.provider) && !blocks.has(candidate.provider),
-  );
+  const waits: number[] = [];
+  let allTried = true;
+  for (const provider of providers) {
+    for (const credential of provider.credentials) {
+      const key = targetKey(provider.slug, credential.id);
+      const block = blocks.get(key);
+      waits.push(block ? block.until - now : 0);
+      if (block || !excluded.has(key)) allTried = false;
+    }
+  }
+
   const message = allTried
     ? "Every eligible provider failed for this request."
     : "Every eligible provider is cooling down after upstream failures.";
-  return { retryAfterMs, message };
+  return { retryAfterMs: Math.min(...waits), message };
 }
 
 function noPreferredProviderMessage(model: string, preferences: RoutingPreferences) {
@@ -513,6 +671,53 @@ async function pickWithStrategy(
   return result.picked.provider;
 }
 
+/**
+ * Choose among a provider's usable credentials, mirroring provider selection one level down:
+ * only the highest credential priority tier is considered; inside it fill-first takes the first
+ * in creation order, round-robin rotates by credential ID, and weighted round-robin runs smooth
+ * WRR on credential weights. Rotation state lives per provider in the workspace+model cursor.
+ */
+async function pickCredential(
+  ctx: MutationCtx,
+  workspace: Id<"workspaces">,
+  model: string,
+  strategy: RoutingSettings["strategy"],
+  provider: string,
+  credentials: RoutableCredential[],
+) {
+  const top = Math.max(...credentials.map((credential) => credential.priority));
+  const tier = credentials.filter((credential) => credential.priority === top);
+  if (strategy === "fill-first" || tier.length === 1) return tier[0]!;
+
+  const row = await ctx.db
+    .query("routing_cursors")
+    .withIndex("by_workspace_model", (q) => q.eq("workspace", workspace).eq("model", model))
+    .unique();
+  const cursors = row?.credentialCursors ?? [];
+  const cursor = cursors.find((entry) => entry.provider === provider) ?? { provider, credits: [] };
+  // The legacy credential is keyed (and sorts) as "".
+  const key = (credential: RoutableCredential) => credential.id ?? "";
+
+  let picked: RoutableCredential;
+  let next: typeof cursor;
+  if (strategy === "weighted-round-robin") {
+    const result = smoothWeightedStep(tier, key, cursor.credits);
+    picked = result.picked;
+    next = { ...cursor, credits: result.credits };
+  } else {
+    const ordered = [...tier].sort((left, right) => (key(left) < key(right) ? -1 : 1));
+    picked = roundRobinSuccessor(ordered, key, cursor.last)!;
+    next = { ...cursor, last: key(picked) };
+  }
+
+  const fields = {
+    credentialCursors: [...cursors.filter((entry) => entry.provider !== provider), next],
+  };
+  if (row) await ctx.db.patch("routing_cursors", row._id, fields);
+  else await ctx.db.insert("routing_cursors", { workspace, model, weighted: [], ...fields });
+  return picked;
+}
+
 function sessionKey(session: string, model: string) {
   return `${session}::${model}`;
 }
@@ -534,15 +739,16 @@ async function bindSession(
   ctx: MutationCtx,
   workspace: Id<"workspaces">,
   key: string,
-  provider: string,
+  target: RoutableTarget,
   expiresAt: number,
 ) {
+  const fields = { provider: target.slug, credential: target.credential.id, expiresAt };
   const existing = await ctx.db
     .query("routing_sessions")
     .withIndex("by_workspace_key", (q) => q.eq("workspace", workspace).eq("key", key))
     .unique();
-  if (existing) await ctx.db.patch("routing_sessions", existing._id, { provider, expiresAt });
-  else await ctx.db.insert("routing_sessions", { workspace, key, provider, expiresAt });
+  if (existing) await ctx.db.patch("routing_sessions", existing._id, fields);
+  else await ctx.db.insert("routing_sessions", { workspace, key, ...fields });
 }
 
 /**
