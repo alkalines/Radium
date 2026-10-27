@@ -8,19 +8,21 @@ import { api } from "backend/convex/_generated/api";
 // Session and owner access are enforced by the parent `/gateway/telemetry` route.
 export const Route = createFileRoute("/gateway/telemetry/$id")({
   staticData: {
-    pageTitle: "Telemetry trace",
+    pageTitle: "Telemetry request",
     screen: "settings",
     settingsWidth: "wide",
   },
   loader: ({ context: { queryClient }, params: { id } }) => {
     void queryClient.prefetchQuery(
-      convexQuery(api.observability.aiTraces.getTrace, { traceId: id as Id<"telemetry_traces"> }),
+      convexQuery(api.observability.telemetry.getRequest, {
+        request: id as Id<"telemetry_requests">,
+      }),
     );
   },
-  component: TelemetryTracePage,
+  component: TelemetryRequestPage,
 });
 
-function TelemetryTracePage() {
+function TelemetryRequestPage() {
   const { id } = Route.useParams();
-  return <TelemetryDetail traceId={id as Id<"telemetry_traces">} />;
+  return <TelemetryDetail requestId={id as Id<"telemetry_requests">} />;
 }

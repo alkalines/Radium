@@ -1,3 +1,6 @@
+/// <reference types="vite/client" />
+
+import { convexTest } from "convex-test";
 import { APICallError } from "ai";
 import { getFunctionName, type FunctionReference } from "convex/server";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -33,7 +36,9 @@ import { CompletionStreamError } from "../translators/openai";
 import { handleAISDKChat } from "./aisdk.chat";
 import { handleChatCompletion, Internal_Chat_Completion } from "./chat_completion";
 import { handleOpenAIModels } from "./models";
+import schema from "../../convex/schema";
 
+const modules = import.meta.glob("../../convex/**/*.ts");
 const runQuery = vi.fn();
 const runMutation = vi.fn();
 const ctx = { runQuery, runMutation } as unknown as ActionCtx;
@@ -226,7 +231,6 @@ describe("moved HTTP handlers", () => {
             provider: "test-provider",
             stream: true,
             prompt_cache_key: undefined,
-            telemetry_request_id: undefined,
           },
           response: {
             gen_id: returnedGenerationId,
@@ -292,6 +296,119 @@ describe("moved HTTP handlers", () => {
       internal.routing.reportResult,
       expect.objectContaining({ provider: "second-provider", outcome: { type: "success" } }),
     );
+  });
+
+  test("a captured streaming request stores its failover attempts, input, and output", async () => {
+    const t = convexTest({ schema, modules });
+    const { workspace, apiKey } = await t.run(async (db) => {
+      const workspace = await db.db.insert("workspaces", {
+        ownerType: "user",
+        ownerId: "authenticated-user",
+        name: "Workspace",
+      });
+      const apiKey = await db.db.insert("api_keys", { workspace, name: "key", hash: "hash" });
+      return { workspace, apiKey };
+    });
+    const providers = ["first-provider", "second-provider"];
+    runQuery.mockImplementation(async (fn, args) => {
+      const name = getFunctionName(fn);
+      if (name === getFunctionName(api.keys.getKeyInfo)) {
+        return { apiKey, workspace, userId: "authenticated-user" };
+      }
+      if (name === getFunctionName(internal.observability.telemetry.getSettingsForWorkspace)) {
+        return { enabled: true, recordInputs: true, recordOutputs: true };
+      }
+      return await t.query(fn, args);
+    });
+    runMutation.mockImplementation(async (fn, args) => {
+      if (isPick(fn)) {
+        const next = providers.find(
+          (slug) => !args.excluded.some((target: { provider: string }) => target.provider === slug),
+        );
+        if (!next) return { ok: false, message: "exhausted", settings: DEFAULT_ROUTING_SETTINGS };
+        return { ok: true, provider: routedProvider(next), settings: DEFAULT_ROUTING_SETTINGS };
+      }
+      const name = getFunctionName(fn);
+      if (
+        name === getFunctionName(internal.routing.reportResult) ||
+        name === getFunctionName(internal.keys.recordCompletion)
+      ) {
+        return null;
+      }
+      return await t.mutation(fn, args);
+    });
+    gateway.streamCompletion.mockImplementation(async (_request, provider) => {
+      if (provider.info.slug === "first-provider") {
+        return new ReadableStream({
+          start(controller) {
+            controller.error(new CompletionStreamError(upstreamError(503), false));
+          },
+        });
+      }
+      return new ReadableStream<string>({
+        start(controller) {
+          controller.enqueue(streamChunk("served"));
+          controller.enqueue("[DONE]");
+          controller.close();
+        },
+      });
+    });
+
+    // Export delivery is scheduled by capture; keep it from running inside this test.
+    vi.useFakeTimers();
+    try {
+      const response = await handleChatCompletion(
+        ctx,
+        new Request("https://gateway.example.test/api/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer valid-key",
+            "Content-Type": "application/json",
+            "X-Title": "Radium test",
+          },
+          body: JSON.stringify({ ...completionBody, stream: true, vendor_extension: 1 }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const captured = await t.run(async (db) => {
+      const requests = await db.db.query("telemetry_requests").collect();
+      const request = requests[0];
+      const outputNode = request?.output
+        ? await db.db.get("telemetry_nodes", request.output)
+        : null;
+      const outputBlob = outputNode ? await db.db.get("telemetry_blobs", outputNode.blob) : null;
+      const params = request?.params ? await db.db.get("telemetry_blobs", request.params) : null;
+      const headers = request?.headers ? await db.db.get("telemetry_blobs", request.headers) : null;
+      return { requests, outputNode, outputBlob, params, headers };
+    });
+    expect(captured.requests).toHaveLength(1);
+    const request = captured.requests[0]!;
+    expect(request).toMatchObject({
+      status: "ok",
+      source: "gateway",
+      stream: true,
+      model: "test-model",
+      provider: "second-provider",
+      apiKey,
+      lineage: { kind: "root" },
+    });
+    expect(request.attempts).toMatchObject([
+      { provider: "first-provider", outcome: "error", status: 503, errorKind: "http" },
+      { provider: "second-provider", outcome: "ok" },
+    ]);
+    expect(captured.outputNode?.parent).toBe(request.input);
+    expect(JSON.parse(captured.outputBlob!.content!)).toEqual({
+      role: "assistant",
+      content: "served",
+    });
+    // Unknown request fields are kept; credentials never are.
+    expect(JSON.parse(captured.params!.content!)).toMatchObject({ vendor_extension: 1 });
+    expect(JSON.parse(captured.headers!.content!)).toEqual({ "x-title": "Radium test" });
   });
 
   test("a failure after output is reported in-stream and never retried", async () => {

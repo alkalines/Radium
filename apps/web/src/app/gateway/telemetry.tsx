@@ -22,7 +22,7 @@ export const Route = createFileRoute("/gateway/telemetry")({
   component: TelemetryRoute,
 });
 
-/** Owner-only trace list; trace detail pages (`/gateway/telemetry/$id`) render in its place. */
+/** Owner-only request list; request and session pages (`/gateway/telemetry/...`) render in its place. */
 function TelemetryRoute() {
   const isDetail = useRouterState({
     select: (state) => state.location.pathname !== "/gateway/telemetry",
@@ -31,7 +31,7 @@ function TelemetryRoute() {
   return (
     <WorkspaceSettingsGate
       title="Telemetry"
-      ownerOnlyDetail="Workspace-wide traces and payloads are visible only to the workspace owner."
+      ownerOnlyDetail="Workspace-wide requests and payloads are visible only to the workspace owner."
     >
       {isDetail ? <Outlet /> : <TelemetryPanel />}
     </WorkspaceSettingsGate>

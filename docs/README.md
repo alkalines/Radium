@@ -21,7 +21,7 @@ start.
 - [Worker Convex Client transport](Worker/Convex_Transport.md) — authenticated identity subscription implemented; batched output, commands, recovery and retention planned
 - [Earlier Worker connectivity research](Worker/Connectivity.md) — superseded WSS/Tailscale proposal and tradeoffs
 - [Gateway ownership](Radium_Gateway/Ownership.md)
-- [Gateway and Chatroom AI telemetry](Radium_Gateway/Telemetry.md)
+- [Gateway telemetry](Radium_Gateway/Telemetry.md) — opt-in request capture, deduplicated storage, sessions and branches, retention, and OTLP/webhook export
 - [Observability and usage](observability.md)
 - [Gateway subscription providers](Radium_Gateway/Subscriptions.md)
 - [Gateway routing](Radium_Gateway/LoadBalancer.md) — strategies, session affinity, retries, cooldowns, error rules, and request provider preferences

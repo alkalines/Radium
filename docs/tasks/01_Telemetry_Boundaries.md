@@ -1,6 +1,7 @@
 # Telemetry Boundaries
 
-Status: Implemented extraction; deployment-level verification remains open.
+Status: Superseded. The AI SDK collector described here was replaced by Gateway
+capture; see [Gateway telemetry](../Radium_Gateway/Telemetry.md).
 Scope: behavior-preserving refactor, not a telemetry rewrite.
 
 ## Entry Points

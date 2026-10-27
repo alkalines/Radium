@@ -11,11 +11,11 @@ Chatroom uses this routing path rather than maintaining a second router.
 - [Architecture](architecture.md): request flow, persistence, and current ownership.
 - [Ownership](Radium_Gateway/Ownership.md): personal workspaces, BYOK keys, and
   the legacy balance migration boundary.
-- [AI telemetry](Radium_Gateway/Telemetry.md): optional request capture, Chatroom
-  correlation, local persistence, and optional OTLP export.
+- [Gateway telemetry](Radium_Gateway/Telemetry.md): opt-in request capture,
+  deduplicated storage, session lineage, retention, and OTLP/webhook export.
 - [Observability and usage](observability.md): operational events, generation
   history, usage estimates, and the shared API organization.
-- [Deployment](deployment.md): runtime and exporter configuration.
+- [Deployment](deployment.md): runtime configuration.
 - [Subscription providers](Radium_Gateway/Subscriptions.md): device login,
   shared Hono routing, and the generic frontend backend proxy.
 - [Routing](Radium_Gateway/LoadBalancer.md): CLIProxyAPI-style provider and

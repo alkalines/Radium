@@ -240,24 +240,29 @@ test("uses only matching default legacy telemetry and materializes complete sett
   const owner = asUser(t, "owner");
   const expectedLegacyTelemetry = { enabled: true, recordInputs: true, recordOutputs: true };
   expect(
-    await owner.query(anyApi.telemetry.getSettings, { workspace: ids.defaultWorkspace }),
+    await owner.query(anyApi.observability.telemetry.getSettings, {
+      workspace: ids.defaultWorkspace,
+    }),
   ).toEqual(expectedLegacyTelemetry);
-  expect(await t.query(anyApi.telemetry.getSettingsForUser, { userId: "owner" })).toEqual(
-    expectedLegacyTelemetry,
-  );
   expect(
-    await t.query(anyApi.telemetry.getSettingsForWorkspace, { workspace: ids.defaultWorkspace }),
+    await t.query(anyApi.observability.telemetry.getSettingsForWorkspace, {
+      workspace: ids.defaultWorkspace,
+    }),
   ).toEqual(expectedLegacyTelemetry);
 
   const defaults = { enabled: false, recordInputs: false, recordOutputs: false };
   expect(
-    await owner.query(anyApi.telemetry.getSettings, { workspace: ids.otherWorkspace }),
+    await owner.query(anyApi.observability.telemetry.getSettings, {
+      workspace: ids.otherWorkspace,
+    }),
   ).toEqual(defaults);
   expect(
-    await t.query(anyApi.telemetry.getSettingsForWorkspace, { workspace: ids.otherWorkspace }),
+    await t.query(anyApi.observability.telemetry.getSettingsForWorkspace, {
+      workspace: ids.otherWorkspace,
+    }),
   ).toEqual(defaults);
 
-  await owner.mutation(anyApi.telemetry.setSettings, {
+  await owner.mutation(anyApi.observability.telemetry.setSettings, {
     workspace: ids.defaultWorkspace,
     enabled: false,
     recordInputs: true,
@@ -279,6 +284,58 @@ test("uses only matching default legacy telemetry and materializes complete sett
     mcpServers: [],
     telemetry: defaults,
   });
+});
+
+test("telemetry settings validate retention, preserve it when omitted, and clear it with null", async () => {
+  const t = makeTest();
+  const workspace = await t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Retention" }),
+  );
+  const owner = asUser(t, "owner");
+  const save = (args: { enabled: boolean; retentionDays?: number | null }) =>
+    owner.mutation(anyApi.observability.telemetry.setSettings, {
+      workspace,
+      recordInputs: true,
+      recordOutputs: true,
+      ...args,
+    });
+  const read = () => owner.query(anyApi.observability.telemetry.getSettings, { workspace });
+
+  await save({ enabled: true, retentionDays: 30 });
+  expect(await read()).toEqual({
+    enabled: true,
+    recordInputs: true,
+    recordOutputs: true,
+    retentionDays: 30,
+  });
+
+  // Disabling clears the content flags but keeps the retention window.
+  await save({ enabled: false });
+  expect(await read()).toEqual({
+    enabled: false,
+    recordInputs: false,
+    recordOutputs: false,
+    retentionDays: 30,
+  });
+
+  for (const invalid of [0, 3651, 1.5, -1]) {
+    await expect(save({ enabled: true, retentionDays: invalid })).rejects.toThrow("Retention");
+  }
+  expect((await read()).retentionDays).toBe(30);
+
+  await save({ enabled: true, retentionDays: null });
+  expect((await read()).retentionDays).toBeUndefined();
+
+  for (const user of ["member", "outsider"]) {
+    await expect(
+      asUser(t, user).mutation(anyApi.observability.telemetry.setSettings, {
+        workspace,
+        enabled: true,
+        recordInputs: false,
+        recordOutputs: false,
+      }),
+    ).rejects.toThrow();
+  }
 });
 
 test("separates historical credit activity from BYOK estimates", async () => {
@@ -428,13 +485,13 @@ test("separates historical credit activity from BYOK estimates", async () => {
   }
 });
 
-test("AI trace namespaces preserve owner-only reads and personal chat privacy", async () => {
+test("telemetry reads preserve owner-only access and personal chat privacy", async () => {
   const t = makeTest();
   const ids = await t.run(async (ctx) => {
     const workspace = await ctx.db.insert("workspaces", {
       ownerType: "user",
       ownerId: "owner",
-      name: "Traces",
+      name: "Requests",
     });
     await ctx.db.insert("workspace_members", { workspace, userId: "member", role: "member" });
     const chatId = await ctx.db.insert("aisdk_chats", {
@@ -450,52 +507,55 @@ test("AI trace namespaces preserve owner-only reads and personal chat privacy", 
       workspace,
       userId: "owner",
       source: "gateway" as const,
-      requestId: "request",
-      callId: "call",
-      operationId: "operation",
-      functionId: "function",
-      provider: "provider",
       model: "model",
+      stream: false,
       status: "ok" as const,
       startedAt: 1,
+      endedAt: 2,
+      durationMs: 1,
+      attempts: [],
       recordsInputs: false,
       recordsOutputs: false,
+      lineage: { kind: "root" as const },
     };
-    const visible = await ctx.db.insert("telemetry_traces", fields);
-    const hidden = await ctx.db.insert("telemetry_traces", {
+    const visible = await ctx.db.insert("telemetry_requests", { ...fields, requestId: "request" });
+    const hidden = await ctx.db.insert("telemetry_requests", {
       ...fields,
       userId: "member",
-      source: "chatroom",
       chatId,
       requestId: "private-request",
     });
     return { workspace, visible, hidden };
   });
   const owner = asUser(t, "owner");
-  const listed = await owner.query(api.observability.aiTraces.listTraces, {
+  const listed = await owner.query(api.observability.telemetry.listRequests, {
     workspace: ids.workspace,
+    paginationOpts: { numItems: 10, cursor: null },
   });
-  expect(listed.map((trace: { _id: string }) => trace._id)).toEqual([ids.visible]);
-  expect(await owner.query(api.telemetry.listTraces, { workspace: ids.workspace })).toEqual(listed);
+  expect(listed.page.map((request: { _id: string }) => request._id)).toEqual([ids.visible]);
   expect(
-    (await owner.query(api.observability.aiTraces.getTrace, { traceId: ids.visible })).trace._id,
+    (await owner.query(api.observability.telemetry.getRequest, { request: ids.visible })).request
+      ._id,
   ).toBe(ids.visible);
   await expect(
-    owner.query(api.observability.aiTraces.getTrace, { traceId: ids.hidden }),
-  ).rejects.toThrow("Trace not found.");
+    owner.query(api.observability.telemetry.getRequest, { request: ids.hidden }),
+  ).rejects.toThrow("Request not found.");
   for (const user of ["member", "outsider"]) {
     const caller = asUser(t, user);
     await expect(
-      caller.query(api.observability.aiTraces.listTraces, { workspace: ids.workspace }),
+      caller.query(api.observability.telemetry.listRequests, {
+        workspace: ids.workspace,
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
     ).rejects.toThrow();
     await expect(
-      caller.query(api.observability.aiTraces.getSummary, {
+      caller.query(api.observability.telemetry.getSummary, {
         workspace: ids.workspace,
         since: 0,
       }),
     ).rejects.toThrow();
     await expect(
-      caller.query(api.observability.aiTraces.getTrace, { traceId: ids.visible }),
+      caller.query(api.observability.telemetry.getRequest, { request: ids.visible }),
     ).rejects.toThrow();
   }
 });

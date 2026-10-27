@@ -7,7 +7,7 @@ import {
 import type { Id } from "./_generated/dataModel";
 import { Internal_Chat_Completion } from "../src/http/chat_completion";
 import type { genCallbackType } from "@/translators/openai";
-import type { TelemetryRequestContext } from "@/telemetry/convex";
+import type { TelemetryRequestContext } from "@/telemetry/capture";
 
 type ErrorResponse = (error: unknown) => Response;
 type InternalChatContext = { userId: string; chatId: Id<"aisdk_chats"> };
@@ -23,7 +23,7 @@ export function createInternalGatewayProvider(
   onError: ErrorResponse,
   providerSlug: string | undefined,
   onGeneration: ((generation: Parameters<genCallbackType>[0]) => void) | undefined,
-  telemetry: TelemetryRequestContext | undefined,
+  telemetry: Omit<TelemetryRequestContext, "requestId"> | undefined,
   chatContext: InternalChatContext,
 ) {
   return createOpenAICompatible({
@@ -36,22 +36,28 @@ export function createInternalGatewayProvider(
     },
     fetch: (async (_input, init): Promise<Response> => {
       try {
-        const requestBody = getGatewayRequestBody(init?.body);
-        if (providerSlug) requestBody.provider = providerSlug;
+        const { requestBody, rawBody } = getGatewayRequestBody(init?.body);
+        if (providerSlug) {
+          requestBody.provider = providerSlug;
+          rawBody.provider = providerSlug;
+        }
         // Carry the same authenticated identity under each downstream contract's field name.
         const downstreamChatContext = {
           actor: chatContext.userId,
           userId: chatContext.userId,
           chatId: chatContext.chatId,
         };
+        // One Chatroom turn can make several Gateway requests (tool-use steps); each is
+        // captured under its own request ID.
         return await Internal_Chat_Completion(
           ctx,
           requestBody,
           workspaceId,
           onGeneration,
-          telemetry,
+          telemetry && { ...telemetry, requestId: crypto.randomUUID() },
           init?.signal,
           downstreamChatContext,
+          rawBody,
         );
       } catch (error) {
         console.error(error);
@@ -61,10 +67,15 @@ export function createInternalGatewayProvider(
   });
 }
 
+/** Parse the wire JSON, keeping the raw object so telemetry sees fields the schema drops. */
 function getGatewayRequestBody(body: BodyInit | null | undefined) {
   if (typeof body !== "string") {
     throw new Error("Expected OpenAI-compatible JSON request body.");
   }
 
-  return ChatCompletions_RequestBody.parse(JSON.parse(body)) as ChatCompletions_RequestBody_Type;
+  const rawBody = JSON.parse(body) as Record<string, unknown>;
+  const requestBody = ChatCompletions_RequestBody.parse(
+    rawBody,
+  ) as ChatCompletions_RequestBody_Type;
+  return { requestBody, rawBody };
 }

@@ -27,7 +27,6 @@ import {
   workspaceMcpSecretNamespace,
 } from "../../convex/secrets";
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
-import { createTelemetryIntegrations } from "@/telemetry/convex";
 import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
 import { buildWorkerChatTools, workerChatApprovalSecret } from "../worker/chat-tools";
 
@@ -89,10 +88,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
 
   const previousPerformance = getLastAssistantPerformance(body.messages);
   const telemetrySettings = await ctx.runQuery(
-    internal.observability.aiTraces.getSettingsForWorkspace,
-    {
-      workspace: workspaceId,
-    },
+    internal.observability.telemetry.getSettingsForWorkspace,
+    { workspace: workspaceId },
   );
   // Workspace owners can read owner-managed telemetry, so member-owned personal
   // chats must not contribute prompt or response content to that channel.
@@ -100,7 +97,6 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     (chat.scope ?? "personal") === "personal" && chat.userId !== workspace.ownerId
       ? { ...telemetrySettings, recordInputs: false, recordOutputs: false }
       : telemetrySettings;
-  const requestId = crypto.randomUUID();
   const generations: Array<{ completionTokens: number; generationTimeMs: number }> = [];
   const provider = createInternalGatewayProvider(
     ctx,
@@ -121,7 +117,6 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
           workspace: workspaceId,
           chatId,
           userId,
-          requestId,
           settings: telemetrySettingsForRequest,
         }
       : undefined,
@@ -165,24 +160,6 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     // Allow follow-up turns so the model can act on executable tool results
     // (Exa web search, MCP tools) instead of stopping at the first tool call.
     stopWhen: isStepCount(5),
-    telemetry: telemetrySettingsForRequest.enabled
-      ? {
-          isEnabled: true,
-          functionId: "radium.chat",
-          recordInputs: telemetrySettingsForRequest.recordInputs,
-          recordOutputs: telemetrySettingsForRequest.recordOutputs,
-          integrations: createTelemetryIntegrations({
-            ctx,
-            workspace: workspaceId,
-            chatId,
-            userId,
-            requestId,
-            settings: telemetrySettingsForRequest,
-            source: "chatroom",
-            functionId: "radium.chat",
-          }),
-        }
-      : { isEnabled: false },
     onError: () => void closeTools(),
     providerOptions:
       body.reasoningEffort || body.reasoningBudget

@@ -80,9 +80,9 @@ scanner.
 
 ## Boundaries And Limitations
 
-Operational events are separate from the existing `telemetry_traces`,
-`telemetry_spans`, and `telemetry_payloads` tables. AI telemetry remains its own
-opt-in feature, including its existing input/output recording controls. The new
+Operational events are separate from Gateway telemetry (`telemetry_*` tables,
+see [Gateway telemetry](Radium_Gateway/Telemetry.md)). Telemetry remains its own
+opt-in feature, including its input/output recording controls. The new
 events are not audit records and do not provide tamper evidence, legal
 retention, or an audit export. They are also not analytics events and no product
 metrics pipeline is attached.

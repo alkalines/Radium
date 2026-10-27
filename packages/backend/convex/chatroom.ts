@@ -18,10 +18,7 @@ import {
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { createInternalGatewayProvider } from "./ai_gateway";
-import {
-  isGatewayCompletionWithoutChat,
-  isOwnerManagedGatewayTrace,
-} from "../src/workspaces/policy";
+import { isGatewayCompletionWithoutChat } from "../src/workspaces/policy";
 import {
   getDefaultWorkspaceForUser,
   requireAccessibleChat,
@@ -585,120 +582,31 @@ export async function filterVisibleCompletions(
 }
 
 /**
- * Filter telemetry rows without allowing an un-attributed Chatroom trace to
- * become visible as a Gateway trace. A hidden Chatroom sibling also hides a
- * no-chat nested Gateway trace with the same request id.
+ * A captured request is visible to the workspace owner when it came through Gateway without a
+ * chat, or when its chat passes the Chatroom privacy policy. Ownership alone never exposes
+ * another user's private chat, so personal-chat requests stay hidden.
  */
-export async function filterVisibleTraces(
+export async function isRequestVisible(
   ctx: DatabaseCtx,
   workspace: Doc<"workspaces">,
-  traces: Doc<"telemetry_traces">[],
-): Promise<Doc<"telemetry_traces">[]> {
-  const cache = new Map<string, boolean>();
-  const chatroomVisibilityByRequest = new Map<string, boolean>();
+  request: Doc<"telemetry_requests">,
+  cache: VisibilityCache = new Map(),
+): Promise<boolean> {
+  if (request.workspace !== workspace._id) return false;
+  if (request.chatId === undefined) return true;
+  return await isChatVisibleToWorkspace(ctx, workspace._id, request.chatId, cache);
+}
 
-  for (const trace of traces) {
-    if (trace.source !== "chatroom") continue;
-
-    let visible = false;
-    if (trace.chatId !== undefined) {
-      visible = await isChatVisibleToWorkspace(ctx, workspace._id, trace.chatId, cache);
-      if (visible) {
-        visible = await isTraceCompletionVisible(ctx, workspace, trace, cache);
-      }
-    }
-
-    // Any hidden Chatroom sibling suppresses the no-chat Gateway trace for the
-    // same request, even when another sibling is visible.
-    const previousVisibility = chatroomVisibilityByRequest.get(trace.requestId);
-    chatroomVisibilityByRequest.set(
-      trace.requestId,
-      previousVisibility === undefined ? visible : previousVisibility && visible,
-    );
-  }
-
-  const visible: Doc<"telemetry_traces">[] = [];
-  for (const trace of traces) {
-    if (!traceBelongsToWorkspace(trace, workspace)) continue;
-    if (!(await isTraceCompletionVisible(ctx, workspace, trace, cache))) continue;
-    if (trace.chatId !== undefined) {
-      if (await isChatVisibleToWorkspace(ctx, workspace._id, trace.chatId, cache)) {
-        visible.push(trace);
-      }
-      continue;
-    }
-
-    if (
-      isOwnerManagedGatewayTrace(trace, workspace.ownerId) &&
-      chatroomVisibilityByRequest.get(trace.requestId) !== false
-    ) {
-      visible.push(trace);
-    }
+/** Filter before callers derive counts, truncation, or latency aggregates. */
+export async function filterVisibleRequests(
+  ctx: DatabaseCtx,
+  workspace: Doc<"workspaces">,
+  requests: Doc<"telemetry_requests">[],
+): Promise<Doc<"telemetry_requests">[]> {
+  const cache: VisibilityCache = new Map();
+  const visible: Doc<"telemetry_requests">[] = [];
+  for (const request of requests) {
+    if (await isRequestVisible(ctx, workspace, request, cache)) visible.push(request);
   }
   return visible;
-}
-
-async function isTraceCompletionVisible(
-  ctx: DatabaseCtx,
-  workspace: Doc<"workspaces">,
-  trace: Doc<"telemetry_traces">,
-  cache: VisibilityCache,
-): Promise<boolean> {
-  if (trace.chatCompletionId === undefined) return true;
-  const completion = await ctx.db.get("chat_completions", trace.chatCompletionId);
-  return (
-    completion !== null &&
-    (await isCompletionVisible(ctx, workspace, completion as AttributedCompletion, cache))
-  );
-}
-
-function traceBelongsToWorkspace(trace: Doc<"telemetry_traces">, workspace: Doc<"workspaces">) {
-  if (trace.workspace !== undefined && trace.workspace !== workspace._id) return false;
-  if (trace.balance !== undefined && trace.balance !== workspace.legacyBalance) return false;
-  return trace.workspace !== undefined || trace.balance !== undefined;
-}
-
-/**
- * Detail reads need the same sibling check as list reads, otherwise a direct
- * request for a nested no-chat Gateway trace could bypass the list filter.
- */
-export async function isTraceVisible(
-  ctx: DatabaseCtx,
-  workspace: Doc<"workspaces">,
-  trace: Doc<"telemetry_traces">,
-): Promise<boolean> {
-  if (trace.chatId !== undefined || trace.source !== "gateway") {
-    return (await filterVisibleTraces(ctx, workspace, [trace])).length === 1;
-  }
-
-  const related = await tracesWithRequestId(ctx, workspace, trace.requestId);
-  const candidates = new Map(related.map((item) => [item._id, item]));
-  candidates.set(trace._id, trace);
-  const visible = await filterVisibleTraces(ctx, workspace, [...candidates.values()]);
-  return visible.some((item) => item._id === trace._id);
-}
-
-async function tracesWithRequestId(
-  ctx: DatabaseCtx,
-  workspace: Doc<"workspaces">,
-  requestId: string,
-) {
-  const current = await ctx.db
-    .query("telemetry_traces")
-    .withIndex("by_workspace_and_requestId", (q) =>
-      q.eq("workspace", workspace._id).eq("requestId", requestId),
-    )
-    .take(101);
-
-  if (!workspace.legacyBalance) return current;
-
-  const legacy = await ctx.db
-    .query("telemetry_traces")
-    .withIndex("by_balance_and_requestId", (q) =>
-      q.eq("balance", workspace.legacyBalance!).eq("requestId", requestId),
-    )
-    .take(101);
-  const byId = new Map(current.map((trace) => [trace._id, trace]));
-  for (const trace of legacy) byId.set(trace._id, trace);
-  return [...byId.values()];
 }

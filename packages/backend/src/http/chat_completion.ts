@@ -5,7 +5,6 @@ import {
   type ChatCompletions_Streaming_Chunk_Type,
 } from "@/types/openai/types";
 import * as z from "zod";
-import type { TelemetryOptions } from "ai";
 import {
   CompletionStreamError,
   NonStreamingCompletion,
@@ -13,17 +12,29 @@ import {
   type genCallbackType,
 } from "@/translators/openai";
 import type { RoutedProvider } from "@/routing/connector";
-import { RoutingError, routeWithFailover, type RoutingRequest } from "@/routing/execute";
-import { upstreamFailureFromError, type UpstreamFailure } from "@/routing/failures";
+import {
+  RoutingError,
+  routeWithFailover,
+  type AttemptOutcome,
+  type RoutingRequest,
+} from "@/routing/execute";
+import { boundedMessage, upstreamFailureFromError, type UpstreamFailure } from "@/routing/failures";
 import { routingPreferencesFromRequest } from "@/routing/preferences";
 import { extractRoutingSession } from "@/routing/session";
 import type { ActionCtx } from "../../convex/_generated/server";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
-  createTelemetryIntegrations,
-  type ChatRequestContext,
+  startCapture,
+  type CaptureResult,
+  type TelemetryCapture,
   type TelemetryRequestContext,
-} from "@/telemetry/convex";
+} from "@/telemetry/capture";
+
+/** Server-derived Chatroom identity carried through an internal Gateway call. */
+export type ChatRequestContext = {
+  actor: string;
+  chatId: Id<"aisdk_chats">;
+};
 
 type CompletionInfo = {
   ctx: ActionCtx;
@@ -37,6 +48,8 @@ type CompletionInfo = {
   headers?: Headers;
   onGeneration?: (generation: Parameters<genCallbackType>[0]) => void;
   telemetry?: TelemetryRequestContext;
+  /** Request JSON as received, before zod parsing drops unknown fields; captured for telemetry. */
+  rawBody?: unknown;
   abortSignal?: AbortSignal | null;
 };
 
@@ -50,7 +63,8 @@ type CompletionRecordDetails = {
 /** Handle an authenticated OpenAI-compatible chat-completion request. */
 export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promise<Response> {
   try {
-    const reqData = ChatCompletions_RequestBody.parse(await req.json());
+    const rawBody: unknown = await req.json();
+    const reqData = ChatCompletions_RequestBody.parse(rawBody);
 
     const bearerToken = req.headers.get("Authorization")?.replace("Bearer ", "");
     if (!bearerToken || bearerToken === "")
@@ -97,13 +111,12 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
     }
 
     const telemetrySettings = await ctx.runQuery(
-      internal.observability.aiTraces.getSettingsForWorkspace,
-      {
-        workspace: workspaceId,
-      },
+      internal.observability.telemetry.getSettingsForWorkspace,
+      { workspace: workspaceId },
     );
     // TODO: Check the model's maximum input and output limits before dispatch.
     return createCompletion(reqData, {
+      rawBody,
       ctx,
       headers: req.headers,
       workspaceId,
@@ -144,6 +157,7 @@ export const Internal_Chat_Completion = async (
   telemetry?: TelemetryRequestContext,
   abortSignal?: AbortSignal | null,
   chatContext?: ChatRequestContext,
+  rawBody?: unknown,
 ) => {
   const effectiveChatContext =
     chatContext ??
@@ -155,23 +169,27 @@ export const Internal_Chat_Completion = async (
     byok: true,
     onGeneration,
     telemetry,
+    rawBody,
     abortSignal,
     chatContext: effectiveChatContext,
   });
 };
 
-/** Persist shared completion attribution and usage after the caller notifies its generation listener. */
+/**
+ * Persist shared completion attribution and usage after the caller notifies its generation
+ * listener. Returns the stored completion's ID so telemetry can link to it.
+ */
 async function recordCompletion(
   requestBody: ChatCompletions_RequestBody_Type,
   provider: RoutedProvider,
   info: CompletionInfo,
   generation: Parameters<genCallbackType>[0],
   details: CompletionRecordDetails,
-): Promise<void> {
+): Promise<Id<"chat_completions"> | null> {
   const providerGenerationId =
     generation.genId || details.originalProviderGenerationId || details.generationId;
 
-  await info.ctx.runMutation(internal.keys.recordCompletion, {
+  return await info.ctx.runMutation(internal.keys.recordCompletion, {
     bill: completionBill(info),
     ...completionActor(info),
     request: {
@@ -183,7 +201,6 @@ async function recordCompletion(
       credential: provider.info.credential.id,
       stream: requestBody.stream ?? false,
       prompt_cache_key: requestBody.prompt_cache_key || requestBody.user,
-      telemetry_request_id: info.telemetry?.requestId,
     },
     response: {
       gen_id: details.generationId,
@@ -213,26 +230,13 @@ async function recordCompletion(
  * Route the request and produce the OpenAI-compatible response. Streaming attempts commit on
  * the provider's first payload, so earlier failures fail over and later ones are reported to
  * the client as an SSE error event. Routing exhaustion maps to the last upstream status.
+ * Telemetry capture starts before routing and is finalized on every exit path.
  */
 const createCompletion = async (
   reqData: ChatCompletions_RequestBody_Type,
   info: CompletionInfo,
 ): Promise<Response> => {
   const generationId = `gen-${crypto.randomUUID()}`;
-  const aiSdkTelemetry = info.telemetry
-    ? {
-        isEnabled: true,
-        functionId: "radium.gateway",
-        recordInputs: info.telemetry.settings.recordInputs,
-        recordOutputs: info.telemetry.settings.recordOutputs,
-        integrations: createTelemetryIntegrations({
-          ctx: info.ctx,
-          ...info.telemetry,
-          source: "gateway" as const,
-          functionId: "radium.gateway",
-        }),
-      }
-    : { isEnabled: false };
   const routing: RoutingRequest = {
     workspace: info.workspaceId,
     model: reqData.model,
@@ -240,38 +244,57 @@ const createCompletion = async (
     session: extractRoutingSession(reqData, info.headers, info.chatContext?.chatId),
     signal: info.abortSignal,
   };
+  const capture = info.telemetry
+    ? startCapture(info.ctx, info.telemetry, {
+        rawBody: info.rawBody ?? reqData,
+        headers: info.headers,
+        session: routing.session,
+        source: info.telemetry.chatId ? "chatroom" : "gateway",
+        model: reqData.model,
+        stream: reqData.stream ?? false,
+        startedAt: Date.now(),
+      })
+    : undefined;
 
   try {
     if (reqData.stream) {
-      return await createStreamingCompletion(reqData, info, routing, generationId, aiSdkTelemetry);
+      return await createStreamingCompletion(reqData, info, routing, generationId, capture);
     }
 
-    const routed = await routeWithFailover(info.ctx, routing, async (provider) => {
-      try {
-        const generation = await NonStreamingCompletion(
-          reqData,
-          provider,
-          async (genCompletion) => {
-            info.onGeneration?.(genCompletion);
-            await recordCompletion(reqData, provider, info, genCompletion, {
-              generationId,
-              canceled: false,
-            });
-          },
-          aiSdkTelemetry,
-          info.abortSignal,
-        );
-        return { ok: true as const, value: generation };
-      } catch (error) {
-        return { ok: false as const, failure: completionFailure(error, false) };
-      }
-    });
+    const routed = await routeWithFailover(
+      info.ctx,
+      routing,
+      withAttemptRecording(capture, info.abortSignal, async (provider) => {
+        try {
+          const generation = await NonStreamingCompletion(
+            reqData,
+            provider,
+            async (genCompletion) => {
+              capture?.recordGeneration(genCompletion);
+              info.onGeneration?.(genCompletion);
+              const completionId = await recordCompletion(reqData, provider, info, genCompletion, {
+                generationId,
+                canceled: false,
+              });
+              capture?.recordChatCompletion(completionId);
+            },
+            info.abortSignal,
+          );
+          return { ok: true as const, value: generation };
+        } catch (error) {
+          return { ok: false as const, failure: completionFailure(error, false) };
+        }
+      }),
+    );
 
     const generation = routed.value;
+    capture?.outputResponse(generation);
     generation.id = generationId;
     generation.provider = routed.provider.info.slug;
+    await capture?.finish({ status: "ok" });
     return Response.json(generation);
   } catch (error) {
+    await capture?.finish(captureFailure(error, info.abortSignal));
     if (error instanceof RoutingError) return routingErrorResponse(error);
     throw error;
   }
@@ -282,49 +305,54 @@ async function createStreamingCompletion(
   info: CompletionInfo,
   routing: RoutingRequest,
   generationId: string,
-  aiSdkTelemetry: TelemetryOptions,
+  capture: TelemetryCapture | undefined,
 ): Promise<Response> {
   let originalProviderGenerationId: string | undefined;
   let finishReason: string | undefined;
   let streamCanceled = false;
 
-  const routed = await routeWithFailover(info.ctx, routing, async (provider) => {
-    // Only the committed attempt may record usage; failed attempts are retried elsewhere.
-    let committed = false;
-    try {
-      const providerGen = await StreamCompletion(
-        reqData,
-        provider,
-        async (genCompletion) => {
-          if (!committed) return;
-          // The listener may synchronously cancel the stream; read its state afterward.
-          info.onGeneration?.(genCompletion);
-          await recordCompletion(reqData, provider, info, genCompletion, {
-            generationId,
-            originalProviderGenerationId,
-            finishReason,
-            canceled: streamCanceled,
-          });
-        },
-        aiSdkTelemetry,
-        info.abortSignal,
-      );
-      const reader = providerGen.getReader();
-      const first = await reader.read();
-      if (first.done) {
-        const failure: UpstreamFailure = {
-          kind: "empty_stream",
-          message: "Upstream returned an empty stream.",
-          outputStarted: false,
-        };
-        return { ok: false as const, failure };
+  const routed = await routeWithFailover(
+    info.ctx,
+    routing,
+    withAttemptRecording(capture, info.abortSignal, async (provider) => {
+      // Only the committed attempt may record usage; failed attempts are retried elsewhere.
+      let committed = false;
+      try {
+        const providerGen = await StreamCompletion(
+          reqData,
+          provider,
+          async (genCompletion) => {
+            if (!committed) return;
+            capture?.recordGeneration(genCompletion);
+            // The listener may synchronously cancel the stream; read its state afterward.
+            info.onGeneration?.(genCompletion);
+            const completionId = await recordCompletion(reqData, provider, info, genCompletion, {
+              generationId,
+              originalProviderGenerationId,
+              finishReason,
+              canceled: streamCanceled,
+            });
+            capture?.recordChatCompletion(completionId);
+          },
+          info.abortSignal,
+        );
+        const reader = providerGen.getReader();
+        const first = await reader.read();
+        if (first.done) {
+          const failure: UpstreamFailure = {
+            kind: "empty_stream",
+            message: "Upstream returned an empty stream.",
+            outputStarted: false,
+          };
+          return { ok: false as const, failure };
+        }
+        committed = true;
+        return { ok: true as const, value: { reader, first: first.value } };
+      } catch (error) {
+        return { ok: false as const, failure: completionFailure(error, false) };
       }
-      committed = true;
-      return { ok: true as const, value: { reader, first: first.value } };
-    } catch (error) {
-      return { ok: false as const, failure: completionFailure(error, false) };
-    }
-  });
+    }),
+  );
 
   const { reader, first } = routed.value;
   const providerSlug = routed.provider.info.slug;
@@ -341,6 +369,8 @@ async function createStreamingCompletion(
           // The inner translator's [DONE] marker is not a JSON chunk; emit the SSE sentinel below.
           return;
         }
+        // Capture reads the provider's own chunk, before its ID and provider are rewritten.
+        capture?.outputChunk(chunk);
         if (!originalProviderGenerationId) originalProviderGenerationId = chunk.id;
         if (chunk.choices[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
 
@@ -349,6 +379,7 @@ async function createStreamingCompletion(
         enqueueSseEvent(JSON.stringify(chunk));
       };
 
+      let result: CaptureResult = { status: "ok" };
       try {
         forward(first);
         while (true) {
@@ -371,13 +402,21 @@ async function createStreamingCompletion(
               },
             }),
           );
+          result =
+            failure.kind === "aborted" || info.abortSignal?.aborted
+              ? { status: "aborted", canceled: true }
+              : { status: "error", error: { message: failure.message, status: failure.status } };
         }
       }
+      // A canceled stream is finalized by `cancel`, after the translator has settled usage.
+      if (streamCanceled) return;
+      await capture?.finish(result);
       controller.close();
     },
     async cancel(reason?) {
       streamCanceled = true;
       await reader.cancel(reason);
+      await capture?.finish({ status: "aborted", canceled: true });
     },
   });
 
@@ -389,6 +428,54 @@ async function createStreamingCompletion(
       "Content-Type": "text/event-stream; charset=utf-8",
     },
   });
+}
+
+/**
+ * Record each routing attempt on the capture, in dispatch order. A streaming attempt succeeds
+ * once its first payload arrives, so its duration is the time to first payload.
+ */
+function withAttemptRecording<T>(
+  capture: TelemetryCapture | undefined,
+  signal: AbortSignal | null | undefined,
+  attempt: (provider: RoutedProvider) => Promise<AttemptOutcome<T>>,
+) {
+  if (!capture) return attempt;
+  return async (provider: RoutedProvider) => {
+    const startedAt = Date.now();
+    const outcome = await attempt(provider);
+    const base = {
+      provider: provider.info.slug,
+      credential: provider.info.credential.id,
+      providerModel: provider.info.modelId,
+      startedAt,
+      durationMs: Date.now() - startedAt,
+    };
+    if (outcome.ok) {
+      capture.attempt({ ...base, outcome: "ok" });
+    } else {
+      const { failure } = outcome;
+      capture.attempt({
+        ...base,
+        outcome: failure.kind === "aborted" || signal?.aborted ? "aborted" : "error",
+        status: failure.status,
+        errorKind: failure.kind,
+        message: boundedMessage(failure.message),
+      });
+    }
+    return outcome;
+  };
+}
+
+/** Capture result for a request that failed before any response was committed. */
+function captureFailure(error: unknown, signal: AbortSignal | null | undefined): CaptureResult {
+  if (error instanceof RoutingError) {
+    return { status: "error", error: { message: error.message, status: error.status } };
+  }
+  if (signal?.aborted) return { status: "aborted", canceled: true };
+  return {
+    status: "error",
+    error: { message: error instanceof Error ? error.message : String(error) },
+  };
 }
 
 /** Unwrap translator stream errors so routing sees the upstream status and headers. */

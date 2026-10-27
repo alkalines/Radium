@@ -6,7 +6,10 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import schema from "./schema";
 import { credentialPreview } from "../src/credential_preview";
-import { getDefaultWorkspaceForUser } from "./workspaces";
+import { findWorkspaceForLegacyBalance, getDefaultWorkspaceForUser } from "./workspaces";
+import { canonicalJson } from "../src/telemetry/canonical";
+import { blobHash, utf8Length } from "../src/telemetry/hash";
+import { INLINE_BLOB_LIMIT } from "../src/telemetry/store";
 import {
   chatWorkspaceBackfillPatch,
   isLegacyChatOwnershipConsistent,
@@ -978,6 +981,164 @@ export const credentialLimits = migrations.define({
 });
 
 export const runCredentialLimits = migrations.runner(internal.migrations.credentialLimits);
+
+/** Store a legacy payload as a deduplicated workspace blob; returns its ID. */
+async function legacyBlob(
+  ctx: MutationCtx,
+  workspace: Id<"workspaces">,
+  value: unknown,
+  truncated: boolean,
+): Promise<Id<"telemetry_blobs">> {
+  const canonical = canonicalJson(value);
+  const hash = await blobHash(workspace, "legacy", canonical);
+  const existing = await ctx.db
+    .query("telemetry_blobs")
+    .withIndex("by_workspace_and_hash", (q) => q.eq("workspace", workspace).eq("hash", hash))
+    .unique();
+  if (existing) return existing._id;
+
+  const size = utf8Length(canonical);
+  return await ctx.db.insert("telemetry_blobs", {
+    workspace,
+    hash,
+    kind: "legacy",
+    size,
+    // Content that cannot be stored inline is dropped rather than failing the migration.
+    ...(size <= INLINE_BLOB_LIMIT ? { content: canonical } : { truncated: true }),
+    ...(truncated && size <= INLINE_BLOB_LIMIT ? { truncated: true } : {}),
+  });
+}
+
+/** Legacy payloads were cut at 32,000 characters; unparsable text is stored as a JSON string. */
+function legacyPayloadValue(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+const LEGACY_PAYLOAD_LIMIT = 32_000;
+
+/**
+ * Move AI SDK traces (with spans and payloads) into `telemetry_requests`, then delete the old
+ * rows. Traces whose workspace cannot be resolved are orphans and are deleted. Idempotent: a
+ * request already created from the same trace is not duplicated. Run once with
+ * `migrations:runTelemetryTraces`; it is not part of `runAll`.
+ */
+export const telemetryTracesToRequests = migrations.define({
+  table: "telemetry_traces",
+  batchSize: 10,
+  migrateOne: async (ctx, trace) => {
+    let workspaceId = trace.workspace;
+    if (!workspaceId && trace.balance) {
+      workspaceId = (await findWorkspaceForLegacyBalance(ctx, trace.balance))?._id;
+    }
+    const workspace = workspaceId ? await ctx.db.get("workspaces", workspaceId) : null;
+
+    const spans = await ctx.db
+      .query("telemetry_spans")
+      .withIndex("by_trace_and_startedAt", (q) => q.eq("trace", trace._id))
+      .collect();
+    const payloads = await ctx.db
+      .query("telemetry_payloads")
+      .withIndex("by_trace", (q) => q.eq("trace", trace._id))
+      .collect();
+
+    if (workspace) {
+      const existing = await ctx.db
+        .query("telemetry_requests")
+        .withIndex("by_workspace_and_requestId", (q) =>
+          q.eq("workspace", workspace._id).eq("requestId", trace.requestId),
+        )
+        .first();
+      if (existing?.legacy?.traceId !== trace._id) {
+        const root = payloads.find((payload) => !payload.span);
+        const blobFor = async (text: string | undefined) => {
+          if (text === undefined) return undefined;
+          return await legacyBlob(
+            ctx,
+            workspace._id,
+            legacyPayloadValue(text),
+            text.length >= LEGACY_PAYLOAD_LIMIT,
+          );
+        };
+        const input = await blobFor(root?.inputJson);
+        const output = await blobFor(root?.outputJson);
+
+        let spansBlob: Id<"telemetry_blobs"> | undefined;
+        if (spans.length > 0) {
+          const entries = spans.map((span) => {
+            const payload = payloads.find((item) => item.span === span._id);
+            const {
+              _id,
+              _creationTime,
+              trace: _trace,
+              balance: _balance,
+              workspace: _ws,
+              ...rest
+            } = span;
+            return {
+              ...rest,
+              id: _id,
+              ...(payload?.inputJson === undefined
+                ? {}
+                : { input: legacyPayloadValue(payload.inputJson) }),
+              ...(payload?.outputJson === undefined
+                ? {}
+                : { output: legacyPayloadValue(payload.outputJson) }),
+            };
+          });
+          spansBlob = await legacyBlob(ctx, workspace._id, entries, false);
+        }
+
+        const apiKey = trace.apiKey ? await ctx.db.get("api_keys", trace.apiKey) : null;
+        const chat = trace.chatId ? await ctx.db.get("aisdk_chats", trace.chatId) : null;
+        const completion = trace.chatCompletionId
+          ? await ctx.db.get("chat_completions", trace.chatCompletionId)
+          : null;
+        const interrupted = trace.status === "running";
+        const errorMessage = interrupted ? "interrupted before completion" : trace.error;
+
+        await ctx.db.insert("telemetry_requests", {
+          workspace: workspace._id,
+          requestId: existing ? `${trace.requestId}:legacy-${trace._id}` : trace.requestId,
+          source: trace.source,
+          ...(apiKey ? { apiKey: apiKey._id } : {}),
+          userId: trace.userId,
+          ...(chat ? { chatId: chat._id } : {}),
+          model: trace.model,
+          provider: trace.provider,
+          stream: false,
+          status: trace.status === "running" ? "error" : trace.status,
+          startedAt: trace.startedAt,
+          endedAt: trace.endedAt ?? trace.startedAt,
+          durationMs: trace.durationMs ?? 0,
+          ...(trace.finishReason ? { finishReason: trace.finishReason } : {}),
+          ...(trace.usage ? { usage: trace.usage } : {}),
+          ...(completion ? { chatCompletion: completion._id } : {}),
+          ...(errorMessage ? { error: { message: errorMessage } } : {}),
+          attempts: [],
+          recordsInputs: trace.recordsInputs,
+          recordsOutputs: trace.recordsOutputs,
+          lineage: { kind: "root" },
+          legacy: {
+            traceId: trace._id,
+            ...(input ? { input } : {}),
+            ...(output ? { output } : {}),
+            ...(spansBlob ? { spans: spansBlob } : {}),
+          },
+        });
+      }
+    }
+
+    for (const payload of payloads) await ctx.db.delete("telemetry_payloads", payload._id);
+    for (const span of spans) await ctx.db.delete("telemetry_spans", span._id);
+    await ctx.db.delete("telemetry_traces", trace._id);
+  },
+});
+
+export const runTelemetryTraces = migrations.runner(internal.migrations.telemetryTracesToRequests);
 
 async function verifiedWorkspaceForBalance(
   ctx: QueryCtx,

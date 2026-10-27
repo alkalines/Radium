@@ -7,10 +7,17 @@ import { workerChatCallFields, workerTaskFields } from "../src/worker/task-contr
 import { chatWorkerSelectionValidator, chatWorkerToolValidator } from "../src/worker/chat-config";
 import { projectFolderValidator } from "../src/projects/validators";
 import {
+  legacyTelemetrySpanKindSchema,
+  legacyTelemetryStatusSchema,
+  telemetryAttemptSchema,
+  telemetryBlobKindSchema,
+  telemetryBlobMetaSchema,
+  telemetryChangesSchema,
+  telemetryDestinationKindSchema,
+  telemetryLineageSchema,
+  telemetryRequestStatusSchema,
   telemetrySettingsSchema,
   telemetrySourceSchema,
-  telemetrySpanKindSchema,
-  telemetryStatusSchema,
   telemetryUsageSchema,
 } from "../src/telemetry/validators";
 import {
@@ -585,6 +592,154 @@ export default defineSchema({
       "lastInteractionAt",
     ])
     .index("by_project_and_lastInteractionAt", ["project", "lastInteractionAt"]),
+  /**
+   * Content-addressed telemetry content, unique per `(workspace, hash)`. `hash` covers the
+   * workspace ID and the RFC 8785 canonical JSON. Content lives inline (`content`) or, above the
+   * inline limit, in file storage (`storage`); neither is set when content recording was off.
+   */
+  telemetry_blobs: defineTable({
+    workspace: v.id("workspaces"),
+    hash: v.string(),
+    kind: telemetryBlobKindSchema,
+    /** UTF-8 byte length of the canonical JSON. */
+    size: v.number(),
+    content: v.optional(v.string()),
+    storage: v.optional(v.id("_storage")),
+    meta: v.optional(telemetryBlobMetaSchema),
+    /** Set for migrated legacy payloads that were cut at the old 32,000-character limit. */
+    truncated: v.optional(v.boolean()),
+  }).index("by_workspace_and_hash", ["workspace", "hash"]),
+  /** Ordered tool membership of a `toolset` blob, written once per new toolset. */
+  telemetry_toolset_tools: defineTable({
+    workspace: v.id("workspaces"),
+    toolset: v.id("telemetry_blobs"),
+    tool: v.id("telemetry_blobs"),
+    position: v.number(),
+  })
+    .index("by_toolset_and_position", ["toolset", "position"])
+    .index("by_tool", ["tool"]),
+  /**
+   * Immutable conversation tree. A node is one message at one position; `hash` chains the
+   * parent hash and message blob hash, so shared prefixes are stored once and rollbacks add
+   * siblings instead of replacing history.
+   */
+  telemetry_nodes: defineTable({
+    workspace: v.id("workspaces"),
+    hash: v.string(),
+    parent: v.optional(v.id("telemetry_nodes")),
+    blob: v.id("telemetry_blobs"),
+    /** 1-based message count from the root. */
+    depth: v.number(),
+    /** Who first produced this message: the client (`input`) or the model (`output`). */
+    origin: v.union(v.literal("input"), v.literal("output")),
+  })
+    .index("by_workspace_and_hash", ["workspace", "hash"])
+    .index("by_parent", ["parent"])
+    .index("by_blob", ["blob"]),
+  /** A conversation or agent run grouped by the routing session key. */
+  telemetry_sessions: defineTable({
+    workspace: v.id("workspaces"),
+    key: v.string(),
+    /** Parent session key for subagents (`x-parent-session-id`). */
+    parentKey: v.optional(v.string()),
+    chatId: v.optional(v.id("aisdk_chats")),
+    startedAt: v.number(),
+  })
+    .index("by_workspace_and_key", ["workspace", "key"])
+    .index("by_workspace_and_startedAt", ["workspace", "startedAt"])
+    .index("by_workspace_and_parentKey", ["workspace", "parentKey"]),
+  /** One captured Gateway request: pointers into blobs/nodes plus routing, timing, and usage. */
+  telemetry_requests: defineTable({
+    workspace: v.id("workspaces"),
+    /** Gateway request ID; idempotency key for capture. */
+    requestId: v.string(),
+    source: telemetrySourceSchema,
+    apiKey: v.optional(v.id("api_keys")),
+    userId: v.optional(v.string()),
+    chatId: v.optional(v.id("aisdk_chats")),
+    session: v.optional(v.id("telemetry_sessions")),
+    /** Model slug requested by the client. */
+    model: v.string(),
+    /** Final provider and credential (the committed attempt, or the last failed one). */
+    provider: v.optional(v.string()),
+    credential: v.optional(v.id("workspace_credentials")),
+    stream: v.boolean(),
+    status: telemetryRequestStatusSchema,
+    startedAt: v.number(),
+    endedAt: v.number(),
+    durationMs: v.number(),
+    ttftMs: v.optional(v.number()),
+    generationMs: v.optional(v.number()),
+    finishReason: v.optional(v.string()),
+    usage: v.optional(telemetryUsageSchema),
+    /** Upstream response ID, for matching provider logs. */
+    providerGenerationId: v.optional(v.string()),
+    chatCompletion: v.optional(v.id("chat_completions")),
+    error: v.optional(v.object({ message: v.string(), status: v.optional(v.number()) })),
+    canceled: v.optional(v.boolean()),
+    attempts: v.array(telemetryAttemptSchema),
+    /** Last client message node; absent when the request had no non-system messages. */
+    input: v.optional(v.id("telemetry_nodes")),
+    /** Model output node, a child of `input`. */
+    output: v.optional(v.id("telemetry_nodes")),
+    /** Leading system/developer messages, stored apart from the conversation chain. */
+    system: v.optional(v.id("telemetry_blobs")),
+    toolset: v.optional(v.id("telemetry_blobs")),
+    /** Raw request body without `messages` and `tools`: model, sampling, flags, metadata. */
+    params: v.optional(v.id("telemetry_blobs")),
+    /** Allowlisted client headers; never credentials. */
+    headers: v.optional(v.id("telemetry_blobs")),
+    recordsInputs: v.boolean(),
+    recordsOutputs: v.boolean(),
+    lineage: telemetryLineageSchema,
+    changes: v.optional(telemetryChangesSchema),
+    /** Rows migrated from the old AI SDK traces; payloads are opaque `legacy` blobs. */
+    legacy: v.optional(
+      v.object({
+        traceId: v.string(),
+        input: v.optional(v.id("telemetry_blobs")),
+        output: v.optional(v.id("telemetry_blobs")),
+        spans: v.optional(v.id("telemetry_blobs")),
+      }),
+    ),
+  })
+    .index("by_workspace_and_startedAt", ["workspace", "startedAt"])
+    .index("by_workspace_and_requestId", ["workspace", "requestId"])
+    .index("by_session_and_startedAt", ["session", "startedAt"])
+    .index("by_chat_and_startedAt", ["chatId", "startedAt"])
+    .index("by_input", ["input"])
+    .index("by_output", ["output"])
+    .index("by_system", ["system"])
+    .index("by_toolset", ["toolset"])
+    .index("by_params", ["params"])
+    .index("by_headers", ["headers"])
+    .index("by_legacy_input", ["legacy.input"])
+    .index("by_legacy_output", ["legacy.output"])
+    .index("by_legacy_spans", ["legacy.spans"]),
+  /** Pending reference checks for blobs/nodes whose last known referrer was deleted. */
+  telemetry_gc: defineTable({
+    workspace: v.id("workspaces"),
+    blob: v.optional(v.id("telemetry_blobs")),
+    node: v.optional(v.id("telemetry_nodes")),
+  }),
+  /** Workspace export destinations; header secrets live in Secret Store under `secretName`. */
+  telemetry_destinations: defineTable({
+    workspace: v.id("workspaces"),
+    kind: telemetryDestinationKindSchema,
+    name: v.string(),
+    endpoint: v.string(),
+    secretName: v.optional(v.string()),
+    enabled: v.boolean(),
+    /** Strip messages, system instructions, tool definitions, and output from exports. */
+    privacyMode: v.boolean(),
+    /** 0..1; decided per session key so whole sessions are kept or dropped together. */
+    samplingRate: v.number(),
+    includeApiKeys: v.array(v.id("api_keys")),
+    excludeApiKeys: v.array(v.id("api_keys")),
+    lastDeliveryAt: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+  }).index("by_workspace", ["workspace"]),
+  /** Deprecated: AI SDK traces. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_traces: defineTable({
     /** Deprecated attribution pointer retained for historical traces. */
     balance: v.optional(v.id("balances")),
@@ -601,7 +756,7 @@ export default defineSchema({
     functionId: v.string(),
     provider: v.string(),
     model: v.string(),
-    status: telemetryStatusSchema,
+    status: legacyTelemetryStatusSchema,
     startedAt: v.number(),
     endedAt: v.optional(v.number()),
     durationMs: v.optional(v.number()),
@@ -618,14 +773,15 @@ export default defineSchema({
     .index("by_workspace_and_startedAt", ["workspace", "startedAt"])
     .index("by_workspace_and_requestId", ["workspace", "requestId"])
     .index("by_chat_and_startedAt", ["chatId", "startedAt"]),
+  /** Deprecated: AI SDK spans. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_spans: defineTable({
     trace: v.id("telemetry_traces"),
     /** Deprecated attribution pointer retained for historical spans. */
     balance: v.optional(v.id("balances")),
     workspace: v.optional(v.id("workspaces")),
-    kind: telemetrySpanKindSchema,
+    kind: legacyTelemetrySpanKindSchema,
     name: v.string(),
-    status: telemetryStatusSchema,
+    status: legacyTelemetryStatusSchema,
     startedAt: v.number(),
     endedAt: v.number(),
     durationMs: v.number(),
@@ -641,6 +797,7 @@ export default defineSchema({
     .index("by_trace_and_startedAt", ["trace", "startedAt"])
     .index("by_balance_and_startedAt", ["balance", "startedAt"])
     .index("by_workspace_and_startedAt", ["workspace", "startedAt"]),
+  /** Deprecated: AI SDK payloads. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_payloads: defineTable({
     trace: v.id("telemetry_traces"),
     span: v.optional(v.id("telemetry_spans")),

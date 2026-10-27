@@ -26,8 +26,8 @@ keys or other secrets in a `VITE_*` variable.
 
 `packages/backend/convex/convex.config.ts` declares the custom backend runtime
 environment contract with Convex validators. `SITE_URL` and `SECRET_STORE_KEYS`
-are required; `AISDK_MaxRetries`, `LWC_SECRET`, the Worker issuer keys, and the
-OTLP variables below are optional. `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` are
+are required; `AISDK_MaxRetries`, `LWC_SECRET`, and the Worker issuer keys are
+optional. `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` are
 Convex-provided system variables, not custom app settings. Declarations do not
 set values: configure deployment values through the dashboard or `convex env`.
 The app passes `SECRET_STORE_KEYS` to the Secret Store component by typed env
@@ -76,20 +76,14 @@ not public application environment variables. Broader application-level
 encryption is future work; `SECRET_STORE_KEYS` only configures the Secret Store
 component.
 
-### OpenTelemetry Export
+### Telemetry Export
 
-| Variable                             | Required | Purpose                                             |
-| ------------------------------------ | -------- | --------------------------------------------------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`        | No       | OTLP/HTTP collector base URL                        |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | No       | Trace-specific endpoint overriding the base URL     |
-| `OTEL_EXPORTER_OTLP_HEADERS`         | No       | Comma-separated base exporter headers               |
-| `OTEL_EXPORTER_OTLP_TRACES_HEADERS`  | No       | Trace-specific exporter headers                     |
-| `OTEL_SERVICE_NAME`                  | No       | Service name; container default is `radium-gateway` |
-
-Configuring an exporter does not by itself enable telemetry. A user must enable
-telemetry, input recording, and output recording independently in the app.
-The full container requires HTTPS for remote OTLP endpoints; plain HTTP is
-accepted only for loopback addresses.
+Telemetry export has no deployment variables. Workspace owners add OTLP/HTTP or
+webhook destinations under Gateway → Telemetry; endpoints and header secrets are
+stored per workspace (headers in Secret Store). Remote endpoints must use HTTPS;
+plain HTTP is accepted only for loopback addresses. The former `OTEL_EXPORTER_*`
+and `OTEL_SERVICE_NAME` variables are no longer read and can be unset. See
+[Gateway telemetry](Radium_Gateway/Telemetry.md#export).
 
 ## Convex Cloud Development
 
@@ -280,9 +274,8 @@ VITE_CONVEX_SITE_URL=https://your-deployment.convex.site \
 docker compose -f docker-compose.frontend.yml up --build
 ```
 
-Configure `SITE_URL`, Secret Store, provider credentials, and any optional
-telemetry values on the external Convex deployment rather than in this
-frontend container.
+Configure `SITE_URL`, Secret Store, and provider credentials on the external
+Convex deployment rather than in this frontend container.
 
 ## Production Build Without Containers
 

@@ -3,21 +3,23 @@
 ## Implemented Organization
 
 Radium's registered observability APIs live under
-`packages/backend/convex/observability/`. This is a shared namespace with three
+`packages/backend/convex/observability/`. This is a shared namespace with
 purpose-specific owners:
 
-| Module        | Responsibility                                                                                                       | Persistence / shared code                                                                                                              |
-| ------------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `events.ts`   | Authenticated browser operational-event ingestion and per-actor rate limiting                                        | Isolated logging Component; `packages/backend/src/logging/` owns the generic v1 envelope and best-effort backend console logger        |
-| `usage.ts`    | Generation history (`getGenerations`), activity aggregation (`getActivity`), and recent usage estimates (`getUsage`) | `chat_completions`; one bounded workspace/legacy read and chat-visibility policy feeds all three queries                               |
-| `aiTraces.ts` | Opt-in AI capture settings, trace/span/payload reads, summaries, deletion, and internal persistence                  | Existing `telemetry_*` tables; `packages/backend/src/telemetry/` owns AI SDK collection, summaries, validators, and the action adapter |
+| Module                  | Responsibility                                                                                                       | Persistence / shared code                                                                                                       |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `events.ts`             | Authenticated browser operational-event ingestion and per-actor rate limiting                                        | Isolated logging Component; `packages/backend/src/logging/` owns the generic v1 envelope and best-effort backend console logger |
+| `usage.ts`              | Generation history (`getGenerations`), activity aggregation (`getActivity`), and recent usage estimates (`getUsage`) | `chat_completions`; one bounded workspace/legacy read and chat-visibility policy feeds all three queries                        |
+| `telemetry.ts`          | Opt-in Gateway capture settings, request/session reads, change and branch views, summaries                           | `telemetry_*` tables; `packages/backend/src/telemetry/` owns canonical hashing, decomposition, capture, and read helpers        |
+| `telemetryIngest.ts`    | Internal content-addressed ingestion, lineage, and change detection                                                  | Called only by the Gateway capture in `src/telemetry/capture.ts`                                                                |
+| `telemetryRetention.ts` | Owner deletes, retention cron, and reference-checked garbage collection                                              | `telemetry_gc` queue                                                                                                            |
+| `telemetryExport.ts`    | Owner-managed OTLP/webhook destinations and scheduled delivery                                                       | `telemetry_destinations`; header secrets in Secret Store                                                                        |
 
-The frontend and internal AI persistence adapter use these namespaces. The old
-`logging`, `logs`, `usage`, and `telemetry` modules re-export their original
-functions for compatibility with existing clients and in-flight function references.
-They own no independent implementations. Table shapes, indexes, Component mount
-names, settings, and stored attribution are unchanged by this organization; no
-data backfill is needed.
+The old `logging`, `logs`, and `usage` modules re-export their original
+functions for compatibility with existing clients and in-flight function
+references. They own no independent implementations. The former `telemetry` and
+`observability/aiTraces` trace APIs were removed with the AI SDK collector; see
+[Gateway telemetry](Radium_Gateway/Telemetry.md).
 
 ## Data And Authorization Flow
 
@@ -29,15 +31,15 @@ data backfill is needed.
 - Usage queries require the workspace owner, merge bounded workspace and legacy
   reads, deduplicate completion IDs, and exclude other users' personal chats.
   Costs are historical operational estimates, never charges or balances.
-- AI traces retain owner-only management and visibility filtering. Internal
-  persistence validates server-derived workspace, actor, key, and chat
+- Gateway telemetry is owner-only and hides requests from other users' personal
+  chats. Internal ingestion revalidates server-derived workspace, key, and chat
   associations. Capture is disabled by default and input/output recording remains
-  independently controlled. See [AI telemetry](Radium_Gateway/Telemetry.md).
+  independently controlled. See [Gateway telemetry](Radium_Gateway/Telemetry.md).
 
 ## Extending Operational Events
 
-Non-AI backend events belong to the operational-event contract, not AI trace
-payloads or completion usage. Existing Convex code can emit bounded operational
+Non-AI backend events belong to the operational-event contract, not Gateway
+telemetry or completion usage. Existing Convex code can emit bounded operational
 events with `logger` from `packages/backend/src/logging/server.ts`. It currently
 writes to the Convex console only. New event names do not require an envelope or
 table change; keep metadata non-sensitive and reuse opaque correlation fields.
@@ -51,10 +53,10 @@ rows.
 
 ## Known Limitations And Verification
 
-Operational events have no read API or automatic retention. AI capture has no
-automatic retention or durable finalization retry. Usage and trace summaries are
-bounded windows, not complete accounting or analytics pipelines. There is no
-required hosted collector.
+Operational events have no read API or automatic retention. Gateway telemetry
+retention is a per-workspace setting. Usage and telemetry summaries are bounded
+windows, not complete accounting or analytics pipelines. There is no required
+hosted collector.
 
 Run local regressions from the repository root:
 

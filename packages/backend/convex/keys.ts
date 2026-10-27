@@ -134,7 +134,6 @@ export const recordCompletion = internalMutation({
       stream: v.boolean(),
       canceled: v.boolean(),
       prompt_cache_key: v.optional(v.string()),
-      telemetry_request_id: v.optional(v.string()),
     }),
     response: v.object({
       gen_id: v.string(),
@@ -330,33 +329,6 @@ export const recordCompletion = internalMutation({
     };
     const completionId = await ctx.db.insert("chat_completions", completionRecord);
     if (credential) await scheduleBudgetRefresh(ctx, credential, Date.now());
-
-    if (args.request.telemetry_request_id) {
-      const traces = resolvedWorkspace
-        ? await ctx.db
-            .query("telemetry_traces")
-            .withIndex("by_workspace_and_requestId", (q) =>
-              q
-                .eq("workspace", resolvedWorkspace._id)
-                .eq("requestId", args.request.telemetry_request_id!),
-            )
-            .take(100)
-        : await ctx.db
-            .query("telemetry_traces")
-            .withIndex("by_balance_and_requestId", (q) =>
-              q.eq("balance", balance!._id).eq("requestId", args.request.telemetry_request_id!),
-            )
-            .take(100);
-
-      const attributedTraces = traces.filter((trace) =>
-        args.chatId !== undefined ? trace.chatId === args.chatId : trace.chatId === undefined,
-      );
-      await Promise.all(
-        attributedTraces.map((trace) =>
-          ctx.db.patch("telemetry_traces", trace._id, { chatCompletionId: completionId }),
-        ),
-      );
-    }
 
     return completionId;
   },

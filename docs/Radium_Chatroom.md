@@ -106,11 +106,12 @@ Store recovery failures remain errors for credential management.
 
 ### Telemetry
 
-AI telemetry is optional and disabled by default. Input and output capture are
-separate controls. The workspace owner manages the settings and general
-telemetry views. Shared-chat traces may be visible to the owner, while traces
-associated with another user's personal chats are filtered out. See the
-[Gateway and Chatroom telemetry guide](Radium_Gateway/Telemetry.md).
+Telemetry is optional and disabled by default. It is captured at the Gateway, so
+each Chatroom model call is recorded as a Gateway request in the chat's session.
+Input and output capture are separate controls. The workspace owner manages the
+settings and views. Shared-chat requests may be visible to the owner; requests
+from another user's personal chat record no content and are hidden. See the
+[Gateway telemetry guide](Radium_Gateway/Telemetry.md).
 
 ## Auth And Runtime Flow
 

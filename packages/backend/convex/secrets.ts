@@ -16,7 +16,8 @@ export type SecretNamespace =
   | `mcp:${string}`
   | `workspace:${string}:provider:${string}`
   | `workspace:${string}:tools`
-  | `workspace:${string}:mcp:${string}`;
+  | `workspace:${string}:mcp:${string}`
+  | `workspace:${string}:telemetry:${string}`;
 
 export type SecretMetadata = {
   kind: "provider" | "exa" | "mcp";
@@ -61,4 +62,12 @@ export function mcpSecretNamespace(server: string): SecretNamespace {
 /** Workspace-scoped MCP credentials. The server id remains part of the key to avoid collisions. */
 export function workspaceMcpSecretNamespace(workspace: string, server: string): SecretNamespace {
   return `${WORKSPACE_SECRET_NAMESPACE_PREFIX}${workspace}:mcp:${server}`;
+}
+
+/** Export destination header secrets: one JSON header map per destination, named by destination id. */
+export function workspaceTelemetrySecretNamespace(
+  workspace: string,
+  destination: string,
+): SecretNamespace {
+  return `${WORKSPACE_SECRET_NAMESPACE_PREFIX}${workspace}:telemetry:${destination}`;
 }

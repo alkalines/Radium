@@ -2,7 +2,6 @@ import {
   jsonSchema,
   type ModelMessage,
   streamText,
-  type TelemetryOptions,
   tool,
   toUIMessageStream,
   type UIMessageChunk,
@@ -219,7 +218,6 @@ function getAISDKStream(
   reqData: ChatCompletions_RequestBody_Type,
   provider: RoutedProvider,
   abortSignal: AbortSignal,
-  telemetry?: TelemetryOptions,
   onProviderCall?: () => void,
 ): ReturnType<typeof streamText> {
   const parsedToolChoice = parseToolChoice(reqData);
@@ -265,7 +263,6 @@ function getAISDKStream(
     presencePenalty: reqData.presence_penalty ?? undefined,
     frequencyPenalty: reqData.frequency_penalty ?? undefined,
     seed: reqData.seed,
-    telemetry,
     onLanguageModelCallStart: onProviderCall,
   });
 }
@@ -287,7 +284,6 @@ export async function StreamCompletion(
   reqData: ChatCompletions_RequestBody_Type,
   provider: RoutedProvider,
   genCallback: genCallbackType,
-  telemetry?: TelemetryOptions,
   requestSignal?: AbortSignal | null,
 ): Promise<ReadableStream<ChatCompletions_Streaming_Chunk_Type | string>> {
   const abort = new AbortController();
@@ -297,7 +293,6 @@ export async function StreamCompletion(
     reqData,
     provider,
     requestSignal ? AbortSignal.any([abort.signal, requestSignal]) : abort.signal,
-    telemetry,
     () => {
       providerDispatched = true;
     },
@@ -657,7 +652,6 @@ export async function NonStreamingCompletion(
   reqData: ChatCompletions_RequestBody_Type,
   provider: RoutedProvider,
   genCallback: genCallbackType,
-  telemetry?: TelemetryOptions,
   requestSignal?: AbortSignal | null,
 ): Promise<ChatCompletions_NotStreaming_ResponseBody_Type> {
   const abort = new AbortController();
@@ -667,7 +661,6 @@ export async function NonStreamingCompletion(
     reqData,
     provider,
     requestSignal ? AbortSignal.any([abort.signal, requestSignal]) : abort.signal,
-    telemetry,
     () => {
       providerDispatched = true;
     },

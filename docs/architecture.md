@@ -121,13 +121,13 @@ owner-managed; users cannot manage another user's personal chat.
 
 ## Telemetry
 
-See [AI telemetry boundaries](Radium_Gateway/Telemetry.md) for the shared Gateway
-and Chatroom collector, Convex persistence, and verification limits.
+See [Gateway telemetry](Radium_Gateway/Telemetry.md) for Gateway capture,
+content-addressed storage, session lineage, retention, and export.
 
-Internal telemetry is opt-in per workspace. Input and output recording are
-separate settings. General telemetry reads are owner-only and filter traces from
-other users' personal chats. Trace records are stored in Convex and may also be
-exported to an OTLP/HTTP collector when an exporter endpoint is configured.
+Telemetry is opt-in per workspace. Input and output recording are separate
+settings. Telemetry reads are owner-only and hide requests from other users'
+personal chats. Requests are stored in Convex and may also be exported to
+owner-configured OTLP/HTTP or webhook destinations.
 
 ## Migration And Generated State
 

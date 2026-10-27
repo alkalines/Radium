@@ -49,7 +49,6 @@ test("settles streaming billing once when aborted after provider dispatch", asyn
       billingMutationCalls += 1;
       resolveBilling();
     },
-    undefined,
     requestController.signal,
   );
 
