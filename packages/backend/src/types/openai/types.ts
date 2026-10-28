@@ -1,5 +1,6 @@
 import * as z from "zod"; // This thing is a fucking heavy
 import {
+  ReasoningDetail,
   OpenAI_Message_Assistant,
   OpenAI_Message_DeveloperSystem,
   OpenAI_Message_Function,
@@ -14,262 +15,272 @@ import {
 const providerSort = z.enum(["price", "throughput", "latency"]);
 
 /** OpenRouter-compatible `provider` preferences supported by Radium routing. */
-export const ProviderPreferences = z.object({
-  order: z.optional(z.array(z.string())),
-  allow_fallbacks: z.optional(z.boolean()),
-  only: z.optional(z.array(z.string())),
-  ignore: z.optional(z.array(z.string())),
-  sort: z.optional(
-    z.union([
-      providerSort,
-      z.object({ by: providerSort, partition: z.optional(z.enum(["model", "none"])) }),
-    ]),
-  ),
-});
-
-export const ChatCompletions_RequestBody = z.object({
-  messages: z.array(
-    z.union([
-      OpenAI_Message_DeveloperSystem,
-      OpenAI_Message_User,
-      OpenAI_Message_Assistant,
-      OpenAI_Message_Tool,
-      // @deprecated
-      OpenAI_Message_Function,
-    ]),
-  ),
-  model: z.string(),
-  /**
-   * Radium routing preferences: a provider slug pins the request to that provider; the
-   * OpenRouter-compatible object filters and orders the workspace's providers.
-   */
-  provider: z.optional(z.union([z.string(), ProviderPreferences])),
-  /** OpenRouter-compatible session identity used for session-affinity routing. */
-  session_id: z.optional(z.string()),
-  audio: z.nullish(
-    z.object({
-      // https://platform.openai.com/docs/api-reference/chat/create#chat-create-audio
-      format: z.union([
-        z.literal("wav"),
-        z.literal("mp3"),
-        z.literal("flac"),
-        z.literal("opus"),
-        z.literal("pcm16"),
+export const ProviderPreferences = z
+  .object({
+    order: z.optional(z.array(z.string())),
+    allow_fallbacks: z.optional(z.boolean()),
+    only: z.optional(z.array(z.string())),
+    ignore: z.optional(z.array(z.string())),
+    sort: z.optional(
+      z.union([
+        providerSort,
+        z.object({ by: providerSort, partition: z.optional(z.enum(["model", "none"])) }),
       ]),
-      voice: z.string(),
-    }),
-  ),
-  frequency_penalty: z.nullish(z.number().min(-2).max(2)),
-  // @deprecated use `tool_choice` instead
-  function_call: z.optional(
-    z.union([
-      z.string(),
+    ),
+  })
+  .strict();
+
+export const ChatCompletions_RequestBody = z
+  .object({
+    messages: z.array(
+      z.union([
+        OpenAI_Message_DeveloperSystem,
+        OpenAI_Message_User,
+        OpenAI_Message_Assistant,
+        OpenAI_Message_Tool,
+        // @deprecated
+        OpenAI_Message_Function,
+      ]),
+    ),
+    model: z.string(),
+    /**
+     * Radium routing preferences: a provider slug pins the request to that provider; the
+     * OpenRouter-compatible object filters and orders the workspace's providers.
+     */
+    provider: z.optional(z.union([z.string(), ProviderPreferences])),
+    /** OpenRouter-compatible session identity used for session-affinity routing. */
+    session_id: z.optional(z.string()),
+    /** Trace context is consumed by Gateway telemetry and is not forwarded upstream. */
+    trace: z.optional(z.record(z.string(), z.unknown())),
+    audio: z.nullish(
       z.object({
-        name: z.string(),
-      }),
-    ]),
-  ),
-  // @deprecated use `tools` instead
-  functions: z.optional(
-    z.array(
-      z.object({
-        name: z.string(),
-        description: z.optional(z.string()),
-        parameters: z.optional(z.object()),
+        // https://platform.openai.com/docs/api-reference/chat/create#chat-create-audio
+        format: z.union([
+          z.literal("wav"),
+          z.literal("mp3"),
+          z.literal("flac"),
+          z.literal("opus"),
+          z.literal("pcm16"),
+        ]),
+        voice: z.string(),
       }),
     ),
-  ),
-  logit_bias: z.optional(z.any()), // Map
-  logprobs: z.nullish(z.boolean()),
-  max_completion_tokens: z.nullish(z.int()),
-  // @deprecated use `max_completion_tokens` instead
-  max_tokens: z.nullish(z.int()),
-  metadata: z.optional(z.any()), // Map
-  modalities: z.optional(z.array(z.string())), // ['text', 'audio']
-  n: z.optional(z.int().min(1)),
-  parallel_tool_calls: z.optional(z.boolean()),
-  prediction: z.optional(
-    z.object({
-      content: z.union([
+    frequency_penalty: z.nullish(z.number().min(-2).max(2)),
+    // @deprecated use `tool_choice` instead
+    function_call: z.optional(
+      z.union([
         z.string(),
-        z.array(
-          z.object({
-            text: z.string(),
-            type: z.string(),
-          }),
-        ),
+        z.object({
+          name: z.string(),
+        }),
       ]),
-      type: z.literal("content"),
-    }),
-  ),
-  presence_penalty: z.nullish(z.number().min(-2).max(2)),
-  prompt_cache_key: z.optional(z.string()),
-  reasoning_effort: z.optional(
-    z.union([
-      z.literal("minimal"),
-      z.literal("low"),
-      z.literal("medium"),
-      z.literal("high"),
-      z.literal("xhigh"),
-      z.literal("max"),
-    ]),
-  ),
-  response_format: z.optional(
-    z.union([
-      z.object({
-        type: z.literal("text"),
-      }),
-      z.object({
-        type: z.literal("json_object"),
-      }),
-      z.object({
-        type: z.literal("json_schema"),
-        json_schema: z.object({
+    ),
+    // @deprecated use `tools` instead
+    functions: z.optional(
+      z.array(
+        z.object({
           name: z.string(),
           description: z.optional(z.string()),
-          schema: z.optional(z.object()),
-          strict: z.optional(z.boolean()),
+          parameters: z.optional(z.object()),
         }),
-      }),
-    ]),
-  ),
-  safety_identifier: z.optional(z.string()),
-  // @deprecated
-  seed: z.optional(z.int()),
-  service_tier: z.optional(z.string()),
-  stop: z.nullish(z.union([z.string(), z.array(z.string())])),
-  store: z.nullish(z.boolean()),
-  stream: z.nullish(z.boolean()),
-  stream_options: z.optional(
-    z.object({
-      include_obfuscation: z.optional(z.boolean()),
-      include_usage: z.optional(z.boolean()),
-    }),
-  ),
-  temperature: z.optional(z.number().min(0).max(2)),
-  tool_choice: z.optional(
-    z.union([
-      z.string(),
+      ),
+    ),
+    logit_bias: z.optional(z.any()), // Map
+    logprobs: z.nullish(z.boolean()),
+    max_completion_tokens: z.nullish(z.int()),
+    // @deprecated use `max_completion_tokens` instead
+    max_tokens: z.nullish(z.int()),
+    metadata: z.optional(z.any()), // Map
+    modalities: z.optional(z.array(z.string())), // ['text', 'audio']
+    n: z.optional(z.int().min(1)),
+    parallel_tool_calls: z.optional(z.boolean()),
+    prediction: z.optional(
       z.object({
-        type: z.literal("allowed_tools"),
-        allowed_tools: z.object({
-          mode: z.union([z.literal("auto"), z.literal("required")]),
-          tools: z.array(
+        content: z.union([
+          z.string(),
+          z.array(
             z.object({
-              type: z.literal("function"), // Guest what there is just the example!
-              function: z.object({
-                name: z.string(),
-              }),
+              text: z.string(),
+              type: z.string(),
             }),
           ),
-        }),
+        ]),
+        type: z.literal("content"),
       }),
-      z.object({
-        type: z.literal("function"),
-        function: z.object({
-          name: z.string(),
-        }),
-      }),
-      z.object({
-        type: z.literal("custom"),
-        custom: z.object({
-          name: z.string(),
-        }),
-      }),
-    ]),
-  ),
-  tools: z.optional(
-    z.array(
+    ),
+    presence_penalty: z.nullish(z.number().min(-2).max(2)),
+    prompt_cache_key: z.optional(z.string()),
+    reasoning_effort: z.optional(
       z.union([
+        z.literal("minimal"),
+        z.literal("low"),
+        z.literal("medium"),
+        z.literal("high"),
+        z.literal("xhigh"),
+        z.literal("max"),
+      ]),
+    ),
+    response_format: z.optional(
+      z.union([
+        z.object({
+          type: z.literal("text"),
+        }),
+        z.object({
+          type: z.literal("json_object"),
+        }),
+        z.object({
+          type: z.literal("json_schema"),
+          json_schema: z.object({
+            name: z.string(),
+            description: z.optional(z.string()),
+            schema: z.optional(z.record(z.string(), z.any())),
+            strict: z.optional(z.boolean()),
+          }),
+        }),
+      ]),
+    ),
+    safety_identifier: z.optional(z.string()),
+    // @deprecated
+    seed: z.optional(z.int()),
+    service_tier: z.optional(z.string()),
+    inference_mode: z.optional(z.string()),
+    stop: z.nullish(z.union([z.string(), z.array(z.string())])),
+    store: z.nullish(z.boolean()),
+    stream: z.nullish(z.boolean()),
+    stream_options: z.optional(
+      z.object({
+        include_obfuscation: z.optional(z.boolean()),
+        include_usage: z.optional(z.boolean()),
+      }),
+    ),
+    temperature: z.optional(z.number().min(0).max(2)),
+    tool_choice: z.optional(
+      z.union([
+        z.string(),
+        z.object({
+          type: z.literal("allowed_tools"),
+          allowed_tools: z.object({
+            mode: z.union([z.literal("auto"), z.literal("required")]),
+            tools: z.array(
+              z.union([
+                z.object({ type: z.literal("function"), function: z.object({ name: z.string() }) }),
+                z.object({ type: z.literal("custom"), custom: z.object({ name: z.string() }) }),
+              ]),
+            ),
+          }),
+        }),
         z.object({
           type: z.literal("function"),
           function: z.object({
             name: z.string(),
-            description: z.optional(z.string()),
-            parameters: z.optional(z.any()),
-            strict: z.optional(z.boolean()),
           }),
         }),
         z.object({
           type: z.literal("custom"),
           custom: z.object({
             name: z.string(),
-            description: z.optional(z.string()),
-            format: z.optional(
-              z.union([
-                z.object({
-                  type: z.literal("text"),
-                }),
-                z.object({
-                  type: z.literal("grammar"),
-                  grammar: z.object({
-                    definition: z.string(),
-                    syntax: z.string(),
-                  }),
-                }),
-              ]),
-            ),
           }),
         }),
       ]),
     ),
-  ),
-  top_logprobs: z.optional(z.int().min(0).max(20)),
-  top_p: z.optional(z.number()),
-  // @deprecated use `safety_identifier` or `prompt_cache_key` instead
-  user: z.optional(z.string()),
-  verbosity: z.optional(z.string()),
-  web_search_options: z.optional(
-    z.object({
-      search_context_size: z.optional(
-        z.union([z.literal("low"), z.literal("medium"), z.literal("high")]),
-      ),
-      user_location: z.nullish(
-        z.object({
-          type: z.string(),
-          approximate: z.object({
-            city: z.optional(z.string()),
-            country: z.optional(z.string()),
-            region: z.optional(z.string()),
-            timezone: z.optional(z.string()),
-          }),
-        }),
-      ),
-    }),
-  ),
-  // Unofficial
-  top_k: z.optional(z.int().min(0)),
-  repetition_penalty: z.optional(z.number().min(0).max(2)),
-  min_p: z.optional(z.number().min(0).max(1)),
-  top_a: z.optional(z.number().min(0).max(1)),
-  plugins: z.optional(
-    z.array(
-      z.object({
-        id: z.literal("web"),
-        max_results: z.number(),
-        search_prompt: z.string(),
-      }),
-    ),
-  ),
-  reasoning: z.optional(
-    z.object({
-      effort: z.nullish(
+    tools: z.optional(
+      z.array(
         z.union([
-          z.literal("high"),
-          z.literal("medium"),
-          z.literal("low"),
-          z.literal("minimal"),
-          z.literal("none"),
-          z.literal("xhigh"),
-          z.literal("max"),
+          z.object({
+            type: z.literal("function"),
+            function: z.object({
+              name: z.string(),
+              description: z.optional(z.string()),
+              parameters: z.optional(z.any()),
+              strict: z.optional(z.boolean()),
+            }),
+            cache_control: z.optional(
+              z
+                .object({ type: z.literal("ephemeral"), ttl: z.optional(z.enum(["5m", "1h"])) })
+                .strict(),
+            ),
+          }),
+          z.object({
+            type: z.literal("custom"),
+            custom: z.object({
+              name: z.string(),
+              description: z.optional(z.string()),
+              format: z.optional(
+                z.union([
+                  z.object({
+                    type: z.literal("text"),
+                  }),
+                  z.object({
+                    type: z.literal("grammar"),
+                    grammar: z.object({
+                      definition: z.string(),
+                      syntax: z.enum(["regex", "lark"]),
+                    }),
+                  }),
+                ]),
+              ),
+            }),
+          }),
         ]),
       ),
-      max_tokens: z.nullish(z.number()),
-      enabled: z.nullish(z.boolean()),
-      exclude: z.nullish(z.boolean()),
-    }),
-  ),
-});
+    ),
+    top_logprobs: z.optional(z.int().min(0).max(20)),
+    top_p: z.optional(z.number()),
+    // @deprecated use `safety_identifier` or `prompt_cache_key` instead
+    user: z.optional(z.string()),
+    verbosity: z.optional(z.string()),
+    web_search_options: z.optional(
+      z.object({
+        search_context_size: z.optional(
+          z.union([z.literal("low"), z.literal("medium"), z.literal("high")]),
+        ),
+        user_location: z.nullish(
+          z.object({
+            type: z.string(),
+            approximate: z.object({
+              city: z.optional(z.string()),
+              country: z.optional(z.string()),
+              region: z.optional(z.string()),
+              timezone: z.optional(z.string()),
+            }),
+          }),
+        ),
+      }),
+    ),
+    // Unofficial
+    top_k: z.optional(z.int().min(0)),
+    repetition_penalty: z.optional(z.number().min(0).max(2)),
+    min_p: z.optional(z.number().min(0).max(1)),
+    top_a: z.optional(z.number().min(0).max(1)),
+    plugins: z.optional(
+      z.array(
+        z.object({
+          id: z.literal("web"),
+          max_results: z.number(),
+          search_prompt: z.string(),
+        }),
+      ),
+    ),
+    reasoning: z.optional(
+      z.object({
+        effort: z.nullish(
+          z.union([
+            z.literal("high"),
+            z.literal("medium"),
+            z.literal("low"),
+            z.literal("minimal"),
+            z.literal("none"),
+            z.literal("xhigh"),
+            z.literal("max"),
+          ]),
+        ),
+        max_tokens: z.nullish(z.number()),
+        enabled: z.nullish(z.boolean()),
+        exclude: z.nullish(z.boolean()),
+      }),
+    ),
+  })
+  .strict();
 
 export const ChatCompletions_NotStreaming_ResponseBody = z.object({
   choices: z.array(
@@ -359,6 +370,7 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
                 }),
                 id: z.string(),
                 type: z.union([z.string(), z.literal("function")]),
+                provider_metadata: z.optional(z.record(z.string(), z.any())),
               }),
               z.object({
                 custom: z.object({
@@ -367,12 +379,14 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
                 }),
                 id: z.string(),
                 type: z.literal("custom"),
+                provider_metadata: z.optional(z.record(z.string(), z.any())),
               }),
             ]),
           ),
         ),
         // Unofficial
         reasoning: z.nullish(z.string()),
+        reasoning_details: z.optional(z.array(ReasoningDetail)),
       }),
     }),
   ),
@@ -407,6 +421,7 @@ export const ChatCompletions_NotStreaming_ResponseBody = z.object({
       z.object({
         audio_tokens: z.nullish(z.int()),
         cached_tokens: z.nullish(z.int()),
+        cache_write_tokens: z.nullish(z.int()),
       }),
     ),
   }),
@@ -432,17 +447,27 @@ export const ChatCompletions_Streaming_Chunk = z.object({
           z.array(
             z.object({
               index: z.int(),
-              function: z.object({
-                arguments: z.string(),
-                name: z.nullish(z.string()),
-              }),
+              function: z.optional(
+                z.object({
+                  arguments: z.string(),
+                  name: z.nullish(z.string()),
+                }),
+              ),
+              custom: z.optional(
+                z.object({
+                  input: z.string(),
+                  name: z.nullish(z.string()),
+                }),
+              ),
+              provider_metadata: z.optional(z.record(z.string(), z.any())),
               id: z.nullish(z.string()),
-              type: z.literal("function"),
+              type: z.optional(z.enum(["function", "custom"])),
             }),
           ),
         ),
         // Unofficial
         reasoning: z.nullish(z.string()),
+        reasoning_details: z.optional(z.array(ReasoningDetail)),
       }),
       index: z.number(),
       finish_reason: z.nullish(
@@ -509,6 +534,7 @@ export const ChatCompletions_Streaming_Chunk = z.object({
         z.object({
           audio_tokens: z.nullish(z.int()),
           cached_tokens: z.nullish(z.int()),
+          cache_write_tokens: z.nullish(z.int()),
         }),
       ),
     }),

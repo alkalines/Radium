@@ -37,6 +37,7 @@ import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
+  fetchOpenRouterServiceTiers,
   isSupportedNpm,
   mapModelsDevModel,
   type MappedModel,
@@ -271,18 +272,9 @@ function ConfigureProvider({
 
   const mapped = useMemo<MappedModel[]>(
     () =>
-      Object.values(provider.models ?? {}).map((model) => {
-        const mapped = mapModelsDevModel(provider.catalogue_provider ?? provider.id, model);
-        return provider.credential_type === "oauth"
-          ? {
-              ...mapped,
-              provider: {
-                ...mapped.provider,
-                pricing: { input: "0", output: "0" },
-              },
-            }
-          : mapped;
-      }),
+      Object.values(provider.models ?? {}).map((model) =>
+        mapModelsDevModel(provider.catalogue_provider ?? provider.id, model),
+      ),
     [provider],
   );
 
@@ -329,6 +321,32 @@ function ConfigureProvider({
     setSubmitting(true);
     try {
       if (!workspaceId) return;
+      const tiered =
+        provider.npm === "@openrouter/ai-sdk-provider"
+          ? await Promise.all(
+              chosen.map(async (model) => {
+                const fetched = await fetchOpenRouterServiceTiers(model.upstreamId);
+                return {
+                  ...model,
+                  provider: {
+                    ...model.provider,
+                    service_tiers: [
+                      ...(model.provider.service_tiers ?? []).map((tier) => {
+                        const endpoint = fetched?.find((item) => item.id === tier.id);
+                        return tier.pricing || !endpoint?.pricing
+                          ? tier
+                          : { ...tier, pricing: endpoint.pricing };
+                      }),
+                      ...(fetched ?? []).filter(
+                        (tier) =>
+                          !model.provider.service_tiers?.some((item) => item.id === tier.id),
+                      ),
+                    ],
+                  },
+                };
+              }),
+            )
+          : chosen;
       await importProvider({
         workspace: workspaceId,
         provider: {
@@ -343,7 +361,7 @@ function ConfigureProvider({
           api: provider.api,
           enabled: true,
         },
-        models: chosen.map((model) => ({
+        models: tiered.map((model) => ({
           global: {
             ...model.global,
             author: {
@@ -454,10 +472,10 @@ function ConfigureProvider({
                       <Badge variant="outline">{formatTokens(model.provider.context)} ctx</Badge>
                     )}
                     <Badge variant="outline">
-                      ${formatPerMillion(model.provider.pricing.input)}/M in
+                      {formatPerMillion(model.provider.pricing.input)} in
                     </Badge>
                     <Badge variant="outline">
-                      ${formatPerMillion(model.provider.pricing.output)}/M out
+                      {formatPerMillion(model.provider.pricing.output)} out
                     </Badge>
                   </div>
                 </div>

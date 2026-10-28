@@ -1,9 +1,15 @@
 import { describe, expect, test } from "vitest";
 import { COOLDOWN, decideFailure, nextCooldown, type UpstreamFailure } from "./failures";
 import { applyRoutingPreferences, routingPreferencesFromRequest } from "./preferences";
-import { highestPriorityTier, pickFromTier, type SelectionCursor } from "./selection";
+import {
+  highestPriorityTier,
+  pickFromTier,
+  providersForServiceTier,
+  type SelectionCursor,
+} from "./selection";
 import { extractRoutingSession } from "./session";
 import type { ChatCompletions_RequestBody_Type } from "@/types/openai/types";
+import type { ProviderPricing } from "../workspaces/provider";
 
 const NOW = 1_000_000;
 
@@ -14,6 +20,118 @@ function failure(status: number, body = "", headers: Record<string, string> = {}
 function candidate(provider: string, priority = 0, weight = 1) {
   return { provider, priority, weight };
 }
+
+describe("service tier routing", () => {
+  test("filters unsupported tiers and sorts using their quotes, not default prices", () => {
+    const providers = providersForServiceTier(
+      [
+        {
+          provider: "a",
+          priority: 0,
+          weight: 1,
+          pricing: { input: "1", output: "1" },
+          service_tiers: [{ id: "priority", pricing: { input: "9", output: "9" } }],
+        },
+        {
+          provider: "b",
+          priority: 0,
+          weight: 1,
+          pricing: { input: "8", output: "8" },
+          service_tiers: [{ id: "priority", pricing: { input: "2", output: "2" } }],
+        },
+        {
+          provider: "c",
+          priority: 0,
+          weight: 1,
+          pricing: { input: "0", output: "0" },
+          service_tiers: [],
+        },
+      ],
+      "priority",
+    );
+    expect(providers.map((provider) => provider.provider)).toEqual(["a", "b"]);
+    const metrics = new Map(
+      providers.map((provider) => [
+        provider.provider,
+        {
+          price: Number(provider.quote!.input) + Number(provider.quote!.output),
+        },
+      ]),
+    );
+    const ranked = applyRoutingPreferences(
+      providers,
+      { allowFallbacks: true, sort: "price" },
+      metrics,
+    );
+    expect(highestPriorityTier(ranked).map((provider) => provider.provider)).toEqual(["b"]);
+    expect(
+      applyRoutingPreferences(ranked, { only: ["a"], allowFallbacks: false }, metrics).map(
+        (p) => p.provider,
+      ),
+    ).toEqual(["a"]);
+  });
+
+  test("an advertised tier without a price remains unknown rather than using default pricing", () => {
+    const [provider] = providersForServiceTier(
+      [{ pricing: { input: "1", output: "1" }, service_tiers: [{ id: "flex" }] }],
+      "flex",
+    );
+    expect(provider.quote).toBeUndefined();
+  });
+
+  test("modes choose their own snapshot, inherit base, and respect explicit tiers", () => {
+    const base: ProviderPricing = {
+      input: "1",
+      output: "2",
+      tiers: [{ context: 200_000, input: "2", output: "4" }],
+    };
+    const priority: ProviderPricing = { input: "3", output: "4" };
+    const provider = {
+      pricing: base,
+      service_tiers: [
+        { id: "default" },
+        { id: "priority", pricing: priority },
+        { id: "flex", pricing: { input: "0.5", output: "1" } },
+      ],
+      inference_modes: [
+        { id: "fast", provider_body: { service_tier: "priority" }, pricing: priority },
+        { id: "pro", provider_body: { reasoning: { mode: "pro" as const } } },
+      ],
+    };
+    expect(providersForServiceTier([provider], undefined, "fast")[0]).toMatchObject({
+      quote: priority,
+      inferenceMode: { id: "fast" },
+    });
+    expect(providersForServiceTier([provider], undefined, "pro")[0].quote).toEqual(base);
+    expect(providersForServiceTier([provider], "default", "fast")[0].quote).toEqual(base);
+    expect(providersForServiceTier([provider], "flex", "fast")[0].quote).toEqual({
+      input: "0.5",
+      output: "1",
+    });
+    expect(providersForServiceTier([provider], "default")[0].quote).toEqual(base);
+    expect(providersForServiceTier([{ pricing: base }], undefined, "pro")).toEqual([]);
+    expect(providersForServiceTier([{ pricing: base }], "default")[0].quote).toEqual(base);
+  });
+
+  test("Anthropic speed selects priority and its mode price", () => {
+    const base = { input: "1", output: "2" };
+    const fast = { input: "5", output: "6" };
+    const provider = {
+      pricing: base,
+      service_tiers: [{ id: "priority", pricing: fast }],
+      inference_modes: [
+        {
+          id: "fast",
+          pricing: fast,
+          provider_body: { speed: "fast" as const },
+          provider_headers: { "anthropic-beta": "fast-mode-2026-02-01" },
+        },
+      ],
+    };
+    expect(providersForServiceTier([provider], undefined, "fast")[0].quote).toEqual(fast);
+    expect(providersForServiceTier([provider], "default", "fast")[0].quote).toEqual(base);
+  });
+});
 
 describe("selection strategies", () => {
   test("only the highest priority tier is eligible", () => {

@@ -26,6 +26,10 @@ Chatroom uses this routing path rather than maintaining a second router.
 - [Usage limits](Radium_Gateway/Limits.md): per-credential limit and balance
   snapshots (ChatGPT plan windows, OpenRouter key limits and balance, owner
   budgets), shown in **Gateway > Limits**, with recorded limit events.
+- Service tiers in the Chatroom model selector, provider-model rate configuration, dispatch-time quotes, served-tier reporting, and separate estimated/provider-reported costs.
+- Structured reasoning continuation and native OpenAI custom string tools; Chatroom uses a lossless in-process SDK adapter through the same routing and accounting pipeline.
+- Cache-read/write accounting with separate 5-minute and 1-hour write rates. Unknown rates and incomplete usage are not reported as free.
+- Inference-mode `provider_headers` are stored as string-to-string records, preserving hyphenated HTTP header names such as `anthropic-beta` without invalid Convex object-field identifiers.
 
 The [Chatroom overview](Radium_Chatroom.md) describes the shared workspace chat
 surface and its owner/member behavior.

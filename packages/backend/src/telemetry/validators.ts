@@ -20,6 +20,7 @@ export const telemetryUsageSchema = v.object({
   reasoningTokens: v.optional(v.number()),
   cacheReadTokens: v.optional(v.number()),
   cacheWriteTokens: v.optional(v.number()),
+  cacheWrite1hTokens: v.optional(v.number()),
 });
 export type TelemetryUsage = Infer<typeof telemetryUsageSchema>;
 

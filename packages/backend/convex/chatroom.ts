@@ -369,19 +369,10 @@ export const generateForChat = internalAction({
     });
     if (!chat || (!args.force && chat.title) || !chat.initialUserMessage.trim()) return null;
 
-    const provider = createInternalGatewayProvider(
-      ctx,
-      chat.workspace,
-      () =>
-        Response.json(
-          { error: { message: "Internal gateway request failed", code: 500 } },
-          { status: 500 },
-        ),
-      undefined,
-      undefined,
-      undefined,
-      { userId: chat.userId, chatId: args.chatId },
-    );
+    const provider = createInternalGatewayProvider(ctx, chat.workspace, {}, undefined, undefined, {
+      userId: chat.userId,
+      chatId: args.chatId,
+    });
 
     try {
       const title = await generateChatTitle({

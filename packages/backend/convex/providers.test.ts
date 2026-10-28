@@ -286,3 +286,43 @@ describe("OAuth account pools", () => {
     expect(await sessionExists(harness, "s3")).toBe(false);
   });
 });
+
+test("editing Default pricing updates ordinary requests' base quote and preserves model configuration", async () => {
+  const { t, workspace, owner } = await setup();
+  const model = {
+    model: "example",
+    upstream_model_id: "custom-upstream",
+    context: 272000,
+    max_output: 5000,
+    pricing: { input: "0.000001", output: "0.000005" },
+    supported_parameters: ["max_tokens" as const],
+    moderated: false,
+  };
+  const configurationId = await t.run(async (ctx) => {
+    const configuration = await ctx.db
+      .query("workspace_configurations")
+      .withIndex("by_workspace_and_provider", (q) =>
+        q.eq("workspace", workspace).eq("provider", "keyed"),
+      )
+      .first();
+    if (!configuration?.snapshot) throw new Error("Missing fixture configuration");
+    await ctx.db.patch("workspace_configurations", configuration._id, {
+      snapshot: { ...configuration.snapshot, models: [model] },
+    });
+    return configuration._id;
+  });
+  await owner.mutation(anyApi.providers.setProviderModelServiceTiers, {
+    workspace,
+    slug: "keyed",
+    model: "example",
+    service_tiers: [{ id: "default", pricing: { input: "0.000002", output: "0.0000075" } }],
+  });
+  const saved = await t.run((ctx) => ctx.db.get("workspace_configurations", configurationId));
+  expect(saved?.snapshot?.models[0]).toMatchObject({
+    upstream_model_id: "custom-upstream",
+    context: 272000,
+    max_output: 5000,
+    pricing: { input: "0.000002", output: "0.0000075" },
+    service_tiers: [{ id: "default", pricing: { input: "0.000002", output: "0.0000075" } }],
+  });
+});

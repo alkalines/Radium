@@ -23,6 +23,7 @@ import {
 import {
   providerModelValidator,
   providerNpmValidator,
+  providerPricingValidator,
   providerSnapshotValidator,
 } from "../src/workspaces/provider";
 import {
@@ -266,6 +267,10 @@ export default defineSchema({
       model: v.id("models"),
       streamed: v.boolean(),
       canceled: v.boolean(),
+      requestedServiceTier: v.optional(v.string()),
+      inferenceMode: v.optional(v.string()),
+      quoteSource: v.optional(v.string()),
+      quote: v.optional(providerPricingValidator),
     }),
     response: v.object({
       genId: v.string(),
@@ -276,6 +281,8 @@ export default defineSchema({
       ttft: v.number(), // Time To First Token
       gen_time: v.number(),
       finish_reason: v.string(),
+      servedServiceTier: v.optional(v.string()),
+      servedQuote: v.optional(providerPricingValidator),
     }),
   })
     .index("by_balance", ["bill.balance"])
@@ -672,6 +679,11 @@ export default defineSchema({
     generationMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
     usage: v.optional(telemetryUsageSchema),
+    requestedServiceTier: v.optional(v.string()),
+    servedServiceTier: v.optional(v.string()),
+    estimatedCost: v.optional(v.number()),
+    reportedCost: v.optional(v.number()),
+    upstreamInferenceCost: v.optional(v.number()),
     /** Upstream response ID, for matching provider logs. */
     providerGenerationId: v.optional(v.string()),
     chatCompletion: v.optional(v.id("chat_completions")),

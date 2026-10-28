@@ -175,3 +175,75 @@ test("a non-streaming response assembles its assistant message", () => {
     tool_calls: [{ id: "c", type: "function", function: { name: "lookup", arguments: "{}" } }],
   });
 });
+
+test("opaque-only reasoning survives assembly and final metadata replaces earlier state", () => {
+  const assembler = new StreamOutputAssembler();
+  assembler.push(
+    chunk({
+      reasoning_details: [
+        {
+          type: "reasoning.encrypted",
+          index: 0,
+          id: "r",
+          format: "openai-responses-v1",
+          data: "partial",
+        },
+      ],
+    }),
+  );
+  assembler.push(
+    chunk({
+      reasoning_details: [
+        {
+          type: "reasoning.encrypted",
+          index: 0,
+          id: "r",
+          format: "openai-responses-v1",
+          data: "complete",
+        },
+      ],
+    }),
+  );
+  expect(assembler.message()).toEqual({
+    role: "assistant",
+    content: "",
+    reasoning_details: [
+      {
+        type: "reasoning.encrypted",
+        index: 0,
+        id: "r",
+        format: "openai-responses-v1",
+        data: "complete",
+      },
+    ],
+  });
+});
+
+test("custom input retains exact string semantics alongside interleaved function calls", () => {
+  const assembler = new StreamOutputAssembler();
+  assembler.push(
+    chunk({
+      tool_calls: [
+        { index: 1, id: "custom", type: "custom", custom: { name: "edit", input: '{"x":' } },
+        {
+          index: 0,
+          id: "function",
+          type: "function",
+          function: { name: "lookup", arguments: '{"q":' },
+        },
+      ],
+    }),
+  );
+  assembler.push(
+    chunk({
+      tool_calls: [
+        { index: 0, function: { arguments: '"query"}' } },
+        { index: 1, custom: { input: "1}\\nraw code" } },
+      ],
+    }),
+  );
+  expect(assembler.message()?.tool_calls).toEqual([
+    { id: "function", type: "function", function: { name: "lookup", arguments: '{"q":"query"}' } },
+    { id: "custom", type: "custom", custom: { name: "edit", input: '{"x":1}\\nraw code' } },
+  ]);
+});

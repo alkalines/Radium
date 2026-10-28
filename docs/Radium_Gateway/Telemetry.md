@@ -23,6 +23,10 @@ Paths below are relative to `packages/backend/`.
 Requests from a member's personal chat never record content, and are hidden from
 the owner's telemetry views (personal chats stay private even from owners).
 
+Structured reasoning, including signatures and encrypted continuation state, is message content subject to these same recording controls. Encryption does not exempt it from privacy rules. Output assembly preserves custom-tool strings and separate interleaved calls; opaque-only reasoning output is retained without being rendered as visible reasoning.
+
+Requests record requested and served service tiers separately, together with estimated, provider-reported and upstream inference costs when available. Usage includes cache reads, total cache writes and the known 1-hour write subset. OTLP exports these operational facts even when message-content privacy mode is enabled; content and opaque continuation payloads are omitted in that mode.
+
 ## Storage Model
 
 Requests are decomposed into content-addressed pieces so an agent loop that

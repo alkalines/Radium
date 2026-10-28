@@ -237,6 +237,50 @@ test("recordCompletion only records BYOK usage and does not debit a balance", as
   });
   expect(stored.credits).toBe(73);
 
+  const quoted = await t.mutation(anyApi.keys.recordCompletion, {
+    bill: { workspace: ids.workspace },
+    request: {
+      ...request, byok: true, requestedServiceTier: "priority", quoteCaptured: true,
+      quote: { input: "1", output: "2", cache_read: "0.1", cache_write: "0.5", cache_write_1h: "2" },
+    },
+    response: {
+      ...response,
+      usage: { ...response.usage, prompt_tokens: 100, completion_tokens: 10, total_tokens: 110,
+        prompt_tokens_details: { cached_tokens: 30, written_cache_tokens: 20, written_cache_tokens_1h: 8 } },
+      servedServiceTier: "priority",
+    },
+  });
+  const quotedRecord = await t.run((ctx) => ctx.db.get("chat_completions", quoted));
+  expect(quotedRecord?.response.pricing).toMatchObject({
+    prompt_tokens: 50, completion_tokens: 20, estimatedCost: 95, cost: 95,
+    prompt_tokens_details: { cached_tokens: 3, written_cache_tokens: 22, written_cache_tokens_1h: 16 },
+  });
+  expect(quotedRecord?.response.pricing.cost_details?.upstream_inference_cost).toBeUndefined();
+
+  const contextualQuote = {
+    input: "1",
+    output: "2",
+    tiers: [{ context: 100, input: "2", output: "3" }],
+  };
+  const pro = await t.mutation(anyApi.keys.recordCompletion, {
+    bill: { workspace: ids.workspace },
+    request: {
+      ...request, byok: true, inferenceMode: "pro", quoteCaptured: true, quote: contextualQuote,
+    },
+    response: {
+      ...response,
+      usage: { ...response.usage, prompt_tokens: 101, total_tokens: 102 },
+      servedQuoteCaptured: true,
+      servedQuote: contextualQuote,
+    },
+  });
+  const proRecord = await t.run((ctx) => ctx.db.get("chat_completions", pro));
+  expect(proRecord?.request).toMatchObject({ inferenceMode: "pro", quote: contextualQuote });
+  expect(proRecord?.response).toMatchObject({
+    servedQuote: contextualQuote,
+    pricing: { estimatedCost: 205 },
+  });
+
   // The serving credential is recorded for per-account usage, and must belong to the workspace.
   const attributed = await t.mutation(anyApi.keys.recordCompletion, {
     bill: { workspace: ids.workspace },

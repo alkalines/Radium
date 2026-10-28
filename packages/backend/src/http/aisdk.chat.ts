@@ -29,11 +29,14 @@ import {
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
 import { buildWorkerChatTools, workerChatApprovalSecret } from "../worker/chat-tools";
+import type { SettledGeneration } from "./chat_completion";
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
   model: string;
   provider?: string;
+  serviceTier?: string;
+  inferenceMode?: string;
   reasoningEffort?: string;
   reasoningBudget?: number;
   id?: Id<"aisdk_chats">;
@@ -98,20 +101,46 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
       ? { ...telemetrySettings, recordInputs: false, recordOutputs: false }
       : telemetrySettings;
   const generations: Array<{ completionTokens: number; generationTimeMs: number }> = [];
+  const previousMessage = body.messages.at(-1);
+  const previousMetadata =
+    previousMessage?.role === "assistant" &&
+    previousMessage.metadata &&
+    typeof previousMessage.metadata === "object"
+      ? previousMessage.metadata
+      : undefined;
+  const previousExecutions =
+    previousMetadata &&
+    "gatewayExecutions" in previousMetadata &&
+    Array.isArray(previousMetadata.gatewayExecutions)
+      ? previousMetadata.gatewayExecutions
+      : [];
+  const gatewayExecutions = [...previousExecutions];
   const provider = createInternalGatewayProvider(
     ctx,
     workspaceId,
-    () =>
-      Response.json(
-        { error: { message: "Internal gateway request failed", code: 500 } },
-        { status: 500 },
-      ),
-    body.provider,
-    (generation) =>
+    {
+      provider: body.provider,
+      serviceTier: body.serviceTier,
+      inferenceMode: body.inferenceMode,
+      reasoningEffort: body.reasoningEffort,
+      reasoningBudget: body.reasoningBudget,
+    },
+    (generation: SettledGeneration) => {
       generations.push({
         completionTokens: generation.usage.completion_tokens,
         generationTimeMs: generation.genTime,
-      }),
+      });
+      gatewayExecutions.push({
+        model: generation.model ?? body.model,
+        provider: generation.provider,
+        requestedServiceTier: body.serviceTier,
+        serviceTier: generation.serviceTier,
+        estimatedCost: generation.estimatedCost,
+        reportedCost: generation.reportedCost,
+        upstreamInferenceCost: generation.upstreamInferenceCost,
+        costSource: generation.costSource,
+      });
+    },
     telemetrySettingsForRequest.enabled
       ? {
           workspace: workspaceId,
@@ -161,25 +190,11 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     // (Exa web search, MCP tools) instead of stopping at the first tool call.
     stopWhen: isStepCount(5),
     onError: () => void closeTools(),
-    providerOptions:
-      body.reasoningEffort || body.reasoningBudget
-        ? {
-            openaiCompatible: {
-              ...(body.reasoningEffort && body.reasoningEffort !== "none"
-                ? { reasoningEffort: body.reasoningEffort }
-                : {}),
-              reasoning: {
-                ...(body.reasoningEffort ? { effort: body.reasoningEffort } : {}),
-                ...(body.reasoningBudget ? { max_tokens: body.reasoningBudget } : {}),
-              },
-            },
-          }
-        : undefined,
     abortSignal: req.signal,
   });
 
-  // Track reasoning start time to calculate duration
-  let reasoningStartTime: number | null = null;
+  const reasoningStarts = new Map<string, { startedAt: number; index: number }>();
+  const reasoningDurations: number[] = [];
 
   return createUIMessageStreamResponse({
     stream: toUIMessageStream({
@@ -188,11 +203,13 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
       sendSources: true,
       sendReasoning: true,
       messageMetadata({ part }) {
-        // Track when reasoning starts
         if (part.type === "reasoning-start") {
-          if (reasoningStartTime === null) {
-            reasoningStartTime = Date.now();
-          }
+          reasoningStarts.set(part.id, { startedAt: Date.now(), index: reasoningDurations.length });
+          reasoningDurations.push(0);
+        } else if (part.type === "reasoning-end") {
+          const timing = reasoningStarts.get(part.id);
+          if (timing)
+            reasoningDurations[timing.index] = Math.ceil((Date.now() - timing.startedAt) / 1000);
         }
         // Attach cumulative token usage once the response finishes so the client
         // can render context-window usage and cost for the message.
@@ -201,6 +218,9 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
           return {
             model: body.model,
             ...(body.provider ? { provider: body.provider } : {}),
+            ...(body.serviceTier ? { serviceTier: body.serviceTier } : {}),
+            ...(body.inferenceMode ? { inferenceMode: body.inferenceMode } : {}),
+            gatewayExecutions,
             usage: part.totalUsage,
             ...(performance ? { performance } : {}),
           };
@@ -208,22 +228,22 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         return {
           model: body.model,
           ...(body.provider ? { provider: body.provider } : {}),
+          ...(body.serviceTier ? { serviceTier: body.serviceTier } : {}),
+          ...(body.inferenceMode ? { inferenceMode: body.inferenceMode } : {}),
         };
       },
       onEnd: async ({ messages }) => {
-        // Calculate reasoning duration and add it to reasoning parts
+        let reasoningIndex = 0;
+        const originalParts = new Map(
+          body.messages.map((message) => [message.id, message.parts.length]),
+        );
         const messagesWithDuration = messages.map((message) => ({
           ...message,
-          parts: message.parts.map((part) => {
-            if (part.type === "reasoning" && reasoningStartTime !== null) {
-              const durationMs = Date.now() - reasoningStartTime;
-              const durationSeconds = Math.ceil(durationMs / 1000);
-              return {
-                ...part,
-                duration: durationSeconds,
-              };
-            }
-            return part;
+          parts: message.parts.map((part, index) => {
+            if (part.type !== "reasoning" || index < (originalParts.get(message.id) ?? 0))
+              return part;
+            const duration = reasoningDurations[reasoningIndex++];
+            return duration === undefined ? part : { ...part, duration };
           }),
         }));
         await ctx.runMutation(internal.aisdk.EditChat, {

@@ -126,14 +126,35 @@ and configurable egress controls are not part of the current API contract; see
 
 ## Compatibility Scope
 
-The request validator and translators under `src/types/openai/` and
-`src/translators/` are the source of truth for accepted fields. Common
-chat messages, sampling settings, reasoning settings, tools, tool choice,
-structured response formats, token limits, and streaming are supported where
-the selected provider/model supports them.
+Radium implements a provider-dependent Chat Completions subset, not every OpenRouter extension. Unknown top-level fields and unsupported provider-selection constraints are rejected rather than silently discarded. `trace` is an explicitly supported telemetry-only object. Provider slugs refer to workspace connections, not OpenRouter's nested upstream endpoint names.
 
-Radium does not currently expose OpenAI Responses, Embeddings, Images, Audio,
-Files, Fine-tuning, or Batch endpoints.
+Supported paths include text and supported image/audio/inline-file inputs, JSON response formats with intact JSON Schema, function tools and tool selection, reasoning continuation, token limits (`max_completion_tokens` or `max_tokens`), and stop sequences where supported upstream. Only `n=1` is supported. Native OpenAI uses Responses upstream; this does not add a public Responses endpoint. Provider-specific unsupported settings return an error instead of pretending they were applied.
+
+### Service tiers and costs
+
+`service_tier` selects an advertised provider-model tier: `default`, `flex`, `priority` (`fast` alias), or `ultrafast`. Omission/`auto` keeps the provider default. Every model, including older workspace snapshots, exposes Default initialized from its existing base prices; Default cannot be disabled in the editor. Explicit tiers restrict eligible workspace connections. OpenRouter capabilities and unambiguous rates are loaded from its endpoint catalogue during model import. Native provider modes and rates are imported from models.dev's experimental metadata where supported; owners can also configure tier rates on existing mappings.
+
+The response's `service_tier`, when known, describes what upstream actually served, not what was requested. Routing retains dispatch-time rates and uses the served tier's snapshot on fallback. Estimates and provider-reported costs remain distinct. Missing prices or usage remain unknown, not zero; historical estimates are not retroactively repriced. Rates are per token internally; configuration forms use USD per million tokens.
+
+models.dev `experimental.modes` is imported separately from service tiers. `inference_mode` selects an advertised named mode (`inferenceMode` in Chatroom requests): a `fast` mode can set `service_tier: "priority"`, while `pro` sets `reasoning.mode: "pro"` rather than inventing a pro service tier. Anthropic speed modes preserve their allowlisted beta header. Modes without a separate cost inherit the base price schedule. Explicit service-tier selection takes precedence over a mode's speed/tier override.
+
+In Chatroom, **Inference mode** contains only Standard and supported Pro reasoning. Fast/Priority, Flex and Ultrafast belong exclusively to **Service tier**; speed-only catalog modes are not duplicated in the inference-mode menu.
+
+Context-dependent `cost.tiers` schedules use their exact context threshold and price the whole request above that boundary, including cached input. The older `context_over_200k` field is used only when no modern context tiers exist. Small positive per-million prices are converted without rounding them to zero.
+
+To restore already-zero or outdated imported prices and load new modes, open the provider's model manager and choose **Refresh existing models from models.dev**, then select the mappings to refresh. This deliberately updates their pricing and modes while preserving unrelated model configuration. It does not silently replace configured free/custom rates or reprice historical completions.
+
+Cache reads and writes are disjoint from uncached input. `usage.prompt_tokens_details.cache_write_tokens` reports writes; 1-hour writes have a separate rate from 5-minute writes. Text-part `cache_control` directives preserve supported cache boundaries and TTLs. Unknown mixed-retention write usage produces an unknown estimate rather than a guessed price.
+
+### Reasoning and custom tools
+
+Assistant `reasoning_details` preserves structured text, summaries and encrypted continuation state. Clients continuing a conversation must replay the entire ordered detail array, including opaque data and signatures, unchanged. A provider-specific `provider_metadata` extension retains native continuation information. Summaries are not raw chain-of-thought; encrypted content is not displayable text.
+
+OpenAI Responses-backed connections support `type: "custom"` tools with exact string input and optional regex/Lark grammar. Runtime-discovered JSON-schema tools remain function tools. Unsupported custom-tool connectors fail explicitly. Parallel calls retain separate IDs/indexes in streaming and nonstreaming responses.
+
+With streaming, `stream_options.include_usage: true` requests a separate terminal usage chunk with an empty `choices` array. Unsupported audio output/modalities, prediction, log probabilities, advanced sampling controls, plugins, model fallback lists and unimplemented routing constraints are rejected.
+
+Radium does not expose public OpenAI Responses, Embeddings, Images, Audio, Files, Fine-tuning, or Batch endpoints.
 
 ## Errors
 

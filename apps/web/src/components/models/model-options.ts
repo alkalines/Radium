@@ -9,7 +9,78 @@ import type { api } from "backend/convex/_generated/api";
 export type AvailableModel = FunctionReturnType<typeof api.models.availableModels>[number];
 
 /** One upstream that can serve a model; `logo` is a models.dev provider slug. */
-export type ModelProviderOption = { id: string; name: string; logo: string };
+export type ModelProviderOption = {
+  id: string;
+  name: string;
+  logo: string;
+  service_tiers?: Array<{
+    id: string;
+    pricing?: {
+      input: string;
+      output: string;
+      cache_read?: string;
+      cache_write?: string;
+      cache_write_1h?: string;
+    };
+  }>;
+  inference_modes?: Array<{
+    id: string;
+    source?: string;
+    provider_body: {
+      service_tier?: string;
+      speed?: "fast" | "standard";
+      reasoning?: { mode: "standard" | "pro" };
+    };
+  }>;
+};
+
+/** The service tier implied by a mode, including native provider speed controls. */
+export function inferenceModeTier(
+  mode: NonNullable<ModelProviderOption["inference_modes"]>[number] | undefined,
+) {
+  if (mode?.provider_body.service_tier) return mode.provider_body.service_tier;
+  if (mode?.provider_body.speed === "fast") return "priority";
+  if (mode?.provider_body.speed === "standard") return "default";
+  return undefined;
+}
+
+/** Returns the selected tier only when this provider-model advertises it. */
+export function validServiceTier(
+  model: ModelOption | undefined,
+  providerId: string | undefined,
+  tier: string | undefined,
+) {
+  if (!tier || tier === "auto") return undefined;
+  const provider = model?.providers?.find((candidate) => candidate.id === providerId);
+  return provider &&
+    (tier === "default" || provider.service_tiers?.some((candidate) => candidate.id === tier))
+    ? tier
+    : undefined;
+}
+
+/** Only Pro reasoning is an inference-mode choice; speed controls belong to service tiers. */
+export function reasoningModesFor(modes: ModelProviderOption["inference_modes"]) {
+  const pro = modes?.find(
+    (mode) =>
+      mode.provider_body.reasoning?.mode === "pro" &&
+      !mode.provider_body.service_tier &&
+      !mode.provider_body.speed,
+  );
+  return pro ? [pro] : [];
+}
+
+/** Retains an inference mode only for the provider-model that advertises it. */
+export function validInferenceMode(
+  model: ModelOption | undefined,
+  providerId: string | undefined,
+  mode: string | undefined,
+) {
+  if (!mode) return undefined;
+  const provider = model?.providers?.find((candidate) => candidate.id === providerId);
+  return reasoningModesFor(provider?.inference_modes).some((candidate) => candidate.id === mode)
+    ? mode
+    : undefined;
+}
 
 /**
  * The minimum a model picker needs. `AvailableModel` satisfies it; lists that only know a slug and

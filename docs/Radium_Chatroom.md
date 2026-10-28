@@ -1,9 +1,7 @@
 # Radium Chatroom
 
 Radium Chatroom is the user-facing home for conversations, model selection,
-reasoning controls, approvals, and tools. It uses the Gateway's internal
-OpenAI-compatible completion path; it does not implement a second provider
-router.
+reasoning controls, service tiers, approvals, and tools. It uses a lossless in-process SDK adapter through the Gateway's shared completion pipeline, not a second provider router. Signed/encrypted reasoning metadata survives history replay; visible summaries render separately from opaque continuation state.
 
 ## Implemented
 

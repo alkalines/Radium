@@ -17,6 +17,8 @@ import type { CooldownReason, RoutingSettings } from "./settings";
 export type RoutingRequest = {
   workspace: Id<"workspaces">;
   model: string;
+  serviceTier?: string;
+  inferenceMode?: string;
   preferences: RoutingPreferences;
   session?: RoutingSession;
   signal?: AbortSignal | null;
@@ -97,12 +99,15 @@ export async function routeWithFailover<T>(
       const pick = await ctx.runMutation(internal.routing.pick, {
         workspace: request.workspace,
         model: request.model,
+        serviceTier: request.serviceTier,
+        inferenceMode: request.inferenceMode,
         preferences: request.preferences,
         session: request.session,
         excluded: tried,
       });
       settings = pick.settings;
       if (!pick.ok) {
+        if (pick.status === 400) throw new RoutingError(pick.message, 400);
         unavailable = pick;
         break;
       }
@@ -207,6 +212,7 @@ async function reportOutcome(
       provider: target.provider,
       credential: target.credential,
       model: request.model,
+      serviceTier: request.serviceTier,
       dispatchedAt,
       session: request.session,
       outcome,

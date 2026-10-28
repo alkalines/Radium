@@ -47,6 +47,11 @@ export type OtlpRequest = {
   finishReason?: string;
   usage?: TelemetryUsage;
   providerGenerationId?: string;
+  requestedServiceTier?: string;
+  servedServiceTier?: string;
+  estimatedCost?: number;
+  reportedCost?: number;
+  upstreamInferenceCost?: number;
   error?: { message: string; status?: number };
   attempts: TelemetryAttempt[];
   lineage: { kind: string };
@@ -175,18 +180,34 @@ function toGenAiMessage(message: unknown, finishReason?: string): Record<string,
       ),
     });
   } else {
-    if (typeof record.reasoning === "string" && record.reasoning) {
+    if (Array.isArray(record.reasoning_details) && record.reasoning_details.length > 0) {
+      for (const value of record.reasoning_details) {
+        const detail = asRecord(value);
+        if (!detail) continue;
+        parts.push({
+          type: "reasoning",
+          ...(detail.type === "reasoning.text" ? { content: detail.text } : {}),
+          ...(detail.type === "reasoning.summary" ? { content: detail.summary } : {}),
+          // Content export is already recording/privacy gated. Keep opaque continuation
+          // fields structured rather than pretending they are visible chain-of-thought.
+          provider_metadata: detail,
+        });
+      }
+    } else if (typeof record.reasoning === "string" && record.reasoning) {
       parts.push({ type: "reasoning", content: record.reasoning });
     }
     parts.push(...contentParts(record.content));
     if (Array.isArray(record.tool_calls)) {
       for (const call of record.tool_calls) {
-        const fn = asRecord(asRecord(call)?.function);
+        const toolCall = asRecord(call);
+        const fn = asRecord(toolCall?.function);
+        const custom = asRecord(toolCall?.custom);
         parts.push({
           type: "tool_call",
-          id: asRecord(call)?.id,
-          name: fn?.name,
-          arguments: parseJsonOrKeep(fn?.arguments),
+          id: toolCall?.id,
+          name: fn?.name ?? custom?.name,
+          arguments: custom ? custom.input : parseJsonOrKeep(fn?.arguments),
+          ...(custom ? { tool_type: "custom" } : {}),
         });
       }
     }
@@ -316,10 +337,16 @@ export async function buildOtlpExport(
     attr("gen_ai.request.presence_penalty", firstNumber(params.presence_penalty)),
     attr("gen_ai.request.stream", request.stream),
     attr("gen_ai.request.reasoning.level", reasoningLevel(params)),
+    attr("gen_ai.request.service_tier", request.requestedServiceTier),
+    attr("gen_ai.response.service_tier", request.servedServiceTier),
+    doubleAttr("radium.cost.estimated_usd", request.estimatedCost),
+    doubleAttr("radium.cost.reported_usd", request.reportedCost),
+    doubleAttr("radium.cost.upstream_inference_usd", request.upstreamInferenceCost),
     attr("gen_ai.usage.input_tokens", usage?.inputTokens),
     attr("gen_ai.usage.output_tokens", usage?.outputTokens),
     attr("gen_ai.usage.cache_read.input_tokens", usage?.cacheReadTokens),
     attr("gen_ai.usage.cache_write.input_tokens", usage?.cacheWriteTokens),
+    attr("radium.usage.cache_write_1h.input_tokens", usage?.cacheWrite1hTokens),
     attr("gen_ai.usage.reasoning.output_tokens", usage?.reasoningTokens),
     doubleAttr(
       "gen_ai.response.time_to_first_chunk",

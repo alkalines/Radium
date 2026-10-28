@@ -184,11 +184,12 @@ function Lineage({ data }: { data: RequestResult }) {
 function Overview({ data, cost }: { data: RequestResult; cost: number | undefined }) {
   const { request, session } = data;
   const usage = request.usage;
+  const displayedCost = request.reportedCost ?? request.estimatedCost ?? cost;
 
   return (
     <DataSection
       title="Overview"
-      description={cost !== undefined ? `Estimated ${formatCost(cost)}` : undefined}
+      description={displayedCost !== undefined ? `Cost ${formatCost(displayedCost)}` : undefined}
       contentClassName="grid gap-x-8 gap-y-2 p-4 text-xs sm:grid-cols-2 lg:grid-cols-3"
     >
       <Detail label="Request ID" value={request.requestId} copy />
@@ -197,12 +198,27 @@ function Overview({ data, cost }: { data: RequestResult; cost: number | undefine
       <Detail label="Time to first token" value={formatTelemetryDuration(request.ttftMs)} />
       <Detail label="Generation" value={formatTelemetryDuration(request.generationMs)} />
       <Detail label="Finish reason" value={request.finishReason ?? "–"} />
+      <Detail label="Requested tier" value={request.requestedServiceTier ?? "Auto / unknown"} />
+      <Detail label="Served tier" value={request.servedServiceTier ?? "Unknown"} />
       <Detail label="Input tokens" value={formatTokenCount(usage?.inputTokens ?? 0)} />
       <Detail label="Output tokens" value={formatTokenCount(usage?.outputTokens ?? 0)} />
       <Detail label="Reasoning tokens" value={formatTokenCount(usage?.reasoningTokens ?? 0)} />
       <Detail label="Cache read" value={formatTokenCount(usage?.cacheReadTokens ?? 0)} />
       <Detail label="Cache write" value={formatTokenCount(usage?.cacheWriteTokens ?? 0)} />
-      <Detail label="Cost" value={formatCost(cost)} />
+      <Detail
+        label="Cost"
+        value={displayedCost === undefined ? "Unknown" : formatCost(displayedCost)}
+      />
+      <Detail
+        label="Cost source"
+        value={
+          request.reportedCost !== undefined
+            ? "Provider reported"
+            : request.estimatedCost !== undefined
+              ? "Gateway estimate"
+              : "Unknown"
+        }
+      />
       {request.providerGenerationId && (
         <Detail label="Generation ID" value={request.providerGenerationId} copy />
       )}

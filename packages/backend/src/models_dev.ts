@@ -9,6 +9,20 @@
  */
 
 import type { AIProviderNpmPackage } from "./types/ai_provider";
+import { z } from "zod";
+import type { ProviderPricing, ProviderSnapshot } from "./workspaces/provider";
+
+const experimentalBodySchema = z
+  .object({
+    service_tier: z.string().optional(),
+    speed: z.enum(["fast", "standard"]).optional(),
+    reasoning: z
+      .object({ mode: z.enum(["standard", "pro"]) })
+      .strict()
+      .optional(),
+  })
+  .strict();
+const experimentalHeadersSchema = z.object({ "anthropic-beta": z.string().optional() }).strict();
 
 export const MODELS_DEV_API_URL = "https://models.dev/api.json";
 
@@ -38,6 +52,8 @@ export type ModelsDevCost = {
   output?: number;
   cache_read?: number;
   cache_write?: number;
+  tiers?: Array<ModelsDevCost & { tier: { type: "context"; size: number } }>;
+  context_over_200k?: ModelsDevCost;
 };
 
 export type ModelsDevModel = {
@@ -57,6 +73,15 @@ export type ModelsDevModel = {
   open_weights?: boolean;
   limit?: { context?: number; output?: number };
   cost?: ModelsDevCost;
+  experimental?: {
+    modes?: Record<
+      string,
+      {
+        cost?: ModelsDevCost;
+        provider?: { body?: Record<string, unknown>; headers?: Record<string, string> };
+      }
+    >;
+  };
 };
 
 export type ModelsDevProvider = {
@@ -128,12 +153,10 @@ export type ProviderModelInput = {
   upstream_model_id?: string;
   context: number;
   max_output: number;
-  pricing: {
-    input: string;
-    output: string;
-    cache_read?: string;
-    cache_write?: string;
-  };
+  pricing: ProviderPricing;
+  /** Optional tier rates are USD per token, from endpoint discovery or explicit configuration. */
+  service_tiers?: Array<{ id: string; source?: string; pricing?: ProviderPricing }>;
+  inference_modes?: NonNullable<ProviderSnapshot["models"][number]["inference_modes"]>;
   supported_parameters: SupportedParameter[];
   moderated: boolean;
 };
@@ -183,7 +206,8 @@ function titleCase(slug: string): string {
  * prefix, when present, is a stronger author signal than the provider id.
  */
 export function deriveAuthor(modelId: string, providerId: string): { name: string; slug: string } {
-  const slug = modelId.includes("/") ? modelId.split("/")[0] : providerId;
+  const separator = modelId.indexOf("/");
+  const slug = separator < 0 ? providerId : modelId.slice(0, separator);
   return { slug, name: AUTHOR_NAMES[slug] ?? titleCase(slug) };
 }
 
@@ -259,10 +283,61 @@ function deriveFeatures(model: ModelsDevModel): GlobalModelInput["features"] {
  * `convex/keys.ts`), so the unit must be per token. Avoids exponent notation.
  */
 function perToken(costPerMillion: number | undefined): string | undefined {
-  if (costPerMillion === undefined) return undefined;
-  const value = costPerMillion / 1_000_000;
-  if (value === 0) return "0";
-  return value.toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+  if (costPerMillion === undefined || !Number.isFinite(costPerMillion) || costPerMillion < 0)
+    return undefined;
+  const [mantissa = "", exponent = "0"] = String(costPerMillion).toLowerCase().split("e");
+  const [whole = "0", fraction = ""] = mantissa.split(".");
+  const digits = whole + fraction;
+  const point = whole.length + Number(exponent) - 6;
+  const shifted =
+    point <= 0
+      ? `0.${"0".repeat(-point)}${digits}`
+      : point >= digits.length
+        ? digits + "0".repeat(point - digits.length)
+        : `${digits.slice(0, point)}.${digits.slice(point)}`;
+  const [integer = "0", decimals = ""] = shifted.split(".");
+  const normalizedInteger = integer.replace(/^0+(?=\d)/, "");
+  const normalizedDecimals = decimals.replace(/0+$/, "");
+  return normalizedDecimals ? `${normalizedInteger}.${normalizedDecimals}` : normalizedInteger;
+}
+
+function mapCost(cost: ModelsDevCost | undefined): ProviderPricing {
+  const pricing: ProviderPricing = {
+    input: perToken(cost?.input) ?? "",
+    output: perToken(cost?.output) ?? "",
+    ...(perToken(cost?.cache_read) !== undefined ? { cache_read: perToken(cost?.cache_read) } : {}),
+    ...(perToken(cost?.cache_write) !== undefined
+      ? { cache_write: perToken(cost?.cache_write) }
+      : {}),
+  };
+  const thresholds =
+    cost?.tiers?.filter(
+      (entry) =>
+        entry.tier.type === "context" && Number.isFinite(entry.tier.size) && entry.tier.size >= 0,
+    ) ?? [];
+  if (thresholds.length) {
+    pricing.tiers = thresholds
+      .map((entry) => ({
+        context: entry.tier.size,
+        ...mapFlatCost(entry),
+      }))
+      .sort((left, right) => left.context - right.context);
+  } else if (cost?.context_over_200k) {
+    // The legacy field has no exact threshold; use it only when modern tiers are absent.
+    pricing.tiers = [{ context: 200_000, ...mapFlatCost(cost.context_over_200k) }];
+  }
+  return pricing;
+}
+
+function mapFlatCost(cost: ModelsDevCost) {
+  return {
+    input: perToken(cost.input) ?? "",
+    output: perToken(cost.output) ?? "",
+    ...(perToken(cost.cache_read) !== undefined ? { cache_read: perToken(cost.cache_read) } : {}),
+    ...(perToken(cost.cache_write) !== undefined
+      ? { cache_write: perToken(cost.cache_write) }
+      : {}),
+  };
 }
 
 /**
@@ -275,6 +350,41 @@ export function mapModelsDevModel(providerId: string, model: ModelsDevModel): Ma
   const slug = canonicalSlug(model.id, author.slug);
   const releaseDate = model.release_date ?? model.last_updated;
   const launchTimestamp = releaseDate ? Date.parse(releaseDate) : NaN;
+  const pricing = mapCost(model.cost);
+  const modes: NonNullable<ProviderModelInput["inference_modes"]> = [];
+  const serviceTiers: NonNullable<ProviderModelInput["service_tiers"]> = [
+    { id: "default", source: "models.dev", pricing },
+  ];
+  for (const [id, mode] of Object.entries(model.experimental?.modes ?? {})) {
+    const parsed = experimentalBodySchema.safeParse(mode.provider?.body);
+    const headers = experimentalHeadersSchema.safeParse(mode.provider?.headers ?? {});
+    if (!parsed.success || !headers.success || Object.keys(parsed.data).length === 0) continue;
+    const modePricing = mode.cost ? mapCost(mode.cost) : undefined;
+    modes.push({
+      id,
+      source: "models.dev.experimental",
+      provider_body: parsed.data,
+      ...(headers.data["anthropic-beta"]
+        ? { provider_headers: { "anthropic-beta": headers.data["anthropic-beta"] } }
+        : {}),
+      ...(modePricing ? { pricing: modePricing } : {}),
+    });
+    const tier =
+      parsed.data.speed === "fast"
+        ? "priority"
+        : parsed.data.speed === "standard"
+          ? "default"
+          : parsed.data.service_tier === "fast"
+            ? "priority"
+            : parsed.data.service_tier;
+    if (tier && tier !== "auto" && !parsed.data.reasoning) {
+      serviceTiers.push({
+        id: tier,
+        source: "models.dev.experimental",
+        ...(modePricing ? { pricing: modePricing } : {}),
+      });
+    }
+  }
 
   return {
     upstreamId: model.id,
@@ -298,12 +408,9 @@ export function mapModelsDevModel(providerId: string, model: ModelsDevModel): Ma
       upstream_model_id: model.id,
       context: model.limit?.context ?? 0,
       max_output: model.limit?.output ?? 0,
-      pricing: {
-        input: perToken(model.cost?.input) ?? "0",
-        output: perToken(model.cost?.output) ?? "0",
-        cache_read: perToken(model.cost?.cache_read),
-        cache_write: perToken(model.cost?.cache_write),
-      },
+      pricing,
+      service_tiers: serviceTiers,
+      ...(modes.length ? { inference_modes: modes } : {}),
       supported_parameters: deriveSupportedParameters(model),
       moderated: false,
     },
@@ -317,4 +424,66 @@ export async function fetchModelsDev(signal?: AbortSignal): Promise<ModelsDevApi
     throw new Error(`models.dev request failed: ${response.status} ${response.statusText}`);
   }
   return (await response.json()) as ModelsDevApi;
+}
+
+/**
+ * Discover OpenRouter endpoint tiers at catalogue-import time, never on a generation.
+ * A tier with differing endpoint prices has no single reliable quote, so retain its
+ * capability but omit pricing rather than presenting a misleading rate.
+ */
+export async function fetchOpenRouterServiceTiers(
+  modelId: string,
+  signal?: AbortSignal,
+): Promise<ProviderModelInput["service_tiers"]> {
+  const parts = modelId.split("/");
+  if (parts.length !== 2 || parts.some((part) => !part)) return undefined;
+  const response = await fetch(
+    `https://openrouter.ai/api/v1/models/${parts.map(encodeURIComponent).join("/")}/endpoints`,
+    { signal },
+  );
+  if (!response.ok) throw new Error(`OpenRouter endpoint catalogue failed: ${response.status}`);
+  const body = (await response.json()) as {
+    data?: {
+      endpoints?: Array<{
+        service_tier?: string | null;
+        pricing?: {
+          prompt?: string;
+          completion?: string;
+          input_cache_read?: string;
+          input_cache_write?: string;
+          overrides?: unknown[];
+        };
+      }>;
+    };
+  };
+  const tiers = new Map<string, Array<ProviderModelInput["pricing"] | undefined>>();
+  for (const endpoint of body.data?.endpoints ?? []) {
+    const id = endpoint.service_tier;
+    if (!id || id === "auto") continue;
+    const pricing = endpoint.pricing;
+    const quote =
+      pricing?.prompt !== undefined &&
+      pricing.completion !== undefined &&
+      !pricing.overrides?.length
+        ? {
+            input: pricing.prompt,
+            output: pricing.completion,
+            ...(pricing.input_cache_read !== undefined
+              ? { cache_read: pricing.input_cache_read }
+              : {}),
+            ...(pricing.input_cache_write !== undefined
+              ? { cache_write: pricing.input_cache_write }
+              : {}),
+          }
+        : undefined;
+    const entries = tiers.get(id) ?? [];
+    entries.push(quote);
+    tiers.set(id, entries);
+  }
+  return [...tiers].map(([id, entries]) => {
+    const quote = entries[0];
+    return quote && entries.every((entry) => JSON.stringify(entry) === JSON.stringify(quote))
+      ? { id, source: "openrouter-endpoints", pricing: quote }
+      : { id, source: "openrouter-endpoints" };
+  });
 }

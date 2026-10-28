@@ -43,6 +43,7 @@ export function formatTokenCount(value: number): string {
 /** Estimated cost in USD; sub-cent values keep enough digits to stay distinguishable. */
 export function formatCost(cost: number | undefined): string {
   if (cost === undefined) return "–";
+  if (cost > 0 && cost < 0.000001) return "<$0.000001";
   return `$${cost < 0.01 ? cost.toFixed(6) : cost.toFixed(4)}`;
 }
 

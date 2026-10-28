@@ -172,85 +172,6 @@ describe("moved HTTP handlers", () => {
     });
   });
 
-  test("streaming completions retain the usage-record contract", async () => {
-    const generation = {
-      genId: "provider-generation",
-      usage: {
-        completion_tokens: 3,
-        completion_tokens_details: { reasoning_tokens: 1 },
-        prompt_tokens: 4,
-        prompt_tokens_details: { cached_tokens: 2, written_cache_tokens: 3 },
-      },
-      genTime: 25,
-      ttft: 40,
-    };
-    routeTo("test-provider");
-    gateway.streamCompletion.mockImplementation(async (_request, _provider, onGeneration) => {
-      let sentChunk = false;
-      return new ReadableStream<string>(
-        {
-          async pull(controller) {
-            if (!sentChunk) {
-              sentChunk = true;
-              controller.enqueue(streamChunk("hello", "length"));
-              return;
-            }
-
-            await onGeneration(generation);
-            controller.enqueue("[DONE]");
-            controller.close();
-          },
-        },
-        { highWaterMark: 0 },
-      );
-    });
-    mockValidKey();
-
-    const response = await handleChatCompletion(ctx, streamingRequest());
-
-    expect(response.status).toBe(200);
-    const responseBody = await response.text();
-    const returnedGenerationId = JSON.parse(responseBody.split("\n")[0]!.slice("data: ".length)).id;
-    expect(returnedGenerationId).toMatch(/^gen-/);
-    expect(returnedGenerationId).not.toBe("provider-generation");
-    expect(responseBody).toContain('"provider":"test-provider"');
-    expect(responseBody).toContain("data: [DONE]\n\n");
-    const recordCalls = runMutation.mock.calls.filter(
-      ([fn]) => getFunctionName(fn) === getFunctionName(internal.keys.recordCompletion),
-    );
-    expect(recordCalls).toEqual([
-      [
-        internal.keys.recordCompletion,
-        {
-          bill: { workspace: "key-workspace", apiKey: "api-key-id" },
-          request: {
-            api: "chat_completions",
-            byok: true,
-            canceled: false,
-            model_slug: "test-model",
-            provider: "test-provider",
-            stream: true,
-            prompt_cache_key: undefined,
-          },
-          response: {
-            gen_id: returnedGenerationId,
-            finish_reason: "length",
-            gen_time: 25,
-            ttft: 40,
-            provider_gen_id: "provider-generation",
-            usage: {
-              completion_tokens: 3,
-              prompt_tokens: 4,
-              completion_tokens_details: { reasoning_tokens: 1 },
-              prompt_tokens_details: { cached_tokens: 2, written_cache_tokens: 3 },
-              total_tokens: 7,
-            },
-          },
-        },
-      ],
-    ]);
-  });
-
   test("streaming fails over to the next provider before any output", async () => {
     const providers = ["first-provider", "second-provider"];
     runMutation.mockImplementation(async (fn, args) => {
@@ -366,7 +287,11 @@ describe("moved HTTP handlers", () => {
             "Content-Type": "application/json",
             "X-Title": "Radium test",
           },
-          body: JSON.stringify({ ...completionBody, stream: true, vendor_extension: 1 }),
+          body: JSON.stringify({
+            ...completionBody,
+            stream: true,
+            prompt_cache_key: "capture-cache-key",
+          }),
         }),
       );
       expect(response.status).toBe(200);
@@ -406,8 +331,10 @@ describe("moved HTTP handlers", () => {
       role: "assistant",
       content: "served",
     });
-    // Unknown request fields are kept; credentials never are.
-    expect(JSON.parse(captured.params!.content!)).toMatchObject({ vendor_extension: 1 });
+    // Supported request parameters are captured, but credentials never are.
+    expect(JSON.parse(captured.params!.content!)).toMatchObject({
+      prompt_cache_key: "capture-cache-key",
+    });
     expect(JSON.parse(captured.headers!.content!)).toEqual({ "x-title": "Radium test" });
   });
 

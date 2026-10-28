@@ -53,7 +53,7 @@ const RANGE_OPTIONS = [
 ] as const;
 
 const dailyCostConfig = {
-  cost: { label: "Estimated cost", color: "var(--chart-3)" },
+  cost: { label: "Known cost", color: "var(--chart-3)" },
 } satisfies ChartConfig;
 
 const usageTypeConfig = {
@@ -74,6 +74,7 @@ const cachingConfig = {
 } satisfies ChartConfig;
 
 function formatCurrency(value: number): string {
+  if (value > 0 && value < 0.0001) return "<$0.0001";
   return new Intl.NumberFormat(undefined, {
     style: "currency",
     currency: "USD",
@@ -117,7 +118,7 @@ export function ActivityPanel() {
     <>
       <WorkspacePageHeader
         title="Activity"
-        description="Estimated upstream cost, traffic, and token behavior across your Radium Gateway."
+        description="Gateway cost, traffic, and token behavior across your Radium Gateway."
         action={
           <Select value={range} onValueChange={setRange}>
             <SelectTrigger className="w-40" size="sm" aria-label="Activity date range">
@@ -161,9 +162,11 @@ export function ActivityPanel() {
             contentClassName="grid gap-px bg-border sm:grid-cols-2 xl:grid-cols-4"
           >
             <Metric
-              title="Estimated cost"
+              title={activity.summary.unknownCostRequests > 0 ? "Known cost (partial)" : "Gateway cost"}
               value={formatCurrency(activity.summary.spend)}
-              detail={`Across ${range} days`}
+              detail={activity.summary.unknownCostRequests > 0
+                ? `${activity.summary.unknownCostRequests} requests with unknown cost`
+                : `Across ${range} days`}
               icon={CircleDollarSignIcon}
             />
             <Metric
@@ -244,8 +247,8 @@ function DailyCostChart({ data }: { data: Array<{ date: string; cost: number }> 
     <DataSection
       className="xl:col-span-3"
       contentClassName="p-4"
-      title="Estimated daily cost"
-      description="Estimated upstream cost over the selected period"
+      title="Known daily cost"
+      description="Known upstream costs over the selected period; requests with unknown costs are excluded"
     >
       <ChartContainer config={dailyCostConfig} className="h-64 w-full">
         <AreaChart accessibilityLayer data={data} margin={{ left: 4, right: 4 }}>
@@ -525,7 +528,7 @@ function TopKeysCard({
     <DataSection
       contentClassName="flex flex-col gap-4 p-4"
       title="Top API keys"
-      description="Ranked by request volume"
+      description="Ranked by request volume; cost excludes requests with unknown prices"
     >
       {topKeys.length ? (
         topKeys.map((key) => (

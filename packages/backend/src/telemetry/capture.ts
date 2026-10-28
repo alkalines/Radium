@@ -48,6 +48,7 @@ export type StartCaptureOptions = {
   source: TelemetrySource;
   /** Model slug the client requested. */
   model: string;
+  requestedServiceTier?: string;
   stream: boolean;
   startedAt: number;
 };
@@ -110,7 +111,16 @@ export class TelemetryCapture {
     | { message?: OutputMessage; id?: string; finishReason?: string }
     | undefined;
   private generation:
-    | { usage?: TelemetryUsage; ttftMs: number; generationMs: number; providerId?: string }
+    | {
+        usage?: TelemetryUsage;
+        ttftMs: number;
+        generationMs: number;
+        providerId?: string;
+        servedServiceTier?: string;
+        estimatedCost?: number;
+        reportedCost?: number;
+        upstreamInferenceCost?: number;
+      }
     | undefined;
   private chatCompletion: Id<"chat_completions"> | undefined;
   private readonly inputs: Promise<IngestedInputs | undefined>;
@@ -167,10 +177,15 @@ export class TelemetryCapture {
         reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens ?? undefined,
         cacheReadTokens: usage?.prompt_tokens_details?.cached_tokens ?? undefined,
         cacheWriteTokens: usage?.prompt_tokens_details?.written_cache_tokens ?? undefined,
+        cacheWrite1hTokens: usage?.prompt_tokens_details?.written_cache_tokens_1h ?? undefined,
       },
       ttftMs: generation.ttft,
       generationMs: generation.genTime,
       providerId: generation.genId,
+      servedServiceTier: generation.serviceTier,
+      estimatedCost: generation.estimatedCost,
+      reportedCost: generation.reportedCost,
+      upstreamInferenceCost: generation.upstreamInferenceCost,
     };
   }
 
@@ -432,6 +447,11 @@ export class TelemetryCapture {
       generationMs: this.generation?.generationMs,
       finishReason: this.streamOutput.finishReason ?? this.responseOutput?.finishReason,
       usage: this.generation?.usage,
+      requestedServiceTier: this.options.requestedServiceTier,
+      servedServiceTier: this.generation?.servedServiceTier,
+      estimatedCost: this.generation?.estimatedCost,
+      reportedCost: this.generation?.reportedCost,
+      upstreamInferenceCost: this.generation?.upstreamInferenceCost,
       providerGenerationId:
         this.generation?.providerId ?? this.streamOutput.providerId ?? this.responseOutput?.id,
       chatCompletion: this.chatCompletion,

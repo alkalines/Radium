@@ -13,6 +13,7 @@
     "@ai-sdk/mcp": "^2.0.54",
     "@ai-sdk/openai": "^4.0.102",
     "@ai-sdk/openai-compatible": "^3.0.78",
+    "@ai-sdk/provider": "^4.0.34",
     "@convex-dev/better-auth": "^0.12.5",
     "@convex-dev/migrations": "^0.3.7",
     "@convex-dev/rate-limiter": "^0.4.2",

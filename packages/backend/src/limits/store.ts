@@ -326,8 +326,10 @@ export async function budgetMeter(
       q.eq("request.credential", credential._id).gte("_creationTime", start),
     )
     .take(BUDGET_SCAN_LIMIT);
+  // A partial sum must not masquerade as a complete budget meter.
+  if (completions.some((completion) => completion.response.pricing.cost === undefined)) return undefined;
   const used = completions.reduce(
-    (total, completion) => total + completion.response.pricing.cost,
+    (total, completion) => total + (completion.response.pricing.cost ?? 0),
     0,
   );
   return {

@@ -10,6 +10,8 @@ import {
   NonStreamingCompletion,
   StreamCompletion,
   type genCallbackType,
+  CompletionRequestError,
+  type CompletionOptions,
 } from "@/translators/openai";
 import type { RoutedProvider } from "@/routing/connector";
 import {
@@ -20,6 +22,7 @@ import {
 } from "@/routing/execute";
 import { boundedMessage, upstreamFailureFromError, type UpstreamFailure } from "@/routing/failures";
 import { routingPreferencesFromRequest } from "@/routing/preferences";
+import { inferenceModeTier } from "@/routing/selection";
 import { extractRoutingSession } from "@/routing/session";
 import type { ActionCtx } from "../../convex/_generated/server";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -29,6 +32,14 @@ import {
   type TelemetryCapture,
   type TelemetryRequestContext,
 } from "@/telemetry/capture";
+import { estimateCompletionCost, servedTierQuote } from "@/usage/completion";
+
+export type SettledGeneration = Parameters<genCallbackType>[0] & {
+  estimatedCost?: number;
+  costSource?: "reported" | "estimated";
+  provider?: string;
+  model?: string;
+};
 
 /** Server-derived Chatroom identity carried through an internal Gateway call. */
 export type ChatRequestContext = {
@@ -46,11 +57,13 @@ type CompletionInfo = {
   byok: boolean;
   /** Client request headers, used only to derive the session-affinity key. */
   headers?: Headers;
-  onGeneration?: (generation: Parameters<genCallbackType>[0]) => void;
+  onGeneration?: (generation: SettledGeneration) => void;
   telemetry?: TelemetryRequestContext;
   /** Request JSON as received, before zod parsing drops unknown fields; captured for telemetry. */
   rawBody?: unknown;
   abortSignal?: AbortSignal | null;
+  /** Trusted in-process model call; never accepted from public request JSON. */
+  completionOptions?: CompletionOptions;
 };
 
 type CompletionRecordDetails = {
@@ -153,11 +166,12 @@ export const Internal_Chat_Completion = async (
   ctx: ActionCtx,
   reqData: ChatCompletions_RequestBody_Type,
   workspaceId: Id<"workspaces">,
-  onGeneration?: (generation: Parameters<genCallbackType>[0]) => void,
+  onGeneration?: (generation: SettledGeneration) => void,
   telemetry?: TelemetryRequestContext,
   abortSignal?: AbortSignal | null,
   chatContext?: ChatRequestContext,
   rawBody?: unknown,
+  completionOptions?: CompletionOptions,
 ) => {
   const effectiveChatContext =
     chatContext ??
@@ -172,6 +186,7 @@ export const Internal_Chat_Completion = async (
     rawBody,
     abortSignal,
     chatContext: effectiveChatContext,
+    completionOptions,
   });
 };
 
@@ -201,6 +216,19 @@ async function recordCompletion(
       credential: provider.info.credential.id,
       stream: requestBody.stream ?? false,
       prompt_cache_key: requestBody.prompt_cache_key || requestBody.user,
+      requestedServiceTier: requestBody.service_tier ?? undefined,
+      inferenceMode: provider.info.inferenceMode?.id,
+      quote: provider.info.quote,
+      quoteCaptured: true,
+      quoteSource:
+        provider.info.service_tiers?.find(
+          (tier) =>
+            tier.id ===
+            (requestBody.service_tier === "fast" ? "priority" : requestBody.service_tier),
+        )?.source ??
+        (requestBody.service_tier && !["auto", "default"].includes(requestBody.service_tier)
+          ? "configured"
+          : "catalog"),
     },
     response: {
       gen_id: details.generationId,
@@ -208,6 +236,22 @@ async function recordCompletion(
       gen_time: generation.genTime,
       ttft: generation.ttft,
       provider_gen_id: providerGenerationId,
+      servedServiceTier: generation.serviceTier,
+      reportedCost: generation.reportedCost,
+      upstreamInferenceCost: generation.upstreamInferenceCost,
+      servedQuoteCaptured: true,
+      servedQuote: generation.usageUnavailable
+        ? undefined
+        : servedTierQuote(
+            !requestBody.service_tier || requestBody.service_tier === "auto"
+              ? inferenceModeTier(provider.info.inferenceMode?.provider_body)
+              : requestBody.service_tier,
+            generation.serviceTier,
+            provider.info.quote,
+            provider.info.service_tiers,
+            provider.info.pricing,
+          ),
+      cacheWriteTtlUnknown: generation.cacheWriteTtlUnknown,
       usage: {
         completion_tokens: generation.usage.completion_tokens,
         prompt_tokens: generation.usage.prompt_tokens,
@@ -219,6 +263,8 @@ async function recordCompletion(
           cached_tokens: generation.usage.prompt_tokens_details.cached_tokens ?? undefined,
           written_cache_tokens:
             generation.usage.prompt_tokens_details.written_cache_tokens ?? undefined,
+          written_cache_tokens_1h:
+            generation.usage.prompt_tokens_details.written_cache_tokens_1h ?? undefined,
         },
         total_tokens: generation.usage.completion_tokens + generation.usage.prompt_tokens,
       },
@@ -240,6 +286,8 @@ const createCompletion = async (
   const routing: RoutingRequest = {
     workspace: info.workspaceId,
     model: reqData.model,
+    serviceTier: reqData.service_tier ?? undefined,
+    inferenceMode: reqData.inference_mode,
     preferences: routingPreferencesFromRequest(reqData.provider),
     session: extractRoutingSession(reqData, info.headers, info.chatContext?.chatId),
     signal: info.abortSignal,
@@ -251,6 +299,7 @@ const createCompletion = async (
         session: routing.session,
         source: info.telemetry.chatId ? "chatroom" : "gateway",
         model: reqData.model,
+        requestedServiceTier: routing.serviceTier,
         stream: reqData.stream ?? false,
         startedAt: Date.now(),
       })
@@ -270,8 +319,14 @@ const createCompletion = async (
             reqData,
             provider,
             async (genCompletion) => {
-              capture?.recordGeneration(genCompletion);
-              info.onGeneration?.(genCompletion);
+              const settled = enrichGeneration(
+                genCompletion,
+                provider,
+                reqData.model,
+                reqData.service_tier,
+              );
+              capture?.recordGeneration(settled);
+              info.onGeneration?.(settled);
               const completionId = await recordCompletion(reqData, provider, info, genCompletion, {
                 generationId,
                 canceled: false,
@@ -279,6 +334,7 @@ const createCompletion = async (
               capture?.recordChatCompletion(completionId);
             },
             info.abortSignal,
+            info.completionOptions,
           );
           return { ok: true as const, value: generation };
         } catch (error) {
@@ -323,9 +379,15 @@ async function createStreamingCompletion(
           provider,
           async (genCompletion) => {
             if (!committed) return;
-            capture?.recordGeneration(genCompletion);
+            const settled = enrichGeneration(
+              genCompletion,
+              provider,
+              reqData.model,
+              reqData.service_tier,
+            );
+            capture?.recordGeneration(settled);
             // The listener may synchronously cancel the stream; read its state afterward.
-            info.onGeneration?.(genCompletion);
+            info.onGeneration?.(settled);
             const completionId = await recordCompletion(reqData, provider, info, genCompletion, {
               generationId,
               originalProviderGenerationId,
@@ -335,6 +397,7 @@ async function createStreamingCompletion(
             capture?.recordChatCompletion(completionId);
           },
           info.abortSignal,
+          info.completionOptions,
         );
         const reader = providerGen.getReader();
         const first = await reader.read();
@@ -478,8 +541,51 @@ function captureFailure(error: unknown, signal: AbortSignal | null | undefined):
   };
 }
 
+function enrichGeneration(
+  generation: Parameters<genCallbackType>[0],
+  provider: RoutedProvider,
+  model: string,
+  requestedTier?: string,
+): SettledGeneration {
+  const quote = generation.usageUnavailable
+    ? undefined
+    : servedTierQuote(
+        !requestedTier || requestedTier === "auto"
+          ? inferenceModeTier(provider.info.inferenceMode?.provider_body)
+          : requestedTier,
+        generation.serviceTier,
+        provider.info.quote,
+        provider.info.service_tiers,
+        provider.info.pricing,
+      );
+  const estimatedCost = estimateCompletionCost(
+    generation.usage,
+    quote,
+    generation.cacheWriteTtlUnknown,
+  ).estimatedCost;
+  return {
+    ...generation,
+    estimatedCost,
+    provider: provider.info.slug,
+    model,
+    costSource:
+      generation.reportedCost !== undefined
+        ? "reported"
+        : estimatedCost !== undefined
+          ? "estimated"
+          : undefined,
+  };
+}
 /** Unwrap translator stream errors so routing sees the upstream status and headers. */
 function completionFailure(error: unknown, outputStarted: boolean) {
+  if (error instanceof CompletionRequestError) {
+    return {
+      kind: "http" as const,
+      status: 400,
+      message: boundedMessage(error.message),
+      outputStarted,
+    };
+  }
   if (error instanceof CompletionStreamError) {
     return upstreamFailureFromError(error.upstreamError, outputStarted || error.outputStarted);
   }

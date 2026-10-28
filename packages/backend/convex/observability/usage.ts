@@ -75,7 +75,8 @@ export const getUsage = query({
     }));
     return {
       completions: recent.length,
-      spentRecent: recent.reduce((total, completion) => total + completion.cost, 0),
+      spentRecent: recent.reduce((total, completion) => total + (completion.cost ?? 0), 0),
+      unknownCostRequests: recent.filter((completion) => completion.cost === undefined).length,
       recent,
     };
   },
@@ -142,6 +143,7 @@ export const getActivity = query({
 
     const summary = {
       spend: 0,
+      unknownCostRequests: 0,
       requests: windowedCompletions.length,
       promptTokens: 0,
       completionTokens: 0,
@@ -173,7 +175,8 @@ export const getActivity = query({
       }
       const date = new Date(completion._creationTime).toISOString().slice(0, 10);
 
-      summary.spend += pricing.cost;
+      if (pricing.cost === undefined) summary.unknownCostRequests += 1;
+      summary.spend += pricing.cost ?? 0;
       summary.promptTokens += usage.prompt_tokens;
       summary.completionTokens += usage.completion_tokens;
       summary.reasoningTokens += usage.completion_tokens_details.reasoning_tokens ?? 0;
@@ -183,20 +186,20 @@ export const getActivity = query({
       const model = byModel.get(modelId) ?? { requests: 0, tokens: 0, cost: 0 };
       model.requests += 1;
       model.tokens += tokens;
-      model.cost += pricing.cost;
+      model.cost += pricing.cost ?? 0;
       byModel.set(modelId, model);
 
       const key = byKey.get(keyId) ?? { requests: 0, cost: 0 };
       key.requests += 1;
-      key.cost += pricing.cost;
+      key.cost += pricing.cost ?? 0;
       byKey.set(keyId, key);
 
       const usageType = completion.request.byok ? usageTypes.byok : usageTypes.legacyCredits;
       usageType.requests += 1;
-      usageType.cost += pricing.cost;
+      usageType.cost += pricing.cost ?? 0;
 
       const day = daily.get(date) ?? { date, cost: 0, requests: 0, models: {} };
-      day.cost += pricing.cost;
+      day.cost += pricing.cost ?? 0;
       day.requests += 1;
       day.models[modelId] = (day.models[modelId] ?? 0) + 1;
       daily.set(date, day);

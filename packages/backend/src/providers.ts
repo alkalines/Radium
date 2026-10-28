@@ -38,7 +38,7 @@ const Providers = {
           baseURL: config.baseURL,
           headers: appHeaders,
           fetch: config.fetch,
-        }).chat(model as any);
+        }).responses(model);
     },
   },
   "@ai-sdk/openai-compatible": {
@@ -63,7 +63,7 @@ const Providers = {
           baseURL: config.baseURL,
           headers: appHeaders,
           fetch: config.fetch,
-        }).chat(model as any);
+        }).chat(model);
     },
   },
   "@opencoredev/loginwithchatgpt-ai": {

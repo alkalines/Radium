@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useMutation } from "convex/react";
 import {
   ArrowLeftIcon,
@@ -37,7 +37,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import { mapModelsDevModel, type MappedModel } from "backend/src/models_dev";
+import {
+  fetchOpenRouterServiceTiers,
+  mapModelsDevModel,
+  type MappedModel,
+} from "backend/src/models_dev";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
@@ -45,7 +49,7 @@ import type { WorkspaceProviderView } from "backend/src/workspaces/provider";
 import { formatPerMillion, formatTokens, useModelsDevCatalogue } from "./models-dev-catalogue";
 import { ProviderLogo } from "./provider-logo";
 
-type ManagerView = "list" | "catalogue" | "custom";
+type ManagerView = "list" | "catalogue" | "refresh" | "custom" | "tiers";
 
 export function ModelManagerDialog({
   provider,
@@ -56,6 +60,7 @@ export function ModelManagerDialog({
 }) {
   const { workspaceId } = useWorkspace();
   const [view, setView] = useState<ManagerView>("list");
+  const [tierModel, setTierModel] = useState<string>();
 
   function close(open: boolean) {
     onOpenChange(open);
@@ -65,10 +70,11 @@ export function ModelManagerDialog({
   return (
     <Dialog open={provider !== null} onOpenChange={close}>
       <DialogContent className="max-h-[85svh] gap-0 overflow-hidden p-0 sm:max-w-2xl">
-        {provider && view === "catalogue" ? (
+        {provider && (view === "catalogue" || view === "refresh") ? (
           <AddFromCatalogue
             provider={provider}
             workspaceId={workspaceId}
+            refresh={view === "refresh"}
             onBack={() => setView("list")}
           />
         ) : provider && view === "custom" ? (
@@ -77,12 +83,24 @@ export function ModelManagerDialog({
             workspaceId={workspaceId}
             onBack={() => setView("list")}
           />
+        ) : provider && view === "tiers" && tierModel ? (
+          <EditModelTiers
+            provider={provider}
+            modelId={tierModel}
+            workspaceId={workspaceId}
+            onBack={() => setView("list")}
+          />
         ) : provider ? (
           <ManagerList
             provider={provider}
             workspaceId={workspaceId}
             onAddCatalogue={() => setView("catalogue")}
+            onRefresh={() => setView("refresh")}
             onAddCustom={() => setView("custom")}
+            onEditTiers={(model) => {
+              setTierModel(model);
+              setView("tiers");
+            }}
           />
         ) : null}
       </DialogContent>
@@ -94,12 +112,16 @@ function ManagerList({
   provider,
   workspaceId,
   onAddCatalogue,
+  onRefresh,
   onAddCustom,
+  onEditTiers,
 }: {
   provider: WorkspaceProviderView;
   workspaceId: Id<"workspaces"> | undefined;
   onAddCatalogue: () => void;
+  onRefresh: () => void;
   onAddCustom: () => void;
+  onEditTiers: (model: string) => void;
 }) {
   const removeModel = useMutation(api.providers.removeProviderModel);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -141,6 +163,13 @@ function ManagerList({
           Add custom model
         </Button>
       </div>
+      {provider.models.length > 0 && (
+        <div className="px-6 pb-3">
+          <Button variant="ghost" size="sm" onClick={onRefresh}>
+            Refresh existing models from models.dev
+          </Button>
+        </div>
+      )}
 
       <ScrollArea className="h-[55svh] border-t">
         {provider.models.length === 0 ? (
@@ -168,13 +197,16 @@ function ManagerList({
                     {model.context > 0 && (
                       <Badge variant="outline">{formatTokens(model.context)} ctx</Badge>
                     )}
-                    <Badge variant="outline">${formatPerMillion(model.pricing.input)}/M in</Badge>
-                    <Badge variant="outline">${formatPerMillion(model.pricing.output)}/M out</Badge>
+                    <Badge variant="outline">{formatPerMillion(model.pricing.input)} in</Badge>
+                    <Badge variant="outline">{formatPerMillion(model.pricing.output)} out</Badge>
                     {model.supported_parameters.includes("tools") && (
                       <WrenchIcon className="size-3.5 self-center text-muted-foreground" />
                     )}
                   </div>
                 </div>
+                <Button variant="ghost" size="sm" onClick={() => onEditTiers(model.model)}>
+                  Tiers
+                </Button>
                 <Button
                   variant="ghost"
                   size="icon"
@@ -200,9 +232,11 @@ function AddFromCatalogue({
   provider,
   workspaceId,
   onBack,
+  refresh,
 }: {
   provider: WorkspaceProviderView;
   workspaceId: Id<"workspaces"> | undefined;
+  refresh: boolean;
   onBack: () => void;
 }) {
   const { catalogue, error } = useModelsDevCatalogue(true);
@@ -217,15 +251,19 @@ function AddFromCatalogue({
     const catalogueProvider = provider.catalogue_provider ?? provider.slug;
     const entry = catalogue?.[catalogueProvider];
     if (!entry) return [];
-    return Object.values(entry.models ?? {})
-      .map((model) => {
-        const mapped = mapModelsDevModel(catalogueProvider, model);
-        return provider.credential_type === "oauth"
-          ? { ...mapped, provider: { ...mapped.provider, pricing: { input: "0", output: "0" } } }
-          : mapped;
-      })
-      .filter((model) => !existing.has(model.provider.model));
-  }, [catalogue, provider.catalogue_provider, provider.credential_type, provider.slug, existing]);
+    const mapped = Object.values(entry.models ?? {}).map((model) =>
+      mapModelsDevModel(catalogueProvider, model),
+    );
+    if (!refresh) return mapped.filter((model) => !existing.has(model.provider.model));
+    return provider.models.flatMap((current) => {
+      const match = mapped.find((model) =>
+        current.upstream_model_id
+          ? current.upstream_model_id === model.upstreamId
+          : current.model === model.provider.model || current.model === model.upstreamId,
+      );
+      return match ? [{ ...match, provider: { ...match.provider, model: current.model } }] : [];
+    });
+  }, [catalogue, provider.catalogue_provider, provider.slug, provider.models, existing, refresh]);
 
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [search, setSearch] = useState("");
@@ -254,12 +292,55 @@ function AddFromCatalogue({
     if (chosen.length === 0 || !workspaceId) return;
     setSubmitting(true);
     try {
+      const tiered =
+        provider.npm === "@openrouter/ai-sdk-provider"
+          ? await Promise.all(
+              chosen.map(async (model) => {
+                const fetched = await fetchOpenRouterServiceTiers(model.upstreamId);
+                return {
+                  ...model,
+                  provider: {
+                    ...model.provider,
+                    service_tiers: [
+                      ...(model.provider.service_tiers ?? []).map((tier) => {
+                        const endpoint = fetched?.find((item) => item.id === tier.id);
+                        return tier.pricing || !endpoint?.pricing
+                          ? tier
+                          : { ...tier, pricing: endpoint.pricing };
+                      }),
+                      ...(fetched ?? []).filter(
+                        (tier) =>
+                          !model.provider.service_tiers?.some((item) => item.id === tier.id),
+                      ),
+                    ],
+                  },
+                };
+              }),
+            )
+          : chosen;
       await addModels({
         workspace: workspaceId,
         slug: provider.slug,
-        models: chosen.map((model) => ({ global: model.global, provider: model.provider })),
+        models: tiered.map((model) => {
+          const current = refresh
+            ? provider.models.find((entry) => entry.model === model.provider.model)
+            : undefined;
+          return {
+            global: current ? { ...model.global, slug: current.model } : model.global,
+            provider: current
+              ? {
+                  ...current,
+                  pricing: model.provider.pricing,
+                  service_tiers: model.provider.service_tiers,
+                  inference_modes: model.provider.inference_modes,
+                }
+              : model.provider,
+          };
+        }),
       });
-      toast.success(`Added ${chosen.length} model${chosen.length === 1 ? "" : "s"}.`);
+      toast.success(
+        `${refresh ? "Refreshed" : "Added"} ${chosen.length} model${chosen.length === 1 ? "" : "s"}.`,
+      );
       onBack();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to add models.");
@@ -277,8 +358,12 @@ function AddFromCatalogue({
           </Button>
           <ProviderLogo slug={provider.slug} className="size-8" />
           <div className="flex flex-col">
-            <DialogTitle>Add models</DialogTitle>
-            <DialogDescription>{selected.size} selected from models.dev</DialogDescription>
+            <DialogTitle>{refresh ? "Refresh model pricing and modes" : "Add models"}</DialogTitle>
+            <DialogDescription>
+              {refresh
+                ? `${selected.size} selected. Refresh replaces their pricing, tiers and modes; other configuration is preserved.`
+                : `${selected.size} selected from models.dev`}
+            </DialogDescription>
           </div>
         </div>
       </DialogHeader>
@@ -317,11 +402,13 @@ function AddFromCatalogue({
               <EmptyMedia variant="icon">
                 <SparklesIcon />
               </EmptyMedia>
-              <EmptyTitle>Nothing to add</EmptyTitle>
+              <EmptyTitle>{refresh ? "No matching models" : "Nothing to add"}</EmptyTitle>
               <EmptyDescription>
-                {catalogue[provider.catalogue_provider ?? provider.slug]
-                  ? "Every catalogue model for this provider is already added."
-                  : "This provider isn’t on models.dev. Add a custom model instead."}
+                {refresh
+                  ? "No configured upstream models match this catalogue."
+                  : catalogue[provider.catalogue_provider ?? provider.slug]
+                    ? "Every catalogue model for this provider is already added."
+                    : "This provider isn’t on models.dev. Add a custom model instead."}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -353,17 +440,17 @@ function AddFromCatalogue({
                       )}
                     </div>
                     <span className="truncate font-mono text-xs text-muted-foreground">
-                      {model.global.slug}
+                      {refresh ? model.provider.model : model.global.slug}
                     </span>
                     <div className="flex flex-wrap gap-1.5 pt-0.5">
                       {model.provider.context > 0 && (
                         <Badge variant="outline">{formatTokens(model.provider.context)} ctx</Badge>
                       )}
                       <Badge variant="outline">
-                        ${formatPerMillion(model.provider.pricing.input)}/M in
+                        {formatPerMillion(model.provider.pricing.input)} in
                       </Badge>
                       <Badge variant="outline">
-                        ${formatPerMillion(model.provider.pricing.output)}/M out
+                        {formatPerMillion(model.provider.pricing.output)} out
                       </Badge>
                     </div>
                   </div>
@@ -380,7 +467,7 @@ function AddFromCatalogue({
         </Button>
         <Button onClick={submit} disabled={submitting || selected.size === 0}>
           {submitting && <Spinner data-icon="inline-start" />}
-          Add {selected.size} {selected.size === 1 ? "model" : "models"}
+          {refresh ? "Refresh" : "Add"} {selected.size} {selected.size === 1 ? "model" : "models"}
         </Button>
       </DialogFooter>
     </>
@@ -395,11 +482,225 @@ function slugify(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-/** Dollars-per-million-tokens (as typed) to the per-token string we store. */
+/** Shift a decimal price without rounding while converting per-token and per-million rates. */
+function shiftPrice(value: string, places: number): string {
+  const match = /^(\d+)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(
+    value.startsWith(".") ? `0${value}` : value,
+  );
+  if (!match) return "";
+  const digits = match[1] + (match[2] ?? "");
+  const point = match[1].length + Number(match[3] ?? 0) + places;
+  let result: string;
+  if (point <= 0) result = `0.${"0".repeat(-point)}${digits}`;
+  else if (point >= digits.length) result = digits + "0".repeat(point - digits.length);
+  else result = `${digits.slice(0, point)}.${digits.slice(point)}`;
+  const [whole, fraction] = result.split(".");
+  const normalizedWhole = whole.replace(/^0+(?=\d)/, "");
+  const normalizedFraction = fraction?.replace(/0+$/, "");
+  return normalizedFraction ? `${normalizedWhole}.${normalizedFraction}` : normalizedWhole;
+}
+
 function perTokenString(dollarsPerMillion: string): string {
-  const value = parseFloat(dollarsPerMillion);
-  if (!Number.isFinite(value) || value === 0) return "0";
-  return (value / 1_000_000).toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+  return shiftPrice(dollarsPerMillion, -6);
+}
+
+type TierRate = {
+  id: string;
+  enabled: boolean;
+  input: string;
+  output: string;
+  cacheRead: string;
+  cacheWrite: string;
+  cacheWrite1h: string;
+  source?: string;
+  thresholds?: WorkspaceProviderView["models"][number]["pricing"]["tiers"];
+};
+
+export function initialTierRates(
+  tiers: WorkspaceProviderView["models"][number]["service_tiers"] = [],
+  base?: WorkspaceProviderView["models"][number]["pricing"],
+): TierRate[] {
+  const ids = [
+    ...new Set(["default", "flex", "priority", "ultrafast", ...tiers.map((tier) => tier.id)]),
+  ];
+  const perMillion = (rate: string | undefined) =>
+    rate === undefined || rate === "" ? "" : shiftPrice(rate, 6);
+  return ids.map((id) => {
+    const tier = tiers.find((entry) => entry.id === id);
+    const pricing = tier?.pricing ?? (id === "default" ? base : undefined);
+    return {
+      id,
+      enabled: id === "default" || tier !== undefined,
+      source: tier?.source,
+      thresholds: pricing?.tiers,
+      input: perMillion(pricing?.input),
+      output: perMillion(pricing?.output),
+      cacheRead: perMillion(pricing?.cache_read),
+      cacheWrite: perMillion(pricing?.cache_write),
+      cacheWrite1h: perMillion(pricing?.cache_write_1h),
+    };
+  });
+}
+
+function validTierRates(tiers: TierRate[]) {
+  return tiers.every((tier) => {
+    if (!tier.enabled) return true;
+    const rates = [tier.input, tier.output, tier.cacheRead, tier.cacheWrite, tier.cacheWrite1h];
+    if (rates.every((rate) => !rate)) return true;
+    return (
+      Boolean(tier.input && tier.output) &&
+      rates.every((rate) => !rate || (Number.isFinite(Number(rate)) && Number(rate) >= 0))
+    );
+  });
+}
+
+export function tierPricing(tiers: TierRate[]) {
+  return tiers
+    .filter((tier) => tier.enabled)
+    .map((tier) => ({
+      id: tier.id,
+      ...(tier.source ? { source: tier.source } : {}),
+      ...(tier.input && tier.output
+        ? {
+            pricing: {
+              input: perTokenString(tier.input),
+              output: perTokenString(tier.output),
+              ...(tier.cacheRead ? { cache_read: perTokenString(tier.cacheRead) } : {}),
+              ...(tier.cacheWrite ? { cache_write: perTokenString(tier.cacheWrite) } : {}),
+              ...(tier.cacheWrite1h ? { cache_write_1h: perTokenString(tier.cacheWrite1h) } : {}),
+              ...(tier.thresholds ? { tiers: tier.thresholds } : {}),
+            },
+          }
+        : {}),
+    }));
+}
+
+function TierRateFields({
+  tierRates,
+  setTierRates,
+}: {
+  tierRates: TierRate[];
+  setTierRates: Dispatch<SetStateAction<TierRate[]>>;
+}) {
+  const labels = {
+    input: "Input",
+    output: "Output",
+    cacheRead: "Cache read",
+    cacheWrite: "Cache write (5m)",
+    cacheWrite1h: "Cache write (1h)",
+  };
+  return (
+    <Field>
+      <FieldLabel>Service tiers</FieldLabel>
+      <FieldDescription>
+        Enable supported tiers. Leave all rates blank when unknown; otherwise input and output rates
+        are required. Rates are dollars per million tokens.
+      </FieldDescription>
+      {tierRates.map((tier, index) => (
+        <div key={tier.id} className="flex flex-col gap-2 border-t py-2">
+          <Field orientation="horizontal">
+            <FieldLabel htmlFor={`cm-tier-${tier.id}`} className="font-normal">
+              {tier.id}
+            </FieldLabel>
+            <Switch
+              id={`cm-tier-${tier.id}`}
+              checked={tier.enabled}
+              disabled={tier.id === "default"}
+              onCheckedChange={(enabled) =>
+                setTierRates((current) =>
+                  current.map((item, i) => (i === index ? { ...item, enabled } : item)),
+                )
+              }
+            />
+          </Field>
+          {tier.enabled && (
+            <div className="grid grid-cols-2 gap-2">
+              {(["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h"] as const).map(
+                (field) => (
+                  <Field key={field}>
+                    <FieldLabel htmlFor={`cm-tier-${tier.id}-${field}`}>
+                      {labels[field]} $/M
+                    </FieldLabel>
+                    <Input
+                      id={`cm-tier-${tier.id}-${field}`}
+                      inputMode="decimal"
+                      value={tier[field]}
+                      onChange={(event) => {
+                        const value = event.target.value.replace(/[^0-9.]/g, "");
+                        setTierRates((current) =>
+                          current.map((item, i) =>
+                            i === index ? { ...item, [field]: value } : item,
+                          ),
+                        );
+                      }}
+                    />
+                  </Field>
+                ),
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </Field>
+  );
+}
+
+function EditModelTiers({
+  provider,
+  modelId,
+  workspaceId,
+  onBack,
+}: {
+  provider: WorkspaceProviderView;
+  modelId: string;
+  workspaceId: Id<"workspaces"> | undefined;
+  onBack: () => void;
+}) {
+  const update = useMutation(api.providers.setProviderModelServiceTiers);
+  const model = provider.models.find((entry) => entry.model === modelId);
+  const [tierRates, setTierRates] = useState(() =>
+    initialTierRates(model?.service_tiers, model?.pricing),
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  async function save() {
+    if (!workspaceId || !model || !validTierRates(tierRates)) return;
+    setSubmitting(true);
+    try {
+      await update({
+        workspace: workspaceId,
+        slug: provider.slug,
+        model: modelId,
+        service_tiers: tierPricing(tierRates),
+      });
+      toast.success("Service tiers updated.");
+      onBack();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to update service tiers.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <>
+      <DialogHeader className="p-6 pb-4">
+        <DialogTitle>Service tiers</DialogTitle>
+        <DialogDescription className="font-mono text-xs">{modelId}</DialogDescription>
+      </DialogHeader>
+      <div className="max-h-[58svh] overflow-y-auto border-y px-6 py-4">
+        <TierRateFields tierRates={tierRates} setTierRates={setTierRates} />
+      </div>
+      <DialogFooter className="p-4">
+        <Button variant="outline" onClick={onBack} disabled={submitting}>
+          Back
+        </Button>
+        <Button onClick={save} disabled={submitting || !model || !validTierRates(tierRates)}>
+          {submitting && <Spinner data-icon="inline-start" />} Save
+        </Button>
+      </DialogFooter>
+    </>
+  );
 }
 
 function AddCustomModel({
@@ -419,12 +720,22 @@ function AddCustomModel({
   const [maxOutput, setMaxOutput] = useState("");
   const [inputPrice, setInputPrice] = useState("");
   const [outputPrice, setOutputPrice] = useState("");
+  const [cacheReadPrice, setCacheReadPrice] = useState("");
+  const [cacheWritePrice, setCacheWritePrice] = useState("");
+  const [cacheWrite1hPrice, setCacheWrite1hPrice] = useState("");
+  const [tierRates, setTierRates] = useState(() => initialTierRates());
   const [reasoning, setReasoning] = useState(false);
   const [tools, setTools] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const slug = `${provider.slug}/${slugify(name) || "model"}`;
-  const valid = name.trim().length > 0 && upstreamId.trim().length > 0;
+  const valid =
+    name.trim().length > 0 &&
+    upstreamId.trim().length > 0 &&
+    [inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, cacheWrite1hPrice].every(
+      (rate) => !rate || (Number.isFinite(Number(rate)) && Number(rate) >= 0),
+    ) &&
+    validTierRates(tierRates);
 
   async function submit() {
     if (!valid || !workspaceId) return;
@@ -467,9 +778,13 @@ function AddCustomModel({
               context: Number(context) || 0,
               max_output: Number(maxOutput) || 0,
               pricing: {
-                input: perTokenString(inputPrice || "0"),
-                output: perTokenString(outputPrice || "0"),
+                input: inputPrice ? perTokenString(inputPrice) : "",
+                output: outputPrice ? perTokenString(outputPrice) : "",
+                ...(cacheReadPrice ? { cache_read: perTokenString(cacheReadPrice) } : {}),
+                ...(cacheWritePrice ? { cache_write: perTokenString(cacheWritePrice) } : {}),
+                ...(cacheWrite1hPrice ? { cache_write_1h: perTokenString(cacheWrite1hPrice) } : {}),
               },
+              service_tiers: tierPricing(tierRates),
               supported_parameters,
               moderated: false,
             },
@@ -567,6 +882,28 @@ function AddCustomModel({
               />
             </Field>
           </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            {(
+              [
+                ["cache-read", "Cache read", cacheReadPrice, setCacheReadPrice],
+                ["cache-write", "Cache write (5m)", cacheWritePrice, setCacheWritePrice],
+                ["cache-write-1h", "Cache write (1h)", cacheWrite1hPrice, setCacheWrite1hPrice],
+              ] as const
+            ).map(([id, label, value, setValue]) => (
+              <Field key={id}>
+                <FieldLabel htmlFor={`cm-${id}`}>{label} $/M</FieldLabel>
+                <Input
+                  id={`cm-${id}`}
+                  inputMode="decimal"
+                  value={value}
+                  onChange={(event) => setValue(event.target.value.replace(/[^0-9.]/g, ""))}
+                />
+              </Field>
+            ))}
+          </div>
+
+          <TierRateFields tierRates={tierRates} setTierRates={setTierRates} />
 
           <Field orientation="horizontal">
             <FieldLabel htmlFor="cm-reasoning" className="font-normal">

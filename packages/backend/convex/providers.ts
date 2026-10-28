@@ -23,6 +23,8 @@ import {
 import {
   providerModelValidator,
   providerNpmValidator,
+  serviceTiersValidator,
+  serviceTiersForModel,
   providerSnapshotFromCatalog,
   type ProviderSnapshot,
 } from "../src/workspaces/provider";
@@ -369,6 +371,37 @@ export const addProviderModels = mutation({
 
     await ctx.db.patch("workspace_configurations", configuration._id, {
       snapshot: { ...provider, models: [...byModel.values()] },
+    });
+  },
+});
+
+/** Update configured tiers without replacing other workspace model metadata. */
+export const setProviderModelServiceTiers = mutation({
+  args: {
+    workspace: v.id("workspaces"),
+    slug: v.string(),
+    model: v.string(),
+    service_tiers: serviceTiersValidator,
+  },
+  handler: async (ctx, args) => {
+    const { configuration, provider } = await requireWorkspaceProvider(
+      ctx,
+      args.workspace,
+      args.slug,
+    );
+    if (!provider.models.some((model) => model.model === args.model))
+      throw new Error("Provider model not found.");
+    await ctx.db.patch("workspace_configurations", configuration._id, {
+      snapshot: {
+        ...provider,
+        models: provider.models.map((model) => {
+          if (model.model !== args.model) return model;
+          const pricing =
+            args.service_tiers.find((tier) => tier.id === "default")?.pricing ?? model.pricing;
+          const updated = { ...model, pricing, service_tiers: args.service_tiers };
+          return { ...updated, service_tiers: serviceTiersForModel(updated) };
+        }),
+      },
     });
   },
 });
@@ -758,6 +791,11 @@ export type RoutableProvider = {
   /** Upstream model ID sent to the provider. */
   modelId: string;
   pricing: ProviderSnapshot["models"][number]["pricing"];
+  service_tiers?: ProviderSnapshot["models"][number]["service_tiers"];
+  inference_modes?: ProviderSnapshot["models"][number]["inference_modes"];
+  inferenceMode?: NonNullable<ProviderSnapshot["models"][number]["inference_modes"]>[number];
+  /** Pricing captured at dispatch; absent when the requested tier has no published quote. */
+  quote?: ProviderSnapshot["models"][number]["pricing"];
   routing: ProviderRouting;
   /** Never empty; in creation order, which breaks fill-first ties inside a priority tier. */
   credentials: RoutableCredential[];
@@ -818,6 +856,8 @@ export async function resolveRoutableProviders(
       oauthFlow: provider.oauth_flow,
       modelId: providerModel.upstream_model_id ?? model.slug,
       pricing: providerModel.pricing,
+      service_tiers: serviceTiersForModel(providerModel),
+      inference_modes: providerModel.inference_modes,
       routing: resolveProviderRouting(record.configuration?.routing),
       credentials,
     });

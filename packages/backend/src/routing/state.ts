@@ -24,6 +24,7 @@ import {
 } from "./preferences";
 import {
   highestPriorityTier,
+  providersForServiceTier,
   pickFromTier,
   roundRobinSuccessor,
   smoothWeightedStep,
@@ -77,6 +78,7 @@ export type RoutingPick =
   | { ok: true; provider: RoutableTarget; settings: RoutingSettings }
   | {
       ok: false;
+      status?: number;
       /** Milliseconds until the soonest cooldown ends; 0 when only already-tried credentials remain. */
       retryAfterMs?: number;
       message: string;
@@ -97,6 +99,8 @@ export const pick = internalMutation({
   args: {
     workspace: v.id("workspaces"),
     model: v.string(),
+    serviceTier: v.optional(v.string()),
+    inferenceMode: v.optional(v.string()),
     preferences: routingPreferencesValidator,
     session: v.optional(sessionValidator),
     excluded: v.array(targetValidator),
@@ -107,9 +111,42 @@ export const pick = internalMutation({
 
     const now = Date.now();
     const settings = await routingSettingsFor(ctx, workspace._id);
-    const providers = await resolveRoutableProviders(ctx, workspace, args.model);
+    const tier =
+      args.serviceTier === "auto"
+        ? undefined
+        : args.serviceTier === "fast"
+          ? "priority"
+          : args.serviceTier;
+    const providers = providersForServiceTier(
+      await resolveRoutableProviders(ctx, workspace, args.model),
+      tier,
+      args.inferenceMode,
+    ).filter(
+      (provider) =>
+        (!provider.inferenceMode?.provider_body.reasoning ||
+          provider.npm === "@ai-sdk/openai" ||
+          provider.npm === "@opencoredev/loginwithchatgpt-ai") &&
+        (!provider.inferenceMode?.provider_body.speed || provider.npm === "@ai-sdk/anthropic") &&
+        (!provider.inferenceMode?.provider_headers || provider.npm === "@ai-sdk/anthropic"),
+    );
+    if ((tier || args.inferenceMode) && providers.length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        message: `No provider supports the requested inference mode or service tier for ${args.model}.`,
+        settings,
+      };
+    }
     const metrics = args.preferences.sort
-      ? await providerMetrics(ctx, workspace._id, args.model, providers, args.preferences.sort)
+      ? await providerMetrics(
+          ctx,
+          workspace._id,
+          args.model,
+          providers,
+          args.preferences.sort,
+          tier,
+          args.inferenceMode,
+        )
       : new Map();
 
     const preferred = applyRoutingPreferences(
@@ -178,7 +215,10 @@ export const pick = internalMutation({
     // A binding without a credential predates credential pools (or names a legacy credential);
     // it keeps the provider and lets the strategy choose among its credentials.
     const reuseBinding = async (binding: Doc<"routing_sessions">) => {
-      if (!available.some((candidate) => candidate.provider === binding.provider)) return undefined;
+      if (
+        !highestPriorityTier(available).some((candidate) => candidate.provider === binding.provider)
+      )
+        return undefined;
       if (binding.credential === undefined) return await pickCredentialOf(binding.provider);
       const credential = usable
         .get(binding.provider)!
@@ -190,7 +230,7 @@ export const pick = internalMutation({
     if (!session) return await pickNew();
 
     const ttlMs = settings.sessionAffinityTtlSeconds * 1000;
-    const primaryKey = sessionKey(session.primary, args.model);
+    const primaryKey = sessionKey(session.primary, `${args.model}:${tier ?? "auto"}`);
     const binding = await liveBinding(ctx, workspace._id, primaryKey, now);
 
     if (binding) {
@@ -233,7 +273,7 @@ export const pick = internalMutation({
       const fallback = await liveBinding(
         ctx,
         workspace._id,
-        sessionKey(session.fallback!, args.model),
+        sessionKey(session.fallback!, `${args.model}:${tier ?? "auto"}`),
         now,
       );
       if (fallback) picked = await reuseBinding(fallback);
@@ -244,7 +284,7 @@ export const pick = internalMutation({
     const keys = [primaryKey];
     // Subagents never move or extend the parent binding.
     if (session.fallback && !session.isSubagent)
-      keys.push(sessionKey(session.fallback, args.model));
+      keys.push(sessionKey(session.fallback, `${args.model}:${tier ?? "auto"}`));
     for (const key of keys) {
       await bindSession(ctx, workspace._id, key, picked.provider, now + ttlMs);
     }
@@ -265,6 +305,7 @@ export const reportResult = internalMutation({
     provider: v.string(),
     credential: v.optional(v.id("workspace_credentials")),
     model: v.string(),
+    serviceTier: v.optional(v.string()),
     dispatchedAt: v.number(),
     session: v.optional(sessionValidator),
     outcome: v.union(
@@ -319,7 +360,10 @@ export const reportResult = internalMutation({
       const binding = await liveBinding(
         ctx,
         args.workspace,
-        sessionKey(args.session.primary, args.model),
+        sessionKey(
+          args.session.primary,
+          `${args.model}:${args.serviceTier === "fast" ? "priority" : !args.serviceTier || args.serviceTier === "auto" ? "auto" : args.serviceTier}`,
+        ),
         now,
       );
       const rebind = settings.sessionAffinityRebindOn === "any" || outcome.rebindOnQuota;
@@ -773,13 +817,19 @@ async function providerMetrics(
   modelSlug: string,
   providers: RoutableProvider[],
   sort: NonNullable<RoutingPreferences["sort"]>,
+  tier?: string,
+  inferenceMode?: string,
 ): Promise<ProviderMetrics> {
   const metrics: ProviderMetrics = new Map();
 
   if (sort === "price") {
     for (const provider of providers) {
-      const price = Number(provider.pricing.input) + Number(provider.pricing.output);
-      if (Number.isFinite(price)) metrics.set(provider.slug, { price });
+      if (!provider.quote?.input.trim() || !provider.quote.output.trim()) continue;
+      const input = Number(provider.quote.input);
+      const output = Number(provider.quote.output);
+      if (Number.isFinite(input) && input >= 0 && Number.isFinite(output) && output >= 0) {
+        metrics.set(provider.slug, { price: input + output });
+      }
     }
     return metrics;
   }
@@ -798,6 +848,8 @@ async function providerMetrics(
     .take(METRIC_SAMPLE_SIZE);
   for (const completion of completions) {
     if (completion.request.model !== model._id || completion.request.canceled) continue;
+    if ((completion.request.requestedServiceTier ?? "auto") !== (tier ?? "auto")) continue;
+    if (completion.request.inferenceMode !== inferenceMode) continue;
     const entry = samples.get(completion.request.provider) ?? { throughput: [], latency: [] };
     if (completion.response.gen_time > 0) {
       entry.throughput.push(

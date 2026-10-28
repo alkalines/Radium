@@ -7,6 +7,65 @@ export type SelectionCandidate = {
   weight: number;
 };
 
+/** Map supported upstream mode body controls to their common routing tier. */
+export function inferenceModeTier(body?: {
+  service_tier?: string;
+  speed?: "fast" | "standard";
+}): string | undefined {
+  if (body?.service_tier) return body.service_tier === "fast" ? "priority" : body.service_tier;
+  if (body?.speed) return body.speed === "fast" ? "priority" : "default";
+  return undefined;
+}
+
+/** Select providers supporting the requested mode and effective tier, freezing the quote. */
+export function providersForServiceTier<
+  T extends {
+    pricing: { input: string; output: string; cache_read?: string; cache_write?: string };
+    service_tiers?: Array<{ id: string; pricing?: T["pricing"] }>;
+    inference_modes?: Array<{
+      id: string;
+      pricing?: T["pricing"];
+      provider_body: {
+        service_tier?: string;
+        speed?: "fast" | "standard";
+        reasoning?: { mode: "standard" | "pro" };
+      };
+    }>;
+  },
+>(
+  providers: T[],
+  tier?: string,
+  inferenceMode?: string,
+): Array<
+  T & {
+    quote?: T["pricing"];
+    inferenceMode?: NonNullable<T["inference_modes"]>[number];
+  }
+> {
+  return providers.flatMap((provider) => {
+    const mode = inferenceMode
+      ? provider.inference_modes?.find((candidate) => candidate.id === inferenceMode)
+      : undefined;
+    if (inferenceMode && !mode) return [];
+    const modeTier = inferenceModeTier(mode?.provider_body);
+    const effectiveTier = tier ?? modeTier;
+    const entry = provider.service_tiers?.find(
+      (candidate) => (candidate.id === "fast" ? "priority" : candidate.id) === effectiveTier,
+    );
+    if (effectiveTier && effectiveTier !== "default" && !entry) return [];
+    const modeApplies = mode && (!tier || tier === modeTier || (tier === "default" && !modeTier));
+    let quote: T["pricing"] | undefined;
+    if (modeApplies) {
+      quote = mode.pricing ?? provider.pricing;
+    } else if (!effectiveTier || effectiveTier === "default") {
+      quote = entry?.pricing ?? provider.pricing;
+    } else {
+      quote = entry?.pricing;
+    }
+    return [{ ...provider, quote, inferenceMode: mode }];
+  });
+}
+
 /** Persisted smooth weighted round-robin credits, keyed by provider. */
 export type WeightedState = Array<{ provider: string; current: number; weight: number }>;
 

@@ -130,28 +130,43 @@ export function toolMeta(tool: unknown): TelemetryBlobMeta | undefined {
   return typeof named.name === "string" ? { names: [named.name] } : undefined;
 }
 
-type ToolCall = { id?: string; type: string; function: { name: string; arguments: string } };
+type ToolCall =
+  | { id?: string; type: "function"; function: { name: string; arguments: string } }
+  | { id?: string; type: "custom"; custom: { name: string; input: string } };
 
-/** The assistant message a model produced, in OpenAI chat format. */
+type ReasoningDetail = {
+  type: string;
+  id?: string | null;
+  format?: string | null;
+  index?: number | null;
+  text?: string | null;
+  summary?: string | null;
+  data?: string | null;
+  signature?: string | null;
+  provider_metadata?: Record<string, unknown>;
+};
+
+/** The assistant output as delivered to the client, including opaque continuation content. */
 export type OutputMessage = {
   role: "assistant";
   content: string | null;
   tool_calls?: ToolCall[];
   reasoning?: string;
+  reasoning_details?: ReasoningDetail[];
   refusal?: string;
 };
 
 /**
- * Accumulates streaming chunks into the assistant message the client received: text and
- * reasoning deltas concatenate, tool-call fragments merge by `index`.
+ * Accumulates wire deltas by their stable tool/reasoning index. Opaque reasoning is content,
+ * governed by the same recording policy as visible output; it is never interpreted as text.
  */
 export class StreamOutputAssembler {
   private content = "";
   private reasoning = "";
   private refusal = "";
   private readonly toolCalls = new Map<number, ToolCall>();
+  private readonly reasoningDetails = new Map<string, ReasoningDetail>();
   private sawOutput = false;
-  /** Provider's own chunk ID; capture it before the gateway rewrites `chunk.id`. */
   providerId?: string;
   finishReason?: string;
 
@@ -160,8 +175,19 @@ export class StreamOutputAssembler {
     const choice = chunk.choices?.[0];
     if (!choice) return;
     if (choice.finish_reason) this.finishReason = choice.finish_reason;
-
-    const delta = choice.delta;
+    const delta = choice.delta as {
+      content?: string | null;
+      reasoning?: string | null;
+      refusal?: string | null;
+      reasoning_details?: ReasoningDetail[] | null;
+      tool_calls?: Array<{
+        index: number;
+        id?: string;
+        type?: string;
+        function?: { name?: string; arguments?: string };
+        custom?: { name?: string; input?: string };
+      }>;
+    };
     if (!delta) return;
     if (delta.content) {
       this.content += delta.content;
@@ -175,20 +201,41 @@ export class StreamOutputAssembler {
       this.refusal += delta.refusal;
       this.sawOutput = true;
     }
+    for (const detail of delta.reasoning_details ?? []) {
+      const key = `${detail.index ?? detail.id ?? 0}:${detail.type}`;
+      const previous = this.reasoningDetails.get(key);
+      this.reasoningDetails.set(key, {
+        ...previous,
+        ...detail,
+        ...(detail.text !== undefined ? { text: (previous?.text ?? "") + detail.text } : {}),
+        ...(detail.summary !== undefined
+          ? { summary: (previous?.summary ?? "") + detail.summary }
+          : {}),
+      });
+      this.sawOutput = true;
+    }
     for (const fragment of delta.tool_calls ?? []) {
       let call = this.toolCalls.get(fragment.index);
       if (!call) {
-        call = { type: fragment.type ?? "function", function: { name: "", arguments: "" } };
+        call =
+          fragment.type === "custom" || fragment.custom
+            ? { type: "custom", custom: { name: "", input: "" } }
+            : { type: "function", function: { name: "", arguments: "" } };
         this.toolCalls.set(fragment.index, call);
       }
       if (fragment.id) call.id = fragment.id;
-      if (fragment.function.name) call.function.name += fragment.function.name;
-      call.function.arguments += fragment.function.arguments ?? "";
+      if (call.type === "custom") {
+        call.custom.name += fragment.custom?.name ?? "";
+        call.custom.input += fragment.custom?.input ?? "";
+      } else {
+        call.function.name += fragment.function?.name ?? "";
+        call.function.arguments += fragment.function?.arguments ?? "";
+      }
       this.sawOutput = true;
     }
   }
 
-  /** The assembled message, or undefined when the stream produced no output. */
+  /** Returns undefined only when no visible or opaque output was received. */
   message(): OutputMessage | undefined {
     if (!this.sawOutput) return undefined;
     const message: OutputMessage = {
@@ -201,37 +248,42 @@ export class StreamOutputAssembler {
         .map(([, call]) => call);
     }
     if (this.reasoning) message.reasoning = this.reasoning;
+    if (this.reasoningDetails.size > 0) {
+      message.reasoning_details = [...this.reasoningDetails.values()].sort(
+        (left, right) => (left.index ?? 0) - (right.index ?? 0),
+      );
+    }
     if (this.refusal) message.refusal = this.refusal;
     return message;
   }
 }
 
-/** The assistant message of a non-streaming response, or undefined when it carries no output. */
+/** Keep the discriminated message shape; flattening custom calls would corrupt replay. */
 export function assembleOutputMessage(
   response: ChatCompletions_NotStreaming_ResponseBody_Type,
 ): OutputMessage | undefined {
   const source = response.choices?.[0]?.message;
   if (!source) return undefined;
-
-  const toolCalls: ToolCall[] = [];
-  for (const call of source.tool_calls ?? []) {
-    if ("function" in call) {
-      toolCalls.push({ id: call.id, type: call.type, function: call.function });
-    } else {
-      toolCalls.push({
-        id: call.id,
-        type: call.type,
-        function: { name: call.custom.name, arguments: call.custom.input },
-      });
-    }
-  }
-
-  const hasOutput = source.content || source.reasoning || source.refusal || toolCalls.length > 0;
-  if (!hasOutput) return undefined;
-
-  const message: OutputMessage = { role: "assistant", content: source.content ?? null };
-  if (toolCalls.length > 0) message.tool_calls = toolCalls;
-  if (source.reasoning) message.reasoning = source.reasoning;
-  if (source.refusal) message.refusal = source.refusal;
-  return message;
+  const details = source.reasoning_details;
+  const toolCalls: ToolCall[] = (source.tool_calls ?? []).map((call) =>
+    "function" in call
+      ? { id: call.id, type: "function", function: { ...call.function } }
+      : { id: call.id, type: "custom", custom: { ...call.custom } },
+  );
+  if (
+    !source.content &&
+    !source.reasoning &&
+    !source.refusal &&
+    toolCalls.length === 0 &&
+    !details?.length
+  )
+    return undefined;
+  return {
+    role: "assistant",
+    content: source.content ?? null,
+    ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+    ...(source.reasoning ? { reasoning: source.reasoning } : {}),
+    ...(details?.length ? { reasoning_details: details } : {}),
+    ...(source.refusal ? { refusal: source.refusal } : {}),
+  };
 }
