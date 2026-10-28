@@ -383,9 +383,129 @@ describe("moved HTTP handlers", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
-      error: { message: "Upstream 400", code: 400, provider: "test-provider" },
+      error: { message: "Upstream 400", code: 400, status: 400, provider: "test-provider" },
     });
     expect(gateway.streamCompletion).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    { status: 429, code: "usage_limit_reached", type: "usage_limit_reached" },
+    { status: 401, code: "invalid_api_key", type: "authentication_error" },
+    { status: 402, code: "insufficient_balance", type: "payment_required" },
+  ])(
+    "returns upstream $code after configured failover is exhausted",
+    async ({ status, code, type }) => {
+      const settings = { ...DEFAULT_ROUTING_SETTINGS, requestRetry: 0 };
+      runMutation.mockImplementation(async (fn, args) => {
+        if (!isPick(fn)) return null;
+        return args.excluded.length === 0
+          ? { ok: true, provider: routedProvider("test-provider"), settings }
+          : { ok: false, message: "No other providers", settings };
+      });
+      gateway.streamCompletion.mockImplementation(async () => {
+        throw new CompletionStreamError(
+          new APICallError({
+            message: "Upstream inference failed",
+            url: "https://upstream.example.test",
+            requestBodyValues: {},
+            statusCode: status,
+            responseHeaders: { "retry-after": "15" },
+            responseBody: JSON.stringify({
+              error: { message: "Provider refused inference", code, type },
+            }),
+          }),
+          false,
+        );
+      });
+      mockValidKey();
+      const response = await handleChatCompletion(ctx, streamingRequest());
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({
+        error: {
+          message: "Provider refused inference",
+          status,
+          code,
+          type,
+          provider: "test-provider",
+        },
+      });
+      expect(response.headers.get("retry-after")).toBe("15");
+    },
+  );
+
+  test("Chatroom returns structured errors for arbitrary upstream providers", async () => {
+    auth.safeGetAuthUser.mockResolvedValue({ _id: "owner" });
+    runQuery.mockImplementation(async (fn) => {
+      const name = getFunctionName(fn);
+      if (name === getFunctionName(internal.workspaces.authorizeChatForUser))
+        return {
+          chat: { userId: "owner", scope: "workspace" },
+          workspace: { _id: "key-workspace", ownerId: "owner" },
+        };
+      if (name === getFunctionName(internal.observability.telemetry.getSettingsForWorkspace))
+        return { enabled: false };
+      if (name === getFunctionName(internal.chatroom.resolveChatTools)) return { mcpServers: [] };
+      if (name === getFunctionName(internal.chatroom.resolveWebSearch)) return { enabled: false };
+      throw new Error(`Unexpected query ${name}`);
+    });
+    const settings = { ...DEFAULT_ROUTING_SETTINGS, requestRetry: 0 };
+    runMutation.mockImplementation(async (fn, args) => {
+      if (!isPick(fn)) return null;
+      return args.excluded.length === 0
+        ? { ok: true, provider: routedProvider("subscription-example"), settings }
+        : { ok: false, message: "No other providers", settings };
+    });
+    gateway.streamCompletion.mockImplementation(async () => {
+      throw new CompletionStreamError(
+        new APICallError({
+          message: "Upstream failure",
+          statusCode: 429,
+          url: "https://subscription.example.test",
+          requestBodyValues: {},
+          responseBody: JSON.stringify({
+            error: {
+              code: "provider_custom_limit",
+              type: "provider_limit",
+              message: "Subscription capacity exhausted",
+            },
+          }),
+        }),
+        false,
+      );
+    });
+    const response = await handleAISDKChat(
+      ctx,
+      new Request("https://gateway.example.test/api/aisdk/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          chatId: "chat-id",
+          model: "test-model",
+          messages: [
+            { id: "user-message", role: "user", parts: [{ type: "text", text: "Hello" }] },
+          ],
+        }),
+      }),
+    );
+    const body = await response.text();
+    const events = body
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const details = events.find((event) => event.type === "data-gateway-error");
+    expect(details).toEqual({
+      type: "data-gateway-error",
+      transient: true,
+      data: {
+        status: 429,
+        code: "provider_custom_limit",
+        type: "provider_limit",
+        message: "Subscription capacity exhausted",
+        provider: "subscription-example",
+      },
+    });
+    const errors = events.filter((event) => event.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0].errorText).toContain("provider_custom_limit");
   });
 
   test("completion recording observes synchronous listener cancellation", async () => {

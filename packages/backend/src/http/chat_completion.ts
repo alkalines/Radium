@@ -20,7 +20,12 @@ import {
   type AttemptOutcome,
   type RoutingRequest,
 } from "@/routing/execute";
-import { boundedMessage, upstreamFailureFromError, type UpstreamFailure } from "@/routing/failures";
+import {
+  boundedMessage,
+  gatewayErrorPayload,
+  upstreamFailureFromError,
+  type UpstreamFailure,
+} from "@/routing/failures";
 import { routingPreferencesFromRequest } from "@/routing/preferences";
 import { inferenceModeTier } from "@/routing/selection";
 import { extractRoutingSession } from "@/routing/session";
@@ -456,15 +461,7 @@ async function createStreamingCompletion(
           // Output already reached the client, so the failure is reported, never retried.
           const failure = completionFailure(error, true);
           await routed.reportLateFailure(failure);
-          enqueueSseEvent(
-            JSON.stringify({
-              error: {
-                message: failure.message,
-                code: failure.status ?? 502,
-                provider: providerSlug,
-              },
-            }),
-          );
+          enqueueSseEvent(JSON.stringify({ error: gatewayErrorPayload(failure, providerSlug) }));
           result =
             failure.kind === "aborted" || info.abortSignal?.aborted
               ? { status: "aborted", canceled: true }
@@ -602,7 +599,9 @@ function routingErrorResponse(error: RoutingError) {
     {
       error: {
         message: error.message,
-        code: error.status,
+        code: error.upstreamCode ?? error.status,
+        status: error.status,
+        ...(error.upstreamType ? { type: error.upstreamType } : {}),
         ...(error.provider ? { provider: error.provider } : {}),
       },
     },

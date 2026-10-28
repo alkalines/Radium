@@ -5,6 +5,8 @@ reasoning controls, service tiers, approvals, and tools. It uses a lossless in-p
 
 ## Implemented
 
+Completed and failed requests both allow **Revert to this message** on a user turn. Reverting returns its text/files to the Composer, removes that turn and later turns from the local thread, clears the failure alert, and retains Restore until the next send. Submission and streaming still block revert; the next send makes the shortened history durable.
+
 ### Workspace Access
 
 Each Better Auth user can own multiple personal workspaces. A workspace owner

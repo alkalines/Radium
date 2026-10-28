@@ -9,6 +9,7 @@ import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
 } from "../types/openai/types";
+import { gatewayErrorFromBody } from "./failures";
 
 export type InternalModelSelection = {
   provider?: string;
@@ -68,7 +69,7 @@ export function createInternalModel(
               // response draining finishes so outer message metadata sees every cost fact.
               if (part.type === "finish") {
                 finish = part;
-              } else if (part.type !== "raw") {
+              } else if (part.type !== "raw" && part.type !== "error") {
                 if (committed) controller.enqueue(part);
                 else pending.push(part);
               }
@@ -87,8 +88,10 @@ export function createInternalModel(
             );
             if (!response.ok) {
               const body: unknown = await response.json().catch(() => undefined);
-              const message = gatewayErrorMessage(body);
-              throw new Error(message ?? `Gateway request failed (${response.status}).`);
+              throw (
+                gatewayErrorFromBody(body, response.status) ??
+                new Error(`Gateway request failed (${response.status}).`)
+              );
             }
             if (canceled) {
               await response.body?.cancel();
@@ -121,8 +124,8 @@ export function createInternalModel(
                   } catch {
                     continue;
                   }
-                  const error = gatewayErrorMessage(value);
-                  if (error) throw new Error(error);
+                  const error = gatewayErrorFromBody(value, 502);
+                  if (error) throw error;
                 }
               }
             }
@@ -131,7 +134,10 @@ export function createInternalModel(
             controller.enqueue(finish);
             controller.close();
           } catch (error) {
-            if (!canceled) controller.error(error);
+            if (!canceled) {
+              controller.enqueue({ type: "error", error });
+              controller.close();
+            }
           } finally {
             responseReader?.releaseLock();
           }
@@ -309,15 +315,4 @@ async function collectGeneration(
     finishReason: finish.finishReason,
     providerMetadata: finish.providerMetadata,
   };
-}
-
-function gatewayErrorMessage(value: unknown): string | undefined {
-  if (!value || typeof value !== "object" || !("error" in value)) return undefined;
-  const error = value.error;
-  return error &&
-    typeof error === "object" &&
-    "message" in error &&
-    typeof error.message === "string"
-    ? error.message
-    : undefined;
 }

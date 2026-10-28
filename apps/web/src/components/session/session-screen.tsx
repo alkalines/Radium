@@ -501,6 +501,7 @@ export const SessionScreen = memo(function SessionScreen({
   const submittedApprovalContinuations = useRef(new Set<string>());
   const {
     addToolApprovalResponse,
+    clearError,
     error,
     messages,
     regenerate,
@@ -684,7 +685,7 @@ export const SessionScreen = memo(function SessionScreen({
    * snapshot (messages and the draft it replaced) stays restorable across further reverts.
    */
   async function handleRevert(message: UIMessage) {
-    if (status !== "ready") return;
+    if (status === "submitted" || status === "streaming") return;
     const index = messages.findIndex((candidate) => candidate.id === message.id);
     if (index === -1) return;
 
@@ -697,6 +698,7 @@ export const SessionScreen = memo(function SessionScreen({
       (current) => current ?? { messages, draft: replacedDraft ?? { text: "", files: [] } },
     );
     setMessages(messages.slice(0, index));
+    clearError();
   }
 
   function restoreRevert() {
@@ -912,7 +914,7 @@ export const SessionScreen = memo(function SessionScreen({
               showChainOfThought={chainOfThoughtEnabled}
               forkModels={models}
               agentName={agent.name}
-              canRevert={status === "ready" && chat !== undefined}
+              canRevert={!isRunning && chat !== undefined}
               onCopy={threadActions.onCopy}
               onRevert={threadActions.onRevert}
               onRetry={threadActions.onRetry}

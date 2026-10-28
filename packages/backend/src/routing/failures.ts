@@ -9,6 +9,9 @@ import type { CooldownReason, ErrorRule, ErrorRuleAction } from "./settings";
 export type UpstreamFailure = {
   kind: "http" | "transport" | "empty_stream" | "aborted";
   status?: number;
+  /** Provider's machine-readable code/type, independent of the HTTP status. */
+  code?: string | number;
+  type?: string;
   message: string;
   body?: string;
   headers?: Record<string, string>;
@@ -67,25 +70,164 @@ const resetFieldsSchema = z.object({
 });
 const errorEnvelopeSchema = z.object({ error: z.unknown() });
 
+const upstreamErrorSchema = z.object({
+  message: z.string().optional(),
+  code: z.union([z.string(), z.number()]).nullish(),
+  type: z.string().nullish(),
+  status: z.number().optional(),
+  statusCode: z.number().optional(),
+});
+const nestedErrorSchema = z.object({
+  error: z.unknown().optional(),
+  response: z.object({ error: z.unknown().optional() }).optional(),
+});
+
+/** The public error contract, used by JSON, SSE and Chatroom's transient error event. */
+export type GatewayErrorPayload = {
+  message: string;
+  code: string | number;
+  status: number;
+  type?: string;
+  provider?: string;
+};
+
+/** Preserve structured Gateway failures through the in-process SDK bridge. */
+export class GatewayInferenceError extends Error {
+  constructor(readonly details: GatewayErrorPayload) {
+    super(details.message);
+    this.name = "GatewayInferenceError";
+  }
+}
+
+/** Only inspect explicit error envelopes; never expose the raw provider response or headers. */
+function providerErrorDetails(
+  value: unknown,
+  depth = 0,
+): z.infer<typeof upstreamErrorSchema> | undefined {
+  if (depth > 4) return undefined;
+  const envelope = nestedErrorSchema.safeParse(value);
+  if (envelope.success) {
+    const nested = envelope.data.response?.error ?? envelope.data.error;
+    if (nested !== undefined) {
+      const details = providerErrorDetails(nested, depth + 1);
+      if (details) return details;
+    }
+  }
+  const parsed = upstreamErrorSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  return parsed.data.message || parsed.data.code != null || parsed.data.type
+    ? parsed.data
+    : undefined;
+}
+
+function bodyErrorDetails(body: string | undefined) {
+  if (!body) return undefined;
+  try {
+    return providerErrorDetails(JSON.parse(body));
+  } catch {
+    return undefined;
+  }
+}
+
+function errorStatus(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 400 && value <= 599
+    ? value
+    : undefined;
+}
+
+/** Build one bounded error shape without replacing the provider code with an HTTP number. */
+export function gatewayErrorPayload(
+  failure: UpstreamFailure,
+  provider?: string,
+): GatewayErrorPayload {
+  const status = failure.status ?? (failure.kind === "empty_stream" ? 502 : 503);
+  return {
+    message: failure.message,
+    code: failure.code ?? status,
+    status,
+    ...(failure.type ? { type: failure.type } : {}),
+    ...(provider ? { provider } : {}),
+  };
+}
+
+/** Decode a Gateway JSON/SSE error for trusted internal transport. */
+export function gatewayErrorFromBody(
+  value: unknown,
+  fallbackStatus: number,
+): GatewayInferenceError | undefined {
+  const envelope = errorEnvelopeSchema.safeParse(value);
+  if (!envelope.success) return undefined;
+  const details = providerErrorDetails(envelope.data.error);
+  if (!details) return undefined;
+  const status =
+    errorStatus(details.status) ??
+    errorStatus(details.statusCode) ??
+    errorStatus(fallbackStatus) ??
+    502;
+  const provider = z.object({ provider: z.string().optional() }).safeParse(envelope.data.error);
+  return new GatewayInferenceError({
+    message: boundedMessage(details.message ?? "Upstream inference failed."),
+    code: details.code ?? status,
+    status,
+    ...(details.type ? { type: details.type } : {}),
+    ...(provider.success && provider.data.provider ? { provider: provider.data.provider } : {}),
+  });
+}
+
 /** Convert an AI SDK or transport error into the routing failure shape. */
 export function upstreamFailureFromError(error: unknown, outputStarted: boolean): UpstreamFailure {
   const cause = RetryError.isInstance(error) ? error.lastError : error;
+
+  if (cause instanceof GatewayInferenceError) {
+    return {
+      kind: "http",
+      status: cause.details.status,
+      code: cause.details.code,
+      type: cause.details.type,
+      message: cause.message,
+      outputStarted,
+    };
+  }
 
   if (cause instanceof Error && (cause.name === "AbortError" || cause.name === "TimeoutError")) {
     return { kind: "aborted", message: "Request aborted.", outputStarted };
   }
 
   if (APICallError.isInstance(cause)) {
+    const details = bodyErrorDetails(cause.responseBody) ?? providerErrorDetails(cause.data);
     return {
       kind: "http",
-      status: cause.statusCode,
-      message: boundedMessage(cause.message),
+      status:
+        errorStatus(cause.statusCode) ??
+        errorStatus(details?.statusCode) ??
+        errorStatus(details?.status) ??
+        errorStatus(details?.code),
+      code: details?.code ?? undefined,
+      type: details?.type ?? undefined,
+      message: boundedMessage(details?.message ?? cause.message),
       body: cause.responseBody?.slice(0, MAX_BODY_CHARS),
       headers: lowercaseHeaders(cause.responseHeaders),
       outputStarted,
     };
   }
 
+  // SDK providers can emit typed errors inside an HTTP 200 event stream.
+  // Use the provider's status/code, never the unrelated Usage Limits snapshots.
+  const details = providerErrorDetails(cause);
+  const code = details?.code ?? undefined;
+  const type = details?.type ?? undefined;
+  const status =
+    errorStatus(details?.statusCode) ?? errorStatus(details?.status) ?? errorStatus(code);
+  if (status !== undefined || code !== undefined || type !== undefined) {
+    return {
+      kind: "http",
+      status: status ?? 502,
+      code,
+      type,
+      message: boundedMessage(details?.message ?? "Upstream inference failed."),
+      outputStarted,
+    };
+  }
   const message = cause instanceof Error ? cause.message : String(cause);
   return { kind: "transport", message: boundedMessage(message), outputStarted };
 }

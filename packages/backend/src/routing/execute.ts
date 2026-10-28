@@ -45,6 +45,8 @@ export class RoutingError extends Error {
     readonly status: number,
     readonly retryAfterMs?: number,
     readonly provider?: string,
+    readonly upstreamCode?: string | number,
+    readonly upstreamType?: string,
   ) {
     super(message);
     this.name = "RoutingError";
@@ -229,7 +231,14 @@ function routingErrorFrom(last: {
   provider: string;
 }) {
   const status = last.failure.status ?? (last.failure.kind === "empty_stream" ? 502 : 503);
-  return new RoutingError(last.failure.message, status, last.decision.retryAfterMs, last.provider);
+  return new RoutingError(
+    last.failure.message,
+    status,
+    last.decision.retryAfterMs,
+    last.provider,
+    last.failure.code,
+    last.failure.type,
+  );
 }
 
 function sleep(ms: number, signal?: AbortSignal | null) {

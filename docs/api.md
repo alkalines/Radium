@@ -158,19 +158,22 @@ Radium does not expose public OpenAI Responses, Embeddings, Images, Audio, Files
 
 ## Errors
 
-| Status | Meaning                                                      |
-| ------ | ------------------------------------------------------------ |
-| `400`  | The JSON body failed validation, or the provider rejected it |
-| `401`  | The bearer token is missing or invalid                       |
-| `429`  | Every eligible provider is cooling down; see `Retry-After`   |
-| `500`  | Routing configuration or another internal operation failed   |
-| other  | Last upstream status after routing exhausted its retries     |
+| Status | Meaning                                                                                   |
+| ------ | ----------------------------------------------------------------------------------------- |
+| `400`  | The JSON body failed validation, or the provider rejected it                              |
+| `401`  | The Gateway bearer token or upstream credential is invalid                                |
+| `402`  | The upstream rejected inference for billing/balance reasons                               |
+| `429`  | Upstream rate/quota rejection, or existing routing cooldown exhaustion; see `Retry-After` |
+| `500`  | Routing configuration or another internal operation failed                                |
+| other  | Last upstream status after routing exhausted its retries                                  |
 
-Upstream failures after routing return `{"error": {"message", "code", "provider"}}`
-with the last provider's status. Provider/model configuration failures (unknown
-model, no credentialed provider, a pinned provider that cannot serve the model)
-still surface through the generic server error path. There is no prepaid-credit
-or balance-required error in the new workspace path.
+Upstream inference failures are handled generically for API-key, subscription and other provider connections. After configured failover is exhausted, the Gateway preserves the upstream HTTP/SDK status and returns `{"error":{"message":"…","code":"provider_defined_code","status":429,"type":"provider_defined_type","provider":"configured-provider"}}`. `code` and `type` retain provider-defined values rather than replacing them with a Radium taxonomy; `type` is omitted when unavailable. Without an upstream code, `code` falls back to the numeric status. An in-band error lacking an HTTP/SDK status uses a generic gateway failure status, not a guess based on provider-specific strings. Raw provider bodies and credential headers are not included.
+
+Before output starts this is a non-2xx JSON response. After streaming headers/output have been committed, the HTTP status cannot change: the SSE stream emits the same structured error and ends without `[DONE]`. Chatroom emits a transient `data-gateway-error` part with the structured details and a readable error message containing code and status.
+
+Chatroom preserves useful upstream error text and adds an actionable next step. Empty messages receive a generic explanation based on HTTP status (rate/quota rejection, authentication, billing, permissions, or upstream failure); it does not guess a provider's plan or reset time. Numeric codes identical to the HTTP status are shown only once.
+
+This path reacts only to actual upstream inference errors. It does not reject requests from Usage Limits snapshots, plan-window estimates, owner budgets or a Radium balance. Existing configured routing retry/cooldown policy remains unchanged. Provider/model configuration failures still use their existing error path.
 
 Usage and `cost` values in completion records are operational upstream estimates.
 They are not invoices, prepaid credits, or a debit against the workspace.
