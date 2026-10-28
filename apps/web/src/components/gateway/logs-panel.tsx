@@ -51,7 +51,9 @@ import { DataSection } from "./data-section";
 type Generation = FunctionReturnType<typeof api.observability.usage.getGenerations>[number];
 const DAY_IN_MS = 86_400_000;
 
-function formatCost(value: number): string {
+function formatCost(value: number | undefined): string {
+  if (value === undefined) return "Unknown";
+  if (value > 0 && value < 0.0001) return "<$0.0001";
   return `$${value.toFixed(Math.abs(value) < 1 ? 4 : 2)}`;
 }
 
@@ -228,7 +230,7 @@ export function LogsPanel() {
                   <TableHead>Provider</TableHead>
                   <TableHead className="text-right">Input</TableHead>
                   <TableHead className="text-right">Output</TableHead>
-                  <TableHead className="text-right">Estimated cost</TableHead>
+                  <TableHead className="text-right">Cost</TableHead>
                   <TableHead>Usage Type</TableHead>
                   <TableHead className="text-right">Speed</TableHead>
                   <TableHead>Finish Reason</TableHead>
@@ -273,6 +275,9 @@ function GenerationRow({ generation, onSelect }: { generation: Generation; onSel
         <span className="flex items-center gap-1.5">
           <ProviderLogo slug={request.provider} className="size-4" />
           {request.provider}
+          {request.credentialName ? (
+            <span className="truncate text-muted-foreground">· {request.credentialName}</span>
+          ) : null}
         </span>
       </TableCell>
       <TableCell className="text-right tabular-nums">{response.usage.prompt_tokens}</TableCell>
@@ -324,7 +329,9 @@ function GenerationDetail({ generation }: { generation: Generation }) {
               {request.model?.name ?? request.model?.slug ?? "Unknown model"}
             </SheetTitle>
             <SheetDescription>
-              {request.provider} · {formatDate(generation._creationTime)}
+              {request.provider}
+              {request.credentialName ? ` · ${request.credentialName}` : ""} ·{" "}
+              {formatDate(generation._creationTime)}
             </SheetDescription>
           </div>
         </div>
@@ -347,7 +354,7 @@ function GenerationDetail({ generation }: { generation: Generation }) {
           )}
         </DetailSection>
 
-        <DetailSection title="Tokens & estimated cost">
+        <DetailSection title="Tokens & cost">
           <DetailRow label="Input tokens" value={String(response.usage.prompt_tokens)} />
           <DetailRow label="Output tokens" value={String(response.usage.completion_tokens)} />
           {response.usage.completion_tokens_details.reasoning_tokens != null && (
@@ -362,7 +369,7 @@ function GenerationDetail({ generation }: { generation: Generation }) {
               value={String(response.usage.prompt_tokens_details.cached_tokens)}
             />
           )}
-          <DetailRow label="Estimated cost" value={formatCost(response.pricing.cost)} mono />
+          <DetailRow label="Cost" value={formatCost(response.pricing.cost)} mono />
         </DetailSection>
 
         <DetailSection title="Request">

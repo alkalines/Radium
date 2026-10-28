@@ -3,9 +3,10 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { AddFunction, MultiplyFunction } from "@/math";
+import { estimateCompletionCost } from "@/usage/completion";
 import { canAccessWorkspace, isByokRequest } from "../src/workspaces/policy";
-import { providerSnapshotFromCatalog } from "../src/workspaces/provider";
+import { providerPricingValidator, providerSnapshotFromCatalog } from "../src/workspaces/provider";
+import { scheduleBudgetRefresh } from "../src/limits/store";
 import { authComponent } from "./auth";
 import { requireOwnedWorkspace } from "./workspaces";
 
@@ -126,12 +127,18 @@ export const recordCompletion = internalMutation({
       model_slug: v.string(),
       app: v.optional(v.id("ai_apps")),
       provider: v.string(),
+      /** Credential that served the request; absent for a provider's legacy credential. */
+      credential: v.optional(v.id("workspace_credentials")),
       byok: v.boolean(),
       api: v.literal("chat_completions"),
       stream: v.boolean(),
       canceled: v.boolean(),
       prompt_cache_key: v.optional(v.string()),
-      telemetry_request_id: v.optional(v.string()),
+      requestedServiceTier: v.optional(v.string()),
+      inferenceMode: v.optional(v.string()),
+      quoteCaptured: v.optional(v.boolean()),
+      quoteSource: v.optional(v.string()),
+      quote: v.optional(providerPricingValidator),
     }),
     response: v.object({
       gen_id: v.string(),
@@ -146,11 +153,18 @@ export const recordCompletion = internalMutation({
         prompt_tokens_details: v.object({
           cached_tokens: v.optional(v.number()),
           written_cache_tokens: v.optional(v.number()),
+          written_cache_tokens_1h: v.optional(v.number()),
         }),
       }),
       ttft: v.number(),
       gen_time: v.number(),
       finish_reason: v.string(),
+      servedServiceTier: v.optional(v.string()),
+      reportedCost: v.optional(v.number()),
+      servedQuote: v.optional(providerPricingValidator),
+      servedQuoteCaptured: v.optional(v.boolean()),
+      cacheWriteTtlUnknown: v.optional(v.boolean()),
+      upstreamInferenceCost: v.optional(v.number()),
     }),
   },
   async handler(ctx, args): Promise<Id<"chat_completions">> {
@@ -223,46 +237,71 @@ export const recordCompletion = internalMutation({
         .query("models")
         .withIndex("by_slug", (q) => q.eq("slug", args.request.model_slug))
         .unique(),
-      resolvedWorkspace
-        ? resolveCompletionProvider(ctx, resolvedWorkspace, args.request.provider)
-        : ctx.db
-            .query("providers")
-            .withIndex("by_slug", (q) => q.eq("slug", args.request.provider))
-            .unique(),
+      args.request.quoteCaptured
+        ? undefined
+        : resolvedWorkspace
+          ? resolveCompletionProvider(ctx, resolvedWorkspace, args.request.provider)
+          : ctx.db
+              .query("providers")
+              .withIndex("by_slug", (q) => q.eq("slug", args.request.provider))
+              .unique(),
     ]);
     if (!modelInfo) throw new Error(`Unknown model: ${args.request.model_slug}`);
-    if (!providerInfo) throw new Error(`Unknown provider: ${args.request.provider}`);
+    if (!args.request.quoteCaptured && !providerInfo)
+      throw new Error(`Unknown provider: ${args.request.provider}`);
 
-    const modelFromProvider = providerInfo.models.find((q) => q.model === args.request.model_slug);
-    if (!modelFromProvider) {
+    const modelFromProvider = providerInfo?.models.find((q) => q.model === args.request.model_slug);
+    if (!args.request.quoteCaptured && !modelFromProvider) {
       throw new Error(
         `Model ${args.request.model_slug} is not available on provider ${args.request.provider}.`,
       );
     }
 
-    /** Decimal arithmetic avoids making persisted usage estimates drift on floats. */
-    const completionPricing = MultiplyFunction([
-      args.response.usage.completion_tokens,
-      parseFloat(modelFromProvider.pricing.output),
-    ]);
-    const cacheReadPricing = MultiplyFunction([
-      args.response.usage.prompt_tokens_details.cached_tokens || 0,
-      parseFloat(modelFromProvider.pricing.cache_read || "0"),
-    ]);
-    const cacheWritePricing = MultiplyFunction([
-      args.response.usage.prompt_tokens_details.written_cache_tokens || 0,
-      parseFloat(modelFromProvider.pricing.cache_write || "0"),
-    ]);
-    const promptPricing = MultiplyFunction([
-      args.response.usage.prompt_tokens,
-      parseFloat(modelFromProvider.pricing.input),
-    ]);
-    const estimatedCost = AddFunction([
-      completionPricing,
-      cacheReadPricing,
-      cacheWritePricing,
-      promptPricing,
-    ]);
+    // A credential removed mid-request keeps its ID for history; an existing one must match.
+    const credential = args.request.credential
+      ? await ctx.db.get("workspace_credentials", args.request.credential)
+      : null;
+    if (
+      credential &&
+      (credential.workspace !== resolvedWorkspace?._id ||
+        credential.provider !== args.request.provider)
+    ) {
+      throw new Error("Completion credential does not belong to its workspace provider.");
+    }
+
+    const quote = args.request.quoteCaptured
+      ? args.request.quote
+      : (args.request.quote ??
+        (!args.request.requestedServiceTier ||
+        args.request.requestedServiceTier === "auto" ||
+        args.request.requestedServiceTier === "default"
+          ? modelFromProvider?.pricing
+          : undefined));
+    const served =
+      args.response.servedServiceTier === "fast" ? "priority" : args.response.servedServiceTier;
+    const requested =
+      args.request.requestedServiceTier === "fast" ? "priority" : args.request.requestedServiceTier;
+    const quoteApplies =
+      served === undefined ||
+      served === (requested && requested !== "auto" ? requested : "default");
+    const effectiveQuote = args.response.servedQuoteCaptured
+      ? args.response.servedQuote
+      : quoteApplies
+        ? quote
+        : undefined;
+    const estimate = estimateCompletionCost(
+      args.response.usage,
+      effectiveQuote,
+      args.response.cacheWriteTtlUnknown,
+    );
+    const {
+      prompt: promptPricing,
+      output: completionPricing,
+      cacheRead: cacheReadPricing,
+      cacheWrite: cacheWritePricing,
+      estimatedCost,
+    } = estimate;
+    const cost = args.response.reportedCost ?? estimatedCost;
 
     const bill = {
       ...(resolvedWorkspace ? { workspace: resolvedWorkspace._id } : {}),
@@ -282,7 +321,12 @@ export const recordCompletion = internalMutation({
         canceled: args.request.canceled,
         model: modelInfo._id,
         provider: args.request.provider,
+        credential: args.request.credential,
         app: args.request.app,
+        requestedServiceTier: args.request.requestedServiceTier,
+        inferenceMode: args.request.inferenceMode,
+        quoteSource: args.request.quoteSource,
+        quote,
       },
       response: {
         finish_reason: args.response.finish_reason,
@@ -290,6 +334,8 @@ export const recordCompletion = internalMutation({
         providerGenId: args.response.provider_gen_id,
         genId: args.response.gen_id,
         moderation_latency: undefined,
+        servedServiceTier: args.response.servedServiceTier,
+        servedQuote: effectiveQuote,
         ttft: args.response.ttft,
         usage: {
           prompt_tokens: args.response.usage.prompt_tokens,
@@ -299,6 +345,9 @@ export const recordCompletion = internalMutation({
           },
           prompt_tokens_details: {
             cached_tokens: args.response.usage.prompt_tokens_details.cached_tokens,
+            written_cache_tokens: args.response.usage.prompt_tokens_details.written_cache_tokens,
+            written_cache_tokens_1h:
+              args.response.usage.prompt_tokens_details.written_cache_tokens_1h,
           },
         },
         pricing: {
@@ -306,40 +355,18 @@ export const recordCompletion = internalMutation({
           prompt_tokens: promptPricing,
           prompt_tokens_details: {
             cached_tokens: cacheReadPricing,
+            written_cache_tokens: cacheWritePricing,
+            written_cache_tokens_1h: estimate.cacheWrite1h,
           },
-          cost_details: { upstream_inference_cost: estimatedCost },
-          cost: estimatedCost,
+          cost_details: { upstream_inference_cost: args.response.upstreamInferenceCost },
+          estimatedCost,
+          reportedCost: args.response.reportedCost,
+          cost,
         },
       },
     };
     const completionId = await ctx.db.insert("chat_completions", completionRecord);
-
-    if (args.request.telemetry_request_id) {
-      const traces = resolvedWorkspace
-        ? await ctx.db
-            .query("telemetry_traces")
-            .withIndex("by_workspace_and_requestId", (q) =>
-              q
-                .eq("workspace", resolvedWorkspace._id)
-                .eq("requestId", args.request.telemetry_request_id!),
-            )
-            .take(100)
-        : await ctx.db
-            .query("telemetry_traces")
-            .withIndex("by_balance_and_requestId", (q) =>
-              q.eq("balance", balance!._id).eq("requestId", args.request.telemetry_request_id!),
-            )
-            .take(100);
-
-      const attributedTraces = traces.filter((trace) =>
-        args.chatId !== undefined ? trace.chatId === args.chatId : trace.chatId === undefined,
-      );
-      await Promise.all(
-        attributedTraces.map((trace) =>
-          ctx.db.patch("telemetry_traces", trace._id, { chatCompletionId: completionId }),
-        ),
-      );
-    }
+    if (credential) await scheduleBudgetRefresh(ctx, credential, Date.now());
 
     return completionId;
   },

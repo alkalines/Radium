@@ -9,6 +9,45 @@ export const providerNpmValidator = v.union(
   v.literal("@opencoredev/loginwithchatgpt-ai"),
 );
 
+const tokenRateFields = {
+  input: v.string(),
+  output: v.string(),
+  cache_read: v.optional(v.string()),
+  cache_write: v.optional(v.string()),
+  cache_write_1h: v.optional(v.string()),
+};
+
+/** USD per-token rates with optional whole-request context thresholds. */
+export const providerPricingValidator = v.object({
+  ...tokenRateFields,
+  tiers: v.optional(v.array(v.object({ context: v.number(), ...tokenRateFields }))),
+});
+export type ProviderPricing = typeof providerPricingValidator.type;
+
+/** Supported, explicit model-mode overrides; never arbitrary upstream request bodies. */
+export const inferenceModesValidator = v.array(
+  v.object({
+    id: v.string(),
+    source: v.optional(v.string()),
+    pricing: v.optional(providerPricingValidator),
+    provider_body: v.object({
+      service_tier: v.optional(v.string()),
+      speed: v.optional(v.union(v.literal("fast"), v.literal("standard"))),
+      reasoning: v.optional(v.object({ mode: v.union(v.literal("standard"), v.literal("pro")) })),
+    }),
+    // HTTP header names contain hyphens, which Convex object-field validators reject.
+    provider_headers: v.optional(v.record(v.string(), v.string())),
+  }),
+);
+
+/** Explicitly advertised tier capability and optional per-token USD quote. */
+export const serviceTiersValidator = v.array(
+  v.object({
+    id: v.string(),
+    source: v.optional(v.string()),
+    pricing: v.optional(providerPricingValidator),
+  }),
+);
 /** Model metadata accepted in a provider catalogue or workspace snapshot. */
 export const providerModelValidator = v.object({
   model: v.string(),
@@ -27,12 +66,9 @@ export const providerModelValidator = v.object({
   ),
   context: v.number(),
   max_output: v.number(),
-  pricing: v.object({
-    input: v.string(),
-    output: v.string(),
-    cache_read: v.optional(v.string()),
-    cache_write: v.optional(v.string()),
-  }),
+  pricing: providerPricingValidator,
+  service_tiers: v.optional(serviceTiersValidator),
+  inference_modes: v.optional(inferenceModesValidator),
   supported_parameters: v.array(
     v.union(
       v.literal("temperature"),
@@ -103,7 +139,10 @@ export function providerSnapshotFromCatalog(provider: ProviderSnapshot): Provide
     name: provider.name,
     npm: provider.npm,
     env: provider.env,
-    models: provider.models,
+    models: provider.models.map((model) => ({
+      ...model,
+      service_tiers: serviceTiersForModel(model),
+    })),
     ...(provider.catalogue_provider === undefined
       ? {}
       : { catalogue_provider: provider.catalogue_provider }),
@@ -114,4 +153,25 @@ export function providerSnapshotFromCatalog(provider: ProviderSnapshot): Provide
     ...(provider.doc === undefined ? {} : { doc: provider.doc }),
     ...(provider.api === undefined ? {} : { api: provider.api }),
   };
+}
+
+/**
+ * Every configured model has a standard tier, including snapshots saved before tiers existed.
+ * Missing default-tier rates inherit the model's base quote; explicit zero rates remain zero.
+ */
+export function serviceTiersForModel(model: {
+  pricing: ProviderPricing;
+  service_tiers?: Array<{ id: string; source?: string; pricing?: ProviderPricing }>;
+}) {
+  const configured = model.service_tiers ?? [];
+  const standard = configured.find((tier) => tier.id === "default");
+  return [
+    {
+      ...standard,
+      id: "default",
+      source: standard?.source ?? "base",
+      pricing: standard?.pricing ?? model.pricing,
+    },
+    ...configured.filter((tier) => tier.id !== "default"),
+  ];
 }

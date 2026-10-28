@@ -25,6 +25,8 @@ export type SessionTabSnapshot = {
   text?: string;
   model?: string;
   provider?: string;
+  serviceTier?: string;
+  inferenceMode?: string;
   reasoningEffort?: string;
   reasoningBudget?: number;
   agentId?: string;
@@ -120,6 +122,12 @@ function parseSnapshot(value: object): SessionTabSnapshot {
   if ("model" in value && typeof value.model === "string") snapshot.model = value.model;
   if ("provider" in value && typeof value.provider === "string") {
     snapshot.provider = value.provider;
+  }
+  if ("serviceTier" in value && typeof value.serviceTier === "string") {
+    snapshot.serviceTier = value.serviceTier;
+  }
+  if ("inferenceMode" in value && typeof value.inferenceMode === "string") {
+    snapshot.inferenceMode = value.inferenceMode;
   }
   if ("reasoningEffort" in value && typeof value.reasoningEffort === "string") {
     snapshot.reasoningEffort = value.reasoningEffort;

@@ -6,7 +6,7 @@ import { expect, test, vi } from "vitest";
 import type { Id } from "./_generated/dataModel";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { filterVisibleTraces, isTraceVisible } from "./chatroom";
+import { filterVisibleRequests, isRequestVisible } from "./chatroom";
 
 type TestIdentity = {
   tokenIdentifier?: string;
@@ -449,59 +449,57 @@ test("chat creation schedules the consolidated title action", async () => {
   }
 });
 
-test("consolidated telemetry visibility hides private chat siblings in lists and direct reads", async () => {
+test("request visibility hides other users' private chats in lists and direct reads", async () => {
   const t = makeTest();
   const ids = await chatFixture(t);
-  const traceIds = await t.run(async (ctx) => {
+  const requestIds = await t.run(async (ctx) => {
     const fields = {
       workspace: ids.workspace,
-      userId: "owner",
-      callId: "call",
-      operationId: "operation",
-      functionId: "function",
-      provider: "provider",
+      source: "gateway" as const,
       model: "model",
+      stream: false,
       status: "ok" as const,
       startedAt: 1,
+      endedAt: 2,
+      durationMs: 1,
+      attempts: [],
       recordsInputs: false,
       recordsOutputs: false,
+      lineage: { kind: "root" as const },
     };
-    const privateTrace = await ctx.db.insert("telemetry_traces", {
+    const privateRequest = await ctx.db.insert("telemetry_requests", {
       ...fields,
-      source: "chatroom",
       requestId: "private-request",
       chatId: ids.memberPersonal,
       userId: "member",
     });
-    const nestedGateway = await ctx.db.insert("telemetry_traces", {
+    const ownerPersonal = await ctx.db.insert("telemetry_requests", {
       ...fields,
-      source: "gateway",
-      requestId: "private-request",
+      requestId: "owner-personal",
+      chatId: ids.ownerPersonal,
+      userId: "owner",
     });
-    const sharedTrace = await ctx.db.insert("telemetry_traces", {
+    const sharedRequest = await ctx.db.insert("telemetry_requests", {
       ...fields,
-      source: "chatroom",
       requestId: "shared-request",
       chatId: ids.ownerShared,
     });
-    const standaloneGateway = await ctx.db.insert("telemetry_traces", {
+    const standaloneGateway = await ctx.db.insert("telemetry_requests", {
       ...fields,
-      source: "gateway",
       requestId: "gateway-request",
     });
-    return { privateTrace, nestedGateway, sharedTrace, standaloneGateway };
+    return { privateRequest, ownerPersonal, sharedRequest, standaloneGateway };
   });
   await asUser(t, "owner").run(async (ctx) => {
     const workspace = (await ctx.db.get("workspaces", ids.workspace))!;
-    const traces = await ctx.db.query("telemetry_traces").collect();
-    const visible = await filterVisibleTraces(ctx, workspace, traces);
-    expect(visible.map((trace) => trace._id)).toEqual([
-      traceIds.sharedTrace,
-      traceIds.standaloneGateway,
+    const requests = await ctx.db.query("telemetry_requests").collect();
+    const visible = await filterVisibleRequests(ctx, workspace, requests);
+    expect(visible.map((request) => request._id)).toEqual([
+      requestIds.ownerPersonal,
+      requestIds.sharedRequest,
+      requestIds.standaloneGateway,
     ]);
-    const nested = (await ctx.db.get("telemetry_traces", traceIds.nestedGateway))!;
-    expect(await isTraceVisible(ctx, workspace, nested)).toBe(false);
-    const standalone = (await ctx.db.get("telemetry_traces", traceIds.standaloneGateway))!;
-    expect(await isTraceVisible(ctx, workspace, standalone)).toBe(true);
+    const hidden = (await ctx.db.get("telemetry_requests", requestIds.privateRequest))!;
+    expect(await isRequestVisible(ctx, workspace, hidden)).toBe(false);
   });
 });

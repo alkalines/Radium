@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import type { ProviderSnapshot } from "./provider";
+import { serviceTiersForModel, type ProviderSnapshot } from "./provider";
 import {
   isWorkspaceProviderEnabled,
   workspaceProviderRecords,
@@ -173,4 +173,25 @@ describe("workspace provider resolution", () => {
     expect(isWorkspaceProviderEnabled(records[0]!)).toBe(true);
     expect(records[0]?.provider.api).toBe("https://catalog.example/v1");
   });
+});
+
+test("legacy model default retains its configured base rates without mutating the snapshot", () => {
+  const model = {
+    pricing: {
+      input: "0.000001",
+      output: "0.000005",
+      cache_read: "0.00000005",
+      cache_write: "0.00000125",
+    },
+  };
+  const tiers = serviceTiersForModel(model);
+  expect(tiers[0]).toEqual({ id: "default", source: "base", pricing: model.pricing });
+  expect("service_tiers" in model).toBe(false);
+  const missingDefaultPrice = serviceTiersForModel({
+    ...model,
+    service_tiers: [{ id: "default" }],
+  });
+  expect(missingDefaultPrice[0]?.pricing).toEqual(model.pricing);
+  const free = serviceTiersForModel({ pricing: { input: "0", output: "0" } });
+  expect(free[0]?.pricing).toEqual({ input: "0", output: "0" });
 });

@@ -5,9 +5,10 @@ backend. The browser uses both of them.
 
 The web application lives in `apps/web/`; Convex functions and components live in
 `packages/backend/convex/`. Reusable backend modules live directly under
-`packages/backend/src/` by domain (`chatroom/`, `logging/`, `telemetry/`,
-`translators/`, `types/`, and `workspaces/`), with provider and routing helpers at
-the `src/` root. Web code imports shared contracts from `backend/src/`.
+`packages/backend/src/` by domain (`chatroom/`, `logging/`, `routing/`, `telemetry/`,
+`translators/`, `types/`, and `workspaces/`), with provider adapters at the `src/`
+root. Gateway provider selection, retries, and cooldowns live in `routing/`; see
+[Gateway routing](Radium_Gateway/LoadBalancer.md). Web code imports shared contracts from `backend/src/`.
 
 ## Runtime Boundaries
 
@@ -120,13 +121,13 @@ owner-managed; users cannot manage another user's personal chat.
 
 ## Telemetry
 
-See [AI telemetry boundaries](Radium_Gateway/Telemetry.md) for the shared Gateway
-and Chatroom collector, Convex persistence, and verification limits.
+See [Gateway telemetry](Radium_Gateway/Telemetry.md) for Gateway capture,
+content-addressed storage, session lineage, retention, and export.
 
-Internal telemetry is opt-in per workspace. Input and output recording are
-separate settings. General telemetry reads are owner-only and filter traces from
-other users' personal chats. Trace records are stored in Convex and may also be
-exported to an OTLP/HTTP collector when an exporter endpoint is configured.
+Telemetry is opt-in per workspace. Input and output recording are separate
+settings. Telemetry reads are owner-only and hide requests from other users'
+personal chats. Requests are stored in Convex and may also be exported to
+owner-configured OTLP/HTTP or webhook destinations.
 
 ## Migration And Generated State
 

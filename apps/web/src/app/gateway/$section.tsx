@@ -5,7 +5,9 @@ import type { ComponentType } from "react";
 import { CredentialsPanel } from "@/components/gateway/credentials-panel";
 import { gatewaySections, type GatewaySection } from "@/components/gateway/gateway-settings";
 import { KeysPanel } from "@/components/gateway/keys-panel";
+import { LimitsPanel } from "@/components/gateway/limits-panel";
 import { ProvidersPanel } from "@/components/gateway/providers-panel";
+import { RoutingPanel } from "@/components/gateway/routing-panel";
 import { WorkspaceSettingsGate } from "@/components/settings/workspace-settings-gate";
 import { requireSession } from "@/lib/require-session";
 import { api } from "backend/convex/_generated/api";
@@ -33,6 +35,8 @@ export const Route = createFileRoute("/gateway/$section")({
 const gatewayPanels: Record<GatewaySection, ComponentType> = {
   providers: ProvidersPanel,
   credentials: CredentialsPanel,
+  routing: RoutingPanel,
+  limits: LimitsPanel,
   keys: KeysPanel,
 };
 
@@ -49,7 +53,7 @@ function GatewayPage() {
   return (
     <WorkspaceSettingsGate
       title={gatewaySection.label}
-      ownerOnlyDetail="Providers, credentials, and API keys stay with the workspace owner. Chats here use the models they connect."
+      ownerOnlyDetail="Providers, credentials, routing, limits, and API keys stay with the workspace owner. Chats here use the models they connect."
     >
       <Panel />
     </WorkspaceSettingsGate>

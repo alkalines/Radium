@@ -56,6 +56,8 @@ function groupMessageParts(parts: MessagePart[]) {
 
   for (const [index, part] of parts.entries()) {
     if (part.type === "step-start") continue;
+    // Metadata-only reasoning carries continuation state but has no visible trace.
+    if (part.type === "reasoning" && !part.text.trim()) continue;
 
     if (part.type === "reasoning" || isToolPart(part)) {
       const previous = blocks.at(-1);
@@ -245,16 +247,36 @@ function MessageStep({
 }) {
   if (part.type === "reasoning") {
     const isStreaming = isLive && part.state === "streaming";
+    const metadata = part.providerMetadata;
+    const isSummary =
+      metadata?.radium?.reasoningType === "summary" || metadata?.openai !== undefined;
+    const heading = isSummary
+      ? /^(?:#{1,6}\s+([^\n]+)|\*\*([^*\n]+)\*\*)/.exec(part.text.trim())
+      : null;
+    const title = heading?.[1] ?? heading?.[2];
 
     if (isGrouped) {
       return (
-        <Markdown isAnimating={isStreaming} className="text-[13px]">
-          {part.text}
-        </Markdown>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground">
+            {isSummary ? "Reasoning summary" : "Visible reasoning"}
+            {title ? `: ${title}` : ""}
+          </span>
+          <Markdown isAnimating={isStreaming} className="text-[13px]">
+            {part.text}
+          </Markdown>
+        </div>
       );
     }
 
-    return <ReasoningStep text={part.text} isStreaming={isStreaming} />;
+    return (
+      <ReasoningStep
+        text={part.text}
+        isStreaming={isStreaming}
+        isSummary={isSummary}
+        title={title}
+      />
+    );
   }
 
   if (isToolPart(part)) {
@@ -265,7 +287,17 @@ function MessageStep({
 }
 
 /** Reasoning as a Trace step: open while the model thinks, collapsed once it is done. */
-function ReasoningStep({ text, isStreaming }: { text: string; isStreaming: boolean }) {
+function ReasoningStep({
+  text,
+  isStreaming,
+  isSummary,
+  title,
+}: {
+  text: string;
+  isStreaming: boolean;
+  isSummary: boolean;
+  title?: string;
+}) {
   const [userOpen, setUserOpen] = useState<boolean>();
   const state: RunState = isStreaming ? "thinking" : "succeeded";
 
@@ -276,7 +308,10 @@ function ReasoningStep({ text, isStreaming }: { text: string; isStreaming: boole
           <TraceIcon>
             <BrainIcon />
           </TraceIcon>
-          <TraceTitle>{isStreaming ? "Thinking" : "Thought"}</TraceTitle>
+          <TraceTitle>
+            {isSummary ? "Reasoning summary" : isStreaming ? "Thinking" : "Visible reasoning"}
+            {title ? `: ${title}` : ""}
+          </TraceTitle>
         </TraceLine>
       </TraceCollapsibleTrigger>
       <TraceCollapsibleContent>

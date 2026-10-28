@@ -63,6 +63,7 @@ export function JsonCodeBlock({ value, title }: { value: unknown; title?: string
  */
 export function ToolInputBlock({ part }: { part: ToolUIPart }) {
   const input = getToolInput(part);
+  if (typeof input === "string") return <ToolCodeBlock code={input} title="input" />;
 
   switch (getToolKind(part)) {
     case "bash": {

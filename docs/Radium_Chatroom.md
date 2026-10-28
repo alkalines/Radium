@@ -1,11 +1,11 @@
 # Radium Chatroom
 
 Radium Chatroom is the user-facing home for conversations, model selection,
-reasoning controls, approvals, and tools. It uses the Gateway's internal
-OpenAI-compatible completion path; it does not implement a second provider
-router.
+reasoning controls, service tiers, approvals, and tools. It uses a lossless in-process SDK adapter through the Gateway's shared completion pipeline, not a second provider router. Signed/encrypted reasoning metadata survives history replay; visible summaries render separately from opaque continuation state.
 
 ## Implemented
+
+Completed and failed requests both allow **Revert to this message** on a user turn. Reverting returns its text/files to the Composer, removes that turn and later turns from the local thread, clears the failure alert, and retains Restore until the next send. Submission and streaming still block revert; the next send makes the shortened history durable.
 
 ### Workspace Access
 
@@ -106,11 +106,12 @@ Store recovery failures remain errors for credential management.
 
 ### Telemetry
 
-AI telemetry is optional and disabled by default. Input and output capture are
-separate controls. The workspace owner manages the settings and general
-telemetry views. Shared-chat traces may be visible to the owner, while traces
-associated with another user's personal chats are filtered out. See the
-[Gateway and Chatroom telemetry guide](Radium_Gateway/Telemetry.md).
+Telemetry is optional and disabled by default. It is captured at the Gateway, so
+each Chatroom model call is recorded as a Gateway request in the chat's session.
+Input and output capture are separate controls. The workspace owner manages the
+settings and views. Shared-chat requests may be visible to the owner; requests
+from another user's personal chat record no content and are hidden. See the
+[Gateway telemetry guide](Radium_Gateway/Telemetry.md).
 
 ## Auth And Runtime Flow
 

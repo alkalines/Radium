@@ -1,13 +1,13 @@
 # Upstream Instances And Credentials
 
-Status: Not started. Depends on task 03's agreed ownership contract.
-First session: define the model and migration, then split adapter implementations.
+Status: Credential/account slice implemented (2026-10-25): providers hold pools of API keys and OAuth accounts, routed per credential. See [Gateway credentials](../Radium_Gateway/Credentials.md). Endpoint instances (multiple vLLM/Ollama servers, unauthenticated local servers), capacity, and the private-network policy are not started.
+First session for the remainder: define the endpoint model and migration, then split adapter implementations.
 
 ## Entry Points
 
 Under `packages/backend/`: `convex/providers.ts`, `convex/secrets.ts`,
-`src/subscriptions/chatgpt.ts`, `convex/schema.ts`, `src/providers.ts`, and
-`src/ai_balancer.ts`; UI in `apps/web/src/components/gateway/credentials-dialog.tsx`.
+`src/workspaces/credentials.ts`, `src/subscriptions/registry.ts`, `convex/schema.ts`,
+`src/providers.ts`, and `src/routing/`; UI in `apps/web/src/components/gateway/credentials-dialog.tsx`.
 
 ## Work
 

@@ -86,14 +86,35 @@ curl -N "$RADIUM_URL/api/openai/v1/chat/completions" \
 ```
 
 Each event contains an OpenAI-compatible JSON chunk prefixed with `data:`. The
-stream terminates with `data: [DONE]`.
+stream terminates with `data: [DONE]`. If the selected provider fails after the
+first chunk, the stream ends with a `data: {"error": {"message", "code", "provider"}}`
+event and no `[DONE]`.
 
 ## Provider Selection
 
-By default, Radium resolves an enabled provider configured for the key's
-workspace that offers the requested model and has matching BYOK credentials.
-Requests may include a `provider` slug to constrain routing to a specific
-configured provider.
+Radium routes among the enabled providers configured for the key's workspace
+that offer the requested model and have matching BYOK credentials, using the
+workspace's routing strategy, priorities, session affinity, retries, and
+cooldowns. See [Gateway routing](Radium_Gateway/LoadBalancer.md).
+
+`provider` accepts a configured provider slug, which pins the request to that
+provider without fallbacks, or an OpenRouter-compatible object:
+
+```json
+{
+  "provider": {
+    "order": ["openai"],
+    "allow_fallbacks": true,
+    "ignore": ["slow"],
+    "sort": "throughput"
+  }
+}
+```
+
+Supported fields are `order`, `allow_fallbacks`, `only`, `ignore`, and `sort`
+(`price`, `throughput`, `latency`, or `{ "by": … }`); slugs name the workspace's
+providers. Session affinity reads `session_id` from the body, client session
+headers such as `X-Session-ID`, or `prompt_cache_key`.
 
 Provider-specific model IDs are internal catalogue configuration. API callers
 send the global Radium model slug returned by the models endpoint.
@@ -105,27 +126,54 @@ and configurable egress controls are not part of the current API contract; see
 
 ## Compatibility Scope
 
-The request validator and translators under `src/types/openai/` and
-`src/translators/` are the source of truth for accepted fields. Common
-chat messages, sampling settings, reasoning settings, tools, tool choice,
-structured response formats, token limits, and streaming are supported where
-the selected provider/model supports them.
+Radium implements a provider-dependent Chat Completions subset, not every OpenRouter extension. Unknown top-level fields and unsupported provider-selection constraints are rejected rather than silently discarded. `trace` is an explicitly supported telemetry-only object. Provider slugs refer to workspace connections, not OpenRouter's nested upstream endpoint names.
 
-Radium does not currently expose OpenAI Responses, Embeddings, Images, Audio,
-Files, Fine-tuning, or Batch endpoints.
+Supported paths include text and supported image/audio/inline-file inputs, JSON response formats with intact JSON Schema, function tools and tool selection, reasoning continuation, token limits (`max_completion_tokens` or `max_tokens`), and stop sequences where supported upstream. Only `n=1` is supported. Native OpenAI uses Responses upstream; this does not add a public Responses endpoint. Provider-specific unsupported settings return an error instead of pretending they were applied.
+
+### Service tiers and costs
+
+`service_tier` selects an advertised provider-model tier: `default`, `flex`, `priority` (`fast` alias), or `ultrafast`. Omission/`auto` keeps the provider default. Every model, including older workspace snapshots, exposes Default initialized from its existing base prices; Default cannot be disabled in the editor. Explicit tiers restrict eligible workspace connections. OpenRouter capabilities and unambiguous rates are loaded from its endpoint catalogue during model import. Native provider modes and rates are imported from models.dev's experimental metadata where supported; owners can also configure tier rates on existing mappings.
+
+The response's `service_tier`, when known, describes what upstream actually served, not what was requested. Routing retains dispatch-time rates and uses the served tier's snapshot on fallback. Estimates and provider-reported costs remain distinct. Missing prices or usage remain unknown, not zero; historical estimates are not retroactively repriced. Rates are per token internally; configuration forms use USD per million tokens.
+
+models.dev `experimental.modes` is imported separately from service tiers. `inference_mode` selects an advertised named mode (`inferenceMode` in Chatroom requests): a `fast` mode can set `service_tier: "priority"`, while `pro` sets `reasoning.mode: "pro"` rather than inventing a pro service tier. Anthropic speed modes preserve their allowlisted beta header. Modes without a separate cost inherit the base price schedule. Explicit service-tier selection takes precedence over a mode's speed/tier override.
+
+In Chatroom, **Inference mode** contains only Standard and supported Pro reasoning. Fast/Priority, Flex and Ultrafast belong exclusively to **Service tier**; speed-only catalog modes are not duplicated in the inference-mode menu.
+
+Context-dependent `cost.tiers` schedules use their exact context threshold and price the whole request above that boundary, including cached input. The older `context_over_200k` field is used only when no modern context tiers exist. Small positive per-million prices are converted without rounding them to zero.
+
+To restore already-zero or outdated imported prices and load new modes, open the provider's model manager and choose **Refresh existing models from models.dev**, then select the mappings to refresh. This deliberately updates their pricing and modes while preserving unrelated model configuration. It does not silently replace configured free/custom rates or reprice historical completions.
+
+Cache reads and writes are disjoint from uncached input. `usage.prompt_tokens_details.cache_write_tokens` reports writes; 1-hour writes have a separate rate from 5-minute writes. Text-part `cache_control` directives preserve supported cache boundaries and TTLs. Unknown mixed-retention write usage produces an unknown estimate rather than a guessed price.
+
+### Reasoning and custom tools
+
+Assistant `reasoning_details` preserves structured text, summaries and encrypted continuation state. Clients continuing a conversation must replay the entire ordered detail array, including opaque data and signatures, unchanged. A provider-specific `provider_metadata` extension retains native continuation information. Summaries are not raw chain-of-thought; encrypted content is not displayable text.
+
+OpenAI Responses-backed connections support `type: "custom"` tools with exact string input and optional regex/Lark grammar. Runtime-discovered JSON-schema tools remain function tools. Unsupported custom-tool connectors fail explicitly. Parallel calls retain separate IDs/indexes in streaming and nonstreaming responses.
+
+With streaming, `stream_options.include_usage: true` requests a separate terminal usage chunk with an empty `choices` array. Unsupported audio output/modalities, prediction, log probabilities, advanced sampling controls, plugins, model fallback lists and unimplemented routing constraints are rejected.
+
+Radium does not expose public OpenAI Responses, Embeddings, Images, Audio, Files, Fine-tuning, or Batch endpoints.
 
 ## Errors
 
-| Status | Meaning                                                           |
-| ------ | ----------------------------------------------------------------- |
-| `400`  | The JSON body failed request validation                           |
-| `401`  | The bearer token is missing or invalid                            |
-| `500`  | Routing, provider execution, or another internal operation failed |
+| Status | Meaning                                                                                   |
+| ------ | ----------------------------------------------------------------------------------------- |
+| `400`  | The JSON body failed validation, or the provider rejected it                              |
+| `401`  | The Gateway bearer token or upstream credential is invalid                                |
+| `402`  | The upstream rejected inference for billing/balance reasons                               |
+| `429`  | Upstream rate/quota rejection, or existing routing cooldown exhaustion; see `Retry-After` |
+| `500`  | Routing configuration or another internal operation failed                                |
+| other  | Last upstream status after routing exhausted its retries                                  |
 
-Provider/model configuration failures currently surface through the generic
-server error path. There is no prepaid-credit or balance-required error in the
-new workspace path. Do not depend on a stable error envelope beyond the explicit
-authentication and validation errors.
+Upstream inference failures are handled generically for API-key, subscription and other provider connections. After configured failover is exhausted, the Gateway preserves the upstream HTTP/SDK status and returns `{"error":{"message":"…","code":"provider_defined_code","status":429,"type":"provider_defined_type","provider":"configured-provider"}}`. `code` and `type` retain provider-defined values rather than replacing them with a Radium taxonomy; `type` is omitted when unavailable. Without an upstream code, `code` falls back to the numeric status. An in-band error lacking an HTTP/SDK status uses a generic gateway failure status, not a guess based on provider-specific strings. Raw provider bodies and credential headers are not included.
+
+Before output starts this is a non-2xx JSON response. After streaming headers/output have been committed, the HTTP status cannot change: the SSE stream emits the same structured error and ends without `[DONE]`. Chatroom emits a transient `data-gateway-error` part with the structured details and a readable error message containing code and status.
+
+Chatroom preserves useful upstream error text and adds an actionable next step. Empty messages receive a generic explanation based on HTTP status (rate/quota rejection, authentication, billing, permissions, or upstream failure); it does not guess a provider's plan or reset time. Numeric codes identical to the HTTP status are shown only once.
+
+This path reacts only to actual upstream inference errors. It does not reject requests from Usage Limits snapshots, plan-window estimates, owner budgets or a Radium balance. Existing configured routing retry/cooldown policy remains unchanged. Provider/model configuration failures still use their existing error path.
 
 Usage and `cost` values in completion records are operational upstream estimates.
 They are not invoices, prepaid credits, or a debit against the workspace.

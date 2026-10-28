@@ -1,6 +1,10 @@
 import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { providerSnapshotFromCatalog, type ProviderSnapshot } from "../src/workspaces/provider";
+import {
+  providerSnapshotFromCatalog,
+  serviceTiersForModel,
+  type ProviderSnapshot,
+} from "../src/workspaces/provider";
 
 type ProviderContext = QueryCtx | MutationCtx;
 
@@ -37,6 +41,13 @@ export async function workspaceProviderRecords(
         provider = providerSnapshotFromCatalog(catalogProvider);
       }
       if (!provider || provider.slug !== configuration.provider) continue;
+      provider = {
+        ...provider,
+        models: provider.models.map((model) => ({
+          ...model,
+          service_tiers: serviceTiersForModel(model),
+        })),
+      };
       records.push({ configuration, provider, catalog: catalogProvider });
     }
     return records;

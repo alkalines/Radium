@@ -53,17 +53,19 @@ and the internal completion pipeline.
 
 ### Radium Telemetry
 
-The new telemetry system gives each generation an inspectable execution trace.
-It records request status, provider and model selection, timing, token usage,
-generation steps, and tool calls. Traces and spans can be explored in the
-Gateway UI.
+Every request through the Gateway can be captured: the full request (messages,
+system prompt, tools, sampling parameters and flags), each routing attempt, the
+output, timing, and token usage. Content is stored once per workspace by
+fingerprint, so long agent sessions don't repeat the same history, prompt, and
+tools on every request. Sessions show how a conversation evolved, including
+system-prompt and tool changes, retries, and rollbacks, with every branch kept.
 
-Telemetry is opt-in per workspace. Input recording and output recording are
-separate controls, general Gateway telemetry is owner-only, and private chat
-records are filtered from owner views. Deployments can optionally export traces
-to an OTLP/HTTP collector.
+Telemetry is opt-in per workspace. Input recording, output recording, and
+retention are separate settings, Gateway telemetry is owner-only, and private
+chat records are hidden from owner views. Owners can export to OTLP/HTTP
+collectors or webhooks.
 
-[Configure telemetry export](docs/deployment.md#opentelemetry-export)
+[How Gateway telemetry works](docs/Radium_Gateway/Telemetry.md)
 
 ### Self-Hosted By Design
 

@@ -18,6 +18,11 @@ import { isWorkerOnline } from "backend/src/worker/presence";
 import type { RunState } from "@/components/agentic/agent-status";
 import { RadiumWordmark } from "@/components/agentic/radium-wordmark";
 import { SessionAmbient } from "@/components/agentic/session-ambient";
+import {
+  inferenceModeTier,
+  validInferenceMode,
+  validServiceTier,
+} from "@/components/models/model-options";
 import { ContextUsage } from "@/components/session/context-usage";
 import {
   getApprovalContinuationKey,
@@ -149,6 +154,8 @@ export const SessionScreen = memo(function SessionScreen({
 
   const [modelOverride, setModelOverride] = useState(requestedModel);
   const [providerOverride, setProviderOverride] = useState(requestedProvider);
+  const [serviceTier, setServiceTier] = useState<string>();
+  const [inferenceMode, setInferenceMode] = useState<string>();
   const [reasoningEffort, setReasoningEffort] = useState("medium");
   const [reasoningBudget, setReasoningBudget] = useState<number>();
   const [choiceWorkspaceId, setChoiceWorkspaceId] = useState<string | undefined>(
@@ -229,6 +236,8 @@ export const SessionScreen = memo(function SessionScreen({
     if (snapshot) {
       if (snapshot.model) setModelOverride(snapshot.model);
       if (snapshot.provider) setProviderOverride(snapshot.provider);
+      if (snapshot.serviceTier) setServiceTier(snapshot.serviceTier);
+      if (snapshot.inferenceMode) setInferenceMode(snapshot.inferenceMode);
       if (snapshot.reasoningEffort) setReasoningEffort(snapshot.reasoningEffort);
       if (snapshot.reasoningBudget) setReasoningBudget(snapshot.reasoningBudget);
       if (snapshot.agentId) setAgent(sessionAgentById(snapshot.agentId));
@@ -256,6 +265,8 @@ export const SessionScreen = memo(function SessionScreen({
     setChoiceWorkspaceId(settingsWorkspaceId);
     setModelOverride(undefined);
     setProviderOverride(undefined);
+    setServiceTier(undefined);
+    setInferenceMode(undefined);
     setDraftWorker(null);
     setDraftProject(null);
     setDraftTools(null);
@@ -278,6 +289,8 @@ export const SessionScreen = memo(function SessionScreen({
     patchTabState(tabId, {
       model: modelOverride,
       provider: providerOverride,
+      serviceTier,
+      inferenceMode,
       reasoningEffort,
       reasoningBudget,
       agentId: agent.id,
@@ -295,6 +308,8 @@ export const SessionScreen = memo(function SessionScreen({
     isTabStateRestored,
     modelOverride,
     providerOverride,
+    serviceTier,
+    inferenceMode,
     reasoningBudget,
     reasoningEffort,
     tabId,
@@ -420,6 +435,20 @@ export const SessionScreen = memo(function SessionScreen({
   )
     ? preferredProvider
     : selectedModelData?.providers[0]?.id;
+  const selectedTier = validServiceTier(selectedModelData, selectedProvider, serviceTier);
+  const selectedMode = validInferenceMode(selectedModelData, selectedProvider, inferenceMode);
+  const modeTier = inferenceModeTier(
+    selectedModelData?.providers
+      .find((provider) => provider.id === selectedProvider)
+      ?.inference_modes?.find((mode) => mode.id === selectedMode),
+  );
+  const effectiveMode = selectedTier && modeTier ? undefined : selectedMode;
+  useEffect(() => {
+    if (!isModelLoading && serviceTier && !selectedTier) setServiceTier(undefined);
+  }, [isModelLoading, selectedTier, serviceTier]);
+  useEffect(() => {
+    if (!isModelLoading && inferenceMode && !effectiveMode) setInferenceMode(undefined);
+  }, [isModelLoading, inferenceMode, effectiveMode]);
   const selectedEffort = validReasoningEffort(selectedModelData, reasoningEffort);
   const selectedBudget =
     selectedModelData?.features?.reasoning_budget && reasoningBudget ? reasoningBudget : undefined;
@@ -432,6 +461,8 @@ export const SessionScreen = memo(function SessionScreen({
           chatId,
           model: selectedModel,
           provider: selectedProvider,
+          serviceTier: selectedTier,
+          inferenceMode: effectiveMode,
           reasoningEffort: selectedEffort,
           reasoningBudget: selectedBudget,
         },
@@ -455,13 +486,22 @@ export const SessionScreen = memo(function SessionScreen({
         },
         credentials: "include",
       }),
-    [chatId, selectedBudget, selectedEffort, selectedModel, selectedProvider],
+    [
+      chatId,
+      selectedBudget,
+      selectedEffort,
+      selectedModel,
+      selectedProvider,
+      selectedTier,
+      effectiveMode,
+    ],
   );
 
   // Prevent duplicate sends if the SDK rechecks this approval before it settles.
   const submittedApprovalContinuations = useRef(new Set<string>());
   const {
     addToolApprovalResponse,
+    clearError,
     error,
     messages,
     regenerate,
@@ -504,6 +544,8 @@ export const SessionScreen = memo(function SessionScreen({
           chatId,
           model: queue.model,
           provider: queue.provider,
+          serviceTier: queue.serviceTier,
+          inferenceMode: queue.inferenceMode,
           reasoningBudget: queue.reasoningBudget,
           reasoningEffort: queue.reasoningEffort,
         },
@@ -555,12 +597,22 @@ export const SessionScreen = memo(function SessionScreen({
         chatId,
         model: modelSlug,
         provider: selectedProvider,
+        serviceTier: validServiceTier(modelData, selectedProvider, serviceTier),
+        inferenceMode: validInferenceMode(modelData, selectedProvider, effectiveMode),
         reasoningEffort: validReasoningEffort(modelData, reasoningEffort),
         reasoningBudget:
           modelData?.features?.reasoning_budget && reasoningBudget ? reasoningBudget : undefined,
       };
     },
-    [chatId, models, reasoningBudget, reasoningEffort, selectedProvider],
+    [
+      chatId,
+      models,
+      reasoningBudget,
+      reasoningEffort,
+      selectedProvider,
+      serviceTier,
+      effectiveMode,
+    ],
   );
 
   async function submitDraft({ text, files }: ComposerMessage) {
@@ -596,6 +648,8 @@ export const SessionScreen = memo(function SessionScreen({
           files,
           model: selectedModel,
           ...(selectedProvider ? { provider: selectedProvider } : {}),
+          ...(selectedTier ? { serviceTier: selectedTier } : {}),
+          ...(effectiveMode ? { inferenceMode: effectiveMode } : {}),
           ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}),
           ...(selectedBudget ? { reasoningBudget: selectedBudget } : {}),
           webSearch: false,
@@ -631,7 +685,7 @@ export const SessionScreen = memo(function SessionScreen({
    * snapshot (messages and the draft it replaced) stays restorable across further reverts.
    */
   async function handleRevert(message: UIMessage) {
-    if (status !== "ready") return;
+    if (status === "submitted" || status === "streaming") return;
     const index = messages.findIndex((candidate) => candidate.id === message.id);
     if (index === -1) return;
 
@@ -644,6 +698,7 @@ export const SessionScreen = memo(function SessionScreen({
       (current) => current ?? { messages, draft: replacedDraft ?? { text: "", files: [] } },
     );
     setMessages(messages.slice(0, index));
+    clearError();
   }
 
   function restoreRevert() {
@@ -674,6 +729,8 @@ export const SessionScreen = memo(function SessionScreen({
     } else {
       const forkModelData = models?.find((candidate) => candidate.slug === forkModel);
       const forkEffort = validReasoningEffort(forkModelData, reasoningEffort);
+      const forkTier = validServiceTier(forkModelData, selectedProvider, serviceTier);
+      const forkMode = validInferenceMode(forkModelData, selectedProvider, effectiveMode);
       const forkBudget =
         forkModelData?.features?.reasoning_budget && reasoningBudget ? reasoningBudget : undefined;
       newChatId = await forkChat({
@@ -686,12 +743,26 @@ export const SessionScreen = memo(function SessionScreen({
           files: getMessageFiles(message),
           model: forkModel,
           ...(selectedProvider ? { provider: selectedProvider } : {}),
+          ...(forkTier ? { serviceTier: forkTier } : {}),
+          ...(forkMode ? { inferenceMode: forkMode } : {}),
           ...(forkEffort ? { reasoningEffort: forkEffort } : {}),
           ...(forkBudget ? { reasoningBudget: forkBudget } : {}),
           webSearch: false,
         },
       });
     }
+    patchTabState(`chat-${newChatId}`, {
+      serviceTier: validServiceTier(
+        models?.find((candidate) => candidate.slug === forkModel),
+        selectedProvider,
+        serviceTier,
+      ),
+      inferenceMode: validInferenceMode(
+        models?.find((candidate) => candidate.slug === forkModel),
+        selectedProvider,
+        effectiveMode,
+      ),
+    });
 
     await navigate({
       to: "/chat/$chatId",
@@ -807,7 +878,11 @@ export const SessionScreen = memo(function SessionScreen({
         <div className="relative flex h-11 shrink-0 items-center justify-end gap-1 px-3">
           {latestUsage && maxTokens ? (
             <div className="shrink-0 max-sm:hidden">
-              <ContextUsage usage={latestUsage} maxTokens={maxTokens} modelId={selectedModel} />
+              <ContextUsage
+                usage={latestUsage.usage}
+                maxTokens={maxTokens}
+                executions={latestUsage.executions}
+              />
             </div>
           ) : null}
           <SessionWorkerControl
@@ -839,7 +914,7 @@ export const SessionScreen = memo(function SessionScreen({
               showChainOfThought={chainOfThoughtEnabled}
               forkModels={models}
               agentName={agent.name}
-              canRevert={status === "ready" && chat !== undefined}
+              canRevert={!isRunning && chat !== undefined}
               onCopy={threadActions.onCopy}
               onRevert={threadActions.onRevert}
               onRetry={threadActions.onRetry}
@@ -942,10 +1017,14 @@ export const SessionScreen = memo(function SessionScreen({
                 isLoading={isModelLoading}
                 selectedModel={selectedModel}
                 selectedProvider={selectedProvider}
+                serviceTier={selectedTier}
+                inferenceMode={effectiveMode}
                 reasoningEffort={selectedEffort}
                 reasoningBudget={reasoningBudget}
                 onModelChange={setModelOverride}
                 onProviderChange={setProviderOverride}
+                onServiceTierChange={setServiceTier}
+                onInferenceModeChange={setInferenceMode}
                 onReasoningEffortChange={setReasoningEffort}
                 onReasoningBudgetChange={setReasoningBudget}
               />
@@ -1029,8 +1108,18 @@ function sessionRunState(status: ChatStatus, messages: UIMessage[], isStarting: 
 /** Cumulative token usage of the latest assistant turn that reported it. */
 function findLatestUsage(messages: UIMessage[]) {
   for (let index = messages.length - 1; index >= 0; index--) {
-    const usage = getUsageMetadata(messages[index]?.metadata);
-    if (usage) return usage;
+    const metadata = messages[index]?.metadata;
+    const usage = getUsageMetadata(metadata);
+    if (usage) {
+      const executions =
+        typeof metadata === "object" &&
+        metadata !== null &&
+        "gatewayExecutions" in metadata &&
+        Array.isArray(metadata.gatewayExecutions)
+          ? metadata.gatewayExecutions
+          : undefined;
+      return { usage, executions };
+    }
   }
   return undefined;
 }

@@ -46,8 +46,11 @@ export function formatTokens(tokens: number): string {
   return String(tokens);
 }
 
-/** Per-token price string (as stored) rendered as a per-million dollar figure. */
+/** Per-token price rendered per million; absent prices are not free. */
 export function formatPerMillion(perToken: string): string {
-  const value = parseFloat(perToken) * 1_000_000;
-  return Number.isFinite(value) ? value.toFixed(2) : "0.00";
+  if (!perToken.trim()) return "Unknown";
+  const value = Number(perToken) * 1_000_000;
+  if (!Number.isFinite(value)) return "Unknown";
+  if (value > 0 && value < 0.01) return "<$0.01/M";
+  return `$${value.toFixed(2)}/M`;
 }

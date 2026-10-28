@@ -21,19 +21,24 @@ start.
 - [Worker Convex Client transport](Worker/Convex_Transport.md) — authenticated identity subscription implemented; batched output, commands, recovery and retention planned
 - [Earlier Worker connectivity research](Worker/Connectivity.md) — superseded WSS/Tailscale proposal and tradeoffs
 - [Gateway ownership](Radium_Gateway/Ownership.md)
-- [Gateway and Chatroom AI telemetry](Radium_Gateway/Telemetry.md)
+- [Gateway telemetry](Radium_Gateway/Telemetry.md) — opt-in request capture, deduplicated storage, sessions and branches, retention, and OTLP/webhook export
 - [Observability and usage](observability.md)
 - [Gateway subscription providers](Radium_Gateway/Subscriptions.md)
+- [Gateway routing](Radium_Gateway/LoadBalancer.md) — strategies, session affinity, retries, cooldowns, error rules, and request provider preferences
+- [Gateway credentials](Radium_Gateway/Credentials.md) — per-provider pools of API keys and OAuth/subscription accounts, OAuth flow adapters, and legacy secret names
+- [Gateway usage limits](Radium_Gateway/Limits.md) — per-credential limit and balance snapshots, adapters, polling, budgets, and limit events
 
-| Guide                                                        | Contents                                                                                |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| [Architecture](architecture.md)                              | Runtime boundaries, request flow, data ownership, and repository layout                 |
-| [API reference](api.md)                                      | OpenAI-compatible endpoints, authentication, requests, streaming, and errors            |
-| [Deployment and configuration](deployment.md)                | Environment variables, Convex Cloud, containers, and releases                           |
-| [Operational logging](logging.md)                            | Local structured logging, ingestion limits, privacy, and known gaps                     |
-| [Backend pre-rewrite handoff](Backend_Pre_Rewrite_Report.md) | Source snapshot, persisted contracts, ownership bridge, and rewrite migration checklist |
-| [Convex reuse research](research/Convex_Reuse.md)            | Helper/component candidates and adoption caveats                                        |
-| [Future agent tasks](tasks/README.md)                        | Separate scoped sessions for architecture debt, rollout, and product work               |
+| Guide                                                             | Contents                                                                                |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| [Architecture](architecture.md)                                   | Runtime boundaries, request flow, data ownership, and repository layout                 |
+| [API reference](api.md)                                           | OpenAI-compatible endpoints, authentication, requests, streaming, and errors            |
+| [Deployment and configuration](deployment.md)                     | Environment variables, Convex Cloud, containers, and releases                           |
+| [Operational logging](logging.md)                                 | Local structured logging, ingestion limits, privacy, and known gaps                     |
+| [Backend pre-rewrite handoff](Backend_Pre_Rewrite_Report.md)      | Source snapshot, persisted contracts, ownership bridge, and rewrite migration checklist |
+| [Convex reuse research](research/Convex_Reuse.md)                 | Helper/component candidates and adoption caveats                                        |
+| [Gateway auto-routing research](research/Gateway_Auto_Routing.md) | Proposed cache-affine, quota-aware routing algorithm and prerequisites                  |
+| [Gateway usage limits research](research/Gateway_Usage_Limits.md) | Upstream limit signals per provider and the per-credential tracking design              |
+| [Future agent tasks](tasks/README.md)                             | Separate scoped sessions for architecture debt, rollout, and product work               |
 
 ## Growing The Docs
 

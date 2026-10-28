@@ -6,7 +6,10 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import schema from "./schema";
 import { credentialPreview } from "../src/credential_preview";
-import { getDefaultWorkspaceForUser } from "./workspaces";
+import { findWorkspaceForLegacyBalance, getDefaultWorkspaceForUser } from "./workspaces";
+import { canonicalJson } from "../src/telemetry/canonical";
+import { blobHash, utf8Length } from "../src/telemetry/hash";
+import { INLINE_BLOB_LIMIT } from "../src/telemetry/store";
 import {
   chatWorkspaceBackfillPatch,
   isLegacyChatOwnershipConsistent,
@@ -28,6 +31,9 @@ import {
   type SecretNamespace,
 } from "./secrets";
 import { providerSnapshotFromCatalog } from "../src/workspaces/provider";
+import { MAX_PROVIDER_CREDENTIALS, credentialSecretName } from "../src/workspaces/credentials";
+import { loadSnapshotTarget, recordLoginPlan } from "../src/limits/store";
+import { OPENAI_CODEX_SLUG } from "../src/provider_slugs";
 
 export const migrations = new Migrations(components.migrations, { schema });
 
@@ -252,21 +258,12 @@ async function workspaceConfigurationCandidatesForRead(
     .take(2);
 }
 
-async function workspaceCredentialCandidatesForRead(
+/**
+ * Credential rows occupying the provider-slug secret name. Only these mirror a legacy credential;
+ * pooled credentials have their own secret names and never conflict.
+ */
+async function providerSlugCredentials(
   ctx: QueryCtx,
-  workspace: Id<"workspaces">,
-  provider: string,
-) {
-  return await ctx.db
-    .query("workspace_credentials")
-    .withIndex("by_workspace_and_provider", (q) =>
-      q.eq("workspace", workspace).eq("provider", provider),
-    )
-    .take(2);
-}
-
-async function existingWorkspaceCredential(
-  ctx: MutationCtx,
   workspace: Id<"workspaces">,
   provider: string,
 ) {
@@ -275,7 +272,16 @@ async function existingWorkspaceCredential(
     .withIndex("by_workspace_and_provider", (q) =>
       q.eq("workspace", workspace).eq("provider", provider),
     )
-    .take(2);
+    .take(MAX_PROVIDER_CREDENTIALS);
+  return credentials.filter((credential) => credential.secretName === undefined);
+}
+
+async function existingWorkspaceCredential(
+  ctx: MutationCtx,
+  workspace: Id<"workspaces">,
+  provider: string,
+) {
+  const credentials = await providerSlugCredentials(ctx, workspace, provider);
   if (credentials.length > 1) {
     throw migrationBlocked("a workspace has duplicate provider credential metadata");
   }
@@ -953,6 +959,187 @@ export const runAll = migrations.runner([
   internal.migrations.spansToWorkspaces,
 ]);
 
+/**
+ * Create limit snapshots for credentials added before usage-limit tracking, so the poll cron
+ * covers them before their next routed request, and move the plan of ChatGPT accounts bound
+ * before then out of their preview (`email · plus plan`) into the snapshot. Run once with
+ * `migrations:runCredentialLimits`.
+ */
+export const credentialLimits = migrations.define({
+  table: "workspace_credentials",
+  batchSize: 25,
+  migrateOne: async (ctx, credential) => {
+    await loadSnapshotTarget(ctx, credential, Date.now());
+    if (credential.provider !== OPENAI_CODEX_SLUG) return;
+    const legacy = /^(?:(.+) · )?(\S+) plan$/.exec(credential.preview.account ?? "");
+    if (!legacy) return;
+    await recordLoginPlan(ctx, credential._id, legacy[2]!);
+    return {
+      preview: { ...credential.preview, account: legacy[1] ?? "Connected ChatGPT account" },
+    };
+  },
+});
+
+export const runCredentialLimits = migrations.runner(internal.migrations.credentialLimits);
+
+/** Store a legacy payload as a deduplicated workspace blob; returns its ID. */
+async function legacyBlob(
+  ctx: MutationCtx,
+  workspace: Id<"workspaces">,
+  value: unknown,
+  truncated: boolean,
+): Promise<Id<"telemetry_blobs">> {
+  const canonical = canonicalJson(value);
+  const hash = await blobHash(workspace, "legacy", canonical);
+  const existing = await ctx.db
+    .query("telemetry_blobs")
+    .withIndex("by_workspace_and_hash", (q) => q.eq("workspace", workspace).eq("hash", hash))
+    .unique();
+  if (existing) return existing._id;
+
+  const size = utf8Length(canonical);
+  return await ctx.db.insert("telemetry_blobs", {
+    workspace,
+    hash,
+    kind: "legacy",
+    size,
+    // Content that cannot be stored inline is dropped rather than failing the migration.
+    ...(size <= INLINE_BLOB_LIMIT ? { content: canonical } : { truncated: true }),
+    ...(truncated && size <= INLINE_BLOB_LIMIT ? { truncated: true } : {}),
+  });
+}
+
+/** Legacy payloads were cut at 32,000 characters; unparsable text is stored as a JSON string. */
+function legacyPayloadValue(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+const LEGACY_PAYLOAD_LIMIT = 32_000;
+
+/**
+ * Move AI SDK traces (with spans and payloads) into `telemetry_requests`, then delete the old
+ * rows. Traces whose workspace cannot be resolved are orphans and are deleted. Idempotent: a
+ * request already created from the same trace is not duplicated. Run once with
+ * `migrations:runTelemetryTraces`; it is not part of `runAll`.
+ */
+export const telemetryTracesToRequests = migrations.define({
+  table: "telemetry_traces",
+  batchSize: 10,
+  migrateOne: async (ctx, trace) => {
+    let workspaceId = trace.workspace;
+    if (!workspaceId && trace.balance) {
+      workspaceId = (await findWorkspaceForLegacyBalance(ctx, trace.balance))?._id;
+    }
+    const workspace = workspaceId ? await ctx.db.get("workspaces", workspaceId) : null;
+
+    const spans = await ctx.db
+      .query("telemetry_spans")
+      .withIndex("by_trace_and_startedAt", (q) => q.eq("trace", trace._id))
+      .collect();
+    const payloads = await ctx.db
+      .query("telemetry_payloads")
+      .withIndex("by_trace", (q) => q.eq("trace", trace._id))
+      .collect();
+
+    if (workspace) {
+      const existing = await ctx.db
+        .query("telemetry_requests")
+        .withIndex("by_workspace_and_requestId", (q) =>
+          q.eq("workspace", workspace._id).eq("requestId", trace.requestId),
+        )
+        .first();
+      if (existing?.legacy?.traceId !== trace._id) {
+        const root = payloads.find((payload) => !payload.span);
+        const blobFor = async (text: string | undefined) => {
+          if (text === undefined) return undefined;
+          return await legacyBlob(
+            ctx,
+            workspace._id,
+            legacyPayloadValue(text),
+            text.length >= LEGACY_PAYLOAD_LIMIT,
+          );
+        };
+        const input = await blobFor(root?.inputJson);
+        const output = await blobFor(root?.outputJson);
+
+        let spansBlob: Id<"telemetry_blobs"> | undefined;
+        if (spans.length > 0) {
+          const entries = spans.map((span) => {
+            const payload = payloads.find((item) => item.span === span._id);
+            const {
+              _id,
+              _creationTime,
+              trace: _trace,
+              balance: _balance,
+              workspace: _ws,
+              ...rest
+            } = span;
+            return {
+              ...rest,
+              id: _id,
+              ...(payload?.inputJson === undefined
+                ? {}
+                : { input: legacyPayloadValue(payload.inputJson) }),
+              ...(payload?.outputJson === undefined
+                ? {}
+                : { output: legacyPayloadValue(payload.outputJson) }),
+            };
+          });
+          spansBlob = await legacyBlob(ctx, workspace._id, entries, false);
+        }
+
+        const apiKey = trace.apiKey ? await ctx.db.get("api_keys", trace.apiKey) : null;
+        const chat = trace.chatId ? await ctx.db.get("aisdk_chats", trace.chatId) : null;
+        const completion = trace.chatCompletionId
+          ? await ctx.db.get("chat_completions", trace.chatCompletionId)
+          : null;
+        const interrupted = trace.status === "running";
+        const errorMessage = interrupted ? "interrupted before completion" : trace.error;
+
+        await ctx.db.insert("telemetry_requests", {
+          workspace: workspace._id,
+          requestId: existing ? `${trace.requestId}:legacy-${trace._id}` : trace.requestId,
+          source: trace.source,
+          ...(apiKey ? { apiKey: apiKey._id } : {}),
+          userId: trace.userId,
+          ...(chat ? { chatId: chat._id } : {}),
+          model: trace.model,
+          provider: trace.provider,
+          stream: false,
+          status: trace.status === "running" ? "error" : trace.status,
+          startedAt: trace.startedAt,
+          endedAt: trace.endedAt ?? trace.startedAt,
+          durationMs: trace.durationMs ?? 0,
+          ...(trace.finishReason ? { finishReason: trace.finishReason } : {}),
+          ...(trace.usage ? { usage: trace.usage } : {}),
+          ...(completion ? { chatCompletion: completion._id } : {}),
+          ...(errorMessage ? { error: { message: errorMessage } } : {}),
+          attempts: [],
+          recordsInputs: trace.recordsInputs,
+          recordsOutputs: trace.recordsOutputs,
+          lineage: { kind: "root" },
+          legacy: {
+            traceId: trace._id,
+            ...(input ? { input } : {}),
+            ...(output ? { output } : {}),
+            ...(spansBlob ? { spans: spansBlob } : {}),
+          },
+        });
+      }
+    }
+
+    for (const payload of payloads) await ctx.db.delete("telemetry_payloads", payload._id);
+    for (const span of spans) await ctx.db.delete("telemetry_spans", span._id);
+    await ctx.db.delete("telemetry_traces", trace._id);
+  },
+});
+
+export const runTelemetryTraces = migrations.runner(internal.migrations.telemetryTracesToRequests);
+
 async function verifiedWorkspaceForBalance(
   ctx: QueryCtx,
   balance: Doc<"balances">,
@@ -1120,13 +1307,16 @@ export const verifyWorkspaceCredentials = internalQuery({
         credential.workspace,
         credential.provider,
       );
-      const credentialMetadata = await workspaceCredentialCandidatesForRead(
-        ctx,
-        credential.workspace,
-        credential.provider,
-      );
-      if (credentialMetadata.length > 1) {
-        addVerificationIssue(issues, samples, "credential_metadata_duplicate", credential._id);
+      // Only rows sharing the provider-slug secret name can be duplicates of each other.
+      if (credential.secretName === undefined) {
+        const slugCredentials = await providerSlugCredentials(
+          ctx,
+          credential.workspace,
+          credential.provider,
+        );
+        if (slugCredentials.length > 1) {
+          addVerificationIssue(issues, samples, "credential_metadata_duplicate", credential._id);
+        }
       }
       if (configurations.length === 0) {
         addVerificationIssue(issues, samples, "credential_configuration_missing", credential._id);
@@ -1137,7 +1327,7 @@ export const verifyWorkspaceCredentials = internalQuery({
       }
       const secret = await inspectSecret(ctx, {
         namespace: workspaceProviderSecretNamespace(credential.workspace, credential.provider),
-        name: credential.provider,
+        name: credentialSecretName(credential),
       });
       recordVerificationSecretFailure(
         issues,
@@ -1345,11 +1535,7 @@ export const verifyProviderSecrets = internalQuery({
         }
         if (configurations[0]?.deletedAt !== undefined) return;
 
-        const credentials = await workspaceCredentialCandidatesForRead(
-          ctx,
-          workspace._id,
-          provider.slug,
-        );
+        const credentials = await providerSlugCredentials(ctx, workspace._id, provider.slug);
         if (credentials.length > 1) {
           addVerificationIssue(issues, samples, "credential_metadata_duplicate", balance._id);
         }

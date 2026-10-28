@@ -11,13 +11,25 @@ Chatroom uses this routing path rather than maintaining a second router.
 - [Architecture](architecture.md): request flow, persistence, and current ownership.
 - [Ownership](Radium_Gateway/Ownership.md): personal workspaces, BYOK keys, and
   the legacy balance migration boundary.
-- [AI telemetry](Radium_Gateway/Telemetry.md): optional request capture, Chatroom
-  correlation, local persistence, and optional OTLP export.
+- [Gateway telemetry](Radium_Gateway/Telemetry.md): opt-in request capture,
+  deduplicated storage, session lineage, retention, and OTLP/webhook export.
 - [Observability and usage](observability.md): operational events, generation
   history, usage estimates, and the shared API organization.
-- [Deployment](deployment.md): runtime and exporter configuration.
+- [Deployment](deployment.md): runtime configuration.
 - [Subscription providers](Radium_Gateway/Subscriptions.md): device login,
   shared Hono routing, and the generic frontend backend proxy.
+- [Routing](Radium_Gateway/LoadBalancer.md): CLIProxyAPI-style provider and
+  credential selection, session affinity, retries, cooldowns, error rules, and
+  request provider preferences, configured in **Gateway > Routing**.
+- [Credentials](Radium_Gateway/Credentials.md): per-provider pools of API keys
+  and OAuth/subscription accounts, managed in **Gateway > Credentials**.
+- [Usage limits](Radium_Gateway/Limits.md): per-credential limit and balance
+  snapshots (ChatGPT plan windows, OpenRouter key limits and balance, owner
+  budgets), shown in **Gateway > Limits**, with recorded limit events.
+- Service tiers in the Chatroom model selector, provider-model rate configuration, dispatch-time quotes, served-tier reporting, and separate estimated/provider-reported costs.
+- Structured reasoning continuation and native OpenAI custom string tools; Chatroom uses a lossless in-process SDK adapter through the same routing and accounting pipeline.
+- Cache-read/write accounting with separate 5-minute and 1-hour write rates. Unknown rates and incomplete usage are not reported as free.
+- Inference-mode `provider_headers` are stored as string-to-string records, preserving hyphenated HTTP header names such as `anthropic-beta` without invalid Convex object-field identifiers.
 
 The [Chatroom overview](Radium_Chatroom.md) describes the shared workspace chat
 surface and its owner/member behavior.
@@ -37,7 +49,8 @@ credits or charge the user.
 ## Planned And Limited
 
 Responses, Anthropic Messages, Gemini, and Grok protocol compatibility are future
-work. Random routing remains a known limitation. Better Auth organization
+work. Routing rotates across each provider's credential pool; quota-aware pacing
+and delivery of limit events (inbox, email, webhooks) are future work. Better Auth organization
 ownership, organization invitations, organization-derived membership, and
 broader roles are future work; direct membership is not an invitation flow.
 Application-level encryption and an optional explicit owner-auditing mode are

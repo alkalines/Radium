@@ -9,6 +9,7 @@ import {
   type ToolSet,
   type ToolApprovalConfiguration,
   type UIMessage,
+  type UIMessageChunk,
 } from "ai";
 import { toExaCountry } from "../chatroom/user-location";
 import {
@@ -27,14 +28,23 @@ import {
   workspaceMcpSecretNamespace,
 } from "../../convex/secrets";
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
-import { createTelemetryIntegrations } from "@/telemetry/convex";
 import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
 import { buildWorkerChatTools, workerChatApprovalSecret } from "../worker/chat-tools";
+import type { SettledGeneration } from "./chat_completion";
+import {
+  GatewayInferenceError,
+  gatewayErrorPayload,
+  upstreamFailureFromError,
+  type GatewayErrorPayload,
+} from "../routing/failures";
+import { formatInferenceError } from "../chatroom/inference-errors";
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
   model: string;
   provider?: string;
+  serviceTier?: string;
+  inferenceMode?: string;
   reasoningEffort?: string;
   reasoningBudget?: number;
   id?: Id<"aisdk_chats">;
@@ -89,10 +99,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
 
   const previousPerformance = getLastAssistantPerformance(body.messages);
   const telemetrySettings = await ctx.runQuery(
-    internal.observability.aiTraces.getSettingsForWorkspace,
-    {
-      workspace: workspaceId,
-    },
+    internal.observability.telemetry.getSettingsForWorkspace,
+    { workspace: workspaceId },
   );
   // Workspace owners can read owner-managed telemetry, so member-owned personal
   // chats must not contribute prompt or response content to that channel.
@@ -100,28 +108,52 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     (chat.scope ?? "personal") === "personal" && chat.userId !== workspace.ownerId
       ? { ...telemetrySettings, recordInputs: false, recordOutputs: false }
       : telemetrySettings;
-  const requestId = crypto.randomUUID();
   const generations: Array<{ completionTokens: number; generationTimeMs: number }> = [];
+  const previousMessage = body.messages.at(-1);
+  const previousMetadata =
+    previousMessage?.role === "assistant" &&
+    previousMessage.metadata &&
+    typeof previousMessage.metadata === "object"
+      ? previousMessage.metadata
+      : undefined;
+  const previousExecutions =
+    previousMetadata &&
+    "gatewayExecutions" in previousMetadata &&
+    Array.isArray(previousMetadata.gatewayExecutions)
+      ? previousMetadata.gatewayExecutions
+      : [];
+  const gatewayExecutions = [...previousExecutions];
   const provider = createInternalGatewayProvider(
     ctx,
     workspaceId,
-    () =>
-      Response.json(
-        { error: { message: "Internal gateway request failed", code: 500 } },
-        { status: 500 },
-      ),
-    body.provider,
-    (generation) =>
+    {
+      provider: body.provider,
+      serviceTier: body.serviceTier,
+      inferenceMode: body.inferenceMode,
+      reasoningEffort: body.reasoningEffort,
+      reasoningBudget: body.reasoningBudget,
+    },
+    (generation: SettledGeneration) => {
       generations.push({
         completionTokens: generation.usage.completion_tokens,
         generationTimeMs: generation.genTime,
-      }),
+      });
+      gatewayExecutions.push({
+        model: generation.model ?? body.model,
+        provider: generation.provider,
+        requestedServiceTier: body.serviceTier,
+        serviceTier: generation.serviceTier,
+        estimatedCost: generation.estimatedCost,
+        reportedCost: generation.reportedCost,
+        upstreamInferenceCost: generation.upstreamInferenceCost,
+        costSource: generation.costSource,
+      });
+    },
     telemetrySettingsForRequest.enabled
       ? {
           workspace: workspaceId,
           chatId,
           userId,
-          requestId,
           settings: telemetrySettingsForRequest,
         }
       : undefined,
@@ -156,6 +188,7 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     messages_queue: null,
   });
 
+  let inferenceError: GatewayErrorPayload | undefined;
   const result = streamText({
     model: provider(body.model),
     messages: await convertToModelMessages(body.messages, { tools }),
@@ -165,98 +198,95 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     // Allow follow-up turns so the model can act on executable tool results
     // (Exa web search, MCP tools) instead of stopping at the first tool call.
     stopWhen: isStepCount(5),
-    telemetry: telemetrySettingsForRequest.enabled
-      ? {
-          isEnabled: true,
-          functionId: "radium.chat",
-          recordInputs: telemetrySettingsForRequest.recordInputs,
-          recordOutputs: telemetrySettingsForRequest.recordOutputs,
-          integrations: createTelemetryIntegrations({
-            ctx,
-            workspace: workspaceId,
-            chatId,
-            userId,
-            requestId,
-            settings: telemetrySettingsForRequest,
-            source: "chatroom",
-            functionId: "radium.chat",
-          }),
-        }
-      : { isEnabled: false },
-    onError: () => void closeTools(),
-    providerOptions:
-      body.reasoningEffort || body.reasoningBudget
-        ? {
-            openaiCompatible: {
-              ...(body.reasoningEffort && body.reasoningEffort !== "none"
-                ? { reasoningEffort: body.reasoningEffort }
-                : {}),
-              reasoning: {
-                ...(body.reasoningEffort ? { effort: body.reasoningEffort } : {}),
-                ...(body.reasoningBudget ? { max_tokens: body.reasoningBudget } : {}),
-              },
-            },
-          }
-        : undefined,
+    onError({ error }) {
+      inferenceError = gatewayErrorPayload(
+        upstreamFailureFromError(error, false),
+        error instanceof GatewayInferenceError ? error.details.provider : undefined,
+      );
+      void closeTools();
+    },
     abortSignal: req.signal,
   });
 
-  // Track reasoning start time to calculate duration
-  let reasoningStartTime: number | null = null;
+  const reasoningStarts = new Map<string, { startedAt: number; index: number }>();
+  const reasoningDurations: number[] = [];
 
-  return createUIMessageStreamResponse({
-    stream: toUIMessageStream({
-      stream: result.stream,
-      originalMessages: body.messages,
-      sendSources: true,
-      sendReasoning: true,
-      messageMetadata({ part }) {
-        // Track when reasoning starts
-        if (part.type === "reasoning-start") {
-          if (reasoningStartTime === null) {
-            reasoningStartTime = Date.now();
-          }
-        }
-        // Attach cumulative token usage once the response finishes so the client
-        // can render context-window usage and cost for the message.
-        if (part.type === "finish") {
-          const performance = aggregatePerformance(generations, previousPerformance);
-          return {
-            model: body.model,
-            ...(body.provider ? { provider: body.provider } : {}),
-            usage: part.totalUsage,
-            ...(performance ? { performance } : {}),
-          };
-        }
+  const uiStream = toUIMessageStream({
+    stream: result.stream,
+    originalMessages: body.messages,
+    sendSources: true,
+    sendReasoning: true,
+    onError(error) {
+      const details = inferenceError ?? gatewayErrorPayload(upstreamFailureFromError(error, false));
+      return formatInferenceError(details);
+    },
+    messageMetadata({ part }) {
+      if (part.type === "reasoning-start") {
+        reasoningStarts.set(part.id, { startedAt: Date.now(), index: reasoningDurations.length });
+        reasoningDurations.push(0);
+      } else if (part.type === "reasoning-end") {
+        const timing = reasoningStarts.get(part.id);
+        if (timing)
+          reasoningDurations[timing.index] = Math.ceil((Date.now() - timing.startedAt) / 1000);
+      }
+      // Attach cumulative token usage once the response finishes so the client
+      // can render context-window usage and cost for the message.
+      if (part.type === "finish") {
+        const performance = aggregatePerformance(generations, previousPerformance);
         return {
           model: body.model,
           ...(body.provider ? { provider: body.provider } : {}),
+          ...(body.serviceTier ? { serviceTier: body.serviceTier } : {}),
+          ...(body.inferenceMode ? { inferenceMode: body.inferenceMode } : {}),
+          gatewayExecutions,
+          usage: part.totalUsage,
+          ...(performance ? { performance } : {}),
         };
-      },
-      onEnd: async ({ messages }) => {
-        // Calculate reasoning duration and add it to reasoning parts
-        const messagesWithDuration = messages.map((message) => ({
-          ...message,
-          parts: message.parts.map((part) => {
-            if (part.type === "reasoning" && reasoningStartTime !== null) {
-              const durationMs = Date.now() - reasoningStartTime;
-              const durationSeconds = Math.ceil(durationMs / 1000);
-              return {
-                ...part,
-                duration: durationSeconds,
-              };
-            }
+      }
+      return {
+        model: body.model,
+        ...(body.provider ? { provider: body.provider } : {}),
+        ...(body.serviceTier ? { serviceTier: body.serviceTier } : {}),
+        ...(body.inferenceMode ? { inferenceMode: body.inferenceMode } : {}),
+      };
+    },
+    onEnd: async ({ messages }) => {
+      let reasoningIndex = 0;
+      const originalParts = new Map(
+        body.messages.map((message) => [message.id, message.parts.length]),
+      );
+      const messagesWithDuration = messages.map((message) => ({
+        ...message,
+        parts: message.parts.map((part, index) => {
+          if (part.type !== "reasoning" || index < (originalParts.get(message.id) ?? 0))
             return part;
-          }),
-        }));
-        await ctx.runMutation(internal.aisdk.EditChat, {
-          chatId,
-          messages: messagesWithDuration,
-          activeStream: false,
-        });
-        await closeTools();
-      },
-    }),
+          const duration = reasoningDurations[reasoningIndex++];
+          return duration === undefined ? part : { ...part, duration };
+        }),
+      }));
+      await ctx.runMutation(internal.aisdk.EditChat, {
+        chatId,
+        messages: messagesWithDuration,
+        activeStream: false,
+      });
+      await closeTools();
+    },
+  });
+  return createUIMessageStreamResponse({
+    stream: uiStream.pipeThrough(
+      new TransformStream<UIMessageChunk, UIMessageChunk>({
+        transform(chunk, controller) {
+          if (chunk.type === "error" && inferenceError) {
+            controller.enqueue({
+              type: "data-gateway-error",
+              data: inferenceError,
+              transient: true,
+            });
+          }
+          controller.enqueue(chunk);
+        },
+      }),
+    ),
   });
 }
 

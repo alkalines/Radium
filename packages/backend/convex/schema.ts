@@ -7,17 +7,37 @@ import { workerChatCallFields, workerTaskFields } from "../src/worker/task-contr
 import { chatWorkerSelectionValidator, chatWorkerToolValidator } from "../src/worker/chat-config";
 import { projectFolderValidator } from "../src/projects/validators";
 import {
+  legacyTelemetrySpanKindSchema,
+  legacyTelemetryStatusSchema,
+  telemetryAttemptSchema,
+  telemetryBlobKindSchema,
+  telemetryBlobMetaSchema,
+  telemetryChangesSchema,
+  telemetryDestinationKindSchema,
+  telemetryLineageSchema,
+  telemetryRequestStatusSchema,
   telemetrySettingsSchema,
   telemetrySourceSchema,
-  telemetrySpanKindSchema,
-  telemetryStatusSchema,
   telemetryUsageSchema,
 } from "../src/telemetry/validators";
 import {
   providerModelValidator,
   providerNpmValidator,
+  providerPricingValidator,
   providerSnapshotValidator,
 } from "../src/workspaces/provider";
+import {
+  cooldownReasonValidator,
+  providerRoutingValidator,
+  routingSettingsValidator,
+} from "../src/routing/settings";
+import {
+  alertStateValidator,
+  credentialBudgetValidator,
+  limitSettingsValidator,
+  meterValidator,
+} from "../src/limits/meters";
+import { limitEventKindValidator } from "../src/limits/events";
 
 export default defineSchema({
   /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
@@ -100,14 +120,48 @@ export default defineSchema({
     snapshot: v.optional(providerSnapshotValidator),
     /** Explicit deletion/disable tombstone that blocks legacy resurrection. */
     deletedAt: v.optional(v.number()),
+    /** Owner routing overrides (priority, weight, cooling, error rules); absent means defaults. */
+    routing: v.optional(providerRoutingValidator),
   })
     .index("by_workspace", ["workspace"])
     .index("by_workspace_and_provider", ["workspace", "provider"]),
-  /** Non-secret credential metadata. Values are encrypted in Secret Store. */
+  /**
+   * Non-secret metadata for one credential (API key set or OAuth account) of a workspace provider.
+   * A provider may hold several; each value set is encrypted in Secret Store under the
+   * workspace provider namespace.
+   */
   workspace_credentials: defineTable({
     workspace: v.id("workspaces"),
     provider: v.string(),
     preview: v.record(v.string(), v.string()),
+    /** Owner-chosen name; absent means a name derived from the preview. */
+    label: v.optional(v.string()),
+    /** Disabled credentials are kept but never routed; absent means enabled. */
+    enabled: v.optional(v.boolean()),
+    /**
+     * Secret Store name inside the provider namespace. Absent for credentials created before
+     * pools (and by the legacy migration), whose secret is named after the provider slug.
+     */
+    secretName: v.optional(v.string()),
+    /**
+     * Upstream account identity reported by an OAuth flow (for example a ChatGPT account ID), used
+     * to recognise reconnects of the same account; not a secret.
+     */
+    account: v.optional(v.string()),
+    /**
+     * Tier inside the provider: higher is tried first, lower serves only when every higher
+     * credential is blocked. Absent means 0.
+     */
+    priority: v.optional(v.number()),
+    /** Share inside the provider for `weighted-round-robin`; 0 excludes it. Absent means 1. */
+    weight: v.optional(v.number()),
+    /** Owner budget metered from Radium's own completions; absent means none. */
+    budget: v.optional(credentialBudgetValidator),
+    /**
+     * Masked preview of the adapter-declared limit key (OpenRouter management key), stored in
+     * Secret Store next to the credential; absent when none is set.
+     */
+    limitKeyPreview: v.optional(v.string()),
   }).index("by_workspace_and_provider", ["workspace", "provider"]),
   /** Gateway API keys are workspace-scoped and store only a hash and preview. */
   api_keys: defineTable({
@@ -137,6 +191,10 @@ export default defineSchema({
     mcpServers: v.array(v.id("mcp_servers")),
     /** Worker tools preselected when a Worker is picked for a new chat; absent means none. */
     workerTools: v.optional(v.array(chatWorkerToolValidator)),
+    /** Gateway routing strategy, session affinity, retry, and cooldown; absent means defaults. */
+    routing: v.optional(routingSettingsValidator),
+    /** Usage-limit alert thresholds; absent means defaults. */
+    limits: v.optional(limitSettingsValidator),
   }).index("by_workspace", ["workspace"]),
   /**
    * Folder-like grouping of chats inside a workspace. Deleting a Project detaches its chats;
@@ -202,11 +260,17 @@ export default defineSchema({
     }),
     request: v.object({
       provider: v.string(),
+      /** Provider credential that served the completion; absent for legacy credentials and older rows. */
+      credential: v.optional(v.id("workspace_credentials")),
       byok: v.boolean(),
       app: v.optional(v.id("ai_apps")),
       model: v.id("models"),
       streamed: v.boolean(),
       canceled: v.boolean(),
+      requestedServiceTier: v.optional(v.string()),
+      inferenceMode: v.optional(v.string()),
+      quoteSource: v.optional(v.string()),
+      quote: v.optional(providerPricingValidator),
     }),
     response: v.object({
       genId: v.string(),
@@ -217,10 +281,13 @@ export default defineSchema({
       ttft: v.number(), // Time To First Token
       gen_time: v.number(),
       finish_reason: v.string(),
+      servedServiceTier: v.optional(v.string()),
+      servedQuote: v.optional(providerPricingValidator),
     }),
   })
     .index("by_balance", ["bill.balance"])
-    .index("by_workspace", ["bill.workspace"]),
+    .index("by_workspace", ["bill.workspace"])
+    .index("by_credential", ["request.credential"]),
   models: defineTable({
     name: v.string(),
     launch_date: v.number(), // UNIX in ms
@@ -300,6 +367,135 @@ export default defineSchema({
     value: v.any(),
     expiresAt: v.optional(v.number()),
   }).index("by_provider_namespace_key", ["provider", "namespace", "key"]),
+  /**
+   * Credential-wide (model `""`) or credential+model exclusion after upstream failures. Rows
+   * without `credential` belong to a provider's legacy, not yet migrated credential (or predate
+   * credential pools). Expired rows keep `backoffLevel` until a success clears them or the prune
+   * cron removes them.
+   */
+  routing_cooldowns: defineTable({
+    workspace: v.id("workspaces"),
+    provider: v.string(),
+    credential: v.optional(v.id("workspace_credentials")),
+    model: v.string(),
+    reason: cooldownReasonValidator,
+    nextRetryAt: v.number(),
+    backoffLevel: v.number(),
+    status: v.optional(v.number()),
+    /** Bounded upstream error message; never prompt or response content. */
+    message: v.optional(v.string()),
+    /** Successes dispatched before this time cannot clear the cooldown. */
+    recordedAt: v.number(),
+  })
+    .index("by_workspace_provider_credential_model", [
+      "workspace",
+      "provider",
+      "credential",
+      "model",
+    ])
+    .index("by_nextRetryAt", ["nextRetryAt"]),
+  /**
+   * Usage-limit snapshot of one pooled credential: meters from response headers, error bodies,
+   * polls, and its metered budget; poll scheduling; and the alert state behind `limit_events`.
+   * Removed with the credential.
+   */
+  credential_limits: defineTable({
+    workspace: v.id("workspaces"),
+    provider: v.string(),
+    credential: v.id("workspace_credentials"),
+    meters: v.array(meterValidator),
+    /** Upstream plan, e.g. ChatGPT `plan_type`. */
+    plan: v.optional(v.string()),
+    /** Last write of the snapshot; drives write throttling. */
+    updatedAt: v.number(),
+    /** Last meters from real traffic (headers or error bodies); fresh data defers polls. */
+    passiveAt: v.optional(v.number()),
+    /** Last successful poll. */
+    polledAt: v.optional(v.number()),
+    /** Last poll attempt (scheduled or owner refresh). */
+    pollAttemptAt: v.optional(v.number()),
+    /** Next scheduled poll; absent when the provider has no pollable adapter. */
+    nextPollAt: v.optional(v.number()),
+    pollError: v.optional(
+      v.object({ message: v.string(), status: v.optional(v.number()), at: v.number() }),
+    ),
+    /** Consecutive failed polls; drives backoff and one `poll_failed` per streak. */
+    pollFailures: v.optional(v.number()),
+    /** Highest alert fired per meter since it last re-armed. */
+    alerts: v.array(alertStateValidator),
+    /** Set when `credential_expired` fired; cleared (with `credential_restored`) by a success. */
+    expiredAt: v.optional(v.number()),
+    /** Budget period end; the poll cron recomputes the budget meter once it passes. */
+    budgetResetsAt: v.optional(v.number()),
+    /** A budget recompute is scheduled; coalesces completions. */
+    budgetPendingAt: v.optional(v.number()),
+  })
+    .index("by_credential", ["credential"])
+    .index("by_workspace", ["workspace"])
+    .index("by_nextPollAt", ["nextPollAt"])
+    .index("by_budgetResetsAt", ["budgetResetsAt"]),
+  /**
+   * Usage-limit and credential-health events, each with its complete payload (meter before and
+   * after, the credential's snapshot, provider and credential identity) for later delivery
+   * channels. Kept 30 days; credential names are captured so events outlive their credential.
+   */
+  limit_events: defineTable({
+    workspace: v.id("workspaces"),
+    kind: limitEventKindValidator,
+    provider: v.string(),
+    providerName: v.string(),
+    credential: v.optional(v.id("workspace_credentials")),
+    credentialName: v.string(),
+    meter: v.optional(meterValidator),
+    previous: v.optional(meterValidator),
+    threshold: v.optional(v.number()),
+    /** Upstream HTTP status for credential and poll events. */
+    status: v.optional(v.number()),
+    message: v.string(),
+    snapshot: v.object({ meters: v.array(meterValidator), plan: v.optional(v.string()) }),
+    settings: limitSettingsValidator,
+    occurredAt: v.number(),
+  })
+    .index("by_workspace_and_occurredAt", ["workspace", "occurredAt"])
+    .index("by_occurredAt", ["occurredAt"]),
+  /**
+   * Session-affinity binding from a session key (`<session>::<model>`) to a provider credential.
+   * `credential` is absent for a legacy credential or a binding made before credential pools; such
+   * bindings keep the provider and let the strategy choose the credential.
+   */
+  routing_sessions: defineTable({
+    workspace: v.id("workspaces"),
+    key: v.string(),
+    provider: v.string(),
+    credential: v.optional(v.id("workspace_credentials")),
+    expiresAt: v.number(),
+  })
+    .index("by_workspace_key", ["workspace", "key"])
+    .index("by_expiresAt", ["expiresAt"]),
+  /**
+   * Round-robin and smooth weighted round-robin cursor per workspace and model, plus per-provider
+   * credential rotation state.
+   */
+  routing_cursors: defineTable({
+    workspace: v.id("workspaces"),
+    model: v.string(),
+    lastProvider: v.optional(v.string()),
+    weighted: v.array(v.object({ provider: v.string(), current: v.number(), weight: v.number() })),
+    /**
+     * Credential rotation per provider. Credentials are keyed by ID, with `""` for the provider's
+     * legacy credential: `last` is the last round-robin pick, `credits` the smooth weighted
+     * round-robin state.
+     */
+    credentialCursors: v.optional(
+      v.array(
+        v.object({
+          provider: v.string(),
+          last: v.optional(v.string()),
+          credits: v.array(v.object({ key: v.string(), current: v.number(), weight: v.number() })),
+        }),
+      ),
+    ),
+  }).index("by_workspace_model", ["workspace", "model"]),
   authors: defineTable({
     name: v.string(),
     slug: v.string(),
@@ -403,6 +599,159 @@ export default defineSchema({
       "lastInteractionAt",
     ])
     .index("by_project_and_lastInteractionAt", ["project", "lastInteractionAt"]),
+  /**
+   * Content-addressed telemetry content, unique per `(workspace, hash)`. `hash` covers the
+   * workspace ID and the RFC 8785 canonical JSON. Content lives inline (`content`) or, above the
+   * inline limit, in file storage (`storage`); neither is set when content recording was off.
+   */
+  telemetry_blobs: defineTable({
+    workspace: v.id("workspaces"),
+    hash: v.string(),
+    kind: telemetryBlobKindSchema,
+    /** UTF-8 byte length of the canonical JSON. */
+    size: v.number(),
+    content: v.optional(v.string()),
+    storage: v.optional(v.id("_storage")),
+    meta: v.optional(telemetryBlobMetaSchema),
+    /** Set for migrated legacy payloads that were cut at the old 32,000-character limit. */
+    truncated: v.optional(v.boolean()),
+  }).index("by_workspace_and_hash", ["workspace", "hash"]),
+  /** Ordered tool membership of a `toolset` blob, written once per new toolset. */
+  telemetry_toolset_tools: defineTable({
+    workspace: v.id("workspaces"),
+    toolset: v.id("telemetry_blobs"),
+    tool: v.id("telemetry_blobs"),
+    position: v.number(),
+  })
+    .index("by_toolset_and_position", ["toolset", "position"])
+    .index("by_tool", ["tool"]),
+  /**
+   * Immutable conversation tree. A node is one message at one position; `hash` chains the
+   * parent hash and message blob hash, so shared prefixes are stored once and rollbacks add
+   * siblings instead of replacing history.
+   */
+  telemetry_nodes: defineTable({
+    workspace: v.id("workspaces"),
+    hash: v.string(),
+    parent: v.optional(v.id("telemetry_nodes")),
+    blob: v.id("telemetry_blobs"),
+    /** 1-based message count from the root. */
+    depth: v.number(),
+    /** Who first produced this message: the client (`input`) or the model (`output`). */
+    origin: v.union(v.literal("input"), v.literal("output")),
+  })
+    .index("by_workspace_and_hash", ["workspace", "hash"])
+    .index("by_parent", ["parent"])
+    .index("by_blob", ["blob"]),
+  /** A conversation or agent run grouped by the routing session key. */
+  telemetry_sessions: defineTable({
+    workspace: v.id("workspaces"),
+    key: v.string(),
+    /** Parent session key for subagents (`x-parent-session-id`). */
+    parentKey: v.optional(v.string()),
+    chatId: v.optional(v.id("aisdk_chats")),
+    startedAt: v.number(),
+  })
+    .index("by_workspace_and_key", ["workspace", "key"])
+    .index("by_workspace_and_startedAt", ["workspace", "startedAt"])
+    .index("by_workspace_and_parentKey", ["workspace", "parentKey"]),
+  /** One captured Gateway request: pointers into blobs/nodes plus routing, timing, and usage. */
+  telemetry_requests: defineTable({
+    workspace: v.id("workspaces"),
+    /** Gateway request ID; idempotency key for capture. */
+    requestId: v.string(),
+    source: telemetrySourceSchema,
+    apiKey: v.optional(v.id("api_keys")),
+    userId: v.optional(v.string()),
+    chatId: v.optional(v.id("aisdk_chats")),
+    session: v.optional(v.id("telemetry_sessions")),
+    /** Model slug requested by the client. */
+    model: v.string(),
+    /** Final provider and credential (the committed attempt, or the last failed one). */
+    provider: v.optional(v.string()),
+    credential: v.optional(v.id("workspace_credentials")),
+    stream: v.boolean(),
+    status: telemetryRequestStatusSchema,
+    startedAt: v.number(),
+    endedAt: v.number(),
+    durationMs: v.number(),
+    ttftMs: v.optional(v.number()),
+    generationMs: v.optional(v.number()),
+    finishReason: v.optional(v.string()),
+    usage: v.optional(telemetryUsageSchema),
+    requestedServiceTier: v.optional(v.string()),
+    servedServiceTier: v.optional(v.string()),
+    estimatedCost: v.optional(v.number()),
+    reportedCost: v.optional(v.number()),
+    upstreamInferenceCost: v.optional(v.number()),
+    /** Upstream response ID, for matching provider logs. */
+    providerGenerationId: v.optional(v.string()),
+    chatCompletion: v.optional(v.id("chat_completions")),
+    error: v.optional(v.object({ message: v.string(), status: v.optional(v.number()) })),
+    canceled: v.optional(v.boolean()),
+    attempts: v.array(telemetryAttemptSchema),
+    /** Last client message node; absent when the request had no non-system messages. */
+    input: v.optional(v.id("telemetry_nodes")),
+    /** Model output node, a child of `input`. */
+    output: v.optional(v.id("telemetry_nodes")),
+    /** Leading system/developer messages, stored apart from the conversation chain. */
+    system: v.optional(v.id("telemetry_blobs")),
+    toolset: v.optional(v.id("telemetry_blobs")),
+    /** Raw request body without `messages` and `tools`: model, sampling, flags, metadata. */
+    params: v.optional(v.id("telemetry_blobs")),
+    /** Allowlisted client headers; never credentials. */
+    headers: v.optional(v.id("telemetry_blobs")),
+    recordsInputs: v.boolean(),
+    recordsOutputs: v.boolean(),
+    lineage: telemetryLineageSchema,
+    changes: v.optional(telemetryChangesSchema),
+    /** Rows migrated from the old AI SDK traces; payloads are opaque `legacy` blobs. */
+    legacy: v.optional(
+      v.object({
+        traceId: v.string(),
+        input: v.optional(v.id("telemetry_blobs")),
+        output: v.optional(v.id("telemetry_blobs")),
+        spans: v.optional(v.id("telemetry_blobs")),
+      }),
+    ),
+  })
+    .index("by_workspace_and_startedAt", ["workspace", "startedAt"])
+    .index("by_workspace_and_requestId", ["workspace", "requestId"])
+    .index("by_session_and_startedAt", ["session", "startedAt"])
+    .index("by_chat_and_startedAt", ["chatId", "startedAt"])
+    .index("by_input", ["input"])
+    .index("by_output", ["output"])
+    .index("by_system", ["system"])
+    .index("by_toolset", ["toolset"])
+    .index("by_params", ["params"])
+    .index("by_headers", ["headers"])
+    .index("by_legacy_input", ["legacy.input"])
+    .index("by_legacy_output", ["legacy.output"])
+    .index("by_legacy_spans", ["legacy.spans"]),
+  /** Pending reference checks for blobs/nodes whose last known referrer was deleted. */
+  telemetry_gc: defineTable({
+    workspace: v.id("workspaces"),
+    blob: v.optional(v.id("telemetry_blobs")),
+    node: v.optional(v.id("telemetry_nodes")),
+  }),
+  /** Workspace export destinations; header secrets live in Secret Store under `secretName`. */
+  telemetry_destinations: defineTable({
+    workspace: v.id("workspaces"),
+    kind: telemetryDestinationKindSchema,
+    name: v.string(),
+    endpoint: v.string(),
+    secretName: v.optional(v.string()),
+    enabled: v.boolean(),
+    /** Strip messages, system instructions, tool definitions, and output from exports. */
+    privacyMode: v.boolean(),
+    /** 0..1; decided per session key so whole sessions are kept or dropped together. */
+    samplingRate: v.number(),
+    includeApiKeys: v.array(v.id("api_keys")),
+    excludeApiKeys: v.array(v.id("api_keys")),
+    lastDeliveryAt: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+  }).index("by_workspace", ["workspace"]),
+  /** Deprecated: AI SDK traces. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_traces: defineTable({
     /** Deprecated attribution pointer retained for historical traces. */
     balance: v.optional(v.id("balances")),
@@ -419,7 +768,7 @@ export default defineSchema({
     functionId: v.string(),
     provider: v.string(),
     model: v.string(),
-    status: telemetryStatusSchema,
+    status: legacyTelemetryStatusSchema,
     startedAt: v.number(),
     endedAt: v.optional(v.number()),
     durationMs: v.optional(v.number()),
@@ -436,14 +785,15 @@ export default defineSchema({
     .index("by_workspace_and_startedAt", ["workspace", "startedAt"])
     .index("by_workspace_and_requestId", ["workspace", "requestId"])
     .index("by_chat_and_startedAt", ["chatId", "startedAt"]),
+  /** Deprecated: AI SDK spans. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_spans: defineTable({
     trace: v.id("telemetry_traces"),
     /** Deprecated attribution pointer retained for historical spans. */
     balance: v.optional(v.id("balances")),
     workspace: v.optional(v.id("workspaces")),
-    kind: telemetrySpanKindSchema,
+    kind: legacyTelemetrySpanKindSchema,
     name: v.string(),
-    status: telemetryStatusSchema,
+    status: legacyTelemetryStatusSchema,
     startedAt: v.number(),
     endedAt: v.number(),
     durationMs: v.number(),
@@ -459,6 +809,7 @@ export default defineSchema({
     .index("by_trace_and_startedAt", ["trace", "startedAt"])
     .index("by_balance_and_startedAt", ["balance", "startedAt"])
     .index("by_workspace_and_startedAt", ["workspace", "startedAt"]),
+  /** Deprecated: AI SDK payloads. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_payloads: defineTable({
     trace: v.id("telemetry_traces"),
     span: v.optional(v.id("telemetry_spans")),

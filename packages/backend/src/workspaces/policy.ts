@@ -155,11 +155,3 @@ export function isGatewayCompletionWithoutChat(completion: {
     (completion.bill.apiKey !== undefined || completion.bill.key !== undefined)
   );
 }
-
-/** Only owner-attributed Gateway traces can omit chat visibility checks. */
-export function isOwnerManagedGatewayTrace(
-  trace: { chatId?: string; source: string; userId: string },
-  ownerId: string,
-): boolean {
-  return trace.chatId === undefined && trace.source === "gateway" && trace.userId === ownerId;
-}
