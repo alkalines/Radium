@@ -40,18 +40,18 @@ sequenceDiagram
 - **Phone (planned).** `deliverFallback` carries an `@todo(expo)` for the Expo app: send through [`@convex-dev/expo-push-notifications`](https://www.convex.dev/components/push-notifications) when the user has a registered phone, before desktop push. No app or token storage exists yet; Settings shows a `Planned` row.
 - **Desktop push.** Ten seconds after creation, an unclaimed notification is marked `delivery` and sent by `notifications_push:send` (`src/notifications/web-push.ts`, `web-push` library, Node runtime) to every subscribed browser of the user, with a 1-hour TTL for sessions and 12 hours for limits. The service worker (`apps/web/public/notifications-sw.js`) shows it even with every tab closed. Subscriptions the push service reports gone (404/410) are deleted; other failures are logged and not retried. A tab that reconnects later skips pushed notifications.
 
-Clicking a toast's `Open`, a system notification, or a pushed notification opens the session, or Gateway > Limits after switching to the notification's workspace (from a pushed notification that opens a new window, the current workspace is used). The service worker focuses an open Radium window and posts the target to it, or opens a new window.
+A toast is a round card (`components/notifications/notification-toast.tsx`): category tile, title, and up to two lines of body. Clicking the card opens its target and dismisses it; the X on its top-left corner (shown on hover or focus, always on touch screens) or a swipe only dismisses. Clicking a card, a system notification, or a pushed notification opens the session, or Gateway > Limits after switching to the notification's workspace (from a pushed notification that opens a new window, the current workspace is used). The service worker focuses an open Radium window and posts the target to it, or opens a new window.
 
 ### Sound
 
-Each category has a short Web Audio cue (`components/notifications/notification-sounds.ts`): rising for finished, a repeated tap for attention, falling for failed, one note for limits. Browsers allow audio only after a user gesture on the page, so a tab plays sounds once the user has clicked or typed in it since it loaded; a background tab with that activation still plays. Pushed notifications use the operating system's notification sound.
+Each category has a short Web Audio cue (`components/notifications/notification-sounds.ts`), synthesized as soft bell-like notes (a few sine partials, a fast attack, a long decay, a low-pass filter, and a small synthetic reverb): a rising fifth for finished, two taps and a lift for attention, a falling minor third for failed, one low note for limits. Browsers allow audio only after a user gesture on the page, so a tab plays sounds once the user has clicked or typed in it since it loaded; a background tab with that activation still plays. Pushed notifications use the operating system's notification sound.
 
 ### Preferences And Devices
 
 **Settings > Account > Notifications** (`components/notifications/notifications-panel.tsx`):
 
-- **This device:** asks for the browser's notification permission and, when the deployment has VAPID keys, subscribes the browser to Web Push (`Enable`, `Enable push`, `Turn off push`). `Send test` shows a toast, plays the attention cue, and shows a system notification locally.
-- **Notify me about:** per category, `Notify` (create notifications at all, on every channel) and `Sound`. Stored per user in `user_preferences.notifications` (`notifications.getPreferences`, `notifications.setPreference`); defaults are on, with sound for every category except limits.
+- **This device:** `System notifications` asks for the browser's notification permission (enabling it also subscribes to push when available). `Push while Radium is closed` subscribes or unsubscribes this browser (`Enable`, `Turn off`), or shows an `Unconfigured` tag when the deployment has no VAPID keys and `Unavailable` when the browser cannot receive push. `Send test` shows a toast, plays the attention cue, and shows a system notification locally.
+- **Notify me about:** per category, a preview button for its sound, `Sound`, and `Notify` (create notifications at all, on every channel). Stored per user in `user_preferences.notifications` (`notifications.getPreferences`, `notifications.setPreference`); defaults are on, with sound for every category except limits.
 - **Push devices:** every browser subscribed for the user (`notifications.listDevices`), marked `This device` for the current one, with `Remove`.
 
 A browser profile receives pushes for whoever subscribed it last: signing in as another user re-registers the existing subscription for that user. Signing out does not unsubscribe the browser.
@@ -63,7 +63,7 @@ A browser profile receives pushes for whoever subscribed it last: signing in as 
 
 ### Configuration
 
-Web Push needs VAPID keys on the Convex deployment; without them, tabs and system notifications from open tabs still work and Settings says push is not configured.
+Web Push needs VAPID keys on the Convex deployment; without them, tabs and system notifications from open tabs still work and Settings tags push `Unconfigured`.
 
 ```bash
 bunx web-push generate-vapid-keys

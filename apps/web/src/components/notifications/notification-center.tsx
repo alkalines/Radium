@@ -4,18 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useConvexAuth, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import {
-  CircleCheckIcon,
-  GaugeIcon,
-  MessageCircleQuestionIcon,
-  OctagonXIcon,
-  ShieldAlertIcon,
-} from "lucide-react";
-import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { Toaster } from "@/components/ui/sonner";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import {
   NOTIFICATION_OPEN_MESSAGE,
@@ -26,18 +17,9 @@ import {
   showSystemNotification,
 } from "./browser-notifications";
 import { playNotificationSound, primeNotificationAudio } from "./notification-sounds";
+import { NotificationToaster, showNotificationToast } from "./notification-toast";
 
 type NotificationView = FunctionReturnType<typeof api.notifications.recent>[number];
-
-/** What a notification toast shows; `_id` also dedupes the toast. */
-export type NotificationToastContent = Pick<
-  NotificationView,
-  "kind" | "category" | "title" | "body"
-> & { _id: string };
-
-/** Sonner toaster that only renders notifications, so app feedback toasts keep their place. */
-export const NOTIFICATION_TOASTER = "notifications";
-const TOAST_DURATION_MS = 8_000;
 
 /**
  * A tab without focus waits this long before claiming, so a focused tab (where the user is
@@ -52,16 +34,6 @@ function isViewing(notification: NotificationView, activeChatId: string | undefi
     document.visibilityState === "visible" &&
     document.hasFocus()
   );
-}
-
-function NotificationIcon({ notification }: { notification: NotificationToastContent }) {
-  if (notification.kind === "session_approval") return <ShieldAlertIcon className="size-4" />;
-  if (notification.kind === "session_question") {
-    return <MessageCircleQuestionIcon className="size-4" />;
-  }
-  if (notification.category === "finished") return <CircleCheckIcon className="size-4" />;
-  if (notification.category === "failed") return <OctagonXIcon className="size-4" />;
-  return <GaugeIcon className="size-4" />;
 }
 
 /**
@@ -184,29 +156,4 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
   }, [notifications, claim]);
 
   return <NotificationToaster />;
-}
-
-/** The notifications Toaster: top right, newest on top, the pile expanded. */
-export function NotificationToaster() {
-  return (
-    <Toaster
-      id={NOTIFICATION_TOASTER}
-      position="top-right"
-      expand
-      visibleToasts={5}
-      duration={TOAST_DURATION_MS}
-      className="notification-toaster"
-    />
-  );
-}
-
-/** Show one notification as a toast with its category icon and, with `onOpen`, an `Open` action. */
-export function showNotificationToast(notification: NotificationToastContent, onOpen?: () => void) {
-  toast(notification.title, {
-    toasterId: NOTIFICATION_TOASTER,
-    id: notification._id,
-    description: notification.body,
-    icon: <NotificationIcon notification={notification} />,
-    ...(onOpen ? { action: { label: "Open", onClick: onOpen } } : {}),
-  });
 }

@@ -9,15 +9,17 @@ import {
   GaugeIcon,
   MonitorIcon,
   OctagonXIcon,
+  RadioTowerIcon,
   ShieldAlertIcon,
   SmartphoneIcon,
+  Volume2Icon,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { NotificationCategory } from "backend/src/notifications/contract";
-import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
+import { GroupList, Row, RowBlock, Tag } from "@/components/harness/group-list";
 import { PageHeader } from "@/components/harness/page-header";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -32,8 +34,8 @@ import {
   subscribeToPush,
   type NotificationPermissionState,
 } from "./browser-notifications";
-import { showNotificationToast } from "./notification-center";
-import { playNotificationSound } from "./notification-sounds";
+import { previewNotificationSound } from "./notification-sounds";
+import { showNotificationToast } from "./notification-toast";
 
 const categories: {
   category: NotificationCategory;
@@ -67,7 +69,7 @@ const categories: {
   },
 ];
 
-function permissionDescription(permission: NotificationPermissionState, canPush: boolean) {
+function permissionDescription(permission: NotificationPermissionState) {
   if (permission === "unsupported") return "This browser cannot show system notifications.";
   if (permission === "denied") {
     return "Blocked for this site. Allow notifications in the browser's site settings.";
@@ -75,9 +77,7 @@ function permissionDescription(permission: NotificationPermissionState, canPush:
   if (permission === "default") {
     return "Off. Enable to get system notifications while Radium is in the background.";
   }
-  return canPush
-    ? "On, including while every Radium tab is closed."
-    : "On while a Radium tab is open in the background.";
+  return "On while Radium is in the background.";
 }
 
 /**
@@ -96,10 +96,12 @@ export function NotificationsPanel() {
 
   // Browser state is client-only; read it after mount so server and client markup agree.
   const [permission, setPermission] = useState<NotificationPermissionState>("unsupported");
+  const [pushSupported, setPushSupported] = useState(false);
   const [endpoint, setEndpoint] = useState<string | undefined>();
   const [isBusy, setIsBusy] = useState(false);
   useEffect(() => {
     setPermission(notificationPermission());
+    setPushSupported(isPushSupported());
     void currentPushSubscription().then((subscription) => setEndpoint(subscription?.endpoint));
   }, []);
 
@@ -108,7 +110,6 @@ export function NotificationsPanel() {
   );
 
   const publicKey = pushConfig?.publicKey ?? null;
-  const canPush = publicKey !== null && isPushSupported();
   const isSubscribed = endpoint !== undefined && Boolean(devices?.some((device) => device.current));
 
   async function enable() {
@@ -167,21 +168,27 @@ export function NotificationsPanel() {
       body: "This is how Radium notifications look and sound on this device.",
     };
     showNotificationToast(test);
-    playNotificationSound(test.category);
+    previewNotificationSound(test.category);
     void showSystemNotification({ ...test, id: test._id, path: "/settings/notifications" });
   }
 
-  let deviceAction: ReactNode = null;
-  if (permission === "default" || (permission === "granted" && canPush && !isSubscribed)) {
-    deviceAction = (
-      <Button variant="outline" size="sm" disabled={isBusy} onClick={() => void enable()}>
-        {permission === "default" ? "Enable" : "Enable push"}
+  // Push needs the server's VAPID keys, a browser with the Push API, and permission (which
+  // `enable` requests first).
+  let pushControl: ReactNode = null;
+  if (pushConfig !== undefined && publicKey === null) {
+    pushControl = <Tag title="The server has no Web Push VAPID keys.">Unconfigured</Tag>;
+  } else if (!pushSupported || permission === "unsupported" || permission === "denied") {
+    pushControl = <Tag title="This browser cannot receive push notifications.">Unavailable</Tag>;
+  } else if (isSubscribed) {
+    pushControl = (
+      <Button variant="outline" size="sm" disabled={isBusy} onClick={() => void disablePush()}>
+        Turn off
       </Button>
     );
-  } else if (permission === "granted" && isSubscribed) {
-    deviceAction = (
-      <Button variant="outline" size="sm" disabled={isBusy} onClick={() => void disablePush()}>
-        Turn off push
+  } else if (publicKey !== null) {
+    pushControl = (
+      <Button variant="outline" size="sm" disabled={isBusy} onClick={() => void enable()}>
+        Enable
       </Button>
     );
   }
@@ -197,15 +204,26 @@ export function NotificationsPanel() {
         <Row
           icon={MonitorIcon}
           title="System notifications"
-          description={permissionDescription(permission, canPush && isSubscribed)}
+          description={permissionDescription(permission)}
         >
-          {deviceAction}
+          {permission === "default" ? (
+            <Button variant="outline" size="sm" disabled={isBusy} onClick={() => void enable()}>
+              Enable
+            </Button>
+          ) : null}
+          {permission === "unsupported" ? <Tag>Unavailable</Tag> : null}
         </Row>
-        {permission === "granted" && pushConfig !== undefined && publicKey === null ? (
-          <RowBlock className="text-sm text-muted-foreground">
-            Push while Radium is closed is not configured on this server (Web Push VAPID keys).
-          </RowBlock>
-        ) : null}
+        <Row
+          icon={RadioTowerIcon}
+          title="Push while Radium is closed"
+          description={
+            isSubscribed
+              ? "On. This device is notified even with every Radium tab closed."
+              : "Notify this device even with every Radium tab closed."
+          }
+        >
+          {pushControl}
+        </Row>
         <Row
           icon={BellRingIcon}
           title="Test"
@@ -242,6 +260,15 @@ export function NotificationsPanel() {
               >
                 <div className="flex items-center gap-4">
                   <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Preview the ${item.title} sound`}
+                      title="Preview sound"
+                      onClick={() => previewNotificationSound(item.category)}
+                    >
+                      <Volume2Icon />
+                    </Button>
                     <Label htmlFor={soundId} className="text-xs font-normal text-muted-foreground">
                       Sound
                     </Label>
