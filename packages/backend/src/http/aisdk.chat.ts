@@ -39,6 +39,8 @@ import {
   type GatewayErrorPayload,
 } from "../routing/failures";
 import { formatInferenceError } from "../chatroom/inference-errors";
+import { logger } from "../logging/server";
+import { sessionNotificationKind } from "../notifications/session";
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
@@ -211,6 +213,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
 
   const reasoningStarts = new Map<string, { startedAt: number; index: number }>();
   const reasoningDurations: number[] = [];
+  // Formatted message of the error chunk the client was sent, for the failure notification.
+  let streamFailure: string | undefined;
 
   const uiStream = toUIMessageStream({
     stream: result.stream,
@@ -219,7 +223,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     sendReasoning: true,
     onError(error) {
       const details = inferenceError ?? gatewayErrorPayload(upstreamFailureFromError(error, false));
-      return formatInferenceError(details);
+      streamFailure = formatInferenceError(details);
+      return streamFailure;
     },
     messageMetadata({ part }) {
       if (part.type === "reasoning-start") {
@@ -251,7 +256,7 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         ...(body.inferenceMode ? { inferenceMode: body.inferenceMode } : {}),
       };
     },
-    onEnd: async ({ messages }) => {
+    onEnd: async ({ messages, isAborted, isCancelled, outcome, responseMessage }) => {
       let reasoningIndex = 0;
       const originalParts = new Map(
         body.messages.map((message) => [message.id, message.parts.length]),
@@ -271,6 +276,27 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         activeStream: false,
       });
       await closeTools();
+
+      // Notifications are a side channel: a failure here must not fail the saved request.
+      const kind = sessionNotificationKind({
+        isAborted,
+        isCancelled,
+        outcome,
+        failed: streamFailure !== undefined,
+        responseMessage,
+      });
+      if (kind) {
+        try {
+          await ctx.runMutation(internal.notifications.notifySession, {
+            userId,
+            chat: chatId,
+            kind,
+            ...(kind === "session_failed" && streamFailure ? { detail: streamFailure } : {}),
+          });
+        } catch {
+          logger.warn("notifications.session_notify_failed");
+        }
+      }
     },
   });
   return createUIMessageStreamResponse({

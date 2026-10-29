@@ -15,6 +15,9 @@ const app = defineApp({
     LWC_SECRET: v.optional(v.string()),
     WORKER_AUTH_JWKS: v.optional(v.string()),
     WORKER_AUTH_PRIVATE_JWK: v.optional(v.string()),
+    WEB_PUSH_VAPID_PUBLIC_KEY: v.optional(v.string()),
+    WEB_PUSH_VAPID_PRIVATE_KEY: v.optional(v.string()),
+    WEB_PUSH_SUBJECT: v.optional(v.string()),
   },
 });
 app.use(betterAuth);

@@ -9,25 +9,28 @@ container and release paths are currently blocked and unverified pending the
 
 ### Application And Convex
 
-| Variable                  | Required          | Scope              | Purpose                                                                |
-| ------------------------- | ----------------- | ------------------ | ---------------------------------------------------------------------- |
-| `CONVEX_DEPLOYMENT`       | Cloud development | Local CLI          | Convex deployment selected by `convex dev`                             |
-| `VITE_CONVEX_URL`         | Yes               | Build/public       | Convex client URL, normally `https://<deployment>.convex.cloud`        |
-| `VITE_CONVEX_SITE_URL`    | Yes               | Build/public       | Convex HTTP action origin, normally `https://<deployment>.convex.site` |
-| `SITE_URL`                | Yes               | Convex             | Public web origin used by Better Auth, such as `http://localhost:3000` |
-| `SECRET_STORE_KEYS`       | Yes               | Deploy/Convex      | Versioned key material used by Convex Secret Store                     |
-| `AISDK_MaxRetries`        | No                | Convex             | AI SDK retry count; defaults to `0`                                    |
-| `LWC_SECRET`              | Feature-specific  | Convex             | Signs ChatGPT Subscription sessions                                    |
-| `WORKER_AUTH_PRIVATE_JWK` | Worker auth       | Convex secret      | Private ES256 machine-token issuer JWK with `kid`                      |
-| `WORKER_AUTH_JWKS`        | Worker auth       | Convex/auth config | Matching public JWKS for the optional custom JWT verifier              |
+| Variable                     | Required          | Scope              | Purpose                                                                                    |
+| ---------------------------- | ----------------- | ------------------ | ------------------------------------------------------------------------------------------ |
+| `CONVEX_DEPLOYMENT`          | Cloud development | Local CLI          | Convex deployment selected by `convex dev`                                                 |
+| `VITE_CONVEX_URL`            | Yes               | Build/public       | Convex client URL, normally `https://<deployment>.convex.cloud`                            |
+| `VITE_CONVEX_SITE_URL`       | Yes               | Build/public       | Convex HTTP action origin, normally `https://<deployment>.convex.site`                     |
+| `SITE_URL`                   | Yes               | Convex             | Public web origin used by Better Auth, such as `http://localhost:3000`                     |
+| `SECRET_STORE_KEYS`          | Yes               | Deploy/Convex      | Versioned key material used by Convex Secret Store                                         |
+| `AISDK_MaxRetries`           | No                | Convex             | AI SDK retry count; defaults to `0`                                                        |
+| `LWC_SECRET`                 | Feature-specific  | Convex             | Signs ChatGPT Subscription sessions                                                        |
+| `WORKER_AUTH_PRIVATE_JWK`    | Worker auth       | Convex secret      | Private ES256 machine-token issuer JWK with `kid`                                          |
+| `WORKER_AUTH_JWKS`           | Worker auth       | Convex/auth config | Matching public JWKS for the optional custom JWT verifier                                  |
+| `WEB_PUSH_VAPID_PUBLIC_KEY`  | Web Push          | Convex             | VAPID public key browsers subscribe with ([Notifications](Notifications.md#configuration)) |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | Web Push          | Convex secret      | Matching VAPID private key that signs push requests                                        |
+| `WEB_PUSH_SUBJECT`           | No                | Convex             | VAPID contact (`mailto:` or `https:`); defaults to `SITE_URL`                              |
 
 `VITE_*` values are public and embedded at build time. Never put provider API
 keys or other secrets in a `VITE_*` variable.
 
 `packages/backend/convex/convex.config.ts` declares the custom backend runtime
 environment contract with Convex validators. `SITE_URL` and `SECRET_STORE_KEYS`
-are required; `AISDK_MaxRetries`, `LWC_SECRET`, and the Worker issuer keys are
-optional. `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` are
+are required; `AISDK_MaxRetries`, `LWC_SECRET`, the Worker issuer keys, and the
+Web Push keys are optional. `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` are
 Convex-provided system variables, not custom app settings. Declarations do not
 set values: configure deployment values through the dashboard or `convex env`.
 The app passes `SECRET_STORE_KEYS` to the Secret Store component by typed env

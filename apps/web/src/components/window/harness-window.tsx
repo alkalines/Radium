@@ -7,6 +7,7 @@ import type { Id } from "backend/convex/_generated/dataModel";
 import { AgentStatus, type RunState } from "@/components/agentic/agent-status";
 import { UserButton } from "@/components/auth/user/user-button";
 import { StripTab, TabEars, stripTabClassName } from "@/components/harness/strip-tab";
+import { NotificationCenter } from "@/components/notifications/notification-center";
 import { SessionProjectTile } from "@/components/session/run-target-picker";
 import { SessionScreen, type SessionTabHint } from "@/components/session/session-screen";
 import { pruneTabStates, removeTabState } from "@/components/session/tab-state";
@@ -397,6 +398,8 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
           );
         })}
       </main>
+
+      <NotificationCenter activeChatId={activeTabId ? activeTab?.chatId : undefined} />
     </div>
   );
 }

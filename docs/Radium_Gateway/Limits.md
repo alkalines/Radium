@@ -30,7 +30,7 @@ Windows are labelled by length (5-hour, Weekly, 30-day), not by primary/secondar
 
 ### Events
 
-`recordLimitEvent` (`src/limits/events.ts`) is the single place events are created. Each `limit_events` row stores the whole payload (provider and credential identity, meter before and after, threshold, upstream status, the full snapshot, and the thresholds in force) so delivery channels need no other reads; `internal.limits.exportEvent` returns it with the workspace. No channel delivers events yet.
+`recordLimitEvent` (`src/limits/events.ts`) is the single place events are created. Each `limit_events` row stores the whole payload (provider and credential identity, meter before and after, threshold, upstream status, the full snapshot, and the thresholds in force) so delivery channels need no other reads; `internal.limits.exportEvent` returns it with the workspace. Each event also notifies the workspace owner (toast in an open tab, else Web Push; see [Notifications](../Notifications.md)); email and webhooks are not implemented.
 
 | Kind                                             | Fires when                                                                                                                                                                                       |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -56,7 +56,7 @@ Owner-only functions in `convex/limits.ts`: `list` (every pooled credential with
 - `wham/usage`, `x-codex-*`, and the OpenRouter budget and `limit_source` shapes are verified against Codex CLI source and OpenRouter docs with fixtures, not against live upstreams. `wham/usage` is undocumented and may change.
 - Per-minute rate-limit headers (OpenAI, Anthropic, Groq) are not tracked; budgets are the only option for those providers.
 - Usage outside Radium shows up only through upstream signals; budgets cannot see it.
-- Events are recorded but not delivered.
+- Events reach only the workspace owner, through [notifications](../Notifications.md); email and webhook delivery are not implemented.
 
 ## Verification
 

@@ -1,6 +1,8 @@
 import { v, type Infer } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx } from "../../convex/_generated/server";
+import { notificationTitle } from "../notifications/contract";
+import { notify } from "../notifications/notify";
 import { meterFraction, type LimitSettings, type Meter } from "./meters";
 
 export const limitEventKindValidator = v.union(
@@ -37,15 +39,17 @@ export type LimitEvent = {
 };
 
 /**
- * Record one limit event with its complete payload. This is the single trigger point for limit
- * events: threshold crossings, resets, credential expiry and restoration, and poll failures all
- * come through here, so delivery channels (inbox, email, webhooks) attach in one place.
+ * Record one limit event with its complete payload and notify the workspace owner. This is the
+ * single trigger point for limit events: threshold crossings, resets, credential expiry and
+ * restoration, and poll failures all come through here, so delivery channels attach in one place
+ * (`src/notifications/notify.ts`; email and webhooks would join there).
  */
 export async function recordLimitEvent(
   ctx: MutationCtx,
   event: LimitEvent,
 ): Promise<Id<"limit_events">> {
-  return await ctx.db.insert("limit_events", {
+  const message = limitEventMessage(event);
+  const id = await ctx.db.insert("limit_events", {
     workspace: event.workspace,
     kind: event.kind,
     provider: event.provider.slug,
@@ -56,11 +60,27 @@ export async function recordLimitEvent(
     ...(event.previous ? { previous: event.previous } : {}),
     ...(event.threshold !== undefined ? { threshold: event.threshold } : {}),
     ...(event.status !== undefined ? { status: event.status } : {}),
-    message: limitEventMessage(event),
+    message,
     snapshot: event.snapshot,
     settings: event.settings,
     occurredAt: event.occurredAt,
   });
+
+  // Limits and credentials are owner-managed, so only the owner is told; archived workspaces
+  // stay quiet.
+  const workspace = await ctx.db.get("workspaces", event.workspace);
+  if (workspace && workspace.archivedAt === undefined) {
+    await notify(ctx, {
+      userId: workspace.ownerId,
+      workspace: event.workspace,
+      kind: event.kind,
+      title: notificationTitle(event.kind),
+      body: `${workspace.name} · ${message}`,
+      limitEvent: id,
+      createdAt: event.occurredAt,
+    });
+  }
+  return id;
 }
 
 function formatDuration(ms: number) {

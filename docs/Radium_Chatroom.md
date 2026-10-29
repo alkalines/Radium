@@ -109,6 +109,10 @@ their own credential and runtime rules under the same Chatroom tool boundary.
 Missing Exa keys omit web search; a failing MCP connection is skipped. Secret
 Store recovery failures remain errors for credential management.
 
+### Notifications
+
+When a request ends, the user who sent it is notified that the session finished, waits for an approval or an answer, or failed: a toast and sound in an open tab, a system notification when that tab is in the background, or Web Push when no tab claims it. Stopped requests notify nobody. See [Notifications](Notifications.md).
+
 ### Telemetry
 
 Telemetry is optional and disabled by default. It is captured at the Gateway, so
