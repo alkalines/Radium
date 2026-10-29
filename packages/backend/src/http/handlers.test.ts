@@ -444,7 +444,8 @@ describe("moved HTTP handlers", () => {
         };
       if (name === getFunctionName(internal.observability.telemetry.getSettingsForWorkspace))
         return { enabled: false };
-      if (name === getFunctionName(internal.chatroom.resolveChatTools)) return { mcpServers: [] };
+      if (name === getFunctionName(internal.chatroom.resolveChatTools))
+        return { builtinToolSets: [], mcpServers: [] };
       if (name === getFunctionName(internal.chatroom.resolveWebSearch)) return { enabled: false };
       throw new Error(`Unexpected query ${name}`);
     });

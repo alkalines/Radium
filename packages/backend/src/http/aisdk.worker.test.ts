@@ -20,6 +20,13 @@ vi.mock("ai", async () => ({
 }));
 
 import { handleAISDKChat } from "./aisdk.chat";
+import { QUESTION_TOOL_ID } from "../chatroom/tools";
+
+/**
+ * The fixture's resolved selection enables only the `question` session set, so `todo_write`
+ * (switched off) must not reach the model; enabled session tools come before Worker tools.
+ */
+const sessionToolNames = [QUESTION_TOOL_ID];
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -54,7 +61,7 @@ function fixture(userId = "owner", worker: StoredWorker = defaultWorker) {
       workspace: { _id: "chat-workspace", ownerId: "owner" },
     })
     .mockResolvedValueOnce({ enabled: false })
-    .mockResolvedValueOnce({ mcpServers: [] });
+    .mockResolvedValueOnce({ builtinToolSets: [QUESTION_TOOL_ID], mcpServers: [] });
   if (userId === "owner" && worker.workerId !== undefined)
     runQuery.mockResolvedValueOnce({
       workerId: "selected-worker",
@@ -82,7 +89,12 @@ test("HTTP chat exposes the persisted Worker's enabled tools with signed write a
   const f = fixture();
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
   const options = mocks.streamText.mock.calls[0]![0];
-  expect(Object.keys(options.tools)).toEqual(["worker_read", "worker_edit", "worker_create"]);
+  expect(Object.keys(options.tools)).toEqual([
+    ...sessionToolNames,
+    "worker_read",
+    "worker_edit",
+    "worker_create",
+  ]);
   expect(options.toolApproval).toEqual({
     worker_edit: "user-approval",
     worker_create: "user-approval",
@@ -98,7 +110,7 @@ test("Bash-only Worker selection receives a signed approval secret", async () =>
   const f = fixture("owner", { ...defaultWorker, tools: ["bash"] });
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
   const options = mocks.streamText.mock.calls[0]![0];
-  expect(Object.keys(options.tools)).toEqual(["worker_bash"]);
+  expect(Object.keys(options.tools)).toEqual([...sessionToolNames, "worker_bash"]);
   expect(options.toolApproval).toEqual({ worker_bash: "user-approval" });
   expect(options.experimental_toolApprovalSecret).toBeInstanceOf(Uint8Array);
 });
@@ -106,7 +118,7 @@ test("Bash-only Worker selection receives a signed approval secret", async () =>
 test("shared-chat members never receive owner-selected Worker tools", async () => {
   const f = fixture("member");
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
-  expect(mocks.streamText.mock.calls[0]![0].tools).toEqual({});
+  expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual(sessionToolNames);
   expect(f.runQuery).toHaveBeenCalledTimes(4);
 });
 
@@ -125,7 +137,7 @@ test("a Worker without a reported directory exposes tools that explain why they 
   const f = fixture("owner", { workerId: "selected-worker", tools: ["read", "bash"] });
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
   const options = mocks.streamText.mock.calls[0]![0];
-  expect(Object.keys(options.tools)).toEqual(["worker_read", "worker_bash"]);
+  expect(Object.keys(options.tools)).toEqual([...sessionToolNames, "worker_read", "worker_bash"]);
   expect(options.toolApproval).toEqual({});
   await expect(
     options.tools.worker_bash.execute({ command: "ls", timeout: 5 }, { toolCallId: "call" }),
@@ -141,6 +153,6 @@ test("a Worker without a reported directory exposes tools that explain why they 
 test("Worker tools chosen without a Worker are not offered to the model", async () => {
   const f = fixture("owner", { tools: ["read"] });
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
-  expect(mocks.streamText.mock.calls[0]![0].tools).toEqual({});
+  expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual(sessionToolNames);
   expect(f.runQuery).toHaveBeenCalledTimes(4);
 });

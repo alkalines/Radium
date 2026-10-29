@@ -188,6 +188,8 @@ export default defineSchema({
     enableChainOfThought: v.optional(v.boolean()),
     telemetry: v.optional(telemetrySettingsSchema),
     builtinToolSets: v.array(v.string()),
+    /** Default-on built-in tool sets switched off (`src/chatroom/tools.ts`); absent means none. */
+    disabledBuiltinToolSets: v.optional(v.array(v.string())),
     mcpServers: v.array(v.id("mcp_servers")),
     /** Worker tools preselected when a Worker is picked for a new chat; absent means none. */
     workerTools: v.optional(v.array(chatWorkerToolValidator)),
@@ -559,6 +561,8 @@ export default defineSchema({
     tools: v.optional(
       v.object({
         builtinToolSets: v.array(v.string()),
+        /** Default-on built-in tool sets switched off for this chat; absent means none. */
+        disabledBuiltinToolSets: v.optional(v.array(v.string())),
         mcpServers: v.array(v.id("mcp_servers")),
       }),
     ),

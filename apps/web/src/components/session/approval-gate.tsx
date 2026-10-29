@@ -34,6 +34,11 @@ const gateCopy: Record<ToolKind, { title: string; description: string }> = {
     title: "Allow this web search?",
     description: "The query is sent to the search provider.",
   },
+  question: { title: "Allow these questions?", description: "You answer them next." },
+  todo: {
+    title: "Allow updating the todo list?",
+    description: "The list above the prompt changes.",
+  },
   other: { title: "Allow this tool call?", description: "The tool runs after you approve it." },
 };
 
@@ -43,6 +48,8 @@ const deniedCopy: Record<ToolKind, string> = {
   create: "Denied. No file was created.",
   read: "Denied. Nothing was read.",
   "web-search": "Denied. Nothing was searched.",
+  question: "Denied. No questions were asked.",
+  todo: "Denied. The todo list did not change.",
   other: "Denied. The tool did not run.",
 };
 
@@ -123,7 +130,7 @@ export function ApprovalPrompt({
       data-state="awaiting"
       role="group"
       aria-label={title}
-      className="flex w-full flex-col overflow-hidden rounded-2xl border border-signal-awaiting/40 bg-card"
+      className="flex w-full flex-col overflow-hidden rounded-2xl border border-signal-awaiting/40 bg-card group-data-[tray=attached]/prompt-slot:rounded-t-none"
     >
       <div className="flex max-h-[min(24rem,50svh)] flex-col gap-3 overflow-y-auto p-3">
         <div className="flex items-start gap-2.5 px-1">

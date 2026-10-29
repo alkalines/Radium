@@ -20,7 +20,7 @@ import {
   resolveChatWorkerSelection,
 } from "../src/worker/chat-selection";
 import { requireWorkspaceProject } from "../src/projects/projects";
-import { sanitizeSelection, toolSelectionValidator } from "./chatroom";
+import { storedSelection, toolSelectionValidator } from "./chatroom";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
 const MAX_CHAT_CANDIDATES = 100;
@@ -57,7 +57,7 @@ export const CreateChat = workspaceMutation({
         current: undefined,
       });
     }
-    const tools = args.tools ? await sanitizeSelection(ctx, ctx.workspace, args.tools) : undefined;
+    const tools = args.tools ? await storedSelection(ctx, ctx.workspace, args.tools) : undefined;
 
     const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],

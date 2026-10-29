@@ -66,6 +66,11 @@ and Exa web search credentials. Secret values are loaded server-side from
 Secret Store and are not returned to the browser. Members can use the configured
 workspace tools in chats, subject to the chat's effective selection.
 
+Two session tools act only on the conversation (`packages/backend/src/chatroom/session-tools.ts`). They are built-in tool sets of the same id, listed in the Tools dialog and Settings → Tools like Web Search, but **default-on**: stored selections record them as opt-outs (`disabledBuiltinToolSets` on workspace defaults and chat overrides), so workspaces and chats saved before they existed get them, and switching one off persists. Their shapes follow OpenCode's `question`/`todowrite` tools and ACP plan entries so a future ACP agent can reuse the same UI:
+
+- `question` asks one or more questions (`header`, `question`, `options[{label, description?}]`, `multiple?`). It has no server execution: the stream ends at the call, the browser shows the Question prompt in the Composer's place, and `addToolOutput` returns `{ answers: string[][] }` (one list per question, empty for a skipped one), which the client continues automatically like an approval. The model receives OpenCode's `"Question"="Answer"` text. Dismissing returns an `output-error` and does not continue; the user's next message does.
+- `todo_write` replaces the Session's todo list (`content`, `status`: `pending` | `in_progress` | `completed`). The list lives in the call input of the persisted messages, so it needs no extra storage; the Session shows the latest complete list above the Composer while it has open items or the run is working.
+
 The Chatroom currently supports HTTP MCP servers, web search when configured,
 and approval UI for tool calls. Filesystem, command, and coding execution belong
 to the external Worker. Its Convex component owns identity persistence, and the

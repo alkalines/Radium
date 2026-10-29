@@ -30,6 +30,7 @@ import {
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
 import { buildWorkerChatTools, workerChatApprovalSecret } from "../worker/chat-tools";
+import { buildSessionTools } from "../chatroom/session-tools";
 import type { SettledGeneration } from "./chat_completion";
 import {
   GatewayInferenceError,
@@ -354,7 +355,9 @@ function aggregatePerformance(
  * connection — call it once the stream finishes or errors.
  *
  * The Web Search built-in tool set contributes the Exa search tool when it is
- * enabled and the workspace has an Exa API key configured.
+ * enabled and the workspace has an Exa API key configured. Enabled session
+ * tool sets (`question`, `todo_write`) are registered first, so MCP names that
+ * collide with them get a numeric suffix.
  *
  * @todo OAuth / OAuth 2.1 servers: supply an `OAuthClientProvider` via the
  *   transport's `authProvider` instead of a static bearer header.
@@ -379,7 +382,7 @@ async function buildChatTools(
   const clients: Awaited<ReturnType<typeof createMCPClient>>[] = [];
   // MCP tools are typed with `unknown` inputs; collect them loosely and cast to
   // `ToolSet` once at the boundary to avoid the invariance friction.
-  const tools: Record<string, ToolSet[string]> = {};
+  const tools: Record<string, ToolSet[string]> = { ...buildSessionTools(config.builtinToolSets) };
   let toolApproval: ToolApprovalConfiguration<ToolSet, unknown> | undefined;
   let approvalSecret: Uint8Array | undefined;
   // Shared-chat membership never grants machine execution. Identity and directory

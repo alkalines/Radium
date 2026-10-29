@@ -25,12 +25,13 @@ import {
 } from "@/components/models/model-options";
 import { ContextUsage } from "@/components/session/context-usage";
 import {
-  getApprovalContinuationKey,
   getLastMessageModel,
   getLastMessageProvider,
   getMessageFiles,
   getMessageText,
   getPendingApprovals,
+  getPendingQuestions,
+  getToolContinuationKey,
   getUsageMetadata,
 } from "@/components/session/message-parts";
 import { SessionThread } from "@/components/session/session-thread";
@@ -44,6 +45,9 @@ import { variants } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { builtInAgent, sessionAgentById, type SessionAgent, type SessionProject } from "./agents";
 import { ApprovalPrompt } from "./approval-gate";
+import { QUESTION_DISMISSED_MESSAGE, QuestionPrompt } from "./question-prompt";
+import { TodoPanel, useTodoTrayItems } from "./todo-list";
+import { getLatestTodos } from "./tool-parts";
 import {
   Composer,
   ConversationVisibilityMenu,
@@ -88,7 +92,9 @@ export type SessionTabHint = {
  *   queued prompt once, then streams turns from `POST /api/aisdk/chat` on the Convex site.
  *   A chat that errors or is no longer accessible shows an inline notice and calls
  *   `onUnavailable` once.
- * - A pending tool approval takes the Composer's place (`ApprovalPrompt`) until it is answered.
+ * - A pending tool approval, then a pending `question` call, takes the Composer's place
+ *   (`ApprovalPrompt`, `QuestionPrompt`) until it is answered. The latest `todo_write` list docks
+ *   above that slot while it has open items or the run is working.
  * - Reverting to a user turn drops it and everything after it, puts its text and files back in
  *   the Composer, and offers a Restore card until the next send makes the revert durable.
  *
@@ -497,10 +503,11 @@ export const SessionScreen = memo(function SessionScreen({
     ],
   );
 
-  // Prevent duplicate sends if the SDK rechecks this approval before it settles.
-  const submittedApprovalContinuations = useRef(new Set<string>());
+  // Prevent duplicate sends if the SDK rechecks an answered step before it settles.
+  const submittedToolContinuations = useRef(new Set<string>());
   const {
     addToolApprovalResponse,
+    addToolOutput,
     clearError,
     error,
     messages,
@@ -513,11 +520,11 @@ export const SessionScreen = memo(function SessionScreen({
     id: chatId,
     transport,
     sendAutomaticallyWhen: ({ messages: nextMessages }) => {
-      const continuationKey = getApprovalContinuationKey(nextMessages);
-      if (!continuationKey || submittedApprovalContinuations.current.has(continuationKey)) {
+      const continuationKey = getToolContinuationKey(nextMessages);
+      if (!continuationKey || submittedToolContinuations.current.has(continuationKey)) {
         return false;
       }
-      submittedApprovalContinuations.current.add(continuationKey);
+      submittedToolContinuations.current.add(continuationKey);
       return true;
     },
   });
@@ -530,6 +537,12 @@ export const SessionScreen = memo(function SessionScreen({
     seededChatId.current = chatId;
     setMessages(chat.messages as UIMessage[]);
   }, [chat, chatId, setMessages]);
+
+  // The todo tray shows the latest list while it has open items; a finished one sinks back. The
+  // prompt slot stays squared under it until its exit animation finishes.
+  const trayTodos = useTodoTrayItems(getLatestTodos(messages));
+  const [isTrayAttached, setIsTrayAttached] = useState(trayTodos !== undefined);
+  if (trayTodos && !isTrayAttached) setIsTrayAttached(true);
 
   // Mark before sending so Convex updates or status changes cannot replay the queued turn.
   const sentQueueChatId = useRef<string>(undefined);
@@ -862,6 +875,10 @@ export const SessionScreen = memo(function SessionScreen({
   const isWorkerBusy = isWorkerSaving || (chatId !== undefined && status !== "ready");
   const pendingApprovals = getPendingApprovals(messages);
   const currentApproval = pendingApprovals[0];
+  // A question shows once its turn has stopped streaming, after every approval of that step.
+  const currentQuestion =
+    isRunning || currentApproval ? undefined : getPendingQuestions(messages)[0];
+  const isComposerReplaced = currentApproval !== undefined || currentQuestion !== undefined;
   const revertedCount = pendingRevert ? pendingRevert.messages.length - messages.length : 0;
 
   return (
@@ -959,7 +976,7 @@ export const SessionScreen = memo(function SessionScreen({
         ) : null}
 
         <AnimatePresence initial={false}>
-          {pendingRevert && !currentApproval ? (
+          {pendingRevert && !isComposerReplaced ? (
             <m.div
               key="revert"
               variants={variants.reveal}
@@ -981,79 +998,120 @@ export const SessionScreen = memo(function SessionScreen({
           ) : null}
         </AnimatePresence>
 
-        {/* A pending approval takes the Composer's place; the Composer stays mounted (hidden) so
-            its draft text, files, and model choice survive the answer. */}
-        <AnimatePresence initial={false}>
-          {currentApproval ? (
-            <m.div
-              key="approval"
-              variants={variants.swap}
-              initial="hidden"
-              animate="visible"
-              exit="exit"
-            >
-              <ApprovalPrompt
-                part={currentApproval}
-                total={pendingApprovals.length}
-                shortcutsEnabled={isActive}
-                onApprovalResponse={addToolApprovalResponse}
-              />
-            </m.div>
-          ) : null}
-        </AnimatePresence>
+        {/* The todo tray is the top of the prompt slot: while it is attached (until its exit
+            finishes) the slot squares its top corners so the two read as one extended input. A
+            pending approval or question takes the Composer's place; the Composer stays mounted
+            (hidden) so its draft text, files, and model choice survive the answer. */}
+        <div
+          data-tray={isTrayAttached ? "attached" : undefined}
+          className="group/prompt-slot flex flex-col"
+        >
+          <AnimatePresence initial={false} onExitComplete={() => setIsTrayAttached(false)}>
+            {trayTodos ? <TodoPanel key="todos" items={trayTodos} isRunning={isRunning} /> : null}
+          </AnimatePresence>
+          <div className="flex flex-col">
+            <AnimatePresence initial={false}>
+              {currentApproval ? (
+                <m.div
+                  key="approval"
+                  variants={variants.swap}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                >
+                  <ApprovalPrompt
+                    part={currentApproval}
+                    total={pendingApprovals.length}
+                    shortcutsEnabled={isActive}
+                    onApprovalResponse={addToolApprovalResponse}
+                  />
+                </m.div>
+              ) : null}
+              {currentQuestion ? (
+                <m.div
+                  key={`question-${currentQuestion.toolCallId}`}
+                  variants={variants.swap}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                >
+                  <QuestionPrompt
+                    part={currentQuestion}
+                    shortcutsEnabled={isActive}
+                    onAnswer={(output) =>
+                      void addToolOutput({
+                        tool: "question",
+                        toolCallId: currentQuestion.toolCallId,
+                        output,
+                      })
+                    }
+                    onDismiss={() =>
+                      void addToolOutput({
+                        tool: "question",
+                        toolCallId: currentQuestion.toolCallId,
+                        state: "output-error",
+                        errorText: QUESTION_DISMISSED_MESSAGE,
+                      })
+                    }
+                  />
+                </m.div>
+              ) : null}
+            </AnimatePresence>
 
-        <div hidden={currentApproval !== undefined}>
-          <Composer
-            ref={composerRef}
-            layoutId={`composer-${tabId}`}
-            autoFocus={isEmpty && isActive}
-            canSend={canSend}
-            isRunning={isRunning}
-            onSubmit={chatId === undefined ? submitDraft : submitTurn}
-            onStop={() => void stop()}
-            modelControl={
-              <ModelPicker
-                models={models}
-                isLoading={isModelLoading}
-                selectedModel={selectedModel}
-                selectedProvider={selectedProvider}
-                serviceTier={selectedTier}
-                inferenceMode={effectiveMode}
-                reasoningEffort={selectedEffort}
-                reasoningBudget={reasoningBudget}
-                onModelChange={setModelOverride}
-                onProviderChange={setProviderOverride}
-                onServiceTierChange={setServiceTier}
-                onInferenceModeChange={setInferenceMode}
-                onReasoningEffortChange={setReasoningEffort}
-                onReasoningBudgetChange={setReasoningBudget}
-              />
-            }
-            menuItems={
-              <ConversationVisibilityMenu
-                scope={chat?.scope ?? draftScope}
-                isDraft={chatId === undefined}
-                canChange={
-                  chatId === undefined || (chat?.canManageScope === true && !isScopeSaving)
+            <div hidden={isComposerReplaced}>
+              <Composer
+                ref={composerRef}
+                layoutId={`composer-${tabId}`}
+                autoFocus={isEmpty && isActive}
+                canSend={canSend}
+                isRunning={isRunning}
+                onSubmit={chatId === undefined ? submitDraft : submitTurn}
+                onStop={() => void stop()}
+                modelControl={
+                  <ModelPicker
+                    models={models}
+                    isLoading={isModelLoading}
+                    selectedModel={selectedModel}
+                    selectedProvider={selectedProvider}
+                    serviceTier={selectedTier}
+                    inferenceMode={effectiveMode}
+                    reasoningEffort={selectedEffort}
+                    reasoningBudget={reasoningBudget}
+                    onModelChange={setModelOverride}
+                    onProviderChange={setProviderOverride}
+                    onServiceTierChange={setServiceTier}
+                    onInferenceModeChange={setInferenceMode}
+                    onReasoningEffortChange={setReasoningEffort}
+                    onReasoningBudgetChange={setReasoningBudget}
+                  />
                 }
-                onChange={(scope) => void changeScope(scope)}
+                menuItems={
+                  <ConversationVisibilityMenu
+                    scope={chat?.scope ?? draftScope}
+                    isDraft={chatId === undefined}
+                    canChange={
+                      chatId === undefined || (chat?.canManageScope === true && !isScopeSaving)
+                    }
+                    onChange={(scope) => void changeScope(scope)}
+                  />
+                }
+                toolbarControls={
+                  isOwner && canManageChat ? (
+                    <ToolsDialog
+                      workspace={settingsWorkspaceId}
+                      chatId={chatId}
+                      draftTools={choicesAreStale ? null : draftTools}
+                      onDraftToolsChange={setDraftTools}
+                      workerSelection={workerSelection}
+                      isWorkerLocked={isWorkerBusy || isRunTargetFixed}
+                      onWorkerSelectionChange={(selection) => void changeWorker(selection)}
+                    />
+                  ) : null
+                }
+                textStore={composerTextStore}
               />
-            }
-            toolbarControls={
-              isOwner && canManageChat ? (
-                <ToolsDialog
-                  workspace={settingsWorkspaceId}
-                  chatId={chatId}
-                  draftTools={choicesAreStale ? null : draftTools}
-                  onDraftToolsChange={setDraftTools}
-                  workerSelection={workerSelection}
-                  isWorkerLocked={isWorkerBusy || isRunTargetFixed}
-                  onWorkerSelectionChange={(selection) => void changeWorker(selection)}
-                />
-              ) : null
-            }
-            textStore={composerTextStore}
-          />
+            </div>
+          </div>
         </div>
 
         {/* Only a New session shows its context under the Composer; a chat's Worker sits in the
@@ -1099,6 +1157,7 @@ function withoutDirectory(selection: ChatWorkerSelection | null): ChatWorkerSele
 function sessionRunState(status: ChatStatus, messages: UIMessage[], isStarting: boolean): RunState {
   if (status === "error") return "failed";
   if (getPendingApprovals(messages).length > 0) return "awaiting";
+  if (status === "ready" && getPendingQuestions(messages).length > 0) return "awaiting";
   if (status === "streaming") return "streaming";
   if (status === "submitted") return "thinking";
   if (isStarting) return "queued";
