@@ -88,7 +88,7 @@ export type SessionMessageProps = {
   canRevert: boolean;
   onCopy: (message: UIMessage) => void;
   onRevert: (message: UIMessage) => void;
-  onRetry: (message: UIMessage) => void;
+  onRegenerate: (message: UIMessage) => void;
   onFork: (message: UIMessage, modelSlug: string) => void;
 };
 
@@ -144,7 +144,7 @@ export const SessionMessage = memo(function SessionMessage(props: SessionMessage
             model={getMessageModel(message)}
             performance={getPerformanceMetadata(message.metadata)}
             onCopy={() => props.onCopy(message)}
-            onRetry={() => props.onRetry(message)}
+            onRegenerate={() => props.onRegenerate(message)}
             onFork={(modelSlug) => props.onFork(message, modelSlug)}
           />
         ) : null}

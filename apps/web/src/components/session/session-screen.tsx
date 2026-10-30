@@ -12,6 +12,7 @@ import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import type { ChatInterruption } from "backend/src/chatroom/interruption";
 import type { ToolSelection } from "backend/src/chatroom/tools";
 import type { ChatWorkerSelection } from "backend/src/worker/chat-config";
 import { isWorkerOnline } from "backend/src/worker/presence";
@@ -33,6 +34,7 @@ import {
   getPendingQuestions,
   getToolContinuationKey,
   getUsageMetadata,
+  withoutUnfinishedStep,
 } from "@/components/session/message-parts";
 import { SessionThread } from "@/components/session/session-thread";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -46,6 +48,7 @@ import { cn } from "@/lib/utils";
 import { builtInAgent, sessionAgentById, type SessionAgent, type SessionProject } from "./agents";
 import { ApprovalPrompt } from "./approval-gate";
 import { QUESTION_DISMISSED_MESSAGE, QuestionPrompt } from "./question-prompt";
+import { RunInterruptionCard } from "./run-interruption";
 import { TodoPanel, useTodoTrayItems } from "./todo-list";
 import { getLatestTodos } from "./tool-parts";
 import {
@@ -97,10 +100,13 @@ export type SessionTabHint = {
  *   above that slot while it has open items or the run is working.
  * - Reverting to a user turn drops it and everything after it, puts its text and files back in
  *   the Composer, and offers a Restore card until the next send makes the revert durable.
+ * - A turn that stopped short (Stop, a reload mid-reply, a request error) shows
+ *   `RunInterruptionCard` above the prompt; its Retry continues the turn after the last completed
+ *   step (`withoutUnfinishedStep`), unlike the assistant footer's Regenerate.
  *
  * The Window keeps every open Tab mounted, so streams continue in background Tabs; `isActive`
- * gates autofocus and approval shortcuts. The Worker and context usage sit in the Panel's
- * top-right corner. `onTabHint` reports title, RunState, and Project on change.
+ * gates autofocus and the approval, question, and Retry shortcuts. The Worker and context usage
+ * sit in the Panel's top-right corner. `onTabHint` reports title, RunState, and Project on change.
  * The callbacks take the Tab id so the Window can pass the same functions to every Tab: the
  * screen is memoized, and with stable props a navigation re-renders only the Tabs whose
  * `isActive` (or requested model/Project) changed.
@@ -180,6 +186,7 @@ export const SessionScreen = memo(function SessionScreen({
   const [pendingRevert, setPendingRevert] = useState<PendingRevert | null>(null);
   const [isScopeSaving, setIsScopeSaving] = useState(false);
   const [isWorkerSaving, setIsWorkerSaving] = useState(false);
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
 
   // The chat this Tab's draft just created keeps showing the draft's own choices (Project, Worker,
@@ -530,13 +537,28 @@ export const SessionScreen = memo(function SessionScreen({
   });
 
   // Seed useChat once per chat from persisted messages; later query updates must not overwrite
-  // its live state.
+  // its live state. A chat opened while a request runs elsewhere (another Tab, or this page before
+  // a reload) seeds again once that request ends, because the backend saves the turn only then.
+  // Starting a request here first gives up on it: this Tab's history wins.
   const seededChatId = useRef<string>(undefined);
+  const seededMidRequest = useRef(false);
   useEffect(() => {
-    if (!chat || !chatId || seededChatId.current === chatId) return;
-    seededChatId.current = chatId;
+    if (!chat || !chatId) return;
+    if (seededChatId.current !== chatId) {
+      seededChatId.current = chatId;
+      seededMidRequest.current = chat.activeStream === true;
+      setMessages(chat.messages as UIMessage[]);
+      return;
+    }
+    if (!seededMidRequest.current) return;
+    if (status !== "ready") {
+      seededMidRequest.current = false;
+      return;
+    }
+    if (chat.activeStream) return;
+    seededMidRequest.current = false;
     setMessages(chat.messages as UIMessage[]);
-  }, [chat, chatId, setMessages]);
+  }, [chat, chatId, setMessages, status]);
 
   // The todo tray shows the latest list while it has open items; a finished one sinks back. The
   // prompt slot stays squared under it until its exit animation finishes.
@@ -585,7 +607,16 @@ export const SessionScreen = memo(function SessionScreen({
   }
   const isStarting = isCreating || visiblePendingPrompt !== undefined;
   const isEmpty = chatId === undefined && pendingPrompt === undefined;
-  const runState = sessionRunState(status, messages, isStarting);
+
+  // The turn that stopped short: this browser's request error first (it may never have reached
+  // the backend), else how the backend recorded the last request ending, which survives a reload.
+  let interruption: ChatInterruption | undefined;
+  if (error) {
+    interruption = { kind: "failed", message: error.message };
+  } else if (chat?.interruption && !chat.activeStream) {
+    interruption = chat.interruption;
+  }
+  const runState = sessionRunState(status, messages, isStarting, interruption);
 
   const submittedTitle = pendingPrompt?.split("\n")[0]?.trim() || undefined;
   const title = chat?.title ?? submittedTitle;
@@ -686,10 +717,21 @@ export const SessionScreen = memo(function SessionScreen({
     void sendMessage({ text, files }, { body: buildSendBody(selectedModel) });
   }
 
-  function handleRetry(message: UIMessage) {
+  function handleRegenerate(message: UIMessage) {
     if (!selectedModel) return;
     setPendingRevert(null);
     void regenerate({ messageId: message.id, body: buildSendBody(selectedModel) });
+  }
+
+  /**
+   * Retry from the interruption card: the stopped turn continues instead of starting over. Its
+   * unfinished step is dropped and the conversation is resent without a new user message, so the
+   * reply picks up after its last completed step, with the model selected now.
+   */
+  function continueInterruptedTurn() {
+    if (!selectedModel || status === "submitted" || status === "streaming") return;
+    setMessages(withoutUnfinishedStep(messages));
+    void sendMessage(undefined, { body: buildSendBody(selectedModel) });
   }
 
   /**
@@ -821,9 +863,9 @@ export const SessionScreen = memo(function SessionScreen({
 
   // Thread callbacks keep one identity for the Tab's lifetime and call the latest handlers, so a
   // Tab switch (only `isActive` changes) does not re-render every memoized message.
-  const latestThreadHandlers = useRef({ handleRetry, handleRevert, handleFork });
+  const latestThreadHandlers = useRef({ handleRegenerate, handleRevert, handleFork });
   useLayoutEffect(() => {
-    latestThreadHandlers.current = { handleRetry, handleRevert, handleFork };
+    latestThreadHandlers.current = { handleRegenerate, handleRevert, handleFork };
   });
   const threadActions = useMemo(
     () => ({
@@ -831,7 +873,7 @@ export const SessionScreen = memo(function SessionScreen({
       onRevert: (message: UIMessage) => {
         void latestThreadHandlers.current.handleRevert(message);
       },
-      onRetry: (message: UIMessage) => latestThreadHandlers.current.handleRetry(message),
+      onRegenerate: (message: UIMessage) => latestThreadHandlers.current.handleRegenerate(message),
       onFork: (message: UIMessage, forkModel: string) => {
         void latestThreadHandlers.current
           .handleFork(message, forkModel)
@@ -880,6 +922,17 @@ export const SessionScreen = memo(function SessionScreen({
     isRunning || currentApproval ? undefined : getPendingQuestions(messages)[0];
   const isComposerReplaced = currentApproval !== undefined || currentQuestion !== undefined;
   const revertedCount = pendingRevert ? pendingRevert.messages.length - messages.length : 0;
+  // A revert or a pending answer comes first; Retry would resend the reverted or unanswered turn.
+  const visibleInterruption =
+    interruption &&
+    chatId !== undefined &&
+    messages.length > 0 &&
+    !isRunning &&
+    !isStarting &&
+    !isComposerReplaced &&
+    !pendingRevert
+      ? interruption
+      : undefined;
 
   return (
     <div className="relative flex h-full flex-col">
@@ -934,7 +987,7 @@ export const SessionScreen = memo(function SessionScreen({
               canRevert={!isRunning && chat !== undefined}
               onCopy={threadActions.onCopy}
               onRevert={threadActions.onRevert}
-              onRetry={threadActions.onRetry}
+              onRegenerate={threadActions.onRegenerate}
               onFork={threadActions.onFork}
             />
           )}
@@ -959,12 +1012,6 @@ export const SessionScreen = memo(function SessionScreen({
             <AlertDescription>{createError}</AlertDescription>
           </Alert>
         ) : null}
-        {error ? (
-          <Alert variant="destructive">
-            <AlertTitle>Message failed</AlertTitle>
-            <AlertDescription>{error.message}</AlertDescription>
-          </Alert>
-        ) : null}
         {modelsError ? (
           <Alert variant="destructive">
             <AlertTitle>Workspace unavailable</AlertTitle>
@@ -976,6 +1023,23 @@ export const SessionScreen = memo(function SessionScreen({
         ) : null}
 
         <AnimatePresence initial={false}>
+          {visibleInterruption ? (
+            <m.div
+              key="interruption"
+              variants={variants.reveal}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+            >
+              <RunInterruptionCard
+                interruption={visibleInterruption}
+                canRetry={chat !== undefined && Boolean(selectedModel)}
+                shortcutsEnabled={isActive}
+                onRetry={continueInterruptedTurn}
+                onSwitchModel={() => setIsModelPickerOpen(true)}
+              />
+            </m.div>
+          ) : null}
           {pendingRevert && !isComposerReplaced ? (
             <m.div
               key="revert"
@@ -1083,6 +1147,8 @@ export const SessionScreen = memo(function SessionScreen({
                     onInferenceModeChange={setInferenceMode}
                     onReasoningEffortChange={setReasoningEffort}
                     onReasoningBudgetChange={setReasoningBudget}
+                    isOpen={isModelPickerOpen}
+                    onOpenChange={setIsModelPickerOpen}
                   />
                 }
                 menuItems={
@@ -1153,14 +1219,24 @@ function withoutDirectory(selection: ChatWorkerSelection | null): ChatWorkerSele
   return { workerId: selection.workerId, tools: selection.tools };
 }
 
-/** Tab RunState from the chat lifecycle; the one place UI status is derived for a Session. */
-function sessionRunState(status: ChatStatus, messages: UIMessage[], isStarting: boolean): RunState {
+/**
+ * Tab RunState from the chat lifecycle; the one place UI status is derived for a Session. A turn
+ * that stopped short stays `failed` or `cancelled` until the next request, also after a reload.
+ */
+function sessionRunState(
+  status: ChatStatus,
+  messages: UIMessage[],
+  isStarting: boolean,
+  interruption: ChatInterruption | undefined,
+): RunState {
   if (status === "error") return "failed";
   if (getPendingApprovals(messages).length > 0) return "awaiting";
   if (status === "ready" && getPendingQuestions(messages).length > 0) return "awaiting";
   if (status === "streaming") return "streaming";
   if (status === "submitted") return "thinking";
   if (isStarting) return "queued";
+  if (interruption?.kind === "failed") return "failed";
+  if (interruption?.kind === "interrupted") return "cancelled";
   return "idle";
 }
 

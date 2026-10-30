@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   BrainIcon,
@@ -55,7 +54,8 @@ export function validReasoningEffort(model: AvailableModel | undefined, effort: 
  * The Composer's Model control (`docs/Interface_Design.md` §2): one trigger shows the model name
  * and its reasoning level; the popover searches the workspace's models and its footer picks the
  * inference provider and the reasoning amount (plus a token budget when the model accepts one).
- * Fully controlled; selecting a model keeps the provider and effort valid for it. The user's
+ * Fully controlled, including whether the popover is open (so other Session controls can open
+ * it); selecting a model keeps the provider and effort valid for it and closes it. The user's
  * pinned models list first and hidden ones drop out (`useModelPreferences`); rows pin inline and
  * `Manage models`, the last option in the list, opens Settings → Models.
  */
@@ -74,6 +74,8 @@ export function ModelPicker({
   onInferenceModeChange,
   onReasoningEffortChange,
   onReasoningBudgetChange,
+  isOpen,
+  onOpenChange,
 }: {
   models: AvailableModel[] | undefined;
   isLoading: boolean;
@@ -90,8 +92,9 @@ export function ModelPicker({
   onInferenceModeChange: (mode: string | undefined) => void;
   onReasoningEffortChange: (effort: string) => void;
   onReasoningBudgetChange: (budget: number | undefined) => void;
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
-  const [isOpen, setIsOpen] = useState(false);
   const navigate = useNavigate();
   const { pinnedModels, hiddenModels, setModelPinned } = useModelPreferences();
   const model = models?.find((candidate) => candidate.slug === selectedModel);
@@ -117,7 +120,7 @@ export function ModelPicker({
     if (nextEffort && nextEffort !== reasoningEffort) {
       onReasoningEffortChange(nextEffort);
     }
-    setIsOpen(false);
+    onOpenChange(false);
   }
 
   if (isLoading) {
@@ -136,7 +139,7 @@ export function ModelPicker({
   }
 
   return (
-    <Popover open={isOpen} onOpenChange={setIsOpen}>
+    <Popover open={isOpen} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <InputGroupButton
           size="xs"
@@ -168,7 +171,7 @@ export function ModelPicker({
               keywords={["Manage models", "settings", "pin", "hide"]}
               className="text-muted-foreground"
               onSelect={() => {
-                setIsOpen(false);
+                onOpenChange(false);
                 void navigate({ to: "/settings/models" });
               }}
             >

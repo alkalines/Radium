@@ -8,6 +8,7 @@ import schema from "./schema";
 import { recordLimitEvent } from "../src/limits/events";
 import { resolveLimitSettings, type Meter } from "../src/limits/meters";
 import { sessionNotificationKind, type ChatRequestEnd } from "../src/notifications/session";
+import { chatInterruption } from "../src/chatroom/interruption";
 
 type AuthContext = {
   auth: { getUserIdentity: () => Promise<{ tokenIdentifier?: string } | null> };
@@ -117,6 +118,25 @@ describe("session outcomes", () => {
     failed: false,
     responseMessage: assistant([{ type: "text" }]),
     ...overrides,
+  });
+
+  test("a stopped or failed request leaves an interruption the Session can continue", () => {
+    expect(chatInterruption(end({}))).toBeUndefined();
+    expect(
+      chatInterruption(
+        end({ responseMessage: assistant([{ type: "tool-question", state: "input-available" }]) }),
+      ),
+    ).toBeUndefined();
+    expect(chatInterruption(end({ isCancelled: true, outcome: { status: "unknown" } }))).toEqual({
+      kind: "interrupted",
+    });
+    expect(chatInterruption(end({ isAborted: true, failed: true }), "Upstream failed")).toEqual({
+      kind: "interrupted",
+    });
+    expect(chatInterruption(end({ failed: true }), "Quota reached")).toEqual({
+      kind: "failed",
+      message: "Quota reached",
+    });
   });
 
   test("map the end of a request to the notification the user needs", () => {

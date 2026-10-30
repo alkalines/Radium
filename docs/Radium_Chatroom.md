@@ -5,7 +5,9 @@ reasoning controls, service tiers, approvals, and tools. It uses a lossless in-p
 
 ## Implemented
 
-Completed and failed requests both allow **Revert to this message** on a user turn. Reverting returns its text/files to the Composer, removes that turn and later turns from the local thread, clears the failure alert, and retains Restore until the next send. Submission and streaming still block revert; the next send makes the shortened history durable.
+Completed and failed requests both allow **Revert to this message** on a user turn. Reverting returns its text/files to the Composer, removes that turn and later turns from the local thread, hides the interruption card, and retains Restore until the next send. Submission and streaming still block revert; the next send makes the shortened history durable.
+
+**Retry** continues a turn that stopped short instead of regenerating it. When a request ends aborted (Stop, or the browser disconnected) or with an error, the chat HTTP action saves `interruption` (`kind`, and the streamed error for failures) on the chat beside the partial messages; the next request clears it (`src/chatroom/interruption.ts`). The Session shows it as a card above the prompt; Retry drops the turn's unfinished step (partial text/reasoning, tool calls without a result), keeps steps whose tool calls have results or approval answers, and resends the conversation without a new user message, so the model resumes after those results. A tool call cut off mid-execution is dropped and may run again when the model re-issues it. A Tab that loads a chat while its request is still running reseeds from the saved messages once that request ends, so a reload mid-reply does not continue from stale history. The assistant footer's **Regenerate** still restarts the reply from its user turn.
 
 ### Workspace Access
 

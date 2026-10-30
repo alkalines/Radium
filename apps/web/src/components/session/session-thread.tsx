@@ -45,7 +45,7 @@ export function SessionThread({
   canRevert,
   onCopy,
   onRevert,
-  onRetry,
+  onRegenerate,
   onFork,
 }: {
   messages: UIMessage[];
@@ -57,7 +57,7 @@ export function SessionThread({
   canRevert: boolean;
   onCopy: (message: UIMessage) => void;
   onRevert: (message: UIMessage) => void;
-  onRetry: (message: UIMessage) => void;
+  onRegenerate: (message: UIMessage) => void;
   onFork: (message: UIMessage, modelSlug: string) => void;
 }) {
   // Snapshot of the turns the thread opened with. Taken during render (React's "adjust state
@@ -131,7 +131,7 @@ export function SessionThread({
                       canRevert={canRevert}
                       onCopy={onCopy}
                       onRevert={onRevert}
-                      onRetry={onRetry}
+                      onRegenerate={onRegenerate}
                       onFork={onFork}
                     />
                   </Reveal>

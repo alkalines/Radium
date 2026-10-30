@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { internalMutation } from "../../convex/_generated/server";
+import { chatInterruption } from "../chatroom/interruption";
 import {
   notificationTitle,
   sessionNotificationKindValidator,
@@ -34,8 +35,8 @@ function toolName(part: MessagePart): string | undefined {
  * the Session shows.
  */
 export function sessionNotificationKind(end: ChatRequestEnd): SessionNotificationKind | undefined {
-  if (end.isAborted || end.isCancelled || end.outcome.status === "aborted") return undefined;
-  if (end.failed || end.outcome.status === "failed") return "session_failed";
+  const interruption = chatInterruption(end);
+  if (interruption) return interruption.kind === "failed" ? "session_failed" : undefined;
 
   const parts = end.responseMessage.role === "assistant" ? end.responseMessage.parts : [];
   if (parts.some((part) => toolName(part) !== undefined && part.state === "approval-requested")) {

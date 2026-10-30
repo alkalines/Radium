@@ -42,6 +42,7 @@ import {
   notificationPreferencesValidator,
   sessionNotificationKindValidator,
 } from "../src/notifications/contract";
+import { chatInterruptionValidator } from "../src/chatroom/interruption";
 
 export default defineSchema({
   /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
@@ -604,6 +605,8 @@ export default defineSchema({
     pinnedAt: v.optional(v.number()),
     activeStream: v.optional(v.boolean()),
     lastInteractionAt: v.optional(v.number()),
+    /** How the latest request stopped short, if it did (`src/chatroom/interruption.ts`). */
+    interruption: v.optional(chatInterruptionValidator),
     /**
      * Per-chat tool override. When absent, the chat inherits workspace defaults,
      * including the legacy settings fallback during migration.

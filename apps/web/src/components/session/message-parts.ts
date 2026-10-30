@@ -166,6 +166,36 @@ export function getToolContinuationKey(messages: UIMessage[]) {
 }
 
 /**
+ * The conversation to resend when a stopped or failed turn continues. The last assistant turn
+ * keeps its finished steps, so the model picks up after the tool results it already has, and
+ * drops the step that was cut off: partial text or reasoning and calls without a result (the
+ * model calls them again). A step whose calls all have a result or an approval answer is
+ * finished. An assistant turn left with nothing finished is dropped, so the user turn is answered
+ * again. Any other conversation is returned as is.
+ */
+export function withoutUnfinishedStep(messages: UIMessage[]): UIMessage[] {
+  const message = messages.at(-1);
+  if (!message || message.role !== "assistant") return messages;
+
+  const lastStepStartIndex = message.parts.findLastIndex((part) => part.type === "step-start");
+  const lastStepTools = message.parts.slice(lastStepStartIndex + 1).filter(isToolPart);
+  const isLastStepFinished =
+    lastStepTools.length > 0 &&
+    lastStepTools.every(
+      (part) =>
+        part.state === "output-available" ||
+        part.state === "output-error" ||
+        part.state === "output-denied" ||
+        part.state === "approval-responded",
+    );
+  if (isLastStepFinished) return messages;
+
+  const finishedParts = message.parts.slice(0, Math.max(lastStepStartIndex, 0));
+  if (finishedParts.every((part) => part.type === "step-start")) return messages.slice(0, -1);
+  return [...messages.slice(0, -1), { ...message, parts: finishedParts }];
+}
+
+/**
  * Tool calls the conversation waits on the user for: the `approval-requested` calls of the last
  * message when it is an assistant turn, in call order. Non-empty maps to the `awaiting` RunState
  * at the data boundary.

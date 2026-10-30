@@ -507,6 +507,15 @@ describe("moved HTTP handlers", () => {
     const errors = events.filter((event) => event.type === "error");
     expect(errors).toHaveLength(1);
     expect(errors[0].errorText).toContain("provider_custom_limit");
+
+    // The failure outlives the page: the saved chat offers to continue with the same error.
+    const saved = runMutation.mock.calls.findLast(
+      ([fn]) => getFunctionName(fn) === getFunctionName(internal.aisdk.EditChat),
+    );
+    expect(saved?.[1]).toMatchObject({
+      activeStream: false,
+      interruption: { kind: "failed", message: errors[0].errorText },
+    });
   });
 
   test("completion recording observes synchronous listener cancellation", async () => {

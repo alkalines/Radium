@@ -39,6 +39,7 @@ import {
   type GatewayErrorPayload,
 } from "../routing/failures";
 import { formatInferenceError } from "../chatroom/inference-errors";
+import { chatInterruption } from "../chatroom/interruption";
 import { logger } from "../logging/server";
 import { sessionNotificationKind } from "../notifications/session";
 
@@ -270,21 +271,24 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
           return duration === undefined ? part : { ...part, duration };
         }),
       }));
-      await ctx.runMutation(internal.aisdk.EditChat, {
-        chatId,
-        messages: messagesWithDuration,
-        activeStream: false,
-      });
-      await closeTools();
-
-      // Notifications are a side channel: a failure here must not fail the saved request.
-      const kind = sessionNotificationKind({
+      const end = {
         isAborted,
         isCancelled,
         outcome,
         failed: streamFailure !== undefined,
         responseMessage,
+      };
+      const interruption = chatInterruption(end, streamFailure);
+      await ctx.runMutation(internal.aisdk.EditChat, {
+        chatId,
+        messages: messagesWithDuration,
+        activeStream: false,
+        ...(interruption ? { interruption } : {}),
       });
+      await closeTools();
+
+      // Notifications are a side channel: a failure here must not fail the saved request.
+      const kind = sessionNotificationKind(end);
       if (kind) {
         try {
           await ctx.runMutation(internal.notifications.notifySession, {
