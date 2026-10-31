@@ -694,6 +694,13 @@ export default defineSchema({
     .index("by_chat", ["chat"])
     .index("by_storageId", ["storageId"]),
   /**
+   * Singleton scan position of the unreferenced-file sweep in `chat_files.prunePendingUploads`:
+   * `_storage` files created at or before `scannedThrough` were already checked.
+   */
+  storage_sweeps: defineTable({
+    scannedThrough: v.number(),
+  }),
+  /**
    * Content-addressed telemetry content, unique per `(workspace, hash)`. `hash` covers the
    * workspace ID and the RFC 8785 canonical JSON. Content lives inline (`content`) or, above the
    * inline limit, in file storage (`storage`); neither is set when content recording was off.
@@ -709,7 +716,9 @@ export default defineSchema({
     meta: v.optional(telemetryBlobMetaSchema),
     /** Set for migrated legacy payloads that were cut at the old 32,000-character limit. */
     truncated: v.optional(v.boolean()),
-  }).index("by_workspace_and_hash", ["workspace", "hash"]),
+  })
+    .index("by_workspace_and_hash", ["workspace", "hash"])
+    .index("by_storage", ["storage"]),
   /** Ordered tool membership of a `toolset` blob, written once per new toolset. */
   telemetry_toolset_tools: defineTable({
     workspace: v.id("workspaces"),

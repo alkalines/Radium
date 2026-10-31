@@ -170,19 +170,62 @@ export async function deleteChatFileBatch(ctx: MutationCtx, chat: Id<"aisdk_chat
   return files.length === CLEANUP_BATCH_SIZE;
 }
 
-/** Hourly cron: delete uploads that were never sent within `PENDING_UPLOAD_TTL_MS`. */
+/**
+ * Delete one batch of `_storage` files older than `cutoff` that no repository row references:
+ * uploads never registered, or telemetry files whose blob write failed. A persisted cursor makes
+ * each file checked once; files referenced then are deleted with their last reference instead.
+ * Returns whether the scan reached `cutoff`.
+ */
+async function sweepUnreferencedStorage(ctx: MutationCtx, cutoff: number) {
+  const cursor = await ctx.db.query("storage_sweeps").first();
+  const files = await ctx.db.system
+    .query("_storage")
+    .withIndex("by_creation_time", (q) =>
+      q.gt("_creationTime", cursor?.scannedThrough ?? 0).lt("_creationTime", cutoff),
+    )
+    .take(CLEANUP_BATCH_SIZE);
+  for (const file of files) {
+    const chatFile = await ctx.db
+      .query("chat_files")
+      .withIndex("by_storageId", (q) => q.eq("storageId", file._id))
+      .first();
+    const telemetryBlob = chatFile
+      ? null
+      : await ctx.db
+          .query("telemetry_blobs")
+          .withIndex("by_storage", (q) => q.eq("storage", file._id))
+          .first();
+    if (!chatFile && !telemetryBlob) await ctx.storage.delete(file._id);
+  }
+
+  const last = files.at(-1);
+  if (last && cursor) {
+    await ctx.db.patch("storage_sweeps", cursor._id, { scannedThrough: last._creationTime });
+  } else if (last) {
+    await ctx.db.insert("storage_sweeps", { scannedThrough: last._creationTime });
+  }
+  return files.length < CLEANUP_BATCH_SIZE;
+}
+
+/**
+ * Hourly cron: delete stored files nothing references and uploads that were never sent, both
+ * once older than `PENDING_UPLOAD_TTL_MS`.
+ */
 export const prunePendingUploads = internalMutation({
   args: {},
   returns: v.null(),
   handler: async (ctx) => {
     const cutoff = Date.now() - PENDING_UPLOAD_TTL_MS;
+    // Runs first: pending rows still reference their files, so the sweep skips what the
+    // pending pass below deletes.
+    const sweptAll = await sweepUnreferencedStorage(ctx, cutoff);
     // `by_chat` orders pending rows by creation time, oldest first.
     const pending = await ctx.db
       .query("chat_files")
       .withIndex("by_chat", (q) => q.eq("chat", undefined).lt("_creationTime", cutoff))
       .take(CLEANUP_BATCH_SIZE);
     for (const file of pending) await deleteFileReference(ctx, file);
-    if (pending.length === CLEANUP_BATCH_SIZE) {
+    if (pending.length === CLEANUP_BATCH_SIZE || !sweptAll) {
       await ctx.scheduler.runAfter(0, internal.chat_files.prunePendingUploads, {});
     }
     return null;

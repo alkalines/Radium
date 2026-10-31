@@ -99,8 +99,9 @@ export function HomeScreen() {
       api.aisdk.ListChats,
       workspaceId ? { workspace: workspaceId, project: projectFilter } : "skip",
     ),
-    // Returning Home must not refetch; keep the live subscription applying small updates instead.
-    gcTime: Infinity,
+    // A quick return Home reuses the live subscription instead of refetching; inactive filtered
+    // lists are dropped after five minutes so their subscriptions stop costing reads.
+    gcTime: 5 * minute,
   });
 
   const isOwner = workspace?.role === "owner";

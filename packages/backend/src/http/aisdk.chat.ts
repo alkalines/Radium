@@ -6,6 +6,7 @@ import {
   isStepCount,
   streamText,
   toUIMessageStream,
+  type ModelMessage,
   type ToolSet,
   type ToolApprovalConfiguration,
   type UIMessage,
@@ -192,18 +193,29 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
   }
   const { tools, close: closeTools, toolApproval, approvalSecret } = chatTools;
 
+  // Persisted messages keep storage URLs; the model gets the stored bytes (see inlineStoredFiles).
+  // Prepared before the chat is marked streaming, so a failure here leaves nothing to reset.
+  let modelMessages: ModelMessage[];
+  try {
+    modelMessages = await inlineStoredFiles(
+      ctx,
+      workspaceId,
+      await convertToModelMessages(body.messages, { tools }),
+    );
+  } catch {
+    await closeTools();
+    logger.warn("chat.model_messages_failed");
+    return Response.json(
+      { error: { message: "The chat messages could not be prepared.", code: 500 } },
+      { status: 500 },
+    );
+  }
+
   await ctx.runMutation(internal.aisdk.EditChat, {
     chatId,
     activeStream: true,
     messages_queue: null,
   });
-
-  // Persisted messages keep storage URLs; the model gets the stored bytes (see inlineStoredFiles).
-  const modelMessages = await inlineStoredFiles(
-    ctx,
-    workspaceId,
-    await convertToModelMessages(body.messages, { tools }),
-  );
 
   let inferenceError: GatewayErrorPayload | undefined;
   const result = streamText({

@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 import { convexTest } from "convex-test";
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { Id } from "./_generated/dataModel";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
@@ -20,6 +20,10 @@ const authMock = vi.hoisted(() => {
 });
 
 vi.mock("./auth", () => ({ authComponent: authMock }));
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -210,21 +214,44 @@ async function isStored(t: ReturnType<typeof makeTest>, storageId: Id<"_storage"
 
 test("uploads never sent in a message are pruned after a day", async () => {
   vi.useFakeTimers();
-  try {
-    const t = makeTest();
-    const { workspace } = await workspaceFixture(t);
-    const { storageId } = await uploadFile(t, workspace);
+  const t = makeTest();
+  const { workspace } = await workspaceFixture(t);
+  const { storageId } = await uploadFile(t, workspace);
 
-    await t.mutation(internal.chat_files.prunePendingUploads, {});
-    expect(await isStored(t, storageId)).toBe(true);
+  await t.mutation(internal.chat_files.prunePendingUploads, {});
+  expect(await isStored(t, storageId)).toBe(true);
 
-    vi.advanceTimersByTime(25 * 60 * 60 * 1000);
-    await t.mutation(internal.chat_files.prunePendingUploads, {});
-    expect(await isStored(t, storageId)).toBe(false);
-    expect(await t.run((ctx) => ctx.db.query("chat_files").collect())).toEqual([]);
-  } finally {
-    vi.useRealTimers();
-  }
+  vi.advanceTimersByTime(25 * 60 * 60 * 1000);
+  await t.mutation(internal.chat_files.prunePendingUploads, {});
+  expect(await isStored(t, storageId)).toBe(false);
+  expect(await t.run((ctx) => ctx.db.query("chat_files").collect())).toEqual([]);
+});
+
+test("old stored files without a referencing row are pruned; referenced ones are kept", async () => {
+  vi.useFakeTimers();
+  const t = makeTest();
+  const { workspace } = await workspaceFixture(t);
+  const [unregistered, telemetry] = await t.run(async (ctx) => [
+    await ctx.storage.store(new Blob([new Uint8Array([1])])),
+    await ctx.storage.store(new Blob([new Uint8Array([2])])),
+  ]);
+  await t.run((ctx) =>
+    ctx.db.insert("telemetry_blobs", {
+      workspace,
+      hash: "h",
+      kind: "message",
+      size: 1,
+      storage: telemetry,
+    }),
+  );
+
+  await t.mutation(internal.chat_files.prunePendingUploads, {});
+  expect(await isStored(t, unregistered)).toBe(true);
+
+  vi.advanceTimersByTime(25 * 60 * 60 * 1000);
+  await t.mutation(internal.chat_files.prunePendingUploads, {});
+  expect(await isStored(t, unregistered)).toBe(false);
+  expect(await isStored(t, telemetry)).toBe(true);
 });
 
 test("ListChats keeps old pinned chats outside the recency window", async () => {
