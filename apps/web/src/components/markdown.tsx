@@ -1,3 +1,5 @@
+import { cjk } from "@streamdown/cjk";
+import { math } from "@streamdown/math";
 import * as React from "react";
 import { Streamdown, useIsCodeFenceIncomplete, type ExtraProps } from "streamdown";
 
@@ -10,6 +12,7 @@ import {
   CodeBlockLine,
   CodeBlockTitle,
 } from "@/components/ui/code-block";
+import { MermaidDiagram } from "@/components/mermaid-diagram";
 import { useHighlightedCode } from "@/hooks/use-highlighted-code";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +22,11 @@ function MarkdownCodeBlock({ code, language }: { code: string; language: string 
   const isIncomplete = useIsCodeFenceIncomplete();
   const lines = useHighlightedCode(code, language);
   const copyValue = code.endsWith("\n") ? code.slice(0, -1) : code;
+
+  // A half-streamed diagram cannot parse, so Mermaid shows as source until its fence closes.
+  if (language === "mermaid" && !isIncomplete) {
+    return <MermaidDiagram chart={copyValue} filename="diagram" title="Diagram" />;
+  }
 
   return (
     <CodeBlock size="sm">
@@ -61,12 +69,15 @@ function MarkdownCode({
 }
 
 const components = { code: MarkdownCode };
+// Math uses the plugin default, `$$…$$` only, so prices like "$5 and $10" stay plain text.
+const plugins = { math, cjk };
 
 /**
  * Agent Markdown rendered with Streamdown, which repairs unterminated syntax while a reply
  * streams. Fenced code renders as a `CodeBlock` with a copy button (disabled until the fence
- * closes). Pass `isAnimating` only for the text that is still streaming: it shows the caret and
- * lets code blocks know their fence may be incomplete.
+ * closes); a closed `mermaid` fence renders as a {@link MermaidDiagram}. KaTeX math (`$$…$$`)
+ * and CJK-aware emphasis come from Streamdown plugins. Pass `isAnimating` only for the text that
+ * is still streaming: it shows the caret and lets code blocks know their fence may be incomplete.
  */
 export const Markdown = React.memo(
   function Markdown({
@@ -82,6 +93,7 @@ export const Markdown = React.memo(
       <Streamdown
         className={cn("min-w-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0", className)}
         components={components}
+        plugins={plugins}
         isAnimating={isAnimating}
         caret={isAnimating ? "block" : undefined}
       >

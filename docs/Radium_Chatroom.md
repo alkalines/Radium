@@ -119,6 +119,12 @@ their own credential and runtime rules under the same Chatroom tool boundary.
 Missing Exa keys omit web search; a failing MCP connection is skipped. Secret
 Store recovery failures remain errors for credential management.
 
+### System Prompt
+
+Every chat request sends one system prompt built by `packages/backend/src/chatroom/system-prompt.ts`. It is deliberately minimal and sets no style or conduct, because Chatroom is general-purpose: it says the model runs inside Radium, outlines Chatroom (including what the Markdown renderer supports), Gateway, and Worker, and gives the model's name, author, and slug from the global `models` catalogue (`internal.models.promptIdentity`; unknown slugs fall back to the slug). Its `# Rules` hold the few always-on harness rules: paths outside the selected Worker directory are out of scope and the UI asks the user's permission for them, so the model does not ask on its own; files it did not make may be the user's work; file reads and changes go through the `worker_*` file tools and everything else, including CLIs, through `worker_bash` (new capabilities are expected to arrive as CLIs and Code Mode, not more native tools); and independent tool calls run in parallel. The orientation is invariant so providers can cache it as a prefix. Opt-in rule packs (like Oh-My-Pi's), a Project's AGENTS.md, and the Code Mode catalog are planned sections; their insertion points are marked in `chatSystemPrompt`.
+
+Agent Markdown (`apps/web/src/components/markdown.tsx`) renders KaTeX math between `$$` delimiters (single `$` stays text, so prices are safe), CJK-aware emphasis through Streamdown's `math` and `cjk` plugins, and closed `mermaid` fences as a `MermaidDiagram`; a fence still streaming shows as source.
+
 ### Notifications
 
 When a request ends, the user who sent it is notified that the session finished, waits for an approval or an answer, or failed: a toast and sound in an open tab, a system notification when that tab is in the background, or Web Push when no tab claims it. Stopped requests notify nobody. See [Notifications](Notifications.md).

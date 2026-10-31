@@ -148,3 +148,22 @@ export const modelInfo = query({
       .unique();
   },
 });
+
+/**
+ * Display name and author name of a global model, for the Chatroom system prompt. Returns `null`
+ * for slugs without a global `models` record; the caller falls back to the slug.
+ */
+export const promptIdentity = internalQuery({
+  args: { slug: v.string() },
+  returns: v.union(v.null(), v.object({ name: v.string(), author: v.optional(v.string()) })),
+  handler: async (ctx, args) => {
+    const model = await ctx.db
+      .query("models")
+      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
+      .unique();
+    if (!model) return null;
+
+    const author = await ctx.db.get("authors", model.author);
+    return { name: model.name, ...(author ? { author: author.name } : {}) };
+  },
+});
