@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import type { FileUIPart } from "ai";
+import { useMutation } from "convex/react";
 import * as m from "motion/react-m";
 import {
   ArrowUpIcon,
@@ -21,7 +22,10 @@ import {
   UsersIcon,
   XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
+import { api } from "backend/convex/_generated/api";
+import type { Id } from "backend/convex/_generated/dataModel";
 import {
   Attachment,
   AttachmentAction,
@@ -53,10 +57,10 @@ import { transitions } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { VoiceInputButton } from "./voice-input-button";
 
-/** What the Composer submits: trimmed text plus attachments as AI SDK file parts with data URLs. */
+/** What the Composer submits: trimmed text plus AI SDK file parts backed by Convex File Storage. */
 export type ComposerMessage = { text: string; files: FileUIPart[] };
 
-/** A picked file held as a blob URL until submit converts it. */
+/** A picked file held as a local blob URL for preview until submit uploads it. */
 type PendingAttachment = { id: string; file: File; url: string };
 
 /**
@@ -81,9 +85,9 @@ export type ComposerHandle = {
  * send/stop trailing. Enter sends, Shift+Enter adds a line. Files come from the `+` menu, paste,
  * or a drop onto the Composer; Backspace in an empty textarea removes the last one.
  *
- * Submitting clears the input immediately. When `onSubmit` throws or rejects, the text and files
- * are restored so the user can retry; it is called at most once per submit. `ref` exposes
- * `swapDraft` for callers that put a draft back (reverting a turn).
+ * Submitting clears the input immediately and uploads files to `workspace` before calling
+ * `onSubmit` once. Upload or submit failures show an error and restore the text and files so the
+ * user can retry; no local preview URL is sent. `ref` exposes `swapDraft` for reverting a turn.
  *
  * `layoutId` is shared by the empty and docked positions so the Composer moves (Reflow) instead of
  * remounting, which keeps the draft text and the model choice.
@@ -91,6 +95,7 @@ export type ComposerHandle = {
 export function Composer({
   ref,
   layoutId,
+  workspace,
   autoFocus,
   canSend,
   isRunning,
@@ -103,6 +108,8 @@ export function Composer({
 }: {
   ref?: Ref<ComposerHandle>;
   layoutId: string;
+  /** The saved chat's workspace, or the draft's settings workspace; required to upload files. */
+  workspace?: Id<"workspaces">;
   autoFocus: boolean;
   /** False while a model is not chosen yet or a turn cannot start; typing stays enabled. */
   canSend: boolean;
@@ -122,6 +129,8 @@ export function Composer({
   const valueRef = useRef(value);
   const [isComposing, setIsComposing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const uploadAttachment = useAttachmentUpload(workspace);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const {
@@ -133,7 +142,7 @@ export function Composer({
     replaceFiles,
   } = useFileAttachments();
   const hasContent = value.trim().length > 0 || attachments.length > 0;
-  const isSendEnabled = canSend && hasContent && !isRunning;
+  const isSendEnabled = canSend && hasContent && !isRunning && !isSubmitting;
 
   // The text lives in Composer state so typing re-renders only the Composer; the store is written
   // directly instead of lifting the text into the Session screen.
@@ -166,16 +175,20 @@ export function Composer({
 
     const text = value.trim();
     const submitted = takeAttachments();
+    setIsSubmitting(true);
     updateValue("");
 
     try {
-      const files = await Promise.all(submitted.map(toFileUIPart));
+      const files = await Promise.all(submitted.map(uploadAttachment));
       await onSubmit({ text, files });
       for (const attachment of submitted) URL.revokeObjectURL(attachment.url);
-    } catch {
+    } catch (error) {
       // Keep the prompt for a retry; anything typed meanwhile wins over the restored text.
       updateValue(valueRef.current || text);
       restoreAttachments(submitted);
+      toast.error(error instanceof Error ? error.message : "Unable to send message.");
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -422,22 +435,33 @@ function useFileAttachments() {
   };
 }
 
-/** AI SDK file part with the file inlined as a data URL; keeps the blob URL if reading fails. */
-function toFileUIPart(attachment: PendingAttachment): Promise<FileUIPart> {
-  const { promise, resolve } = Promise.withResolvers<FileUIPart>();
-  const part = {
-    type: "file" as const,
-    mediaType: attachment.file.type,
-    filename: attachment.file.name,
+/** Matches the server's attachment limit; oversized files must never start an upload. */
+export const MAX_ATTACHMENT_SIZE_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Uploads a local preview to the chosen workspace and returns only registered storage file parts.
+ * Rejected registration means the backend already removed the file; reject the submit, never fall
+ * back to a local URL. The Composer retains the original files for a retry.
+ */
+function useAttachmentUpload(workspace: Id<"workspaces"> | undefined) {
+  const generateUploadUrl = useMutation(api.chat_files.generateUploadUrl);
+  const registerFile = useMutation(api.chat_files.register);
+
+  return async ({ file }: PendingAttachment): Promise<FileUIPart> => {
+    if (file.size > MAX_ATTACHMENT_SIZE_BYTES) throw new Error("File is too large.");
+    if (!workspace) throw new Error("Choose a workspace before uploading files.");
+    const uploadUrl = await generateUploadUrl({ workspace });
+    const response = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    if (!response.ok) throw new Error(`Unable to upload ${file.name} (${response.status}).`);
+    const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
+    const part = await registerFile({ workspace, storageId, filename: file.name });
+    if (!part) throw new Error("File could not be attached.");
+    return part;
   };
-  const reader = new FileReader();
-  reader.onloadend = () => {
-    const dataUrl = typeof reader.result === "string" ? reader.result : null;
-    resolve({ ...part, url: dataUrl ?? attachment.url });
-  };
-  reader.onerror = () => resolve({ ...part, url: attachment.url });
-  reader.readAsDataURL(attachment.file);
-  return promise;
 }
 
 export type ChatScope = "personal" | "workspace";

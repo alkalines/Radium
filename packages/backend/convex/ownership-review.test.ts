@@ -411,8 +411,6 @@ test("separates historical credit activity from BYOK estimates", async () => {
       workspace,
       userId: "member",
       scope: "personal",
-      messages: [],
-      chat_completions: [],
       activeStream: false,
       lastInteractionAt: 1,
     });
@@ -498,8 +496,6 @@ test("telemetry reads preserve owner-only access and personal chat privacy", asy
       workspace,
       userId: "member",
       scope: "personal",
-      messages: [],
-      chat_completions: [],
       activeStream: false,
       lastInteractionAt: 1,
     });
@@ -577,8 +573,6 @@ test("migrates explicit chat history after its creator loses membership", async 
       userId: "member",
       workspace,
       scope: "personal",
-      messages: [],
-      chat_completions: [],
       activeStream: false,
       lastInteractionAt: 1,
     });

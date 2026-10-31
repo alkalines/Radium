@@ -60,8 +60,6 @@ async function setup() {
       userId: "member",
       workspace,
       scope: "workspace",
-      messages: [],
-      chat_completions: [],
       title: "Refactor routing",
     });
     return { workspace, chat };

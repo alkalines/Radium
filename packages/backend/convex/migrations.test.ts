@@ -88,6 +88,49 @@ test("chatsToWorkspaces applies the owner-validated personal backfill", async ()
   });
 });
 
+test("chatMessagesToTable moves embedded histories out of chat documents in order", async () => {
+  const t = makeTest();
+  const message = (id: string, text: string) => ({
+    id,
+    role: "user" as const,
+    parts: [{ type: "text" as const, text, state: "done" as const }],
+  });
+  const chat = await t.run(async (ctx) => {
+    const workspace = await ctx.db.insert("workspaces", {
+      ownerType: "user",
+      ownerId: "alice",
+      name: "Alice workspace",
+    });
+    return await ctx.db.insert("aisdk_chats", {
+      userId: "alice",
+      workspace,
+      messages: [message("m0", "first"), message("m1", "second")],
+      chat_completions: [],
+    });
+  });
+
+  await expect(t.mutation(anyApi.migrations.chatMessagesToTable, oneBatch)).resolves.toMatchObject({
+    processed: 1,
+    isDone: true,
+  });
+  // A second run must not duplicate rows for the already-moved chat.
+  await t.mutation(anyApi.migrations.chatMessagesToTable, oneBatch);
+
+  const stored = await t.run((ctx) => ctx.db.get("aisdk_chats", chat));
+  expect(stored?.messages).toBeUndefined();
+  expect(stored?.chat_completions).toBeUndefined();
+  const rows = await t.run((ctx) =>
+    ctx.db
+      .query("chat_messages")
+      .withIndex("by_chat_and_position", (q) => q.eq("chat", chat))
+      .collect(),
+  );
+  expect(rows.map((row) => [row.position, row.message.id])).toEqual([
+    [0, "m0"],
+    [1, "m1"],
+  ]);
+});
+
 test("apiKeysFromKeys rejects a legacy balance mapped to another owner", async () => {
   const t = makeTest();
   await t.run(async (ctx) => {

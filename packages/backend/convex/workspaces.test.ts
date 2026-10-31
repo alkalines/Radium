@@ -309,8 +309,6 @@ test("HTTP chat authorization allows member shared chats but keeps personal chat
       userId: "owner",
       workspace,
       scope: "workspace",
-      messages: [],
-      chat_completions: [],
       activeStream: false,
       lastInteractionAt: Date.now(),
     });
@@ -318,8 +316,6 @@ test("HTTP chat authorization allows member shared chats but keeps personal chat
       userId: "member",
       workspace,
       scope: "personal",
-      messages: [],
-      chat_completions: [],
       activeStream: false,
       lastInteractionAt: Date.now(),
     });
@@ -597,8 +593,6 @@ test("chat management policy uses the authenticated workspace caller", async () 
         userId,
         workspace,
         scope,
-        messages: [],
-        chat_completions: [],
         activeStream: false,
         lastInteractionAt: Date.now(),
       });

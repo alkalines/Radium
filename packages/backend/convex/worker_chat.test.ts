@@ -85,8 +85,6 @@ async function fixture() {
       workspace,
       userId: "owner",
       scope: "workspace",
-      messages: [],
-      chat_completions: [],
       worker: worker as never,
     }),
   );
@@ -141,8 +139,6 @@ test("Bash dispatch enforces owner/chat/Worker configuration and retains one-sho
       workspace: f.workspace,
       userId: "member",
       scope: "personal",
-      messages: [],
-      chat_completions: [],
       worker: { ...f.worker, tools: ["bash"] },
     }),
   );
@@ -295,8 +291,6 @@ test("chat dispatch is owner-only and reauthorizes workspace and personal chat v
       workspace: f.workspace,
       userId: "member",
       scope: "personal",
-      messages: [],
-      chat_completions: [],
       worker: f.worker as never,
     }),
   );
@@ -329,8 +323,6 @@ test("chat dispatch is owner-only and reauthorizes workspace and personal chat v
       workspace: foreignWorkspace,
       userId: "outsider",
       scope: "workspace",
-      messages: [],
-      chat_completions: [],
       worker: f.worker as never,
     }),
   );

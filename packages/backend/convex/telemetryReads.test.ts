@@ -62,8 +62,6 @@ async function workspaceFixture(t: ReturnType<typeof makeTest>) {
         userId,
         workspace,
         scope,
-        messages: [],
-        chat_completions: [],
         activeStream: false,
         lastInteractionAt: 1,
       });

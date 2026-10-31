@@ -42,6 +42,7 @@ import { formatInferenceError } from "../chatroom/inference-errors";
 import { chatInterruption } from "../chatroom/interruption";
 import { logger } from "../logging/server";
 import { sessionNotificationKind } from "../notifications/session";
+import { inlineStoredFiles } from "../chatroom/files";
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
@@ -197,10 +198,17 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     messages_queue: null,
   });
 
+  // Persisted messages keep storage URLs; the model gets the stored bytes (see inlineStoredFiles).
+  const modelMessages = await inlineStoredFiles(
+    ctx,
+    workspaceId,
+    await convertToModelMessages(body.messages, { tools }),
+  );
+
   let inferenceError: GatewayErrorPayload | undefined;
   const result = streamText({
     model: provider(body.model),
-    messages: await convertToModelMessages(body.messages, { tools }),
+    messages: modelMessages,
     tools,
     toolApproval,
     experimental_toolApprovalSecret: approvalSecret,

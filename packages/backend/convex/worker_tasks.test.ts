@@ -80,8 +80,6 @@ async function fixture() {
       workspace,
       userId: "owner",
       scope: "personal",
-      messages: [],
-      chat_completions: [],
     }),
   );
   const dispatch = {
@@ -122,8 +120,6 @@ test("dispatch is owner-authorized, chat-visible, workspace-bound and idempotent
       workspace: f.workspace,
       userId: "member",
       scope: "personal",
-      messages: [],
-      chat_completions: [],
     }),
   );
   await expect(
@@ -344,8 +340,6 @@ test("edit dispatch and output preserve owner, private-chat and assignment bound
       workspace: f.workspace,
       userId: "member",
       scope: "personal",
-      messages: [],
-      chat_completions: [],
     }),
   );
   await expect(

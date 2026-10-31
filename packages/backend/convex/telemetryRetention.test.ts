@@ -236,8 +236,6 @@ test("deleteRequest is owner-only and hides requests of other users' personal ch
       userId: "member",
       workspace,
       scope: "personal",
-      messages: [],
-      chat_completions: [],
       activeStream: false,
       lastInteractionAt: 1,
     });

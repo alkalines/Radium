@@ -10,9 +10,17 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import { internal } from "./_generated/api";
-import { requireAccessibleChat, requireChatManager } from "./workspaces";
+import { requireAccessibleChat, requireChatManager, resolveWorkspaceForChat } from "./workspaces";
 import { workspaceMutation, workspaceQuery } from "./helpers";
 import { firstUserMessageText } from "@/chatroom/titles";
+import {
+  cleanupChatContent,
+  insertChatMessages,
+  loadChatMessages,
+  loadFirstUserMessage,
+  saveChatMessages,
+} from "../src/chatroom/messages";
+import { linkChatFiles, storedFileUrls } from "../src/chatroom/files";
 import { canManageChat } from "../src/workspaces/policy";
 import { chatWorkerSelectionValidator, type ChatWorkerSelection } from "../src/worker/chat-config";
 import {
@@ -24,7 +32,14 @@ import { storedSelection, toolSelectionValidator } from "../src/chatroom/tool-se
 import { chatInterruptionValidator } from "../src/chatroom/interruption";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
-const MAX_CHAT_CANDIDATES = 100;
+const LIST_LIMIT = 30;
+// Pinned chats sort first however old they are, so they are read apart from the recency window.
+const MAX_PINNED_CANDIDATES = 100;
+// Legacy balance-only chats have no workspace index; keep the wider pre-split window for them.
+const MAX_LEGACY_CANDIDATES = 100;
+
+/** Registered for `DeleteChat`; implementation in src/chatroom/messages.ts. */
+export { cleanupChatContent };
 
 // Mutation
 /**
@@ -61,8 +76,6 @@ export const CreateChat = workspaceMutation({
     const tools = args.tools ? await storedSelection(ctx, ctx.workspace, args.tools) : undefined;
 
     const chatId = await ctx.db.insert("aisdk_chats", {
-      chat_completions: [],
-      messages: [],
       messages_queue: args.messages_queue,
       workspace: args.workspace,
       scope: args.scope ?? "personal",
@@ -73,6 +86,12 @@ export const CreateChat = workspaceMutation({
       activeStream: false,
       lastInteractionAt: Date.now(),
     });
+    await linkChatFiles(
+      ctx,
+      args.workspace,
+      chatId,
+      storedFileUrls([{ parts: args.messages_queue.files }]),
+    );
 
     await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, { chatId });
     return chatId;
@@ -102,8 +121,6 @@ export const ForkChat = workspaceMutation({
     }
 
     const chatId = await ctx.db.insert("aisdk_chats", {
-      chat_completions: [],
-      messages: args.messages,
       messages_queue: args.messages_queue ?? undefined,
       workspace: args.workspace,
       scope: args.scope ?? "personal",
@@ -112,6 +129,15 @@ export const ForkChat = workspaceMutation({
       activeStream: false,
       lastInteractionAt: Date.now(),
     });
+    await insertChatMessages(ctx, chatId, args.workspace, args.messages);
+    if (args.messages_queue) {
+      await linkChatFiles(
+        ctx,
+        args.workspace,
+        chatId,
+        storedFileUrls([{ parts: args.messages_queue.files }]),
+      );
+    }
 
     if (args.messages_queue?.text.trim()) {
       await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, { chatId });
@@ -123,7 +149,9 @@ export const ForkChat = workspaceMutation({
 /**
  * Chat HTTP action write: request start (`activeStream: true`, queue cleared) and request end
  * (messages, `activeStream: false`, and the `interruption` if it stopped short). Omitted fields
- * other than `messages` are cleared, so every start drops the previous interruption.
+ * other than `messages` are cleared, so every start drops the previous interruption. `messages`
+ * replaces the stored history (only changed positions are written) and moves an unmigrated
+ * chat's embedded history out of the chat document.
  */
 export const EditChat = internalMutation({
   args: {
@@ -137,8 +165,14 @@ export const EditChat = internalMutation({
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
     if (!chat) return "Chat not Found.";
 
+    if (args.messages) {
+      const workspace = await resolveWorkspaceForChat(ctx, chat);
+      if (!workspace) return "Chat not Found.";
+      await saveChatMessages(ctx, chat, workspace._id, args.messages);
+    }
+
     await ctx.db.patch("aisdk_chats", args.chatId, {
-      messages: args.messages || chat.messages,
+      ...(args.messages ? { messages: undefined, chat_completions: undefined } : {}),
       messages_queue: args.messages_queue,
       activeStream: args.activeStream,
       interruption: args.interruption,
@@ -147,6 +181,10 @@ export const EditChat = internalMutation({
   },
 });
 
+/**
+ * Chat metadata for a session Tab, without its history: every mounted Tab subscribes to this,
+ * so it must stay cheap. History comes from `GetChatMessages`, subscribed only by opened Tabs.
+ */
 export const GetChat = query({
   args: {
     chatId: v.id("aisdk_chats"),
@@ -157,18 +195,33 @@ export const GetChat = query({
     const { chat, workspace, canManage } = await requireAccessibleChat(ctx, args.chatId);
 
     return {
-      id: chat?._id,
+      id: chat._id,
       workspace: workspace._id,
       scope: chat.scope ?? "personal",
       canManage,
       canManageScope: chat.userId === identity._id,
-      messages: chat?.messages,
-      title: chat?.title,
+      title: chat.title,
       activeStream: chat.activeStream,
       interruption: chat.interruption ?? null,
       messages_queue: chat.messages_queue,
       worker: chat.worker,
       project: chat.project ?? null,
+    };
+  },
+});
+
+/**
+ * A chat's full history for the open session, with `activeStream` from the same snapshot so the
+ * client can tell whether a request was still running when these messages were read.
+ */
+export const GetChatMessages = query({
+  args: { chatId: v.id("aisdk_chats") },
+  returns: v.object({ messages: v.array(messageSchema), activeStream: v.boolean() }),
+  handler: async (ctx, args) => {
+    const { chat } = await requireAccessibleChat(ctx, args.chatId);
+    return {
+      messages: await loadChatMessages(ctx, chat),
+      activeStream: chat.activeStream ?? false,
     };
   },
 });
@@ -308,7 +361,12 @@ export const RegenerateChatTitle = mutation({
     if (!identity) return "Not logged in!";
 
     const { chat } = await requireChatManager(ctx, args.chatId);
-    if (!firstUserMessageText(chat)) return "Chat has no prompt to title.";
+    const firstUserMessage = await loadFirstUserMessage(ctx, chat);
+    const prompt = firstUserMessageText({
+      messages_queue: chat.messages_queue,
+      messages: firstUserMessage ? [firstUserMessage] : [],
+    });
+    if (!prompt) return "Chat has no prompt to title.";
 
     await ctx.db.patch("aisdk_chats", args.chatId, { title: undefined, emoji: undefined });
     await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, {
@@ -331,17 +389,8 @@ export const DeleteChat = mutation({
     await ctx.scheduler.runAfter(0, internal.worker_tasks.cleanupChatCalls, {
       chatId: args.chatId,
     });
+    await ctx.scheduler.runAfter(0, internal.aisdk.cleanupChatContent, { chatId: args.chatId });
     return null;
-  },
-});
-
-export const InternalChatInfo = internalQuery({
-  args: {
-    chatId: v.id("aisdk_chats"),
-  },
-  handler: async (ctx, args) => {
-    const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    return chat;
   },
 });
 
@@ -357,6 +406,11 @@ function chatBelongsToWorkspace(chat: Doc<"aisdk_chats">, workspace: Doc<"worksp
  * Bounded chat candidates visible to `userId`: their own chats plus workspace-scoped chats, and
  * their legacy balance-only chats. `project` filters to one Project's chats, `null` to chats
  * without a Project, and `undefined` applies no Project filter.
+ *
+ * Reads the `LIST_LIMIT` most recent chats of each stream plus every pinned chat: the list holds
+ * P pinned chats and `LIST_LIMIT - P` unpinned ones, and a stream's recency window holds at most
+ * P pinned chats, so it always contains enough unpinned ones. Keep this read set small: the
+ * Home list stays subscribed, so any chat write re-runs it.
  */
 async function chatCandidates(
   ctx: QueryCtx,
@@ -394,9 +448,24 @@ async function chatCandidates(
             q.eq("workspace", workspace._id).eq("scope", "workspace").eq("project", projectKey),
           );
 
-  const [own, shared, legacy] = await Promise.all([
-    ownChats.order("desc").take(MAX_CHAT_CANDIDATES),
-    sharedChats.order("desc").take(MAX_CHAT_CANDIDATES),
+  // Pinned chats are few; read them across Projects and filter here instead of adding a Project
+  // variant of each pinned index.
+  const ownPinned = ctx.db
+    .query("aisdk_chats")
+    .withIndex("by_workspace_and_userId_and_pinnedAt", (q) =>
+      q.eq("workspace", workspace._id).eq("userId", userId).gt("pinnedAt", 0),
+    );
+  const sharedPinned = ctx.db
+    .query("aisdk_chats")
+    .withIndex("by_workspace_and_scope_and_pinnedAt", (q) =>
+      q.eq("workspace", workspace._id).eq("scope", "workspace").gt("pinnedAt", 0),
+    );
+
+  const [own, shared, pinnedOwn, pinnedShared, legacy] = await Promise.all([
+    ownChats.order("desc").take(LIST_LIMIT),
+    sharedChats.order("desc").take(LIST_LIMIT),
+    ownPinned.order("desc").take(MAX_PINNED_CANDIDATES),
+    sharedPinned.order("desc").take(MAX_PINNED_CANDIDATES),
     workspace.legacyBalance
       ? ctx.db
           .query("aisdk_chats")
@@ -404,18 +473,24 @@ async function chatCandidates(
             q.eq("balance", workspace.legacyBalance!),
           )
           .order("desc")
-          .take(MAX_CHAT_CANDIDATES)
+          .take(MAX_LEGACY_CANDIDATES)
       : Promise.resolve([]),
   ]);
 
+  const matchesProject = (chat: Doc<"aisdk_chats">) =>
+    project === undefined || chat.project === projectKey;
   const chatsById = new Map<Id<"aisdk_chats">, Doc<"aisdk_chats">>();
   for (const chat of [...own, ...shared]) {
     if (chatBelongsToWorkspace(chat, workspace)) chatsById.set(chat._id, chat);
   }
+  for (const chat of [...pinnedOwn, ...pinnedShared]) {
+    if (chatBelongsToWorkspace(chat, workspace) && matchesProject(chat)) {
+      chatsById.set(chat._id, chat);
+    }
+  }
   for (const chat of legacy) {
-    const matchesProject = project === undefined || chat.project === projectKey;
     if (
-      matchesProject &&
+      matchesProject(chat) &&
       chat.workspace === undefined &&
       chat.userId === userId &&
       (chat.scope === undefined || chat.scope === "personal")
@@ -449,7 +524,7 @@ export const ListChats = workspaceQuery({
         if (pinnedDelta !== 0) return pinnedDelta;
         return (b.lastInteractionAt ?? b._creationTime) - (a.lastInteractionAt ?? a._creationTime);
       })
-      .slice(0, 30)
+      .slice(0, LIST_LIMIT)
       .map((chat) => ({
         id: chat._id,
         title: chat.title,
