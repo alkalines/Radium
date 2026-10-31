@@ -38,7 +38,7 @@ function MessageAction({
 
 /**
  * Footer under one turn (shadcn Message pattern). User turns: fork with another model, revert
- * (when `onRevert` is given), copy; they reveal on hover or focus. Assistant turns: retry, copy,
+ * (when `onRevert` is given), copy; they reveal on hover or focus. Assistant turns: regenerate, copy,
  * fork, then who answered (the agent name, then the model as `Lab: Model`) and the generation
  * performance. The assistant buttons reveal while the pointer is over the turn, keyboard focus is
  * inside the footer, or the fork list is open (always on touch); hidden, they leave the flow and
@@ -56,7 +56,7 @@ export function MessageActions({
   performance,
   onCopy,
   onRevert,
-  onRetry,
+  onRegenerate,
   onFork,
 }: {
   role: "user" | "assistant";
@@ -69,7 +69,8 @@ export function MessageActions({
   performance?: MessagePerformance;
   onCopy: () => void;
   onRevert?: () => void;
-  onRetry?: () => void;
+  /** Starts the reply over from its user turn (a stopped turn continues from the Session card). */
+  onRegenerate?: () => void;
   onFork: (modelSlug: string) => void;
 }) {
   const [isCopied, setIsCopied] = useState(false);
@@ -234,8 +235,8 @@ export function MessageActions({
             : "pointer-events-none absolute inset-y-0 left-0 flex items-center"
         }
       >
-        {onRetry ? (
-          <MessageAction label="Retry" disabled={disabled} onClick={onRetry}>
+        {onRegenerate ? (
+          <MessageAction label="Regenerate" disabled={disabled} onClick={onRegenerate}>
             <RefreshCcwIcon />
           </MessageAction>
         ) : null}

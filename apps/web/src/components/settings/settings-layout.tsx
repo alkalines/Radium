@@ -3,6 +3,7 @@ import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   ActivityIcon,
   ArrowLeftIcon,
+  BellIcon,
   BoxesIcon,
   CpuIcon,
   RadioTowerIcon,
@@ -132,6 +133,12 @@ export function SettingsLayout({
         })) ?? [],
     ),
     { label: "Models", searchText: "Models", icon: CpuIcon, href: "/settings/models" },
+    {
+      label: "Notifications",
+      searchText: "Notifications",
+      icon: BellIcon,
+      href: "/settings/notifications",
+    },
   ];
 
   function matchingItems(items: NavItem[]) {

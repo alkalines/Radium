@@ -38,6 +38,11 @@ import {
   meterValidator,
 } from "../src/limits/meters";
 import { limitEventKindValidator } from "../src/limits/events";
+import {
+  notificationPreferencesValidator,
+  sessionNotificationKindValidator,
+} from "../src/notifications/contract";
+import { chatInterruptionValidator } from "../src/chatroom/interruption";
 
 export default defineSchema({
   /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
@@ -188,6 +193,8 @@ export default defineSchema({
     enableChainOfThought: v.optional(v.boolean()),
     telemetry: v.optional(telemetrySettingsSchema),
     builtinToolSets: v.array(v.string()),
+    /** Default-on built-in tool sets switched off (`src/chatroom/tools.ts`); absent means none. */
+    disabledBuiltinToolSets: v.optional(v.array(v.string())),
     mcpServers: v.array(v.id("mcp_servers")),
     /** Worker tools preselected when a Worker is picked for a new chat; absent means none. */
     workerTools: v.optional(v.array(chatWorkerToolValidator)),
@@ -215,7 +222,53 @@ export default defineSchema({
     userId: v.string(),
     pinnedModels: v.array(v.string()),
     hiddenModels: v.array(v.string()),
+    /** Notification categories switched off or silenced; absent means defaults. */
+    notifications: v.optional(notificationPreferencesValidator),
   }).index("by_userId", ["userId"]),
+  /**
+   * One notification for one user (`src/notifications/`): a Chatroom run outcome for the user who
+   * sent it, or a limit event for the workspace owner. Open browser tabs claim it (`seenAt`);
+   * unclaimed ones fall back to push (`delivery`). Kept 7 days.
+   */
+  notifications: defineTable({
+    userId: v.string(), // Better Auth ID of the recipient
+    workspace: v.optional(v.id("workspaces")),
+    kind: v.union(sessionNotificationKindValidator, limitEventKindValidator),
+    title: v.string(),
+    body: v.string(),
+    chat: v.optional(v.id("aisdk_chats")),
+    limitEvent: v.optional(v.id("limit_events")),
+    createdAt: v.number(),
+    /** Set by the first open tab that claimed it; push fallback is skipped once set. */
+    seenAt: v.optional(v.number()),
+    /** Set when the fallback sent it to devices because no open tab claimed it in time. */
+    delivery: v.optional(
+      v.object({
+        channel: v.literal("web_push"),
+        at: v.number(),
+        devices: v.number(),
+        delivered: v.optional(v.number()),
+      }),
+    ),
+  })
+    .index("by_userId_and_createdAt", ["userId", "createdAt"])
+    .index("by_createdAt", ["createdAt"]),
+  /**
+   * Web Push subscriptions (one per browser profile and user), registered from Settings >
+   * Notifications. Only endpoints of known push services are accepted (`src/notifications/push.ts`).
+   */
+  push_subscriptions: defineTable({
+    userId: v.string(), // Better Auth ID
+    endpoint: v.string(),
+    p256dh: v.string(),
+    auth: v.string(),
+    /** Browser and OS reported by the client, for the device list. */
+    label: v.string(),
+    createdAt: v.number(),
+    lastDeliveredAt: v.optional(v.number()),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_endpoint", ["endpoint"]),
   /**
    * Legacy balance ownership remains in the widened schema. It is read only by
    * migration/rollback compatibility paths and is not used for credits.
@@ -552,6 +605,8 @@ export default defineSchema({
     pinnedAt: v.optional(v.number()),
     activeStream: v.optional(v.boolean()),
     lastInteractionAt: v.optional(v.number()),
+    /** How the latest request stopped short, if it did (`src/chatroom/interruption.ts`). */
+    interruption: v.optional(chatInterruptionValidator),
     /**
      * Per-chat tool override. When absent, the chat inherits workspace defaults,
      * including the legacy settings fallback during migration.
@@ -559,6 +614,8 @@ export default defineSchema({
     tools: v.optional(
       v.object({
         builtinToolSets: v.array(v.string()),
+        /** Default-on built-in tool sets switched off for this chat; absent means none. */
+        disabledBuiltinToolSets: v.optional(v.array(v.string())),
         mcpServers: v.array(v.id("mcp_servers")),
       }),
     ),

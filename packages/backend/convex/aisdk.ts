@@ -20,7 +20,8 @@ import {
   resolveChatWorkerSelection,
 } from "../src/worker/chat-selection";
 import { requireWorkspaceProject } from "../src/projects/projects";
-import { sanitizeSelection, toolSelectionValidator } from "./chatroom";
+import { storedSelection, toolSelectionValidator } from "../src/chatroom/tool-selection";
+import { chatInterruptionValidator } from "../src/chatroom/interruption";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
 const MAX_CHAT_CANDIDATES = 100;
@@ -57,7 +58,7 @@ export const CreateChat = workspaceMutation({
         current: undefined,
       });
     }
-    const tools = args.tools ? await sanitizeSelection(ctx, ctx.workspace, args.tools) : undefined;
+    const tools = args.tools ? await storedSelection(ctx, ctx.workspace, args.tools) : undefined;
 
     const chatId = await ctx.db.insert("aisdk_chats", {
       chat_completions: [],
@@ -119,11 +120,17 @@ export const ForkChat = workspaceMutation({
   },
 });
 
+/**
+ * Chat HTTP action write: request start (`activeStream: true`, queue cleared) and request end
+ * (messages, `activeStream: false`, and the `interruption` if it stopped short). Omitted fields
+ * other than `messages` are cleared, so every start drops the previous interruption.
+ */
 export const EditChat = internalMutation({
   args: {
     messages: v.optional(v.array(messageSchema)),
     activeStream: v.optional(v.boolean()),
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
+    interruption: v.optional(chatInterruptionValidator),
     chatId: v.id("aisdk_chats"),
   },
   handler: async (ctx, args) => {
@@ -134,6 +141,7 @@ export const EditChat = internalMutation({
       messages: args.messages || chat.messages,
       messages_queue: args.messages_queue,
       activeStream: args.activeStream,
+      interruption: args.interruption,
       lastInteractionAt: Date.now(),
     });
   },
@@ -157,6 +165,7 @@ export const GetChat = query({
       messages: chat?.messages,
       title: chat?.title,
       activeStream: chat.activeStream,
+      interruption: chat.interruption ?? null,
       messages_queue: chat.messages_queue,
       worker: chat.worker,
       project: chat.project ?? null,

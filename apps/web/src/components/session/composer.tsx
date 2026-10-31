@@ -245,7 +245,11 @@ export function Composer({
           }}
         />
         <InputGroup
-          className={cn("rounded-2xl border-border bg-card", isDragging && "border-ring")}
+          className={cn(
+            // Squared under an attached todo tray (`TodoPanel`), so the two read as one input.
+            "rounded-2xl border-border bg-card group-data-[tray=attached]/prompt-slot:rounded-t-none",
+            isDragging && "border-ring",
+          )}
           onDragOver={handleDragOver}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}

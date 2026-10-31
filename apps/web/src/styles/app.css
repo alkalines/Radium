@@ -209,6 +209,13 @@ html:has([data-slot="harness-window"]) {
   scrollbar-gutter: auto;
 }
 
+/* Notification toasts pile from the top-right corner and leave by fading in place; sonner's
+   default slides the front toast up out of the pile. */
+.notification-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-removed="true"][data-swipe-out="false"] {
+  --y: translateY(0);
+}
+
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation: none;

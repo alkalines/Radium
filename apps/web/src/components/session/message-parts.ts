@@ -1,4 +1,5 @@
 import {
+  getToolName,
   isToolUIPart,
   type FileUIPart,
   type LanguageModelUsage,
@@ -118,11 +119,14 @@ function isModelMetadata(metadata: UIMessage["metadata"]): metadata is { model: 
 }
 
 /**
- * Returns a continuation key when the latest assistant step is ready to resume after approval.
- * The key joins the answered approval ids, so callers can remember which continuation they
- * already sent and never resubmit the same approved step.
+ * Returns a continuation key when the latest assistant step is ready to resume after the user
+ * answered it: an approval response, or answers to a `question` call (which has no server
+ * execution, so its output in the current step always came from this browser). A dismissed
+ * question is an `output-error` and resumes nothing; the user's next message carries it. The key
+ * joins the answered approval and call ids, so callers can remember which continuation they
+ * already sent and never resubmit the same step.
  */
-export function getApprovalContinuationKey(messages: UIMessage[]) {
+export function getToolContinuationKey(messages: UIMessage[]) {
   const message = messages[messages.length - 1];
 
   if (!message || message.role !== "assistant") {
@@ -133,13 +137,17 @@ export function getApprovalContinuationKey(messages: UIMessage[]) {
     (lastIndex, part, index) => (part.type === "step-start" ? index : lastIndex),
     -1,
   );
-  // Earlier steps are already complete; only approvals in the current step can trigger a resume.
+  // Earlier steps are already complete; only answers in the current step can trigger a resume.
   const toolParts = message.parts.slice(lastStepStartIndex + 1).filter(isToolPart);
-  const respondedApprovals = toolParts.filter(
-    (part) => part.state === "approval-responded" && "approval" in part,
-  );
+  const answeredIds = toolParts.flatMap((part) => {
+    if (part.state === "approval-responded") return [part.approval.id];
+    if (part.state === "output-available" && getToolName(part) === "question") {
+      return [part.toolCallId];
+    }
+    return [];
+  });
 
-  if (respondedApprovals.length === 0) {
+  if (answeredIds.length === 0) {
     return null;
   }
 
@@ -154,7 +162,37 @@ export function getApprovalContinuationKey(messages: UIMessage[]) {
     return null;
   }
 
-  return respondedApprovals.map((part) => part.approval.id).join(":");
+  return answeredIds.join(":");
+}
+
+/**
+ * The conversation to resend when a stopped or failed turn continues. The last assistant turn
+ * keeps its finished steps, so the model picks up after the tool results it already has, and
+ * drops the step that was cut off: partial text or reasoning and calls without a result (the
+ * model calls them again). A step whose calls all have a result or an approval answer is
+ * finished. An assistant turn left with nothing finished is dropped, so the user turn is answered
+ * again. Any other conversation is returned as is.
+ */
+export function withoutUnfinishedStep(messages: UIMessage[]): UIMessage[] {
+  const message = messages.at(-1);
+  if (!message || message.role !== "assistant") return messages;
+
+  const lastStepStartIndex = message.parts.findLastIndex((part) => part.type === "step-start");
+  const lastStepTools = message.parts.slice(lastStepStartIndex + 1).filter(isToolPart);
+  const isLastStepFinished =
+    lastStepTools.length > 0 &&
+    lastStepTools.every(
+      (part) =>
+        part.state === "output-available" ||
+        part.state === "output-error" ||
+        part.state === "output-denied" ||
+        part.state === "approval-responded",
+    );
+  if (isLastStepFinished) return messages;
+
+  const finishedParts = message.parts.slice(0, Math.max(lastStepStartIndex, 0));
+  if (finishedParts.every((part) => part.type === "step-start")) return messages.slice(0, -1);
+  return [...messages.slice(0, -1), { ...message, parts: finishedParts }];
 }
 
 /**
@@ -171,5 +209,21 @@ export function getPendingApprovals(
   return message.parts.filter(
     (part): part is ToolUIPart & { state: "approval-requested" } =>
       isToolPart(part) && part.state === "approval-requested",
+  );
+}
+
+/**
+ * `question` calls of the last assistant turn still waiting for the user's answers, in call order.
+ * They have no server execution, so the turn stays `input-available` until the browser answers.
+ */
+export function getPendingQuestions(
+  messages: UIMessage[],
+): (ToolUIPart & { state: "input-available" })[] {
+  const message = messages.at(-1);
+  if (!message || message.role !== "assistant") return [];
+
+  return message.parts.filter(
+    (part): part is ToolUIPart & { state: "input-available" } =>
+      isToolPart(part) && part.state === "input-available" && getToolName(part) === "question",
   );
 }

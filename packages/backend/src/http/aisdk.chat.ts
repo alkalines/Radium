@@ -30,6 +30,7 @@ import {
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
 import { buildWorkerChatTools, workerChatApprovalSecret } from "../worker/chat-tools";
+import { buildSessionTools } from "../chatroom/session-tools";
 import type { SettledGeneration } from "./chat_completion";
 import {
   GatewayInferenceError,
@@ -38,6 +39,9 @@ import {
   type GatewayErrorPayload,
 } from "../routing/failures";
 import { formatInferenceError } from "../chatroom/inference-errors";
+import { chatInterruption } from "../chatroom/interruption";
+import { logger } from "../logging/server";
+import { sessionNotificationKind } from "../notifications/session";
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
@@ -162,12 +166,17 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
 
   let chatTools: Awaited<ReturnType<typeof buildChatTools>>;
   try {
-    chatTools = await buildChatTools(ctx, chatId, {
-      userId,
-      workspaceId,
-      ownerId: workspace.ownerId,
-      selection: chat.worker,
-    });
+    chatTools = await buildChatTools(
+      ctx,
+      chatId,
+      { slug: body.model, provider: body.provider },
+      {
+        userId,
+        workspaceId,
+        ownerId: workspace.ownerId,
+        selection: chat.worker,
+      },
+    );
   } catch {
     return Response.json(
       {
@@ -210,6 +219,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
 
   const reasoningStarts = new Map<string, { startedAt: number; index: number }>();
   const reasoningDurations: number[] = [];
+  // Formatted message of the error chunk the client was sent, for the failure notification.
+  let streamFailure: string | undefined;
 
   const uiStream = toUIMessageStream({
     stream: result.stream,
@@ -218,7 +229,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     sendReasoning: true,
     onError(error) {
       const details = inferenceError ?? gatewayErrorPayload(upstreamFailureFromError(error, false));
-      return formatInferenceError(details);
+      streamFailure = formatInferenceError(details);
+      return streamFailure;
     },
     messageMetadata({ part }) {
       if (part.type === "reasoning-start") {
@@ -250,7 +262,7 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         ...(body.inferenceMode ? { inferenceMode: body.inferenceMode } : {}),
       };
     },
-    onEnd: async ({ messages }) => {
+    onEnd: async ({ messages, isAborted, isCancelled, outcome, responseMessage }) => {
       let reasoningIndex = 0;
       const originalParts = new Map(
         body.messages.map((message) => [message.id, message.parts.length]),
@@ -264,12 +276,36 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
           return duration === undefined ? part : { ...part, duration };
         }),
       }));
+      const end = {
+        isAborted,
+        isCancelled,
+        outcome,
+        failed: streamFailure !== undefined,
+        responseMessage,
+      };
+      const interruption = chatInterruption(end, streamFailure);
       await ctx.runMutation(internal.aisdk.EditChat, {
         chatId,
         messages: messagesWithDuration,
         activeStream: false,
+        ...(interruption ? { interruption } : {}),
       });
       await closeTools();
+
+      // Notifications are a side channel: a failure here must not fail the saved request.
+      const kind = sessionNotificationKind(end);
+      if (kind) {
+        try {
+          await ctx.runMutation(internal.notifications.notifySession, {
+            userId,
+            chat: chatId,
+            kind,
+            ...(kind === "session_failed" && streamFailure ? { detail: streamFailure } : {}),
+          });
+        } catch {
+          logger.warn("notifications.session_notify_failed");
+        }
+      }
     },
   });
   return createUIMessageStreamResponse({
@@ -354,7 +390,10 @@ function aggregatePerformance(
  * connection — call it once the stream finishes or errors.
  *
  * The Web Search built-in tool set contributes the Exa search tool when it is
- * enabled and the workspace has an Exa API key configured.
+ * enabled and the workspace has an Exa API key configured. Enabled session
+ * tool sets (`question`, `todo_write`) are default-on, so they are registered
+ * only when the selected model lists `tools` in its `supported_parameters`;
+ * they come first, so MCP names that collide with them get a numeric suffix.
  *
  * @todo OAuth / OAuth 2.1 servers: supply an `OAuthClientProvider` via the
  *   transport's `authProvider` instead of a static bearer header.
@@ -362,6 +401,7 @@ function aggregatePerformance(
 async function buildChatTools(
   ctx: ActionCtx,
   chatId: Id<"aisdk_chats">,
+  model: { slug: string; provider?: string },
   worker: {
     userId: string;
     ownerId: string;
@@ -375,11 +415,18 @@ async function buildChatTools(
   approvalSecret?: Uint8Array;
 }> {
   const config = await ctx.runQuery(internal.chatroom.resolveChatTools, { chatId });
+  const modelSupportsTools = await ctx.runQuery(internal.models.supportsTools, {
+    workspace: worker.workspaceId,
+    model: model.slug,
+    provider: model.provider,
+  });
 
   const clients: Awaited<ReturnType<typeof createMCPClient>>[] = [];
   // MCP tools are typed with `unknown` inputs; collect them loosely and cast to
   // `ToolSet` once at the boundary to avoid the invariance friction.
-  const tools: Record<string, ToolSet[string]> = {};
+  const tools: Record<string, ToolSet[string]> = modelSupportsTools
+    ? { ...buildSessionTools(config.builtinToolSets) }
+    : {};
   let toolApproval: ToolApprovalConfiguration<ToolSet, unknown> | undefined;
   let approvalSecret: Uint8Array | undefined;
   // Shared-chat membership never grants machine execution. Identity and directory

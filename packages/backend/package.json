@@ -30,11 +30,13 @@
     "hono": "^4.13.14",
     "jose": "^6.2.13",
     "vitest": "^5.0.5",
+    "web-push": "^3.6.7",
     "worker-component": "workspace:*",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "latest"
+    "@types/node": "latest",
+    "@types/web-push": "^3.6.4"
   },
   "peerDependencies": {
     "typescript": "^7"

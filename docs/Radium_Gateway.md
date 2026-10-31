@@ -50,7 +50,7 @@ credits or charge the user.
 
 Responses, Anthropic Messages, Gemini, and Grok protocol compatibility are future
 work. Routing rotates across each provider's credential pool; quota-aware pacing
-and delivery of limit events (inbox, email, webhooks) are future work. Better Auth organization
+is future work. Limit events notify the workspace owner ([Notifications](Notifications.md)); email and webhook delivery are future work. Better Auth organization
 ownership, organization invitations, organization-derived membership, and
 broader roles are future work; direct membership is not an invitation flow.
 Application-level encryption and an optional explicit owner-auditing mode are

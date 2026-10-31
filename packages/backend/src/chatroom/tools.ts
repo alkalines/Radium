@@ -80,17 +80,37 @@ export type BuiltinToolSet = {
    * @todo Implement executable builders for these and flip to `true`.
    */
   available: boolean;
+  /**
+   * On unless a selection switched it off. Stored selections record these as
+   * opt-outs (`disabledBuiltinToolSets`), so a default-on set added later is on
+   * for selections saved before it existed.
+   */
+  defaultEnabled?: boolean;
 };
 
 /**
  * The configurable registry of built-in tool sets.
  *
- * These are intentionally config-only for now — they make the selection UI and
- * persistence real end-to-end, but none execute yet. To ship a working tool
- * set, add its executable builder where `streamText` is configured (see
- * `src/http/aisdk.chat.ts`) and set `available: true` here.
+ * Executable sets have a builder where `streamText` is configured (see
+ * `src/http/aisdk.chat.ts`); `available: false` entries are selectable
+ * placeholders until theirs exists. The session sets (`question`,
+ * `todo_write`) are default-on.
  */
 export const BUILTIN_TOOL_SETS = [
+  {
+    id: "question",
+    name: "Questions",
+    description: "Let the model ask you clarifying questions and wait for your answers.",
+    available: true,
+    defaultEnabled: true,
+  },
+  {
+    id: "todo_write",
+    name: "Todo list",
+    description: "Let the model keep its plan as a todo list above the prompt.",
+    available: true,
+    defaultEnabled: true,
+  },
   {
     id: "web_search",
     name: "Web Search",
@@ -120,10 +140,18 @@ export type BuiltinToolSetId = (typeof BUILTIN_TOOL_SETS)[number]["id"];
  */
 export const WEB_SEARCH_TOOL_ID = "web_search" satisfies BuiltinToolSetId;
 
+/** Ids of the session tool sets; each contributes one model tool of the same name. */
+export const QUESTION_TOOL_ID = "question" satisfies BuiltinToolSetId;
+export const TODO_TOOL_ID = "todo_write" satisfies BuiltinToolSetId;
+
 /** Look up a built-in tool set definition by id. */
 export function getBuiltinToolSet(id: string): BuiltinToolSet | undefined {
   return BUILTIN_TOOL_SETS.find((toolSet) => toolSet.id === id);
 }
+
+const defaultEnabledToolSetIds: readonly string[] = BUILTIN_TOOL_SETS.flatMap(
+  (toolSet: BuiltinToolSet) => (toolSet.defaultEnabled ? [toolSet.id] : []),
+);
 
 /**
  * A user's tool selection — which built-in sets and which MCP servers are
@@ -141,3 +169,34 @@ export const EMPTY_TOOL_SELECTION: ToolSelection = {
   builtinToolSets: [],
   mcpServers: [],
 };
+
+/**
+ * The built-in part of a selection as stored on workspace defaults and chat
+ * overrides: opt-in ids for ordinary sets, opt-out ids for default-on sets.
+ */
+export type StoredBuiltinToolSets = {
+  builtinToolSets: readonly string[];
+  disabledBuiltinToolSets?: readonly string[];
+};
+
+/**
+ * The enabled built-in set ids of a stored selection, in registry order. A
+ * default-on set is enabled unless it was switched off; unknown ids are dropped.
+ */
+export function enabledBuiltinToolSets(stored: StoredBuiltinToolSets): string[] {
+  const disabled = stored.disabledBuiltinToolSets ?? [];
+  return BUILTIN_TOOL_SETS.flatMap((toolSet: BuiltinToolSet) => {
+    const enabled = toolSet.defaultEnabled
+      ? !disabled.includes(toolSet.id)
+      : stored.builtinToolSets.includes(toolSet.id);
+    return enabled ? [toolSet.id] : [];
+  });
+}
+
+/** The stored form of a complete list of enabled built-in set ids. */
+export function storedBuiltinToolSets(enabled: readonly string[]) {
+  return {
+    builtinToolSets: enabled.filter((id) => !defaultEnabledToolSetIds.includes(id)),
+    disabledBuiltinToolSets: defaultEnabledToolSetIds.filter((id) => !enabled.includes(id)),
+  };
+}

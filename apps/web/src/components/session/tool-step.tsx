@@ -4,6 +4,8 @@ import {
   FilePenLineIcon,
   FilePlusIcon,
   FileTextIcon,
+  ListTodoIcon,
+  MessageCircleQuestionIcon,
   SearchIcon,
   TerminalIcon,
   WrenchIcon,
@@ -16,14 +18,29 @@ import {
   TraceCollapsible,
   TraceCollapsibleContent,
   TraceCollapsibleTrigger,
+  TraceDescription,
   TraceIcon,
   TraceLine,
   TraceTitle,
 } from "@/components/ui/trace";
-import { JsonCodeBlock, ToolCodeBlock, ToolInputBlock, languageForPath } from "./tool-code";
+import { TodoList } from "./todo-list";
+import {
+  DiffCodeBlock,
+  DiffStats,
+  JsonCodeBlock,
+  ToolCodeBlock,
+  ToolInputBlock,
+  countContentLines,
+  languageForPath,
+} from "./tool-code";
+import { countDiffLines, getReceiptFiles, parseNumberedRead, parsePatch } from "./tool-diff";
 import {
   getBashResult,
+  getInputNumber,
   getInputString,
+  getQuestionAnswers,
+  getQuestionPrompts,
+  getTodoItems,
   getToolInput,
   getToolKind,
   getToolRunState,
@@ -65,12 +82,12 @@ const toolVerbs: Record<ToolKind, Record<ToolPhase, string>> = {
     stopped: "Stopped reading",
   },
   edit: {
-    active: "Editing files",
-    awaiting: "Edit files",
-    succeeded: "Edited files",
-    failed: "Failed to edit files",
-    denied: "Denied file edit",
-    stopped: "Stopped editing files",
+    active: "Editing",
+    awaiting: "Edit",
+    succeeded: "Edited",
+    failed: "Failed to edit",
+    denied: "Denied editing",
+    stopped: "Stopped editing",
   },
   create: {
     active: "Creating",
@@ -88,6 +105,22 @@ const toolVerbs: Record<ToolKind, Record<ToolPhase, string>> = {
     denied: "Denied web search",
     stopped: "Stopped searching the web",
   },
+  question: {
+    active: "Asking",
+    awaiting: "Waiting for your answer to",
+    succeeded: "Asked",
+    failed: "Failed to ask",
+    denied: "Denied asking",
+    stopped: "Dismissed",
+  },
+  todo: {
+    active: "Updating todos",
+    awaiting: "Update todos",
+    succeeded: "Updated todos",
+    failed: "Failed to update todos",
+    denied: "Denied updating todos",
+    stopped: "Stopped updating todos",
+  },
   other: {
     active: "Using",
     awaiting: "Use",
@@ -104,6 +137,8 @@ const toolIcons: Record<ToolKind, LucideIcon> = {
   edit: FilePenLineIcon,
   create: FilePlusIcon,
   "web-search": SearchIcon,
+  question: MessageCircleQuestionIcon,
+  todo: ListTodoIcon,
   other: WrenchIcon,
 };
 
@@ -115,36 +150,103 @@ function toolPhase(part: ToolUIPart, state: RunState): ToolPhase {
   return "active";
 }
 
-/** What the call acts on, after the verb: Machine text for commands and paths, prose otherwise. */
-function toolObject(part: ToolUIPart, kind: ToolKind): ReactNode {
+/** The files an edit touches: the receipt's once applied, otherwise the patch's (as it streams). */
+function editFiles(part: ToolUIPart) {
+  if (part.state === "output-available" && !getWorkerFailure(part.output)) {
+    const files = getReceiptFiles(part.output);
+    if (files && files.length > 0) return files;
+  }
+  return parsePatch(getInputString(getToolInput(part), "patch") ?? "");
+}
+
+/** Plain-text subject after the verb: a command, a path, a query, or a count. */
+function toolSubject(part: ToolUIPart, kind: ToolKind): string | undefined {
   const input = getToolInput(part);
 
   switch (kind) {
-    case "bash": {
-      const command = getInputString(input, "command");
-      return command ? <span className="font-mono text-xs">{command}</span> : null;
-    }
+    case "bash":
+      return getInputString(input, "command");
     case "read":
-    case "create": {
-      const path = getInputString(input, "path");
-      return path ? <span className="font-mono text-xs">{path}</span> : null;
+    case "create":
+      return getInputString(input, "path");
+    case "edit": {
+      const files = editFiles(part);
+      const first = files[0]?.path;
+      if (!first) return "files";
+      return files.length > 1 ? `${first} and ${files.length - 1} more` : first;
     }
     case "web-search": {
       const query = getWebSearchQuery(input);
-      return query ? `for ${query}` : null;
+      return query ? `for ${query}` : undefined;
     }
-    case "edit":
-      return null;
+    case "question": {
+      const questions = getQuestionPrompts(input);
+      if (questions.length === 1) return questions[0]?.header || "a question";
+      return questions.length > 1 ? `${questions.length} questions` : undefined;
+    }
+    case "todo":
+      return undefined;
     case "other":
       return getToolName(part).replaceAll(/[_-]/g, " ");
   }
 }
 
+/** Kinds whose subject is Machine text (commands and paths) rather than prose. */
+const machineSubjects: Record<ToolKind, boolean> = {
+  bash: true,
+  read: true,
+  edit: true,
+  create: true,
+  "web-search": false,
+  question: false,
+  todo: false,
+  other: false,
+};
+
+/** Trailing line detail: change counts for writes, a read's line range, todo progress. */
+function toolDetail(part: ToolUIPart, kind: ToolKind): ReactNode {
+  const input = getToolInput(part);
+
+  switch (kind) {
+    case "edit": {
+      const lines = editFiles(part).flatMap((file) => file.lines);
+      const counts = countDiffLines(lines);
+      if (counts.added === 0 && counts.removed === 0) return null;
+      return <DiffStats {...counts} />;
+    }
+    case "create": {
+      const content = getInputString(input, "content");
+      if (content === undefined) return null;
+      return <DiffStats added={countContentLines(content)} removed={0} />;
+    }
+    case "read": {
+      const start = getInputNumber(input, "startLine");
+      if (start === undefined) return null;
+      const maxLines = getInputNumber(input, "maxLines");
+      const range = maxLines === undefined ? `${start}–` : `${start}–${start + maxLines - 1}`;
+      return <span className="font-mono text-xs">L{range}</span>;
+    }
+    case "todo": {
+      const items = getTodoItems(input);
+      if (items.length === 0) return null;
+      const done = items.filter((item) => item.status === "completed").length;
+      return `${done}/${items.length} done`;
+    }
+    case "bash":
+    case "web-search":
+    case "question":
+    case "other":
+      return null;
+  }
+}
+
 /**
- * One tool call as a Trace step: verb + subject, with the call's input and output in a
- * collapsible body. The body is open while the call runs and closes once it is answered,
- * produces output, or later content follows; the reader can reopen it. Approval prompts take the
- * Composer's place (`ApprovalPrompt`), so an awaiting call stays a closed line.
+ * One tool call as a Trace step: verb + subject (+ change counts or progress), with the call's
+ * input and output in a collapsible body. The body is open while the model writes the call and
+ * while it runs, so its input renders live as it streams (a command, file content, a patch as a
+ * diff, a todo list); it closes once the call is answered, produces output, or later content
+ * follows, and the reader can reopen it. Approval and question prompts take the Composer's place
+ * (`ApprovalPrompt`, `QuestionPrompt`), so a call awaiting the user stays a closed line.
  */
 export function ToolStep({
   part,
@@ -159,7 +261,8 @@ export function ToolStep({
 }) {
   const kind = getToolKind(part);
   const state = getToolRunState(part, isLive);
-  const isRunningInput = part.state === "input-streaming" || part.state === "input-available";
+  const isRunningInput =
+    (part.state === "input-streaming" || part.state === "input-available") && state !== "awaiting";
   const shouldAutoClose = !isRunningInput || hasLaterContent;
   const [isOpen, setIsOpen] = useState(!shouldAutoClose);
 
@@ -170,18 +273,39 @@ export function ToolStep({
   }, [shouldAutoClose]);
 
   const Icon = toolIcons[kind];
-  const object = toolObject(part, kind);
-  const title = getToolTitle(part, kind, state);
+  const verb = toolVerbs[kind][toolPhase(part, state)];
+  const subject = toolSubject(part, kind);
+  const detail = toolDetail(part, kind);
+  // A file write, edit, or todo update in progress already shows its live content and a
+  // shimmering verb; the running dot beside it is noise. Other states keep their dot.
+  const isActiveWrite =
+    (kind === "edit" || kind === "create" || kind === "todo") &&
+    (state === "streaming" || state === "executing");
+  const showStatus = state !== "succeeded" && !isActiveWrite;
   const line = (
-    <TraceLine status={traceStatusFor(state)} title={title}>
+    <TraceLine status={traceStatusFor(state)} title={subject ? `${verb} ${subject}` : verb}>
       <TraceIcon>
         <Icon />
       </TraceIcon>
       <TraceTitle>
-        {toolVerbs[kind][toolPhase(part, state)]}
-        {object ? <> {object}</> : null}
+        {verb}
+        {subject ? (
+          <>
+            {" "}
+            <span className={machineSubjects[kind] ? "font-mono text-xs" : undefined}>
+              {subject}
+            </span>
+          </>
+        ) : null}
       </TraceTitle>
-      {state === "succeeded" ? null : <AgentStatus state={state} hideLabel />}
+      {detail ? <TraceDescription>{detail}</TraceDescription> : null}
+      {showStatus ? (
+        <AgentStatus
+          state={state}
+          label={kind === "question" && state === "awaiting" ? "awaiting answer" : undefined}
+          hideLabel
+        />
+      ) : null}
     </TraceLine>
   );
   if (!hasToolBody(part, kind)) {
@@ -192,33 +316,45 @@ export function ToolStep({
     <TraceCollapsible open={isOpen} onOpenChange={setIsOpen}>
       <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
       <TraceCollapsibleContent className="flex flex-col gap-2">
-        <ToolBody part={part} kind={kind} />
+        <ToolBody part={part} kind={kind} state={state} />
       </TraceCollapsibleContent>
     </TraceCollapsible>
   );
 }
 
-/** Plain-text title for the line's `title` tooltip, since `TraceTitle` truncates long commands. */
-function getToolTitle(part: ToolUIPart, kind: ToolKind, state: RunState) {
-  const input = getToolInput(part);
-  const subject =
-    getInputString(input, "command") ?? getInputString(input, "path") ?? getWebSearchQuery(input);
-  const verb = toolVerbs[kind][toolPhase(part, state)];
-  return subject ? `${verb} ${subject}` : verb;
-}
-
 function hasToolBody(part: ToolUIPart, kind: ToolKind) {
-  if (kind === "bash" || kind === "edit" || kind === "create" || kind === "other") return true;
-  return part.state === "output-available" || part.state === "output-error";
+  switch (kind) {
+    case "bash":
+    case "edit":
+    case "create":
+    case "todo":
+    case "other":
+      return true;
+    case "question":
+      return part.state === "output-available";
+    case "read":
+    case "web-search":
+      return part.state === "output-available" || part.state === "output-error";
+  }
 }
 
-function ToolBody({ part, kind }: { part: ToolUIPart; kind: ToolKind }) {
+function ToolBody({ part, kind, state }: { part: ToolUIPart; kind: ToolKind; state: RunState }) {
   if (kind === "bash") {
     return (
-      <div className="max-h-64 overflow-y-auto rounded-lg bg-muted p-3">
-        <TerminalLog lines={bashTerminalLines(part)} />
+      <div className="max-h-64 overflow-y-auto rounded-xl bg-muted p-3">
+        <TerminalLog lines={bashTerminalLines(part, state)} />
       </div>
     );
+  }
+
+  if (kind === "todo") {
+    const items = getTodoItems(getToolInput(part));
+    if (items.length === 0) return <p className="text-xs text-muted-foreground">No todos.</p>;
+    return <TodoList items={items} className="py-0.5 pl-1" />;
+  }
+
+  if (kind === "question") {
+    return <QuestionAnswers part={part} />;
   }
 
   if (part.state === "output-error") {
@@ -246,23 +382,69 @@ function ToolBody({ part, kind }: { part: ToolUIPart; kind: ToolKind }) {
   if (kind === "read") {
     if (part.state !== "output-available") return null;
     if (failure) return <FailureBlock failure={failure} />;
+    return <ReadOutput part={part} />;
+  }
 
-    const content = getInputString(part.output, "content");
-    const path = getInputString(getToolInput(part), "path");
-    if (content === undefined) return <JsonCodeBlock value={part.output} />;
-    return (
-      <ToolCodeBlock code={content} language={path ? languageForPath(path) : "text"} title={path} />
-    );
+  if (kind === "edit" && part.state === "output-available" && !failure) {
+    const files = getReceiptFiles(part.output);
+    if (files && files.length > 0) {
+      return files.map((file, index) => (
+        <DiffCodeBlock key={`${file.path}-${index}`} file={file} />
+      ));
+    }
   }
 
   return (
     <>
       <ToolInputBlock part={part} />
       {failure ? <FailureBlock failure={failure} /> : null}
-      {part.state === "output-available" && !failure ? (
+      {kind === "other" && part.state === "output-available" ? (
         <JsonCodeBlock value={part.output} title="output" />
       ) : null}
     </>
+  );
+}
+
+/** A `worker_read` result: the file's lines numbered from where the read started. */
+function ReadOutput({ part }: { part: ToolUIPart & { state: "output-available" } }) {
+  const content = getInputString(part.output, "content");
+  if (content === undefined) return <JsonCodeBlock value={part.output} />;
+
+  const path = getInputString(getToolInput(part), "path");
+  const { startLine, text } = parseNumberedRead(content);
+  const nextLine = getInputNumber(part.output, "nextLine");
+  const footer = nextLine === undefined ? undefined : `Truncated · continues at line ${nextLine}`;
+
+  return (
+    <ToolCodeBlock
+      code={text}
+      language={path ? languageForPath(path) : "text"}
+      title={path}
+      startLine={startLine}
+      footer={footer}
+    />
+  );
+}
+
+/** Each question of an answered `question` call with the user's answers. */
+function QuestionAnswers({ part }: { part: ToolUIPart }) {
+  const questions = getQuestionPrompts(getToolInput(part));
+  const answers = part.state === "output-available" ? getQuestionAnswers(part.output) : undefined;
+
+  return (
+    <dl className="flex flex-col gap-2 pl-1 text-[13px]">
+      {questions.map((question, index) => {
+        const answer = answers?.[index] ?? [];
+        return (
+          <div key={index} className="flex min-w-0 flex-col">
+            <dt className="text-muted-foreground">{question.question}</dt>
+            <dd className={answer.length > 0 ? "text-foreground" : "text-muted-foreground italic"}>
+              {answer.length > 0 ? answer.join(", ") : "Unanswered"}
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
   );
 }
 
@@ -272,10 +454,12 @@ function FailureBlock({ failure }: { failure: WorkerFailure }) {
 }
 
 /**
- * Terminal lines for a Worker Bash call. The Worker returns stdout and stderr combined, so output
- * lines are all `stdout`; the failure reason (exit code, timeout, receipt code) is `stderr`.
+ * Terminal lines for a Worker Bash call. The command streams in as the model writes it; once it
+ * runs, a system line marks the wait until the Worker returns. The Worker returns stdout and
+ * stderr combined, so output lines are all `stdout`; the failure reason (exit code, timeout,
+ * receipt code) is `stderr`.
  */
-function bashTerminalLines(part: ToolUIPart): TerminalLine[] {
+function bashTerminalLines(part: ToolUIPart, state: RunState): TerminalLine[] {
   const id = part.toolCallId;
   const command = getInputString(getToolInput(part), "command") ?? "";
   const lines: TerminalLine[] = [{ id: `${id}-command`, stream: "stdin", text: command }];
@@ -286,6 +470,9 @@ function bashTerminalLines(part: ToolUIPart): TerminalLine[] {
   }
 
   if (part.state !== "output-available") {
+    if (state === "executing" && part.state !== "input-streaming") {
+      lines.push({ id: `${id}-running`, stream: "system", text: "Running on the Worker…" });
+    }
     return lines;
   }
 

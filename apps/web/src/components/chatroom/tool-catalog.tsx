@@ -4,6 +4,8 @@ import {
   FileTextIcon,
   GlobeIcon,
   ImageIcon,
+  ListTodoIcon,
+  MessageCircleQuestionIcon,
   SquareTerminalIcon,
   TerminalIcon,
   WrenchIcon,
@@ -95,6 +97,8 @@ export function workerToolsFor(
 
 // Built-in tool sets without an entry here use the wrench.
 const builtinToolIcons: Record<string, LucideIcon> = {
+  question: MessageCircleQuestionIcon,
+  todo_write: ListTodoIcon,
   web_search: GlobeIcon,
   code_interpreter: SquareTerminalIcon,
   image_generation: ImageIcon,

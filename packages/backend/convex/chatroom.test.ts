@@ -287,10 +287,11 @@ test("Worker tool defaults are owner-written, member-readable, and keep legacy s
   await expect(
     member.query(api.chatroom.getWorkerToolDefaults, { workspace: ids.workspace }),
   ).resolves.toEqual(["read", "edit"]);
-  // The first workspace write materializes the legacy fallback instead of dropping it.
+  // The first workspace write materializes the legacy fallback instead of dropping it. Legacy
+  // settings predate the default-on session sets, so those count as enabled.
   await expect(
     member.query(api.chatroom.getToolDefaults, { workspace: ids.workspace }),
-  ).resolves.toEqual({ builtinToolSets: ["web_search"], mcpServers: [] });
+  ).resolves.toEqual({ builtinToolSets: ["question", "todo_write", "web_search"], mcpServers: [] });
 });
 
 test("CreateChat stores draft tool choices as a sanitized chat override without touching defaults", async () => {
@@ -298,6 +299,7 @@ test("CreateChat stores draft tool choices as a sanitized chat override without 
   const ids = await chatFixture(t);
   const member = asUser(t, "member");
 
+  // A draft's list is complete: leaving out the default-on session sets switches them off.
   const chatId = await member.mutation(api.aisdk.CreateChat, {
     workspace: ids.workspace,
     messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
@@ -311,8 +313,26 @@ test("CreateChat stores draft tool choices as a sanitized chat override without 
   });
   await expect(
     member.query(api.chatroom.getToolDefaults, { workspace: ids.workspace }),
-  ).resolves.toEqual({ builtinToolSets: [], mcpServers: [] });
+  ).resolves.toEqual({ builtinToolSets: ["question", "todo_write"], mcpServers: [] });
   expect(await t.run((ctx) => ctx.db.query("workspace_settings").collect())).toEqual([]);
+});
+
+test("workspace defaults keep a switched-off default-on tool set off", async () => {
+  const t = makeTest();
+  const ids = await chatFixture(t);
+  const owner = asUser(t, "owner");
+
+  await owner.mutation(api.chatroom.setToolDefaults, {
+    workspace: ids.workspace,
+    selection: { builtinToolSets: ["todo_write"], mcpServers: [] },
+  });
+
+  await expect(
+    owner.query(api.chatroom.getToolDefaults, { workspace: ids.workspace }),
+  ).resolves.toEqual({ builtinToolSets: ["todo_write"], mcpServers: [] });
+  await expect(
+    owner.query(api.chatroom.getChatTools, { chatId: ids.ownerShared }),
+  ).resolves.toEqual({ builtinToolSets: ["todo_write"], mcpServers: [], source: "defaults" });
 });
 
 test("moved title handlers preserve existing titles unless regeneration is forced", async () => {

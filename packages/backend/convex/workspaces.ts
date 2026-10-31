@@ -87,6 +87,10 @@ export async function loadWorkspaceSettings(
       : {}),
     ...(settings?.telemetry !== undefined ? { telemetry: settings.telemetry } : {}),
     builtinToolSets: settings?.builtinToolSets ?? [],
+    // Legacy user settings predate default-on tool sets, so only workspace rows can opt out.
+    ...(settings?.disabledBuiltinToolSets !== undefined
+      ? { disabledBuiltinToolSets: settings.disabledBuiltinToolSets }
+      : {}),
     mcpServers: settings?.mcpServers ?? [],
     // Legacy user settings predate Worker tools, so only workspace rows can set them.
     ...(settings?.workerTools !== undefined ? { workerTools: settings.workerTools } : {}),

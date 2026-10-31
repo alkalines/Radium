@@ -5,7 +5,9 @@ reasoning controls, service tiers, approvals, and tools. It uses a lossless in-p
 
 ## Implemented
 
-Completed and failed requests both allow **Revert to this message** on a user turn. Reverting returns its text/files to the Composer, removes that turn and later turns from the local thread, clears the failure alert, and retains Restore until the next send. Submission and streaming still block revert; the next send makes the shortened history durable.
+Completed and failed requests both allow **Revert to this message** on a user turn. Reverting returns its text/files to the Composer, removes that turn and later turns from the local thread, hides the interruption card, and retains Restore until the next send. Submission and streaming still block revert; the next send makes the shortened history durable.
+
+**Retry** continues a turn that stopped short instead of regenerating it. When a request ends aborted (Stop, or the browser disconnected) or with an error, the chat HTTP action saves `interruption` (`kind`, and the streamed error for failures) on the chat beside the partial messages; the next request clears it (`src/chatroom/interruption.ts`). The Session shows it as a card above the prompt; Retry drops the turn's unfinished step (partial text/reasoning, tool calls without a result), keeps steps whose tool calls have results or approval answers, and resends the conversation without a new user message, so the model resumes after those results. A tool call cut off mid-execution is dropped and may run again when the model re-issues it. A Tab that loads a chat while its request is still running reseeds from the saved messages once that request ends, so a reload mid-reply does not continue from stale history. The assistant footer's **Regenerate** still restarts the reply from its user turn.
 
 ### Workspace Access
 
@@ -66,6 +68,11 @@ and Exa web search credentials. Secret values are loaded server-side from
 Secret Store and are not returned to the browser. Members can use the configured
 workspace tools in chats, subject to the chat's effective selection.
 
+Two session tools act only on the conversation (`packages/backend/src/chatroom/session-tools.ts`). They are built-in tool sets of the same id, listed in the Tools dialog and Settings → Tools like Web Search, but **default-on**: stored selections record them as opt-outs (`disabledBuiltinToolSets` on workspace defaults and chat overrides), so workspaces and chats saved before they existed get them, and switching one off persists. Their shapes follow OpenCode's `question`/`todowrite` tools and ACP plan entries so a future ACP agent can reuse the same UI:
+
+- `question` asks one or more questions (`header`, `question`, `options[{label, description?}]`, `multiple?`). It has no server execution: the stream ends at the call, the browser shows the Question prompt in the Composer's place, and `addToolOutput` returns `{ answers: string[][] }` (one list per question, empty for a skipped one), which the client continues automatically like an approval. The model receives OpenCode's `"Question"="Answer"` text. Dismissing returns an `output-error` and does not continue; the user's next message does.
+- `todo_write` replaces the Session's todo list (`content`, `status`: `pending` | `in_progress` | `completed`). The list lives in the call input of the persisted messages, so it needs no extra storage; the Session shows the latest complete list above the Composer while it has open items or the run is working.
+
 The Chatroom currently supports HTTP MCP servers, web search when configured,
 and approval UI for tool calls. Filesystem, command, and coding execution belong
 to the external Worker. Its Convex component owns identity persistence, and the
@@ -103,6 +110,10 @@ the current agentic search integration; additional search integrations can use
 their own credential and runtime rules under the same Chatroom tool boundary.
 Missing Exa keys omit web search; a failing MCP connection is skipped. Secret
 Store recovery failures remain errors for credential management.
+
+### Notifications
+
+When a request ends, the user who sent it is notified that the session finished, waits for an approval or an answer, or failed: a toast and sound in an open tab, a system notification when that tab is in the background, or Web Push when no tab claims it. Stopped requests notify nobody. See [Notifications](Notifications.md).
 
 ### Telemetry
 
