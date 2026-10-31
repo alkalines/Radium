@@ -982,6 +982,31 @@ export const credentialLimits = migrations.define({
 
 export const runCredentialLimits = migrations.runner(internal.migrations.credentialLimits);
 
+/**
+ * Move each chat's embedded history into `chat_messages` and clear the deprecated `messages` and
+ * `chat_completions` fields, so chat lists and authorization stop reading whole histories.
+ * Idempotent: chats already moved (or saved since the split) have neither field. Inline data-URL
+ * attachments stay inline in their message rows, since mutations cannot write File Storage.
+ * Run once with `migrations:runChatMessages`; narrow the schema only after it completes.
+ */
+export const chatMessagesToTable = migrations.define({
+  table: "aisdk_chats",
+  // Legacy chats can approach the 1 MiB document limit; keep each batch's writes small.
+  batchSize: 5,
+  migrateOne: async (ctx, chat) => {
+    if (chat.messages === undefined && chat.chat_completions === undefined) return;
+
+    // A save clears `messages` in the same transaction that writes rows, so a chat that still
+    // has the field has no rows yet.
+    for (const [position, message] of (chat.messages ?? []).entries()) {
+      await ctx.db.insert("chat_messages", { chat: chat._id, position, message });
+    }
+    return { messages: undefined, chat_completions: undefined };
+  },
+});
+
+export const runChatMessages = migrations.runner(internal.migrations.chatMessagesToTable);
+
 /** Store a legacy payload as a deduplicated workspace blob; returns its ID. */
 async function legacyBlob(
   ctx: MutationCtx,

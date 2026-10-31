@@ -12,6 +12,7 @@ import {
   isTitleGenerationModel,
   sanitizeTitle,
 } from "@/chatroom/titles";
+import { loadFirstUserMessage } from "@/chatroom/messages";
 import {
   internalAction,
   internalMutation,
@@ -370,7 +371,11 @@ export const titleGenerationInfo = internalQuery({
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
     if (!chat) return null;
 
-    const initialUserMessage = firstUserMessageText(chat);
+    const firstUserMessage = await loadFirstUserMessage(ctx, chat);
+    const initialUserMessage = firstUserMessageText({
+      messages_queue: chat.messages_queue,
+      messages: firstUserMessage ? [firstUserMessage] : [],
+    });
     if (!initialUserMessage) return null;
 
     const workspace = await resolveWorkspaceForChat(ctx, chat);

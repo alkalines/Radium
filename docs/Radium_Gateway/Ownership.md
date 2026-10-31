@@ -36,6 +36,11 @@ Auth organization. This is direct membership, not an invitation flow.
   `workspace` chats are visible to the workspace owner and explicit members.
   `ListChats` returns a member's own personal chats plus shared workspace chats;
   it does not expose another user's personal chats.
+- Chat history lives in `chat_messages` (one row per message) and attachments in
+  Convex File Storage referenced by `chat_files`. Neither table carries access
+  data: every read authorizes the parent chat first (`aisdk.GetChatMessages`),
+  and no query lists `chat_files`. Attachment storage URLs are capability URLs;
+  a chat only links files uploaded in its own workspace.
 - Workspace API keys are stored in `api_keys`. Only a SHA-512 hash and masked
   preview are persisted; the `rad-sk-...` value is returned once.
 - Gateway requests resolve a workspace from the new API key. Legacy balance keys

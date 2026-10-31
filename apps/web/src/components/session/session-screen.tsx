@@ -91,10 +91,11 @@ export type SessionTabHint = {
  *   Submitting persists the chat with `api.aisdk.CreateChat` (prompt in `messages_queue`) and calls
  *   `onCreated`; the prompt stays visible as a pending turn until the chat's messages arrive, and
  *   the draft's own choices stay on screen until the created chat loads.
- * - Active: loads `api.aisdk.GetChat`, seeds `useChat` once from the persisted messages, sends a
- *   queued prompt once, then streams turns from `POST /api/aisdk/chat` on the Convex site.
- *   A chat that errors or is no longer accessible shows an inline notice and calls
- *   `onUnavailable` once.
+ * - Saved: subscribes to `api.aisdk.GetChat` metadata for every mounted Tab. Content from
+ *   `api.aisdk.GetChatMessages` is subscribed only after the Tab is first active, then stays live
+ *   until unmount. It seeds `useChat` before sending a queued prompt once, then streams turns from
+ *   `POST /api/aisdk/chat` on the Convex site. Either query failing or losing access shows an inline
+ *   notice and calls `onUnavailable` once.
  * - A pending tool approval, then a pending `question` call, takes the Composer's place
  *   (`ApprovalPrompt`, `QuestionPrompt`) until it is answered. The latest `todo_write` list docks
  *   above that slot while it has open items or the run is working.
@@ -104,9 +105,10 @@ export type SessionTabHint = {
  *   `RunInterruptionCard` above the prompt; its Retry continues the turn after the last completed
  *   step (`withoutUnfinishedStep`), unlike the assistant footer's Regenerate.
  *
- * The Window keeps every open Tab mounted, so streams continue in background Tabs; `isActive`
- * gates autofocus and the approval, question, and Retry shortcuts. The Worker and context usage
- * sit in the Panel's top-right corner. `onTabHint` reports title, RunState, and Project on change.
+ * The Window keeps every open Tab mounted, so streams continue in background Tabs without loading
+ * content for restored Tabs that have never been opened. `isActive` also gates autofocus and the
+ * approval, question, and Retry shortcuts. The Worker and context usage sit in the Panel's top-right
+ * corner. `onTabHint` reports title, RunState, and Project on change.
  * The callbacks take the Tab id so the Window can pass the same functions to every Tab: the
  * screen is memoized, and with stable props a navigation re-renders only the Tabs whose
  * `isActive` (or requested model/Project) changed.
@@ -150,7 +152,17 @@ export const SessionScreen = memo(function SessionScreen({
     convexQuery(api.aisdk.GetChat, chatId ? { chatId } : "skip"),
   );
   const chat = typeof chatResult === "string" ? undefined : chatResult;
-  const isChatUnavailable = Boolean(chatError) || typeof chatResult === "string";
+  // Restored Tabs need only metadata until opened; keep content live after the first activation.
+  const [openedChatId, setOpenedChatId] = useState(isActive ? chatId : undefined);
+  if (isActive && chatId && openedChatId !== chatId) setOpenedChatId(chatId);
+  const isContentEnabled = chatId !== undefined && (isActive || openedChatId === chatId);
+  const {
+    data: chatContent,
+    error: chatContentError,
+    isPending: isChatContentPending,
+  } = useQuery(convexQuery(api.aisdk.GetChatMessages, isContentEnabled ? { chatId } : "skip"));
+  const isChatUnavailable =
+    Boolean(chatError) || Boolean(chatContentError) || typeof chatResult === "string";
 
   const createChat = useMutation(api.aisdk.CreateChat);
   const forkChat = useMutation(api.aisdk.ForkChat);
@@ -418,7 +430,7 @@ export const SessionScreen = memo(function SessionScreen({
   // default, then the first available model.
   const explicitModel = choicesAreStale ? undefined : modelOverride;
   const explicitProvider = choicesAreStale ? undefined : providerOverride;
-  const persistedMessages = chat?.messages as UIMessage[] | undefined;
+  const persistedMessages = chatContent?.messages as UIMessage[] | undefined;
   const chatModel = persistedMessages ? getLastMessageModel(persistedMessages) : undefined;
   const chatProvider = persistedMessages ? getLastMessageProvider(persistedMessages) : undefined;
   const queuedModel = chat?.messages_queue?.model;
@@ -427,7 +439,10 @@ export const SessionScreen = memo(function SessionScreen({
   const isModelListLoading =
     models === undefined || (chatId === undefined && (modelsFetching || choicesAreStale));
   const isWaitingForChat =
-    chatId !== undefined && chatResult === undefined && !chatError && !isLoadingCreatedChat;
+    chatId !== undefined &&
+    !isChatUnavailable &&
+    !isLoadingCreatedChat &&
+    (chatResult === undefined || (isContentEnabled && isChatContentPending));
   const isWaitingForDefault =
     !(chatModel || queuedModel) &&
     (userInfo === undefined || (signedIn && defaultModelQuery.isPending));
@@ -540,14 +555,14 @@ export const SessionScreen = memo(function SessionScreen({
   // its live state. A chat opened while a request runs elsewhere (another Tab, or this page before
   // a reload) seeds again once that request ends, because the backend saves the turn only then.
   // Starting a request here first gives up on it: this Tab's history wins.
-  const seededChatId = useRef<string>(undefined);
+  const [seededChatId, setSeededChatId] = useState<string>();
   const seededMidRequest = useRef(false);
   useEffect(() => {
-    if (!chat || !chatId) return;
-    if (seededChatId.current !== chatId) {
-      seededChatId.current = chatId;
-      seededMidRequest.current = chat.activeStream === true;
-      setMessages(chat.messages as UIMessage[]);
+    if (!chatContent || !chatId) return;
+    if (seededChatId !== chatId) {
+      seededMidRequest.current = chatContent.activeStream;
+      setMessages(chatContent.messages as UIMessage[]);
+      setSeededChatId(chatId);
       return;
     }
     if (!seededMidRequest.current) return;
@@ -555,10 +570,10 @@ export const SessionScreen = memo(function SessionScreen({
       seededMidRequest.current = false;
       return;
     }
-    if (chat.activeStream) return;
+    if (chatContent.activeStream) return;
     seededMidRequest.current = false;
-    setMessages(chat.messages as UIMessage[]);
-  }, [chat, chatId, setMessages, status]);
+    setMessages(chatContent.messages as UIMessage[]);
+  }, [chatContent, chatId, seededChatId, setMessages, status]);
 
   // The todo tray shows the latest list while it has open items; a finished one sinks back. The
   // prompt slot stays squared under it until its exit animation finishes.
@@ -566,11 +581,20 @@ export const SessionScreen = memo(function SessionScreen({
   const [isTrayAttached, setIsTrayAttached] = useState(trayTodos !== undefined);
   if (trayTodos && !isTrayAttached) setIsTrayAttached(true);
 
-  // Mark before sending so Convex updates or status changes cannot replay the queued turn.
+  // Wait for the seeded render so forks send their history with the queued prompt. Mark before
+  // sending so Convex updates or status changes cannot replay the queued turn.
   const sentQueueChatId = useRef<string>(undefined);
   useEffect(() => {
     const queue = chat?.messages_queue;
-    if (!chatId || !queue || status !== "ready" || sentQueueChatId.current === chatId) return;
+    if (
+      !chatId ||
+      seededChatId !== chatId ||
+      !queue ||
+      status !== "ready" ||
+      sentQueueChatId.current === chatId
+    ) {
+      return;
+    }
     sentQueueChatId.current = chatId;
     void sendMessage(
       { text: queue.text, files: queue.files.filter(hasFileUrl) },
@@ -586,7 +610,7 @@ export const SessionScreen = memo(function SessionScreen({
         },
       },
     );
-  }, [chat?.messages_queue, chatId, sendMessage, status]);
+  }, [chat?.messages_queue, chatId, seededChatId, sendMessage, status]);
 
   const reportedUnavailable = useRef(false);
   useEffect(() => {
@@ -616,7 +640,13 @@ export const SessionScreen = memo(function SessionScreen({
   } else if (chat?.interruption && !chat.activeStream) {
     interruption = chat.interruption;
   }
-  const runState = sessionRunState(status, messages, isStarting, interruption);
+  const runState = sessionRunState(
+    status,
+    messages,
+    isStarting,
+    interruption,
+    chat?.activeStream === true,
+  );
 
   const submittedTitle = pendingPrompt?.split("\n")[0]?.trim() || undefined;
   const title = chat?.title ?? submittedTitle;
@@ -905,7 +935,11 @@ export const SessionScreen = memo(function SessionScreen({
   const canSend =
     chatId === undefined
       ? Boolean(settingsWorkspaceId && selectedModelData) && !isModelLoading && !isCreating
-      : chat !== undefined && status === "ready" && Boolean(selectedModel) && !isStarting;
+      : chat !== undefined &&
+        seededChatId === chatId &&
+        status === "ready" &&
+        Boolean(selectedModel) &&
+        !isStarting;
   const latestUsage = findLatestUsage(messages);
   const maxTokens = selectedModelData?.providers.find(
     (provider) => provider.id === selectedProvider,
@@ -1126,6 +1160,7 @@ export const SessionScreen = memo(function SessionScreen({
               <Composer
                 ref={composerRef}
                 layoutId={`composer-${tabId}`}
+                workspace={chatId ? chat?.workspace : settingsWorkspaceId}
                 autoFocus={isEmpty && isActive}
                 canSend={canSend}
                 isRunning={isRunning}
@@ -1220,20 +1255,25 @@ function withoutDirectory(selection: ChatWorkerSelection | null): ChatWorkerSele
 }
 
 /**
- * Tab RunState from the chat lifecycle; the one place UI status is derived for a Session. A turn
- * that stopped short stays `failed` or `cancelled` until the next request, also after a reload.
+ * Tab RunState from the chat lifecycle; the one place UI status is derived for a Session. Metadata
+ * keeps unopened Tabs' remote runs visible without fetching messages. A turn that stopped short
+ * stays `failed` or `cancelled` until the next request, also after a reload.
  */
 function sessionRunState(
   status: ChatStatus,
   messages: UIMessage[],
   isStarting: boolean,
   interruption: ChatInterruption | undefined,
+  activeStream: boolean,
 ): RunState {
   if (status === "error") return "failed";
   if (getPendingApprovals(messages).length > 0) return "awaiting";
   if (status === "ready" && getPendingQuestions(messages).length > 0) return "awaiting";
   if (status === "streaming") return "streaming";
   if (status === "submitted") return "thinking";
+  // A run this Tab did not start (another browser tab, before a reload, or a Tab whose messages
+  // are not loaded yet) is visible only through the chat metadata.
+  if (activeStream) return "streaming";
   if (isStarting) return "queued";
   if (interruption?.kind === "failed") return "failed";
   if (interruption?.kind === "interrupted") return "cancelled";

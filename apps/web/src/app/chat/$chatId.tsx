@@ -27,6 +27,9 @@ export const Route = createFileRoute("/chat/$chatId")({
     void queryClient.prefetchQuery(
       convexQuery(api.aisdk.GetChat, { chatId: chatId as Id<"aisdk_chats"> }),
     );
+    void queryClient.prefetchQuery(
+      convexQuery(api.aisdk.GetChatMessages, { chatId: chatId as Id<"aisdk_chats"> }),
+    );
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
   },
   component: () => null,
