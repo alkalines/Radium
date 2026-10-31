@@ -6,6 +6,7 @@ import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import { workerChatCallFields, workerTaskFields } from "../src/worker/task-contract";
 import { chatWorkerSelectionValidator, chatWorkerToolValidator } from "../src/worker/chat-config";
 import { projectFolderValidator } from "../src/projects/validators";
+import { systemPromptSettingsValidator } from "../src/chatroom/system-prompt";
 import {
   legacyTelemetrySpanKindSchema,
   legacyTelemetryStatusSchema,
@@ -202,6 +203,8 @@ export default defineSchema({
     routing: v.optional(routingSettingsValidator),
     /** Usage-limit alert thresholds; absent means defaults. */
     limits: v.optional(limitSettingsValidator),
+    /** Chatroom system prompt switches (`src/chatroom/system-prompt.ts`); absent means all on. */
+    systemPrompt: v.optional(systemPromptSettingsValidator),
   }).index("by_workspace", ["workspace"]),
   /**
    * Folder-like grouping of chats inside a workspace. Deleting a Project detaches its chats;

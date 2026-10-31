@@ -32,7 +32,6 @@ import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
 import { buildWorkerChatTools, workerChatApprovalSecret } from "../worker/chat-tools";
 import { buildSessionTools } from "../chatroom/session-tools";
-import { chatSystemPrompt } from "../chatroom/system-prompt";
 import type { SettledGeneration } from "./chat_completion";
 import {
   GatewayInferenceError,
@@ -167,9 +166,13 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     { userId, chatId },
   );
 
-  // Looked up before tools connect, so a failure here cannot leave MCP connections open.
-  const modelIdentity = await ctx.runQuery(internal.models.promptIdentity, { slug: body.model });
-  const instructions = chatSystemPrompt({ slug: body.model, ...modelIdentity });
+  // Read before tools connect, so a failure here cannot leave MCP connections open. `null` means
+  // the workspace switched the system prompt off.
+  const instructions =
+    (await ctx.runQuery(internal.chatroom.resolveSystemPrompt, {
+      workspace: workspaceId,
+      model: body.model,
+    })) ?? undefined;
 
   let chatTools: Awaited<ReturnType<typeof buildChatTools>>;
   try {

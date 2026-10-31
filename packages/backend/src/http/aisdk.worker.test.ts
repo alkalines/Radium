@@ -65,7 +65,7 @@ function fixture(
       workspace: { _id: "chat-workspace", ownerId: "owner" },
     })
     .mockResolvedValueOnce({ enabled: false })
-    .mockResolvedValueOnce({ name: "Test Model", author: "Test Author" })
+    .mockResolvedValueOnce("system prompt")
     .mockResolvedValueOnce({ builtinToolSets: [QUESTION_TOOL_ID], mcpServers: [] })
     .mockResolvedValueOnce(modelSupportsTools);
   if (userId === "owner" && worker.workerId !== undefined)

@@ -1,3 +1,23 @@
+import { v, type Infer } from "convex/values";
+
+/**
+ * Workspace switches for the Chatroom system prompt (`workspace_settings.systemPrompt`).
+ * `modelIdentity` only applies while `enabled` is on; it is kept when the prompt is off so
+ * switching the prompt back on restores the previous choice.
+ */
+export const systemPromptSettingsValidator = v.object({
+  enabled: v.boolean(),
+  modelIdentity: v.boolean(),
+});
+
+export type SystemPromptSettings = Infer<typeof systemPromptSettingsValidator>;
+
+/** Effective settings when a workspace has never changed them: everything on. */
+export const DEFAULT_SYSTEM_PROMPT_SETTINGS: SystemPromptSettings = {
+  enabled: true,
+  modelIdentity: true,
+};
+
 /**
  * Catalogue identity of the model answering a Chatroom request. `name` and `author` are absent
  * when the slug has no global `models` record (for example a provider-only mapping).
@@ -29,17 +49,24 @@ const RADIUM_ORIENTATION = `You are running inside Radium, a self-hosted workspa
 
 /**
  * Build the Chatroom system prompt for one request: the invariant Radium orientation, then the
- * model's own identity. Pure and deterministic, so identical inputs keep the same cacheable text.
+ * model's own identity unless the workspace hid it (`model` omitted). Pure and deterministic, so
+ * identical inputs keep the same cacheable text.
  */
-export function chatSystemPrompt(model: ChatModelIdentity): string {
-  const identity = [
-    "# Model",
-    `- Name: ${model.name ?? model.slug}`,
-    ...(model.author ? [`- Author: ${model.author}`] : []),
-    `- Slug: ${model.slug}`,
-  ].join("\n");
+export function chatSystemPrompt(model?: ChatModelIdentity): string {
+  const sections = [RADIUM_ORIENTATION];
+  if (model) {
+    sections.push(
+      [
+        "# Model",
+        `- Name: ${model.name ?? model.slug}`,
+        ...(model.author ? [`- Author: ${model.author}`] : []),
+        `- Slug: ${model.slug}`,
+      ].join("\n"),
+    );
+  }
 
-  // Sections still to come, ordered from most to least stable so the cacheable prefix stays long:
+  // Sections still to come go between the orientation and the model identity, ordered from most
+  // to least stable so the cacheable prefix stays long:
   // - Rule packs: opt-in conduct rules in the style of Oh-My-Pi (e.g. `ts-no-tiny-functions`),
   //   enabled per workspace or chat. Insert after RADIUM_ORIENTATION; its `# Rules` are the
   //   always-on permission boundaries and stay there.
@@ -48,5 +75,5 @@ export function chatSystemPrompt(model: ChatModelIdentity): string {
   // - Code Mode: the `execute` tool's catalog (see docs/research/OpenCode_Code_Mode.md), which
   //   changes with the enabled tools. Insert after project instructions; the `execute` tool
   //   description itself stays invariant.
-  return [RADIUM_ORIENTATION, identity].join("\n\n");
+  return sections.join("\n\n");
 }

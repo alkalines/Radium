@@ -14,6 +14,12 @@ import {
 } from "@/chatroom/titles";
 import { loadFirstUserMessage } from "@/chatroom/messages";
 import {
+  chatSystemPrompt,
+  DEFAULT_SYSTEM_PROMPT_SETTINGS,
+  systemPromptSettingsValidator,
+  type SystemPromptSettings,
+} from "../src/chatroom/system-prompt";
+import {
   internalAction,
   internalMutation,
   internalQuery,
@@ -185,6 +191,55 @@ export const setChainOfThoughtEnabled = ownedWorkspaceMutation({
   returns: v.id("workspace_settings"),
   handler: async (ctx, args) => {
     return await ctx.workspace.updateSettings({ enableChainOfThought: args.enabled });
+  },
+});
+
+/** Read the workspace's system prompt switches; absent means everything on. */
+export const getSystemPromptSettings = workspaceQuery({
+  args: {},
+  returns: systemPromptSettingsValidator,
+  handler: async (ctx): Promise<SystemPromptSettings> => {
+    return ctx.workspace.settings.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_SETTINGS;
+  },
+});
+
+/** Set whether chats send the system prompt and whether it names the model. Owner only. */
+export const setSystemPromptSettings = ownedWorkspaceMutation({
+  args: systemPromptSettingsValidator.fields,
+  returns: v.id("workspace_settings"),
+  handler: async (ctx, args) => {
+    return await ctx.workspace.updateSettings({
+      systemPrompt: { enabled: args.enabled, modelIdentity: args.modelIdentity },
+    });
+  },
+});
+
+/**
+ * The system prompt for one chat request, or `null` when the workspace switched it off. The model
+ * identity comes from the global `models` catalogue and is left out when the workspace hid it.
+ * Callers authorize the chat first; this only reads workspace settings and the public catalogue.
+ */
+export const resolveSystemPrompt = internalQuery({
+  args: { workspace: v.id("workspaces"), model: v.string() },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    const workspace = await ctx.db.get("workspaces", args.workspace);
+    const settings =
+      (workspace && (await loadWorkspaceSettings(ctx, workspace)).systemPrompt) ??
+      DEFAULT_SYSTEM_PROMPT_SETTINGS;
+    if (!settings.enabled) return null;
+    if (!settings.modelIdentity) return chatSystemPrompt();
+
+    const model = await ctx.db
+      .query("models")
+      .withIndex("by_slug", (q) => q.eq("slug", args.model))
+      .unique();
+    const author = model ? await ctx.db.get("authors", model.author) : null;
+    return chatSystemPrompt({
+      slug: args.model,
+      ...(model ? { name: model.name } : {}),
+      ...(author ? { author: author.name } : {}),
+    });
   },
 });
 

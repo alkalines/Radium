@@ -98,6 +98,8 @@ export async function loadWorkspaceSettings(
     ...(settings?.routing !== undefined ? { routing: settings.routing } : {}),
     // Legacy user settings predate usage limits, so only workspace rows can set them.
     ...(settings?.limits !== undefined ? { limits: settings.limits } : {}),
+    // Legacy user settings predate the system prompt, so only workspace rows can set it.
+    ...(settings?.systemPrompt !== undefined ? { systemPrompt: settings.systemPrompt } : {}),
   };
 }
 

@@ -329,6 +329,70 @@ test("workspace defaults keep a switched-off default-on tool set off", async () 
   ).resolves.toEqual({ builtinToolSets: ["todo_write"], mcpServers: [], source: "defaults" });
 });
 
+test("system prompt switches: owner-only, identity hidden on request, off returns no prompt", async () => {
+  const t = makeTest();
+  const ids = await chatFixture(t);
+  const owner = asUser(t, "owner");
+  await t.run(async (ctx) => {
+    const author = await ctx.db.insert("authors", { name: "Anthropic", slug: "anthropic" });
+    await ctx.db.insert("models", {
+      name: "Claude Opus",
+      slug: "anthropic/claude-opus",
+      author,
+      launch_date: 0,
+      type: "chat",
+      description: "Chat model",
+      reasoning: true,
+      features: {},
+      architecture: {
+        input_modalities: ["text"],
+        output_modalities: ["text"],
+        tokenizer: "Claude",
+      },
+    });
+  });
+  const resolve = () =>
+    t.query(internal.chatroom.resolveSystemPrompt, {
+      workspace: ids.workspace,
+      model: "anthropic/claude-opus",
+    });
+
+  const defaultPrompt = await resolve();
+  expect(defaultPrompt).toContain("Radium");
+  expect(defaultPrompt).toContain(
+    "# Model\n- Name: Claude Opus\n- Author: Anthropic\n- Slug: anthropic/claude-opus",
+  );
+
+  await expect(
+    asUser(t, "member").mutation(api.chatroom.setSystemPromptSettings, {
+      workspace: ids.workspace,
+      enabled: false,
+      modelIdentity: false,
+    }),
+  ).rejects.toThrow("Workspace not found.");
+
+  await owner.mutation(api.chatroom.setSystemPromptSettings, {
+    workspace: ids.workspace,
+    enabled: true,
+    modelIdentity: false,
+  });
+  const anonymous = await resolve();
+  expect(anonymous).toContain("Radium");
+  expect(anonymous).not.toContain("# Model");
+  expect(anonymous).not.toContain("Claude Opus");
+
+  // The identity switch only matters while the prompt is on.
+  await owner.mutation(api.chatroom.setSystemPromptSettings, {
+    workspace: ids.workspace,
+    enabled: false,
+    modelIdentity: true,
+  });
+  await expect(resolve()).resolves.toBeNull();
+  await expect(
+    owner.query(api.chatroom.getSystemPromptSettings, { workspace: ids.workspace }),
+  ).resolves.toEqual({ enabled: false, modelIdentity: true });
+});
+
 test("moved title handlers preserve existing titles unless regeneration is forced", async () => {
   const t = makeTest();
   const { ownerShared: chatId } = await chatFixture(t);
