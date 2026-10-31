@@ -9,6 +9,14 @@ Completed and failed requests both allow **Revert to this message** on a user tu
 
 **Retry** continues a turn that stopped short instead of regenerating it. When a request ends aborted (Stop, or the browser disconnected) or with an error, the chat HTTP action saves `interruption` (`kind`, and the streamed error for failures) on the chat beside the partial messages; the next request clears it (`src/chatroom/interruption.ts`). The Session shows it as a card above the prompt; Retry drops the turn's unfinished step (partial text/reasoning, tool calls without a result), keeps steps whose tool calls have results or approval answers, and resends the conversation without a new user message, so the model resumes after those results. A tool call cut off mid-execution is dropped and may run again when the model re-issues it. A Tab that loads a chat while its request is still running reseeds from the saved messages once that request ends, so a reload mid-reply does not continue from stale history. The assistant footer's **Regenerate** still restarts the reply from its user turn.
 
+### Chat Storage and Subscriptions
+
+Chat documents (`aisdk_chats`) hold only metadata. History is one `chat_messages` row per message; the chat HTTP action saves the full history at request end but writes only positions whose content changed and deletes positions past a revert (`src/chatroom/messages.ts`). Attachments are uploaded by the Composer to Convex File Storage (`chat_files.generateUploadUrl`, then `chat_files.register`, 20 MiB limit) and persisted as storage URLs; the chat action inlines their bytes into the model input only (`src/chatroom/files.ts`). Files are deleted with the last chat that references them; uploads never sent, and stored files no `chat_files` or `telemetry_blobs` row references (such as uploads never registered), are pruned after a day.
+
+Subscriptions follow what is on screen. Home subscribes to `aisdk.ListChats` per Project filter and keeps an inactive filter's subscription for five minutes, so a quick return to Home applies live updates instead of refetching; starting on a session Tab never subscribes it. Every mounted session Tab subscribes to `aisdk.GetChat` (metadata, for its title and run state) but subscribes to `aisdk.GetChatMessages` only after the Tab is first opened, then keeps it while the Tab stays open.
+
+Chats created before this split keep their history embedded until their next save or `migrations:runChatMessages` moves it out. Inline data-URL attachments in those histories stay inline in their message rows. Narrowing the deprecated `messages`/`chat_completions` fields requires that migration to have completed on the deployment.
+
 ### Workspace Access
 
 Each Better Auth user can own multiple personal workspaces. A workspace owner

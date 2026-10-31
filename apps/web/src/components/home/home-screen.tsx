@@ -94,12 +94,15 @@ export function HomeScreen() {
   let projectFilter: Id<"projects"> | null | undefined = selectedProject?._id;
   if (isNoProjectSelected) projectFilter = null;
 
-  const { data: chats, error: chatsError } = useQuery(
-    convexQuery(
+  const { data: chats, error: chatsError } = useQuery({
+    ...convexQuery(
       api.aisdk.ListChats,
       workspaceId ? { workspace: workspaceId, project: projectFilter } : "skip",
     ),
-  );
+    // A quick return Home reuses the live subscription instead of refetching; inactive filtered
+    // lists are dropped after five minutes so their subscriptions stop costing reads.
+    gcTime: 5 * minute,
+  });
 
   const isOwner = workspace?.role === "owner";
   const workspaceName = workspace?.name ?? "workspace";

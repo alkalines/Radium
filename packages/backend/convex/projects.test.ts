@@ -100,8 +100,6 @@ function insertChat(
   return t.run((ctx) =>
     ctx.db.insert("aisdk_chats", {
       ...chat,
-      messages: [],
-      chat_completions: [],
       activeStream: false,
     }),
   );
@@ -471,8 +469,6 @@ test("removing a Project detaches every chat in batches and never deletes chats"
           workspace: ids.workspace,
           scope: "personal",
           project,
-          messages: [],
-          chat_completions: [],
           activeStream: false,
           lastInteractionAt: index,
         }),

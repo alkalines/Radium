@@ -83,8 +83,6 @@ async function chatFixture(t: ReturnType<typeof makeTest>) {
       userId: "owner",
       workspace,
       scope: "personal",
-      messages: [],
-      chat_completions: [],
       activeStream: false,
       lastInteractionAt: 1,
     });
@@ -92,8 +90,6 @@ async function chatFixture(t: ReturnType<typeof makeTest>) {
       userId: "owner",
       workspace,
       scope: "workspace",
-      messages: [],
-      chat_completions: [],
       activeStream: false,
       lastInteractionAt: 2,
     });
@@ -101,8 +97,6 @@ async function chatFixture(t: ReturnType<typeof makeTest>) {
       userId: "member",
       workspace,
       scope: "personal",
-      messages: [],
-      chat_completions: [],
       activeStream: false,
       lastInteractionAt: 3,
     });

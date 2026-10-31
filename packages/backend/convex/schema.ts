@@ -597,9 +597,15 @@ export default defineSchema({
     balance: v.optional(v.id("balances")),
     workspace: v.optional(v.id("workspaces")),
     scope: v.optional(v.union(v.literal("personal"), v.literal("workspace"))),
-    messages: v.array(messageSchema),
+    /**
+     * Deprecated embedded history. Messages live in `chat_messages`; `migrations.chatMessagesToTable`
+     * moves legacy histories out and every save clears this field. Narrow once that backfill is
+     * verified.
+     */
+    messages: v.optional(v.array(messageSchema)),
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())), // Used only on home page
-    chat_completions: v.array(v.id("chat_completions")),
+    /** Deprecated and never read; cleared with `messages`. */
+    chat_completions: v.optional(v.array(v.id("chat_completions"))),
     title: v.optional(v.string()),
     emoji: v.optional(v.string()),
     pinnedAt: v.optional(v.number()),
@@ -643,6 +649,9 @@ export default defineSchema({
       "userId",
       "lastInteractionAt",
     ])
+    // Pinned chats can be older than the recency window, so ListChats reads them separately.
+    .index("by_workspace_and_userId_and_pinnedAt", ["workspace", "userId", "pinnedAt"])
+    .index("by_workspace_and_scope_and_pinnedAt", ["workspace", "scope", "pinnedAt"])
     .index("by_workspace_and_userId_and_project_and_lastInteractionAt", [
       "workspace",
       "userId",
@@ -656,6 +665,41 @@ export default defineSchema({
       "lastInteractionAt",
     ])
     .index("by_project_and_lastInteractionAt", ["project", "lastInteractionAt"]),
+  /**
+   * One persisted AI SDK UI message per row, ordered by `position` (0-based) within its chat.
+   * Rows carry no access data: every read authorizes the parent chat first.
+   */
+  chat_messages: defineTable({
+    chat: v.id("aisdk_chats"),
+    position: v.number(),
+    message: messageSchema,
+  }).index("by_chat_and_position", ["chat", "position"]),
+  /**
+   * Chat attachments in File Storage. A row is one chat's reference to a stored file; `chat` is
+   * unset between upload and the first save that references it. The file is deleted with its
+   * last row. `url` is the storage URL persisted in message file parts.
+   */
+  chat_files: defineTable({
+    workspace: v.id("workspaces"),
+    /** Better Auth ID of the uploader. */
+    userId: v.string(),
+    storageId: v.id("_storage"),
+    url: v.string(),
+    mediaType: v.string(),
+    filename: v.optional(v.string()),
+    size: v.number(),
+    chat: v.optional(v.id("aisdk_chats")),
+  })
+    .index("by_workspace_and_url_and_chat", ["workspace", "url", "chat"])
+    .index("by_chat", ["chat"])
+    .index("by_storageId", ["storageId"]),
+  /**
+   * Singleton scan position of the unreferenced-file sweep in `chat_files.prunePendingUploads`:
+   * `_storage` files created at or before `scannedThrough` were already checked.
+   */
+  storage_sweeps: defineTable({
+    scannedThrough: v.number(),
+  }),
   /**
    * Content-addressed telemetry content, unique per `(workspace, hash)`. `hash` covers the
    * workspace ID and the RFC 8785 canonical JSON. Content lives inline (`content`) or, above the
@@ -672,7 +716,9 @@ export default defineSchema({
     meta: v.optional(telemetryBlobMetaSchema),
     /** Set for migrated legacy payloads that were cut at the old 32,000-character limit. */
     truncated: v.optional(v.boolean()),
-  }).index("by_workspace_and_hash", ["workspace", "hash"]),
+  })
+    .index("by_workspace_and_hash", ["workspace", "hash"])
+    .index("by_storage", ["storage"]),
   /** Ordered tool membership of a `toolset` blob, written once per new toolset. */
   telemetry_toolset_tools: defineTable({
     workspace: v.id("workspaces"),
