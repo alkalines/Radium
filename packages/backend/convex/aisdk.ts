@@ -20,7 +20,7 @@ import {
   resolveChatWorkerSelection,
 } from "../src/worker/chat-selection";
 import { requireWorkspaceProject } from "../src/projects/projects";
-import { storedSelection, toolSelectionValidator } from "./chatroom";
+import { storedSelection, toolSelectionValidator } from "../src/chatroom/tool-selection";
 import { chatInterruptionValidator } from "../src/chatroom/interruption";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));

@@ -92,11 +92,21 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
     const onMessage = (event: MessageEvent) => {
       const data = event.data as { type?: string; path?: unknown; workspace?: unknown } | null;
       if (data?.type !== NOTIFICATION_OPEN_MESSAGE || typeof data.path !== "string") return;
-      if (!data.path.startsWith("/")) return;
+
+      // Resolve against this origin so `//host` or absolute URLs never become a destination.
+      let url: URL;
+      try {
+        url = new URL(data.path, window.location.origin);
+      } catch {
+        return;
+      }
+      if (url.origin !== window.location.origin) return;
+      const path = `${url.pathname}${url.search}${url.hash}`;
+
       latest.current.open({
-        path: data.path,
+        path,
         ...(typeof data.workspace === "string" ? { workspace: data.workspace } : {}),
-        ...(data.path.startsWith("/chat/") ? { chat: data.path.slice("/chat/".length) } : {}),
+        ...(url.pathname.startsWith("/chat/") ? { chat: url.pathname.slice("/chat/".length) } : {}),
       });
     };
     navigator.serviceWorker.addEventListener("message", onMessage);

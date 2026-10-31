@@ -166,12 +166,17 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
 
   let chatTools: Awaited<ReturnType<typeof buildChatTools>>;
   try {
-    chatTools = await buildChatTools(ctx, chatId, {
-      userId,
-      workspaceId,
-      ownerId: workspace.ownerId,
-      selection: chat.worker,
-    });
+    chatTools = await buildChatTools(
+      ctx,
+      chatId,
+      { slug: body.model, provider: body.provider },
+      {
+        userId,
+        workspaceId,
+        ownerId: workspace.ownerId,
+        selection: chat.worker,
+      },
+    );
   } catch {
     return Response.json(
       {
@@ -386,8 +391,9 @@ function aggregatePerformance(
  *
  * The Web Search built-in tool set contributes the Exa search tool when it is
  * enabled and the workspace has an Exa API key configured. Enabled session
- * tool sets (`question`, `todo_write`) are registered first, so MCP names that
- * collide with them get a numeric suffix.
+ * tool sets (`question`, `todo_write`) are default-on, so they are registered
+ * only when the selected model lists `tools` in its `supported_parameters`;
+ * they come first, so MCP names that collide with them get a numeric suffix.
  *
  * @todo OAuth / OAuth 2.1 servers: supply an `OAuthClientProvider` via the
  *   transport's `authProvider` instead of a static bearer header.
@@ -395,6 +401,7 @@ function aggregatePerformance(
 async function buildChatTools(
   ctx: ActionCtx,
   chatId: Id<"aisdk_chats">,
+  model: { slug: string; provider?: string },
   worker: {
     userId: string;
     ownerId: string;
@@ -408,11 +415,18 @@ async function buildChatTools(
   approvalSecret?: Uint8Array;
 }> {
   const config = await ctx.runQuery(internal.chatroom.resolveChatTools, { chatId });
+  const modelSupportsTools = await ctx.runQuery(internal.models.supportsTools, {
+    workspace: worker.workspaceId,
+    model: model.slug,
+    provider: model.provider,
+  });
 
   const clients: Awaited<ReturnType<typeof createMCPClient>>[] = [];
   // MCP tools are typed with `unknown` inputs; collect them loosely and cast to
   // `ToolSet` once at the boundary to avoid the invariance friction.
-  const tools: Record<string, ToolSet[string]> = { ...buildSessionTools(config.builtinToolSets) };
+  const tools: Record<string, ToolSet[string]> = modelSupportsTools
+    ? { ...buildSessionTools(config.builtinToolSets) }
+    : {};
   let toolApproval: ToolApprovalConfiguration<ToolSet, unknown> | undefined;
   let approvalSecret: Uint8Array | undefined;
   // Shared-chat membership never grants machine execution. Identity and directory

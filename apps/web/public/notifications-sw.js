@@ -36,10 +36,22 @@ self.addEventListener("push", (event) => {
   );
 });
 
+/** The notification's path when it resolves to this origin, else `/` (blocks `//host` redirects). */
+function sameOriginPath(value) {
+  if (typeof value !== "string") return "/";
+  try {
+    const url = new URL(value, self.location.origin);
+    if (url.origin === self.location.origin) return url.pathname + url.search + url.hash;
+  } catch {
+    // Unparseable paths fall through to the root.
+  }
+  return "/";
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const data = event.notification.data || {};
-  const path = typeof data.path === "string" && data.path.startsWith("/") ? data.path : "/";
+  const path = sameOriginPath(data.path);
 
   event.waitUntil(
     (async () => {

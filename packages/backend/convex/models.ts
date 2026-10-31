@@ -110,6 +110,32 @@ export const availableModels = workspaceQuery({
   },
 });
 
+/**
+ * Whether `model` accepts tool definitions in this workspace, per the provider catalogue's
+ * `supported_parameters`. A pinned `provider` checks only that provider; otherwise any enabled
+ * provider offering the model counts. Unknown models and providers report `false`.
+ */
+export const supportsTools = internalQuery({
+  args: { workspace: v.id("workspaces"), model: v.string(), provider: v.optional(v.string()) },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const workspace = await ctx.db.get("workspaces", args.workspace);
+    if (!workspace) return false;
+
+    const providerRecords = await workspaceProviderRecords(ctx, workspace);
+    for (const record of providerRecords) {
+      if (!isWorkspaceProviderEnabled(record)) continue;
+      if (args.provider !== undefined && record.provider.slug !== args.provider) continue;
+
+      const providerModel = record.provider.models.find(
+        (candidate) => candidate.model === args.model,
+      );
+      if (providerModel?.supported_parameters.includes("tools")) return true;
+    }
+    return false;
+  },
+});
+
 /** Look up a global model by its canonical slug. */
 export const modelInfo = query({
   args: {

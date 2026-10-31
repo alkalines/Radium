@@ -6,6 +6,9 @@ import { internalAction } from "../../convex/_generated/server";
 import { logger } from "../logging/server";
 import { webPushConfig } from "./push";
 
+/** Socket timeout for one push service request, so a stalled endpoint fails instead of hanging. */
+const PUSH_REQUEST_TIMEOUT_MS = 10_000;
+
 /**
  * Send one notification to every subscribed browser of its user. Node-only (the `web-push`
  * library), registered from `convex/notifications_push.ts`; import nothing from here into
@@ -34,7 +37,12 @@ export const send = internalAction({
               keys: { p256dh: subscription.p256dh, auth: subscription.auth },
             },
             target.payload,
-            { vapidDetails: config, TTL: target.ttlSeconds, urgency: target.urgency },
+            {
+              vapidDetails: config,
+              TTL: target.ttlSeconds,
+              urgency: target.urgency,
+              timeout: PUSH_REQUEST_TIMEOUT_MS,
+            },
           );
           delivered.push(subscription._id);
         } catch (error) {

@@ -446,6 +446,7 @@ describe("moved HTTP handlers", () => {
         return { enabled: false };
       if (name === getFunctionName(internal.chatroom.resolveChatTools))
         return { builtinToolSets: [], mcpServers: [] };
+      if (name === getFunctionName(internal.models.supportsTools)) return true;
       if (name === getFunctionName(internal.chatroom.resolveWebSearch)) return { enabled: false };
       throw new Error(`Unexpected query ${name}`);
     });

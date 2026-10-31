@@ -1,10 +1,11 @@
 import { v } from "convex/values";
+import { WEB_SEARCH_TOOL_ID } from "@/chatroom/tools";
 import {
-  BUILTIN_TOOL_SETS,
-  WEB_SEARCH_TOOL_ID,
-  enabledBuiltinToolSets,
-  storedBuiltinToolSets,
-} from "@/chatroom/tools";
+  readStoredSelection,
+  storedSelection,
+  toolSelectionValidator,
+  type WorkspaceToolSelection,
+} from "@/chatroom/tool-selection";
 import {
   firstUserMessageText,
   generateChatTitle,
@@ -46,82 +47,10 @@ import { chatWorkerToolValidator, type ChatWorkerTool } from "../src/worker/chat
  * action that needs them.
  */
 
-const VALID_BUILTIN_IDS = new Set<string>(BUILTIN_TOOL_SETS.map((toolSet) => toolSet.id));
-
-/**
- * Built-in tool set IDs plus workspace MCP server IDs, as clients send them: the complete list
- * of enabled sets, including default-on ones. Storage converts it with {@link storedSelection}.
- */
-export const toolSelectionValidator = v.object({
-  builtinToolSets: v.array(v.string()),
-  mcpServers: v.array(v.id("mcp_servers")),
-});
-
-type ToolSelection = {
-  builtinToolSets: string[];
-  mcpServers: Id<"mcp_servers">[];
-};
-
-/** A selection as stored on workspace defaults and chat overrides (`src/chatroom/tools.ts`). */
-type StoredToolSelection = ToolSelection & { disabledBuiltinToolSets?: string[] };
-
-/**
- * Sanitise a selection against the workspace: unknown built-in IDs and MCP servers from other
- * workspaces are dropped silently. Legacy user-owned servers are accepted only by the
- * deterministic migration workspace. Callers authorize the workspace first.
- */
-async function sanitizeSelection(
-  ctx: QueryCtx | MutationCtx,
-  workspace: Doc<"workspaces">,
-  selection: ToolSelection,
-): Promise<ToolSelection> {
-  const builtinToolSets = selection.builtinToolSets.filter((id) => VALID_BUILTIN_IDS.has(id));
-
-  const defaultWorkspace = await getDefaultWorkspaceForUser(ctx, workspace.ownerId);
-  const acceptsLegacyServers = defaultWorkspace?._id === workspace._id;
-  const mcpServers: Id<"mcp_servers">[] = [];
-  for (const serverId of selection.mcpServers) {
-    const server = await ctx.db.get("mcp_servers", serverId);
-    if (!server) continue;
-
-    const workspaceServer = server.workspace === workspace._id;
-    const legacyServer =
-      acceptsLegacyServers && server.workspace === undefined && server.userId === workspace.ownerId;
-    if (workspaceServer || legacyServer) mcpServers.push(serverId);
-  }
-
-  return { builtinToolSets, mcpServers };
-}
-
-/** The effective, sanitized selection of a stored one: default-on sets count unless switched off. */
-function readStoredSelection(
-  ctx: QueryCtx | MutationCtx,
-  workspace: Doc<"workspaces">,
-  stored: StoredToolSelection,
-): Promise<ToolSelection> {
-  return sanitizeSelection(ctx, workspace, {
-    builtinToolSets: enabledBuiltinToolSets(stored),
-    mcpServers: stored.mcpServers,
-  });
-}
-
-/**
- * Sanitise a client selection and convert it to its stored form, recording switched-off
- * default-on sets as opt-outs. Use for every write of defaults or a chat override.
- */
-export async function storedSelection(
-  ctx: QueryCtx | MutationCtx,
-  workspace: Doc<"workspaces">,
-  selection: ToolSelection,
-): Promise<StoredToolSelection> {
-  const sanitized = await sanitizeSelection(ctx, workspace, selection);
-  return { ...storedBuiltinToolSets(sanitized.builtinToolSets), mcpServers: sanitized.mcpServers };
-}
-
 /** Read the user's default tool selection. */
 export const getToolDefaults = workspaceQuery({
   args: {},
-  handler: async (ctx): Promise<ToolSelection> => {
+  handler: async (ctx): Promise<WorkspaceToolSelection> => {
     return readStoredSelection(ctx, ctx.workspace, ctx.workspace.settings);
   },
 });
@@ -265,7 +194,7 @@ export const setChainOfThoughtEnabled = ownedWorkspaceMutation({
  */
 export const getChatTools = query({
   args: { chatId: v.id("aisdk_chats") },
-  handler: async (ctx, args): Promise<ToolSelection & { source: "chat" | "defaults" }> => {
+  handler: async (ctx, args): Promise<WorkspaceToolSelection & { source: "chat" | "defaults" }> => {
     const { chat, workspace } = await requireAccessibleChat(ctx, args.chatId);
     if (chat.tools) {
       const selection = await readStoredSelection(ctx, workspace, chat.tools);
@@ -290,7 +219,7 @@ export const setChatTools = mutation({
 async function resolveDefaults(
   ctx: QueryCtx | MutationCtx,
   workspace: Doc<"workspaces">,
-): Promise<ToolSelection> {
+): Promise<WorkspaceToolSelection> {
   const defaults = await loadWorkspaceSettings(ctx, workspace);
   return readStoredSelection(ctx, workspace, defaults);
 }

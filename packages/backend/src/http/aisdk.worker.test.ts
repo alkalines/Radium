@@ -48,7 +48,11 @@ const defaultWorker: StoredWorker = {
   tools: ["read", "edit", "create"],
 };
 
-function fixture(userId = "owner", worker: StoredWorker = defaultWorker) {
+function fixture(
+  userId = "owner",
+  worker: StoredWorker = defaultWorker,
+  modelSupportsTools = true,
+) {
   mocks.user.mockResolvedValue({ _id: userId });
   const runQuery = vi
     .fn()
@@ -61,7 +65,8 @@ function fixture(userId = "owner", worker: StoredWorker = defaultWorker) {
       workspace: { _id: "chat-workspace", ownerId: "owner" },
     })
     .mockResolvedValueOnce({ enabled: false })
-    .mockResolvedValueOnce({ builtinToolSets: [QUESTION_TOOL_ID], mcpServers: [] });
+    .mockResolvedValueOnce({ builtinToolSets: [QUESTION_TOOL_ID], mcpServers: [] })
+    .mockResolvedValueOnce(modelSupportsTools);
   if (userId === "owner" && worker.workerId !== undefined)
     runQuery.mockResolvedValueOnce({
       workerId: "selected-worker",
@@ -100,7 +105,7 @@ test("HTTP chat exposes the persisted Worker's enabled tools with signed write a
     worker_create: "user-approval",
   });
   expect(options.experimental_toolApprovalSecret).toBeInstanceOf(Uint8Array);
-  expect(f.runQuery.mock.calls[3]![1]).toEqual({
+  expect(f.runQuery.mock.calls[4]![1]).toEqual({
     workspaceId: "chat-workspace",
     workerId: "selected-worker",
   });
@@ -119,7 +124,7 @@ test("shared-chat members never receive owner-selected Worker tools", async () =
   const f = fixture("member");
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
   expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual(sessionToolNames);
-  expect(f.runQuery).toHaveBeenCalledTimes(4);
+  expect(f.runQuery).toHaveBeenCalledTimes(5);
 });
 
 test("an invalid stored Worker directory fails visibly before marking a stream active", async () => {
@@ -154,5 +159,15 @@ test("Worker tools chosen without a Worker are not offered to the model", async 
   const f = fixture("owner", { tools: ["read"] });
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
   expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual(sessionToolNames);
-  expect(f.runQuery).toHaveBeenCalledTimes(4);
+  expect(f.runQuery).toHaveBeenCalledTimes(5);
+});
+
+test("default-on session tools are withheld from a model without tool support", async () => {
+  const f = fixture("owner", defaultWorker, false);
+  expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
+  expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual([
+    "worker_read",
+    "worker_edit",
+    "worker_create",
+  ]);
 });
