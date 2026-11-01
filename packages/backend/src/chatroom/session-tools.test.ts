@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { buildSessionTools } from "./session-tools";
 import {
+  CODE_MODE_TOOL_SET_ID,
   QUESTION_TOOL_ID,
   TODO_TOOL_ID,
   enabledBuiltinToolSets,
@@ -44,17 +45,18 @@ test("todo_write replaces the list and summarizes progress for the model", () =>
   expect(todo?.execute?.({ todos: [] }, options)).toBe("Todos cleared");
 });
 
-test("session tools are default-on sets that only a saved opt-out switches off", () => {
-  // Selections saved before the session sets existed have no opt-outs, so they get both.
+test("default-on sets stay on until a saved opt-out switches them off", () => {
+  // Selections saved before the default-on sets existed have no opt-outs, so they get all of them.
   const legacy = enabledBuiltinToolSets({ builtinToolSets: ["web_search"] });
-  expect(legacy).toEqual([QUESTION_TOOL_ID, TODO_TOOL_ID, "web_search"]);
+  expect(legacy).toEqual([QUESTION_TOOL_ID, TODO_TOOL_ID, "web_search", CODE_MODE_TOOL_SET_ID]);
   expect(Object.keys(buildSessionTools(legacy))).toEqual([QUESTION_TOOL_ID, TODO_TOOL_ID]);
 
-  // Saving a list without `question` records it as switched off and survives the round trip.
+  // Saving a list without `question` and Code Mode records them as switched off and survives the
+  // round trip.
   const stored = storedBuiltinToolSets([TODO_TOOL_ID, "web_search"]);
   expect(stored).toEqual({
     builtinToolSets: ["web_search"],
-    disabledBuiltinToolSets: [QUESTION_TOOL_ID],
+    disabledBuiltinToolSets: [QUESTION_TOOL_ID, CODE_MODE_TOOL_SET_ID],
   });
   expect(enabledBuiltinToolSets(stored)).toEqual([TODO_TOOL_ID, "web_search"]);
   expect(Object.keys(buildSessionTools(enabledBuiltinToolSets(stored)))).toEqual([TODO_TOOL_ID]);

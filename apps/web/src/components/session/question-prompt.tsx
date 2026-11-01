@@ -21,6 +21,7 @@ import {
   QuestionnaireSubmit,
   QuestionnaireTitle,
 } from "@/components/ui/questionnaire";
+import { ExpiryCountdown } from "./approval-gate";
 import { getQuestionPrompts, getToolInput } from "./tool-parts";
 
 /** The `output-error` text a dismissed question returns to the model. */
@@ -40,11 +41,14 @@ const escapeIgnoredSelector =
 export function QuestionPrompt({
   part,
   shortcutsEnabled,
+  expiresAt,
   onAnswer,
   onDismiss,
 }: {
   part: ToolUIPart & { state: "input-available" };
   shortcutsEnabled: boolean;
+  /** Code Mode questions: when the server dismisses them if still unanswered. */
+  expiresAt?: number;
   onAnswer: (output: QuestionOutput) => void;
   onDismiss: () => void;
 }) {
@@ -131,6 +135,9 @@ export function QuestionPrompt({
                   </QuestionnaireDescription>
                 ) : null}
               </div>
+              {expiresAt !== undefined ? (
+                <ExpiryCountdown expiresAt={expiresAt} outcome="Dismisses" />
+              ) : null}
               {questions.length > 1 ? (
                 <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                   {index + 1} of {questions.length}

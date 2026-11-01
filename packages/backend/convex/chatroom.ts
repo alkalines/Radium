@@ -14,7 +14,7 @@ import {
 } from "@/chatroom/titles";
 import { loadFirstUserMessage } from "@/chatroom/messages";
 import {
-  chatSystemPrompt,
+  chatModelIdentityValidator,
   DEFAULT_SYSTEM_PROMPT_SETTINGS,
   systemPromptSettingsValidator,
   type SystemPromptSettings,
@@ -215,31 +215,35 @@ export const setSystemPromptSettings = ownedWorkspaceMutation({
 });
 
 /**
- * The system prompt for one chat request, or `null` when the workspace switched it off. The model
- * identity comes from the global `models` catalogue and is left out when the workspace hid it.
- * Callers authorize the chat first; this only reads workspace settings and the public catalogue.
+ * What the system prompt of one chat request names, or `null` when the workspace switched the
+ * prompt off. `model` is the identity from the global `models` catalogue, absent when the
+ * workspace hid it. The chat action builds the text with `chatSystemPrompt` once it knows the Code
+ * Mode catalog. Callers authorize the chat first; this only reads workspace settings and the
+ * public catalogue.
  */
 export const resolveSystemPrompt = internalQuery({
   args: { workspace: v.id("workspaces"), model: v.string() },
-  returns: v.union(v.string(), v.null()),
+  returns: v.union(v.object({ model: v.optional(chatModelIdentityValidator) }), v.null()),
   handler: async (ctx, args) => {
     const workspace = await ctx.db.get("workspaces", args.workspace);
     const settings =
       (workspace && (await loadWorkspaceSettings(ctx, workspace)).systemPrompt) ??
       DEFAULT_SYSTEM_PROMPT_SETTINGS;
     if (!settings.enabled) return null;
-    if (!settings.modelIdentity) return chatSystemPrompt();
+    if (!settings.modelIdentity) return {};
 
     const model = await ctx.db
       .query("models")
       .withIndex("by_slug", (q) => q.eq("slug", args.model))
       .unique();
     const author = model ? await ctx.db.get("authors", model.author) : null;
-    return chatSystemPrompt({
-      slug: args.model,
-      ...(model ? { name: model.name } : {}),
-      ...(author ? { author: author.name } : {}),
-    });
+    return {
+      model: {
+        slug: args.model,
+        ...(model ? { name: model.name } : {}),
+        ...(author ? { author: author.name } : {}),
+      },
+    };
   },
 });
 
@@ -331,6 +335,7 @@ export const resolveChatTools = internalQuery({
         url: server.url,
         transport: server.transport,
         auth: server.auth,
+        codeMode: server.codeMode ?? true,
       });
     }
 
@@ -374,6 +379,8 @@ type ResolvedMcpServer = {
   url: string;
   transport: Doc<"mcp_servers">["transport"];
   auth: Doc<"mcp_servers">["auth"];
+  /** Tools reachable only inside Code Mode (`true`) or as direct tool calls (`false`). */
+  codeMode: boolean;
 };
 
 // Title generation

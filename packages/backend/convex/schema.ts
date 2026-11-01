@@ -7,6 +7,7 @@ import { workerChatCallFields, workerTaskFields } from "../src/worker/task-contr
 import { chatWorkerSelectionValidator, chatWorkerToolValidator } from "../src/worker/chat-config";
 import { projectFolderValidator } from "../src/projects/validators";
 import { systemPromptSettingsValidator } from "../src/chatroom/system-prompt";
+import { codeModeInteractionResponseValidator } from "../src/chatroom/code-mode";
 import {
   legacyTelemetrySpanKindSchema,
   legacyTelemetryStatusSchema,
@@ -578,9 +579,27 @@ export default defineSchema({
     ),
     /** Masked, non-secret previews of the stored secrets for display. */
     preview: v.optional(v.record(v.string(), v.string())),
+    /**
+     * Whether the server's tools are reachable only inside Code Mode (`execute`); `false` exposes
+     * them as direct tool calls instead. Absent means `true`.
+     */
+    codeMode: v.optional(v.boolean()),
   })
     .index("by_userId", ["userId"])
     .index("by_workspace", ["workspace"]),
+  /**
+   * A user prompt a running Code Mode program waits on: an approval for an inner Worker call or an
+   * inner `question`. The chat action inserts it, the requesting user answers it through
+   * `api.code_mode.answerInteraction`, and the action deletes it once it reads the answer or stops
+   * waiting. Rows are short-lived and hold no tool input.
+   */
+  codemode_interactions: defineTable({
+    chatId: v.id("aisdk_chats"),
+    /** Better Auth ID of the user whose request runs the program; only they can answer. */
+    userId: v.string(),
+    kind: v.union(v.literal("approval"), v.literal("question")),
+    response: v.optional(codeModeInteractionResponseValidator),
+  }),
   /**
    * Legacy per-user Chatroom defaults retained for migration and fallback reads.
    * New configuration writes belong to workspace_settings.

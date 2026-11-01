@@ -285,7 +285,10 @@ test("Worker tool defaults are owner-written, member-readable, and keep legacy s
   // settings predate the default-on session sets, so those count as enabled.
   await expect(
     member.query(api.chatroom.getToolDefaults, { workspace: ids.workspace }),
-  ).resolves.toEqual({ builtinToolSets: ["question", "todo_write", "web_search"], mcpServers: [] });
+  ).resolves.toEqual({
+    builtinToolSets: ["question", "todo_write", "web_search", "code_interpreter"],
+    mcpServers: [],
+  });
 });
 
 test("CreateChat stores draft tool choices as a sanitized chat override without touching defaults", async () => {
@@ -307,7 +310,10 @@ test("CreateChat stores draft tool choices as a sanitized chat override without 
   });
   await expect(
     member.query(api.chatroom.getToolDefaults, { workspace: ids.workspace }),
-  ).resolves.toEqual({ builtinToolSets: ["question", "todo_write"], mcpServers: [] });
+  ).resolves.toEqual({
+    builtinToolSets: ["question", "todo_write", "code_interpreter"],
+    mcpServers: [],
+  });
   expect(await t.run((ctx) => ctx.db.query("workspace_settings").collect())).toEqual([]);
 });
 
@@ -357,11 +363,9 @@ test("system prompt switches: owner-only, identity hidden on request, off return
       model: "anthropic/claude-opus",
     });
 
-  const defaultPrompt = await resolve();
-  expect(defaultPrompt).toContain("Radium");
-  expect(defaultPrompt).toContain(
-    "# Model\n- Name: Claude Opus\n- Author: Anthropic\n- Slug: anthropic/claude-opus",
-  );
+  await expect(resolve()).resolves.toEqual({
+    model: { slug: "anthropic/claude-opus", name: "Claude Opus", author: "Anthropic" },
+  });
 
   await expect(
     asUser(t, "member").mutation(api.chatroom.setSystemPromptSettings, {
@@ -376,10 +380,7 @@ test("system prompt switches: owner-only, identity hidden on request, off return
     enabled: true,
     modelIdentity: false,
   });
-  const anonymous = await resolve();
-  expect(anonymous).toContain("Radium");
-  expect(anonymous).not.toContain("# Model");
-  expect(anonymous).not.toContain("Claude Opus");
+  await expect(resolve()).resolves.toEqual({});
 
   // The identity switch only matters while the prompt is on.
   await owner.mutation(api.chatroom.setSystemPromptSettings, {
@@ -391,6 +392,43 @@ test("system prompt switches: owner-only, identity hidden on request, off return
   await expect(
     owner.query(api.chatroom.getSystemPromptSettings, { workspace: ids.workspace }),
   ).resolves.toEqual({ enabled: false, modelIdentity: true });
+});
+
+test("Code Mode prompts: only the requesting user answers, once, with the matching kind", async () => {
+  const t = makeTest();
+  const ids = await chatFixture(t);
+  const interaction = await t.mutation(internal.code_mode.openInteraction, {
+    chatId: ids.ownerShared,
+    userId: "member",
+    kind: "approval",
+  });
+  const answer = (userId: string, approved: boolean) =>
+    asUser(t, userId).mutation(api.code_mode.answerInteraction, {
+      interaction,
+      response: { kind: "approval", approved },
+    });
+
+  // The chat owner can read this shared chat but did not start the run.
+  await expect(answer("owner", true)).rejects.toThrow("no longer waiting");
+  await expect(
+    asUser(t, "member").mutation(api.code_mode.answerInteraction, {
+      interaction,
+      response: { kind: "question", answers: [] },
+    }),
+  ).rejects.toThrow("does not match");
+  await expect(
+    t.query(internal.code_mode.interactionResponse, { interaction }),
+  ).resolves.toBeNull();
+
+  await answer("member", false);
+  await expect(answer("member", true)).rejects.toThrow("already answered");
+  await expect(t.query(internal.code_mode.interactionResponse, { interaction })).resolves.toEqual({
+    kind: "approval",
+    approved: false,
+  });
+
+  await t.mutation(internal.code_mode.closeInteraction, { interaction });
+  await expect(answer("member", true)).rejects.toThrow("no longer waiting");
 });
 
 test("moved title handlers preserve existing titles unless regeneration is forced", async () => {

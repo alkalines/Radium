@@ -1,7 +1,12 @@
+import { tool } from "ai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { z } from "zod";
 import type { ActionCtx } from "../../convex/_generated/server";
 
-const mocks = vi.hoisted(() => ({ streamText: vi.fn(), user: vi.fn() }));
+const mocks = vi.hoisted(() => ({ streamText: vi.fn(), user: vi.fn(), mcpTools: vi.fn() }));
+vi.mock("@ai-sdk/mcp", () => ({
+  createMCPClient: async () => ({ tools: mocks.mcpTools, close: async () => {} }),
+}));
 vi.mock("../../convex/auth", () => ({
   authComponent: { safeGetAuthUser: mocks.user },
   createAuth: () => ({ api: { getSession: vi.fn() } }),
@@ -20,11 +25,13 @@ vi.mock("ai", async () => ({
 }));
 
 import { handleAISDKChat } from "./aisdk.chat";
-import { QUESTION_TOOL_ID } from "../chatroom/tools";
+import { CODE_MODE_TOOL_SET_ID, QUESTION_TOOL_ID } from "../chatroom/tools";
+import { CODE_MODE_TOOL_NAME } from "../chatroom/code-mode";
 
 /**
  * The fixture's resolved selection enables only the `question` session set, so `todo_write`
- * (switched off) must not reach the model; enabled session tools come before Worker tools.
+ * (switched off) must not reach the model; enabled session tools come before Worker tools, and
+ * Code Mode's `execute` comes last.
  */
 const sessionToolNames = [QUESTION_TOOL_ID];
 
@@ -52,6 +59,8 @@ function fixture(
   userId = "owner",
   worker: StoredWorker = defaultWorker,
   modelSupportsTools = true,
+  builtinToolSets: string[] = [QUESTION_TOOL_ID, CODE_MODE_TOOL_SET_ID],
+  mcpServers: Array<{ name: string; codeMode: boolean }> = [],
 ) {
   mocks.user.mockResolvedValue({ _id: userId });
   const runQuery = vi
@@ -65,8 +74,19 @@ function fixture(
       workspace: { _id: "chat-workspace", ownerId: "owner" },
     })
     .mockResolvedValueOnce({ enabled: false })
-    .mockResolvedValueOnce("system prompt")
-    .mockResolvedValueOnce({ builtinToolSets: [QUESTION_TOOL_ID], mcpServers: [] })
+    .mockResolvedValueOnce({})
+    .mockResolvedValueOnce({
+      builtinToolSets,
+      mcpServers: mcpServers.map((server, index) => ({
+        _id: `server-${index}`,
+        workspace: "chat-workspace",
+        legacy: false,
+        url: "https://mcp.example.test",
+        transport: "http",
+        auth: { type: "none" },
+        ...server,
+      })),
+    })
     .mockResolvedValueOnce(modelSupportsTools);
   if (userId === "owner" && worker.workerId !== undefined)
     runQuery.mockResolvedValueOnce({
@@ -100,6 +120,7 @@ test("HTTP chat exposes the persisted Worker's enabled tools with signed write a
     "worker_read",
     "worker_edit",
     "worker_create",
+    CODE_MODE_TOOL_NAME,
   ]);
   expect(options.toolApproval).toEqual({
     worker_edit: "user-approval",
@@ -116,7 +137,11 @@ test("Bash-only Worker selection receives a signed approval secret", async () =>
   const f = fixture("owner", { ...defaultWorker, tools: ["bash"] });
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
   const options = mocks.streamText.mock.calls[0]![0];
-  expect(Object.keys(options.tools)).toEqual([...sessionToolNames, "worker_bash"]);
+  expect(Object.keys(options.tools)).toEqual([
+    ...sessionToolNames,
+    "worker_bash",
+    CODE_MODE_TOOL_NAME,
+  ]);
   expect(options.toolApproval).toEqual({ worker_bash: "user-approval" });
   expect(options.experimental_toolApprovalSecret).toBeInstanceOf(Uint8Array);
 });
@@ -124,7 +149,10 @@ test("Bash-only Worker selection receives a signed approval secret", async () =>
 test("shared-chat members never receive owner-selected Worker tools", async () => {
   const f = fixture("member");
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
-  expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual(sessionToolNames);
+  expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual([
+    ...sessionToolNames,
+    CODE_MODE_TOOL_NAME,
+  ]);
   expect(f.runQuery).toHaveBeenCalledTimes(6);
 });
 
@@ -143,7 +171,12 @@ test("a Worker without a reported directory exposes tools that explain why they 
   const f = fixture("owner", { workerId: "selected-worker", tools: ["read", "bash"] });
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
   const options = mocks.streamText.mock.calls[0]![0];
-  expect(Object.keys(options.tools)).toEqual([...sessionToolNames, "worker_read", "worker_bash"]);
+  expect(Object.keys(options.tools)).toEqual([
+    ...sessionToolNames,
+    "worker_read",
+    "worker_bash",
+    CODE_MODE_TOOL_NAME,
+  ]);
   expect(options.toolApproval).toEqual({});
   await expect(
     options.tools.worker_bash.execute({ command: "ls", timeout: 5 }, { toolCallId: "call" }),
@@ -159,7 +192,10 @@ test("a Worker without a reported directory exposes tools that explain why they 
 test("Worker tools chosen without a Worker are not offered to the model", async () => {
   const f = fixture("owner", { tools: ["read"] });
   expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
-  expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual(sessionToolNames);
+  expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual([
+    ...sessionToolNames,
+    CODE_MODE_TOOL_NAME,
+  ]);
   expect(f.runQuery).toHaveBeenCalledTimes(6);
 });
 
@@ -170,5 +206,58 @@ test("default-on session tools are withheld from a model without tool support", 
     "worker_read",
     "worker_edit",
     "worker_create",
+  ]);
+});
+
+test("switching the Code Mode set off removes execute and keeps the direct tools", async () => {
+  const f = fixture("owner", defaultWorker, true, [QUESTION_TOOL_ID]);
+  expect((await handleAISDKChat(f.ctx, request())).status).toBe(200);
+  expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual([
+    ...sessionToolNames,
+    "worker_read",
+    "worker_edit",
+    "worker_create",
+  ]);
+});
+
+test("MCP servers run only inside Code Mode unless switched to direct, or Code Mode is off", async () => {
+  mocks.mcpTools.mockResolvedValue({
+    search: tool({
+      description: "Search things.",
+      inputSchema: z.object({ query: z.string() }),
+      execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    }),
+  });
+  const servers = [
+    { name: "GitHub", codeMode: true },
+    { name: "Runner", codeMode: false },
+  ];
+
+  const on = fixture("owner", defaultWorker, true, undefined, servers);
+  expect((await handleAISDKChat(on.ctx, request())).status).toBe(200);
+  const withCodeMode = mocks.streamText.mock.calls[0]![0];
+  expect(Object.keys(withCodeMode.tools)).toEqual([
+    ...sessionToolNames,
+    "worker_read",
+    "worker_edit",
+    "worker_create",
+    "runner_search",
+    CODE_MODE_TOOL_NAME,
+  ]);
+  // The Code Mode server is only in the catalog; the direct server is not nested in Code Mode.
+  expect(withCodeMode.instructions).toContain("- github (1 tool)");
+  expect(withCodeMode.instructions).toContain("tools.github.search(");
+  expect(withCodeMode.instructions).not.toContain("runner");
+
+  mocks.streamText.mockClear();
+  const off = fixture("owner", defaultWorker, true, [QUESTION_TOOL_ID], servers);
+  expect((await handleAISDKChat(off.ctx, request())).status).toBe(200);
+  expect(Object.keys(mocks.streamText.mock.calls[0]![0].tools)).toEqual([
+    ...sessionToolNames,
+    "worker_read",
+    "worker_edit",
+    "worker_create",
+    "github_search",
+    "runner_search",
   ]);
 });

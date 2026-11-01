@@ -344,7 +344,7 @@ function ChainOfThought({
 }) {
   const [userOpen, setUserOpen] = useState<boolean>();
   const tools = items.flatMap(({ part }) => (isToolPart(part) ? [part] : []));
-  const isAwaiting = tools.some((part) => part.state === "approval-requested");
+  const isAwaiting = tools.some((part) => getToolRunState(part, isLive) === "awaiting");
   const failedCount = tools.filter((part) => getToolRunState(part, isLive) === "failed").length;
 
   let state: RunState = "succeeded";
@@ -355,7 +355,7 @@ function ChainOfThought({
   let title = `Worked through ${items.length} ${items.length === 1 ? "step" : "steps"}`;
   if (tools.length === 0) title = "Thought";
   if (failedCount > 0) title = `${title}, ${failedCount} failed`;
-  if (isAwaiting) title = "Waiting for approval";
+  if (isAwaiting) title = "Waiting for your answer";
   if (state === "thinking") title = "Thinking";
 
   return (

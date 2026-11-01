@@ -12,6 +12,7 @@ import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import type { CodeModeInteractionResponse } from "backend/src/chatroom/code-mode";
 import type { ChatInterruption } from "backend/src/chatroom/interruption";
 import type { ToolSelection } from "backend/src/chatroom/tools";
 import type { ChatWorkerSelection } from "backend/src/worker/chat-config";
@@ -168,6 +169,7 @@ export const SessionScreen = memo(function SessionScreen({
   const forkChat = useMutation(api.aisdk.ForkChat);
   const setChatScope = useMutation(api.aisdk.SetChatScope);
   const setChatWorker = useMutation(api.aisdk.SetChatWorker);
+  const answerCodeModeInteraction = useMutation(api.code_mode.answerInteraction);
 
   // An existing chat's settings belong to its own workspace; a draft uses the current one.
   const settingsWorkspaceId = chat?.workspace ?? workspaceId;
@@ -550,6 +552,45 @@ export const SessionScreen = memo(function SessionScreen({
       return true;
     },
   });
+
+  const pendingApprovals = getPendingApprovals(messages);
+  const pendingQuestions = getPendingQuestions(messages);
+  const submittedInteractions = useRef(new Set<string>());
+  const [hiddenInteractions, setHiddenInteractions] = useState<ReadonlySet<string>>(new Set());
+
+  // A successful mutation can beat the next stream snapshot. Hide its prompt until the row
+  // leaves awaiting, and guard synchronously so keyboard and pointer submits cannot race.
+  useEffect(() => {
+    const pendingIds = new Set(
+      [...getPendingApprovals(messages), ...getPendingQuestions(messages)].flatMap((part) =>
+        part.codeModeInteraction ? [part.codeModeInteraction.id] : [],
+      ),
+    );
+    let changed = false;
+    for (const id of submittedInteractions.current) {
+      if (!pendingIds.has(id)) {
+        submittedInteractions.current.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) setHiddenInteractions(new Set(submittedInteractions.current));
+  }, [messages]);
+
+  async function respondToCodeMode(id: string, response: CodeModeInteractionResponse) {
+    if (submittedInteractions.current.has(id)) return;
+    submittedInteractions.current.add(id);
+    setHiddenInteractions(new Set(submittedInteractions.current));
+    try {
+      await answerCodeModeInteraction({
+        interaction: id as Id<"codemode_interactions">,
+        response,
+      });
+    } catch (error) {
+      submittedInteractions.current.delete(id);
+      setHiddenInteractions(new Set(submittedInteractions.current));
+      toast.error(error instanceof Error ? error.message : "Failed to answer the tool.");
+    }
+  }
 
   // Seed useChat once per chat from persisted messages; later query updates must not overwrite
   // its live state. A chat opened while a request runs elsewhere (another Tab, or this page before
@@ -949,11 +990,21 @@ export const SessionScreen = memo(function SessionScreen({
   if (usesDraftChoices) workerSelection = choicesAreStale ? null : draftWorker;
   const isRunTargetFixed = messages.length > 0 && agent.protocol === "acp";
   const isWorkerBusy = isWorkerSaving || (chatId !== undefined && status !== "ready");
-  const pendingApprovals = getPendingApprovals(messages);
-  const currentApproval = pendingApprovals[0];
-  // A question shows once its turn has stopped streaming, after every approval of that step.
-  const currentQuestion =
-    isRunning || currentApproval ? undefined : getPendingQuestions(messages)[0];
+  // Code Mode prompts wait inside this Tab's live request; a stopped or saved run cannot answer.
+  const visibleApprovals = pendingApprovals.filter(
+    (part) =>
+      !part.codeModeInteraction ||
+      (isRunning && !hiddenInteractions.has(part.codeModeInteraction.id)),
+  );
+  const currentApproval = visibleApprovals[0];
+  // Native questions wait for the step to finish; Code Mode waits for its answer in-stream.
+  const currentQuestion = currentApproval
+    ? undefined
+    : pendingQuestions.find((part) =>
+        part.codeModeInteraction
+          ? isRunning && !hiddenInteractions.has(part.codeModeInteraction.id)
+          : !isRunning,
+      );
   const isComposerReplaced = currentApproval !== undefined || currentQuestion !== undefined;
   const revertedCount = pendingRevert ? pendingRevert.messages.length - messages.length : 0;
   // A revert or a pending answer comes first; Retry would resend the reverted or unanswered turn.
@@ -1119,9 +1170,21 @@ export const SessionScreen = memo(function SessionScreen({
                 >
                   <ApprovalPrompt
                     part={currentApproval}
-                    total={pendingApprovals.length}
+                    total={visibleApprovals.length}
                     shortcutsEnabled={isActive}
-                    onApprovalResponse={addToolApprovalResponse}
+                    expiresAt={currentApproval.codeModeInteraction?.expiresAt}
+                    onApprovalResponse={(response) => {
+                      const interaction = currentApproval.codeModeInteraction;
+                      if (interaction) {
+                        void respondToCodeMode(interaction.id, {
+                          kind: "approval",
+                          approved: response.approved,
+                          ...(response.reason ? { reason: response.reason } : {}),
+                        });
+                      } else {
+                        void addToolApprovalResponse(response);
+                      }
+                    }}
                   />
                 </m.div>
               ) : null}
@@ -1136,21 +1199,38 @@ export const SessionScreen = memo(function SessionScreen({
                   <QuestionPrompt
                     part={currentQuestion}
                     shortcutsEnabled={isActive}
-                    onAnswer={(output) =>
-                      void addToolOutput({
-                        tool: "question",
-                        toolCallId: currentQuestion.toolCallId,
-                        output,
-                      })
-                    }
-                    onDismiss={() =>
-                      void addToolOutput({
-                        tool: "question",
-                        toolCallId: currentQuestion.toolCallId,
-                        state: "output-error",
-                        errorText: QUESTION_DISMISSED_MESSAGE,
-                      })
-                    }
+                    expiresAt={currentQuestion.codeModeInteraction?.expiresAt}
+                    onAnswer={(output) => {
+                      const interaction = currentQuestion.codeModeInteraction;
+                      if (interaction) {
+                        void respondToCodeMode(interaction.id, {
+                          kind: "question",
+                          answers: output.answers,
+                        });
+                      } else {
+                        void addToolOutput({
+                          tool: "question",
+                          toolCallId: currentQuestion.toolCallId,
+                          output,
+                        });
+                      }
+                    }}
+                    onDismiss={() => {
+                      const interaction = currentQuestion.codeModeInteraction;
+                      if (interaction) {
+                        void respondToCodeMode(interaction.id, {
+                          kind: "question",
+                          dismissed: true,
+                        });
+                      } else {
+                        void addToolOutput({
+                          tool: "question",
+                          toolCallId: currentQuestion.toolCallId,
+                          state: "output-error",
+                          errorText: QUESTION_DISMISSED_MESSAGE,
+                        });
+                      }
+                    }}
                   />
                 </m.div>
               ) : null}
@@ -1267,8 +1347,18 @@ function sessionRunState(
   activeStream: boolean,
 ): RunState {
   if (status === "error") return "failed";
-  if (getPendingApprovals(messages).length > 0) return "awaiting";
-  if (status === "ready" && getPendingQuestions(messages).length > 0) return "awaiting";
+  // Code Mode prompts only wait while this Tab's request streams.
+  const isLive = status === "streaming" || status === "submitted";
+  if (getPendingApprovals(messages).some((part) => !part.codeModeInteraction || isLive)) {
+    return "awaiting";
+  }
+  if (
+    getPendingQuestions(messages).some((part) =>
+      part.codeModeInteraction ? isLive : status === "ready",
+    )
+  ) {
+    return "awaiting";
+  }
   if (status === "streaming") return "streaming";
   if (status === "submitted") return "thinking";
   // A run this Tab did not start (another browser tab, before a reload, or a Tab whose messages

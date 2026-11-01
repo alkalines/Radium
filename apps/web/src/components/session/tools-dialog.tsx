@@ -223,6 +223,7 @@ export function ToolsDialog({
                 title={server.name}
                 description={<span className="font-mono text-[13px]">{server.url}</span>}
               >
+                <Tag>{server.codeMode ? "Code Mode" : "Direct"}</Tag>
                 <Switch
                   checked={selection?.mcpServers.includes(server._id) ?? false}
                   disabled={!selection}

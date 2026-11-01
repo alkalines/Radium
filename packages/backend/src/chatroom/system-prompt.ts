@@ -22,11 +22,13 @@ export const DEFAULT_SYSTEM_PROMPT_SETTINGS: SystemPromptSettings = {
  * Catalogue identity of the model answering a Chatroom request. `name` and `author` are absent
  * when the slug has no global `models` record (for example a provider-only mapping).
  */
-export type ChatModelIdentity = {
-  slug: string;
-  name?: string;
-  author?: string;
-};
+export const chatModelIdentityValidator = v.object({
+  slug: v.string(),
+  name: v.optional(v.string()),
+  author: v.optional(v.string()),
+});
+
+export type ChatModelIdentity = Infer<typeof chatModelIdentityValidator>;
 
 /**
  * Radium orientation shared by every Chatroom request. It describes the environment and the few
@@ -48,12 +50,28 @@ const RADIUM_ORIENTATION = `You are running inside Radium, a self-hosted workspa
 - Run independent tool calls in parallel.`;
 
 /**
- * Build the Chatroom system prompt for one request: the invariant Radium orientation, then the
- * model's own identity unless the workspace hid it (`model` omitted). Pure and deterministic, so
- * identical inputs keep the same cacheable text.
+ * Build the Chatroom system prompt for one request: the invariant Radium orientation, the Code
+ * Mode catalog when the request has an `execute` tool (`codeMode`, from `createCodeMode`), then
+ * the model's own identity unless the workspace hid it (`model` omitted). Pure and deterministic,
+ * so identical inputs keep the same cacheable text.
  */
-export function chatSystemPrompt(model?: ChatModelIdentity): string {
+export function chatSystemPrompt(options: {
+  model?: ChatModelIdentity;
+  codeMode?: string;
+}): string {
+  const { model, codeMode } = options;
   const sections = [RADIUM_ORIENTATION];
+
+  // Sections still to come go between the orientation and Code Mode, ordered from most to least
+  // stable so the cacheable prefix stays long:
+  // - Rule packs: opt-in conduct rules in the style of Oh-My-Pi (e.g. `ts-no-tiny-functions`),
+  //   enabled per workspace or chat. Insert after RADIUM_ORIENTATION; its `# Rules` are the
+  //   always-on permission boundaries and stay there.
+  // - Project instructions: the Project's AGENTS.md read through the Worker, when a Project and
+  //   Worker are selected. Insert after rule packs.
+
+  // The catalog changes with the enabled tools; the `execute` tool description stays invariant.
+  if (codeMode) sections.push(codeMode);
   if (model) {
     sections.push(
       [
@@ -64,16 +82,5 @@ export function chatSystemPrompt(model?: ChatModelIdentity): string {
       ].join("\n"),
     );
   }
-
-  // Sections still to come go between the orientation and the model identity, ordered from most
-  // to least stable so the cacheable prefix stays long:
-  // - Rule packs: opt-in conduct rules in the style of Oh-My-Pi (e.g. `ts-no-tiny-functions`),
-  //   enabled per workspace or chat. Insert after RADIUM_ORIENTATION; its `# Rules` are the
-  //   always-on permission boundaries and stay there.
-  // - Project instructions: the Project's AGENTS.md read through the Worker, when a Project and
-  //   Worker are selected. Insert after rule packs.
-  // - Code Mode: the `execute` tool's catalog (see docs/research/OpenCode_Code_Mode.md), which
-  //   changes with the enabled tools. Insert after project instructions; the `execute` tool
-  //   description itself stays invariant.
   return sections.join("\n\n");
 }

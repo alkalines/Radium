@@ -13,6 +13,10 @@ import { getToolKind, type ToolKind } from "./tool-parts";
 export type ApprovalResponse = { id: string; approved: boolean; reason?: string };
 
 const gateCopy: Record<ToolKind, { title: string; description: string }> = {
+  code: {
+    title: "Allow this code?",
+    description: "The program runs using this chat's tools.",
+  },
   bash: {
     title: "Allow this command on the Worker?",
     description:
@@ -43,6 +47,7 @@ const gateCopy: Record<ToolKind, { title: string; description: string }> = {
 };
 
 const deniedCopy: Record<ToolKind, string> = {
+  code: "Denied. No code was run.",
   bash: "Denied. No command was executed.",
   edit: "Denied. No files were changed.",
   create: "Denied. No file was created.",
@@ -68,16 +73,19 @@ const overlaySelector =
  * `total` is how many calls of the turn wait; they are answered one at a time, first to last.
  * With `shortcutsEnabled` (the visible Tab), ⌘/Ctrl+Enter approves and Esc rejects unless another
  * handler already consumed the key; while a reason is typed, Enter sends it and Esc goes back.
+ * `expiresAt` (Code Mode calls) shows the time left before the call is refused automatically.
  */
 export function ApprovalPrompt({
   part,
   total,
   shortcutsEnabled,
+  expiresAt,
   onApprovalResponse,
 }: {
   part: ToolUIPart & { state: "approval-requested" };
   total: number;
   shortcutsEnabled: boolean;
+  expiresAt?: number;
   onApprovalResponse: (response: ApprovalResponse) => void;
 }) {
   const [isGivingReason, setIsGivingReason] = useState(false);
@@ -141,6 +149,9 @@ export function ApprovalPrompt({
               {part.approval.requestReason ?? copy.description}
             </p>
           </div>
+          {expiresAt !== undefined ? (
+            <ExpiryCountdown expiresAt={expiresAt} outcome="Rejects" />
+          ) : null}
           {total > 1 ? (
             <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
               1 of {total}
@@ -213,6 +224,26 @@ export function ApprovalPrompt({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Time left before an unanswered Code Mode prompt is refused by the server, e.g. "Rejects in
+ * 2:59". The deadline is the server's; local clock skew only shifts the displayed time.
+ */
+export function ExpiryCountdown({ expiresAt, outcome }: { expiresAt: number; outcome: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const seconds = Math.max(0, Math.ceil((expiresAt - now) / 1000));
+  const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  return (
+    <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+      {outcome} in {clock}
+    </span>
   );
 }
 

@@ -32,6 +32,10 @@ import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
 import { buildWorkerChatTools, workerChatApprovalSecret } from "../worker/chat-tools";
 import { buildSessionTools } from "../chatroom/session-tools";
+import { CODE_MODE_TOOL_SET_ID, QUESTION_TOOL_ID } from "../chatroom/tools";
+import { CODE_MODE_TOOL_NAME, type CodeModeInteractionKind } from "../chatroom/code-mode";
+import { createCodeMode, type CodeModeInventory } from "../chatroom/code-mode-runtime";
+import { chatSystemPrompt } from "../chatroom/system-prompt";
 import type { SettledGeneration } from "./chat_completion";
 import {
   GatewayInferenceError,
@@ -168,11 +172,10 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
 
   // Read before tools connect, so a failure here cannot leave MCP connections open. `null` means
   // the workspace switched the system prompt off.
-  const instructions =
-    (await ctx.runQuery(internal.chatroom.resolveSystemPrompt, {
-      workspace: workspaceId,
-      model: body.model,
-    })) ?? undefined;
+  const systemPrompt = await ctx.runQuery(internal.chatroom.resolveSystemPrompt, {
+    workspace: workspaceId,
+    model: body.model,
+  });
 
   let chatTools: Awaited<ReturnType<typeof buildChatTools>>;
   try {
@@ -186,6 +189,7 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         ownerId: workspace.ownerId,
         selection: chat.worker,
       },
+      { systemPrompt: systemPrompt !== null },
     );
   } catch {
     return Response.json(
@@ -200,6 +204,9 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     );
   }
   const { tools, close: closeTools, toolApproval, approvalSecret } = chatTools;
+  const instructions = systemPrompt
+    ? chatSystemPrompt({ model: systemPrompt.model, codeMode: chatTools.codeModeInstructions })
+    : undefined;
 
   // Persisted messages keep storage URLs; the model gets the stored bytes (see inlineStoredFiles).
   // Prepared before the chat is marked streaming, so a failure here leaves nothing to reset.
@@ -409,11 +416,13 @@ function aggregatePerformance(
 /**
  * Resolve and connect the tools enabled for a chat.
  *
- * Each enabled MCP server is connected over its Streamable HTTP transport and
- * its tools merged in, namespaced by server so names from different servers
- * never collide. Bearer tokens are decrypted here (never sent to the client)
- * and passed as an `Authorization` header. A failing server is skipped rather
- * than failing the whole request.
+ * Each enabled MCP server is connected over its Streamable HTTP transport.
+ * Bearer tokens are decrypted here (never sent to the client) and passed as an
+ * `Authorization` header. A failing server is skipped rather than failing the
+ * whole request. While Code Mode is on, a server in Code Mode (the default)
+ * contributes its tools only to the `execute` tool, as namespace
+ * `tools.<server prefix>`; a server switched out of Code Mode, or every server
+ * while Code Mode is off, contributes direct tools named `<server prefix>_<tool>`.
  *
  * Returns the merged tool set plus an idempotent `close` that tears down every
  * connection — call it once the stream finishes or errors.
@@ -423,6 +432,14 @@ function aggregatePerformance(
  * tool sets (`question`, `todo_write`) are default-on, so they are registered
  * only when the selected model lists `tools` in its `supported_parameters`;
  * they come first, so MCP names that collide with them get a numeric suffix.
+ *
+ * When the Code Mode set (`code_interpreter`, default-on) is enabled and the
+ * model supports tools, `execute` is added last: every direct tool except direct
+ * MCP tools (such a server may itself run code, so Code Mode never nests it) is
+ * callable inside it under the same name and approvals, plus the Code Mode MCP
+ * namespaces. Its catalog is returned as `codeModeInstructions` for the system
+ * prompt, or folded into the tool description when the request sends no system
+ * prompt (`options.systemPrompt` false).
  *
  * @todo OAuth / OAuth 2.1 servers: supply an `OAuthClientProvider` via the
  *   transport's `authProvider` instead of a static bearer header.
@@ -437,11 +454,13 @@ async function buildChatTools(
     workspaceId: Id<"workspaces">;
     selection?: ChatWorkerSelection;
   },
+  options: { systemPrompt: boolean },
 ): Promise<{
   tools: ToolSet;
   close: () => Promise<void>;
   toolApproval?: ToolApprovalConfiguration<ToolSet, unknown>;
   approvalSecret?: Uint8Array;
+  codeModeInstructions?: string;
 }> {
   const config = await ctx.runQuery(internal.chatroom.resolveChatTools, { chatId });
   const modelSupportsTools = await ctx.runQuery(internal.models.supportsTools, {
@@ -456,6 +475,11 @@ async function buildChatTools(
   const tools: Record<string, ToolSet[string]> = modelSupportsTools
     ? { ...buildSessionTools(config.builtinToolSets) }
     : {};
+  const codeModeEnabled =
+    modelSupportsTools && config.builtinToolSets.includes(CODE_MODE_TOOL_SET_ID);
+  const directMcpTools = new Set<string>();
+  const codeModeServers: Array<{ prefix: string; name: string; tools: Record<string, unknown> }> =
+    [];
   let toolApproval: ToolApprovalConfiguration<ToolSet, unknown> | undefined;
   let approvalSecret: Uint8Array | undefined;
   // Shared-chat membership never grants machine execution. Identity and directory
@@ -514,8 +538,14 @@ async function buildChatTools(
       // still closes it if the server accepts a connection but tool loading fails.
       const serverTools = await client.tools();
       const prefix = toolNamePrefix(server.name);
+      if (server.codeMode && codeModeEnabled) {
+        codeModeServers.push({ prefix, name: server.name, tools: serverTools });
+        continue;
+      }
       for (const [name, definition] of Object.entries(serverTools)) {
-        tools[uniqueToolName(tools, `${prefix}_${name}`)] = definition as ToolSet[string];
+        const toolName = uniqueToolName(tools, `${prefix}_${name}`);
+        tools[toolName] = definition as ToolSet[string];
+        directMcpTools.add(toolName);
       }
     } catch {
       console.error("Failed to connect MCP server", { serverId: server._id, name: server.name });
@@ -531,7 +561,67 @@ async function buildChatTools(
     );
   };
 
-  return { tools: tools as ToolSet, close, toolApproval, approvalSecret };
+  let codeModeInstructions: string | undefined;
+  if (codeModeEnabled) {
+    // Inner calls keep the approvals of their direct counterparts; the user answers them
+    // in-stream through `codemode_interactions` instead of the SDK approval round trip.
+    const approvalTools = new Set(toolApproval ? Object.keys(toolApproval) : []);
+    const directTools: CodeModeInventory["tools"] = {};
+    for (const [name, definition] of Object.entries(tools)) {
+      if (directMcpTools.has(name)) continue;
+      let interaction: CodeModeInteractionKind | undefined;
+      if (name === QUESTION_TOOL_ID) interaction = "question";
+      else if (approvalTools.has(name)) interaction = "approval";
+      directTools[name] = { tool: definition, ...(interaction ? { interaction } : {}) };
+    }
+    // Namespaces share the `tools.*` root with the final direct tool names.
+    const namespaces: CodeModeInventory["namespaces"] = {};
+    for (const server of codeModeServers) {
+      namespaces[uniqueToolName({ ...directTools, ...namespaces }, server.prefix)] = {
+        description: `Tools of the "${server.name}" MCP server.`,
+        tools: Object.fromEntries(
+          Object.entries(server.tools).map(([name, definition]) => [
+            name,
+            { tool: definition as ToolSet[string], mcp: true },
+          ]),
+        ),
+      };
+    }
+
+    try {
+      const codeMode = await createCodeMode({
+        inventory: { tools: directTools, namespaces },
+        catalogInDescription: !options.systemPrompt,
+        interactions: {
+          open: (kind) =>
+            ctx.runMutation(internal.code_mode.openInteraction, {
+              chatId,
+              userId: worker.userId,
+              kind,
+            }),
+          response: (id) =>
+            ctx.runQuery(internal.code_mode.interactionResponse, {
+              interaction: id as Id<"codemode_interactions">,
+            }),
+          close: async (id) => {
+            await ctx.runMutation(internal.code_mode.closeInteraction, {
+              interaction: id as Id<"codemode_interactions">,
+            });
+          },
+        },
+      });
+      if (codeMode) {
+        tools[CODE_MODE_TOOL_NAME] = codeMode.tool;
+        codeModeInstructions = codeMode.instructions;
+      }
+    } catch {
+      // Like a failing MCP server, a tool whose schema Code Mode cannot render must not fail the
+      // request; the direct tools still work.
+      logger.error("chat.code_mode_unavailable");
+    }
+  }
+
+  return { tools: tools as ToolSet, close, toolApproval, approvalSecret, codeModeInstructions };
 }
 
 /**

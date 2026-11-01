@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 
@@ -37,6 +38,7 @@ export type McpServerEditTarget = {
   auth: { type: McpAuthType };
   preview?: Record<string, string>;
   hasSecret: boolean;
+  codeMode: boolean;
 } | null;
 
 /**
@@ -62,6 +64,7 @@ export function McpServerDialog({
   const [url, setUrl] = useState("");
   const [authType, setAuthType] = useState<McpAuthType>("none");
   const [secret, setSecret] = useState("");
+  const [codeMode, setCodeMode] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
   const isEditing = target !== null;
@@ -73,6 +76,7 @@ export function McpServerDialog({
     setUrl(target?.url ?? "");
     setAuthType(target?.auth.type ?? "none");
     setSecret("");
+    setCodeMode(target?.codeMode ?? true);
   }, [open, target]);
 
   const authMeta = MCP_AUTH_TYPES.find((entry) => entry.value === authType);
@@ -93,6 +97,7 @@ export function McpServerDialog({
           url: url.trim(),
           auth: { type: authType },
           secret: secret.trim() || undefined,
+          codeMode,
         });
         toast.success(`Updated ${name.trim()}.`);
       } else {
@@ -102,6 +107,7 @@ export function McpServerDialog({
           url: url.trim(),
           auth: { type: authType },
           secret: secret.trim() || undefined,
+          codeMode,
         });
         toast.success(`Added ${name.trim()}.`);
       }
@@ -148,6 +154,20 @@ export function McpServerDialog({
               onChange={(event) => setUrl(event.target.value)}
             />
             <FieldDescription>Streamable HTTP transport endpoint.</FieldDescription>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="mcp-code-mode">Code Mode only</FieldLabel>
+            <FieldDescription id="mcp-code-mode-description">
+              Tools run only inside Code Mode, keeping them out of the model's tool list and saving
+              tokens. Turn off to expose them as direct tool calls.
+            </FieldDescription>
+            <Switch
+              id="mcp-code-mode"
+              checked={codeMode}
+              onCheckedChange={setCodeMode}
+              aria-describedby="mcp-code-mode-description"
+            />
           </Field>
 
           <Field>

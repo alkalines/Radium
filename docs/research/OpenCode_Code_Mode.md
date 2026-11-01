@@ -1,9 +1,10 @@
 # OpenCode Code Mode Research
 
-Research snapshot: 2026-10-31. Reference for a future Radium Code Mode or ACP
-tool surface; **Radium has no Code Mode runtime**. Related: the Oh-My-Pi
-[eval reference](../Worker/Eval_Tool.md), which runs real Bun/Python
-subprocesses rather than an interpreter.
+Research snapshot: 2026-10-31. Radium's implementation follows it; see
+[Code Mode in Radium Chatroom](../Radium_Chatroom.md#code-mode) for what was built
+and where Radium differs (no `fetch`, explicit limits, in-stream approvals).
+Related: the Oh-My-Pi [eval reference](../Worker/Eval_Tool.md), which runs real
+Bun/Python subprocesses rather than an interpreter.
 
 Sources:
 

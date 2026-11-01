@@ -1,12 +1,12 @@
 import type { ReactNode } from "react";
 import {
+  CodeXmlIcon,
   FilePenIcon,
   FileTextIcon,
   GlobeIcon,
   ImageIcon,
   ListTodoIcon,
   MessageCircleQuestionIcon,
-  SquareTerminalIcon,
   TerminalIcon,
   WrenchIcon,
   type LucideIcon,
@@ -100,7 +100,7 @@ const builtinToolIcons: Record<string, LucideIcon> = {
   question: MessageCircleQuestionIcon,
   todo_write: ListTodoIcon,
   web_search: GlobeIcon,
-  code_interpreter: SquareTerminalIcon,
+  code_interpreter: CodeXmlIcon,
   image_generation: ImageIcon,
 };
 
