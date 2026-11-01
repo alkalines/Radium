@@ -8,6 +8,7 @@ import type { QuestionOutput, QuestionPrompt, TodoItem } from "backend/src/chatr
 
 import type { RunState } from "@/components/agentic/agent-status";
 import { isToolPart } from "./message-parts";
+import { acpToolKind, isAcpToolPart, type AcpToolKind, type AcpToolPart } from "./acp/parts";
 
 /**
  * Readers for the tool calls Chatroom can make (`packages/backend/src/http/aisdk.chat.ts`): the
@@ -17,7 +18,7 @@ import { isToolPart } from "./message-parts";
  */
 
 /** How a tool call renders. `other` covers MCP tools and anything unknown: generic JSON. */
-export type ToolKind =
+export type BuiltinToolKind =
   | "code"
   | "bash"
   | "read"
@@ -28,7 +29,10 @@ export type ToolKind =
   | "todo"
   | "other";
 
-const namedToolKinds: Record<string, ToolKind> = {
+/** ACP kinds share the Trace renderer, but never go through built-in tool protocol readers. */
+export type ToolKind = BuiltinToolKind | AcpToolKind;
+
+const namedToolKinds: Record<string, BuiltinToolKind> = {
   execute: "code",
   question: "question",
   todo_write: "todo",
@@ -81,7 +85,8 @@ export function codeModeCallPart(call: CodeModeCall): CodeModeToolPart {
 }
 
 /** Selects a tool's existing per-tool visuals; namespaced MCP paths stay generic. */
-export function getToolKind(part: ToolUIPart): ToolKind {
+export function getToolKind(part: ToolUIPart | AcpToolPart): ToolKind {
+  if (isAcpToolPart(part)) return acpToolKind(part.acp.item);
   const name = getToolName(part);
   const namedKind = namedToolKinds[name];
   if (namedKind) return namedKind;
@@ -121,7 +126,14 @@ export function getInputNumber(input: unknown, key: string) {
  * a `question`, which has no server execution and waits for the user's answer.
  * Worker tools report their own failure as an `{ ok: false }` output, which counts as failed.
  */
-export function getToolRunState(part: ToolUIPart, isLive: boolean): RunState {
+export function getToolRunState(part: ToolUIPart | AcpToolPart, isLive: boolean): RunState {
+  if (isAcpToolPart(part)) {
+    const { item, turnCancelled } = part.acp;
+    if (item.status === "completed") return "succeeded";
+    if (item.status === "failed") return "failed";
+    if (turnCancelled) return "cancelled";
+    return item.status === "in_progress" ? "executing" : "queued";
+  }
   const snapshot = getCodeModeOutput(part);
   if (snapshot) {
     if (snapshot.calls.some((call) => call.status === "awaiting")) {

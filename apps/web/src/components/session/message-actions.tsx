@@ -53,6 +53,8 @@ export function MessageActions({
   disabled,
   agentName,
   model,
+  modelLabel,
+  forkWithoutModel = false,
   performance,
   onCopy,
   onRevert,
@@ -66,12 +68,15 @@ export function MessageActions({
   agentName?: string;
   /** Model ID an assistant turn recorded; named from `forkModels` when the workspace lists it. */
   model?: string;
+  /** Agent-advertised choice name, without a Gateway model lookup. */
+  modelLabel?: string;
+  forkWithoutModel?: boolean;
   performance?: MessagePerformance;
   onCopy: () => void;
   onRevert?: () => void;
   /** Starts the reply over from its user turn (a stopped turn continues from the Session card). */
   onRegenerate?: () => void;
-  onFork: (modelSlug: string) => void;
+  onFork?: (modelSlug: string) => void;
 }) {
   const [isCopied, setIsCopied] = useState(false);
   const [isForkOpen, setIsForkOpen] = useState(false);
@@ -124,7 +129,11 @@ export function MessageActions({
     </MessageAction>
   );
 
-  const forkAction = (
+  const forkAction = !onFork ? null : forkWithoutModel ? (
+    <MessageAction label="Fork into a new session" disabled={disabled} onClick={() => onFork("")}>
+      <GitBranchIcon />
+    </MessageAction>
+  ) : (
     <Popover open={isForkOpen} onOpenChange={setIsForkOpen}>
       <Tooltip>
         <TooltipTrigger asChild>
@@ -181,7 +190,11 @@ export function MessageActions({
   const modelOption = model ? forkModels?.find((candidate) => candidate.slug === model) : undefined;
   const details = [
     agentName ? <span key="agent">{agentName}</span> : null,
-    model ? (
+    modelLabel ? (
+      <span key="model" className="truncate" title={modelLabel}>
+        {modelLabel}
+      </span>
+    ) : model ? (
       <span key="model" className={modelOption ? "truncate" : "truncate font-mono"} title={model}>
         {modelOption ? modelDisplayName(modelOption) : model}
       </span>

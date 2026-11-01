@@ -8,8 +8,10 @@ start.
 
 - [Radium Gateway](Radium_Gateway.md)
 - [Radium Chatroom](Radium_Chatroom.md)
+- [Live sessions across Tabs](Radium_Chatroom/Live_Sessions.md) — proposed: live in-flight replies, Stop and reload resume in every Tab and device through short-lived Convex frames instead of Redis; shared with ACP
 - [Notifications](Notifications.md) — session and usage-limit notifications: toasts and sound in open tabs, system notifications, Web Push, preferences, and the planned phone channel
 - [Interface design](Interface_Design.md) — web UI spec: layout model, visual tokens, Run state, and Motion rules
+- [ACP agents](ACP.md) — external harnesses (Claude Agent, Codex, Gemini CLI, …) over the Agent Client Protocol on a Worker: Worker host, Convex transport and Chatroom implemented; with [agents](ACP/Agents.md), [sessions](ACP/Sessions.md), [transport](ACP/Transport.md), and [Chatroom mapping](ACP/Interactions.md)
 - [Worker](Worker.md) — machine authentication, identity persistence, task status coordination, and proposed execution transport
 - [Worker machine authentication](Worker/Machine_Authentication.md) — setup codes, key proofs, JWT refresh, owner management and configuration
 - [Worker identity component](Worker/Component.md) — workspace package, internal enrollment/recovery/revocation API, and integration boundary
@@ -19,7 +21,7 @@ start.
 - [Worker Bash tool reference](Worker/Bash_Tool.md) — embedded Rust shell, managed jobs, PTYs, service modes, and Worker integration requirements
 - [Worker eval tool reference](Worker/Eval_Tool.md) — retained JavaScript/Python execution, tool callbacks, output, and runtime lifecycle
 - [Worker authentication research](Worker/Authentication.md) — cross-network transport, machine identity, and component evaluation
-- [Worker Convex Client transport](Worker/Convex_Transport.md) — authenticated identity subscription implemented; batched output, commands, recovery and retention planned
+- [Worker Convex Client transport](Worker/Convex_Transport.md) — authenticated identity subscription, task request/result paths and the ACP relay implemented
 - [Earlier Worker connectivity research](Worker/Connectivity.md) — superseded WSS/Tailscale proposal and tradeoffs
 - [Gateway ownership](Radium_Gateway/Ownership.md)
 - [Gateway telemetry](Radium_Gateway/Telemetry.md) — opt-in request capture, deduplicated storage, sessions and branches, retention, and OTLP/webhook export

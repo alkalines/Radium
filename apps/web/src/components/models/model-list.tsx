@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { PinIcon } from "lucide-react";
+import { BoxIcon, PinIcon } from "lucide-react";
 
 import { ProviderLogo } from "@/components/gateway/provider-logo";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,7 @@ export function ModelList<T extends ModelOption>({
   listClassName,
   extraItems,
   footer,
+  noModelsMessage,
 }: {
   models: T[];
   selectedSlug?: string;
@@ -58,6 +59,7 @@ export function ModelList<T extends ModelOption>({
   /** Extra `CommandItem`s after the models, such as `Manage models`; they search like models. */
   extraItems?: ReactNode;
   /** Rendered under the list inside the same surface, for example provider and effort controls. */
+  noModelsMessage?: string;
   footer?: ReactNode;
 }) {
   const [search, setSearch] = useState("");
@@ -91,9 +93,7 @@ export function ModelList<T extends ModelOption>({
         data-checked={model.slug === selectedSlug}
         onSelect={() => onSelect(model)}
       >
-        {model.author ? (
-          <ProviderLogo variant="labs" slug={model.author.slug} className="size-5" />
-        ) : null}
+        <ModelAuthorLogo author={model.author} />
         <span className="min-w-0 flex-1 truncate">
           {model.author ? (
             <span className="text-muted-foreground">{model.author.name}: </span>
@@ -114,27 +114,33 @@ export function ModelList<T extends ModelOption>({
 
   return (
     <Command className={cn("rounded-none bg-transparent", className)}>
-      <CommandInput
-        autoFocus={autoFocus}
-        placeholder={placeholder}
-        value={search}
-        onValueChange={setSearch}
-      />
-      <CommandList className={listClassName}>
-        <CommandEmpty>{emptyText}</CommandEmpty>
-        {pinnedModels.length > 0 ? (
-          <CommandGroup heading="Pinned">{pinnedModels.map(renderRow)}</CommandGroup>
-        ) : null}
-        {otherModels.length > 0 ? (
-          <CommandGroup heading={heading}>{otherModels.map(renderRow)}</CommandGroup>
-        ) : null}
-        {extraItems ? (
-          <>
-            <CommandSeparator />
-            <CommandGroup>{extraItems}</CommandGroup>
-          </>
-        ) : null}
-      </CommandList>
+      {noModelsMessage && models.length === 0 ? (
+        <p className="px-3 py-4 text-sm text-muted-foreground">{noModelsMessage}</p>
+      ) : (
+        <>
+          <CommandInput
+            autoFocus={autoFocus}
+            placeholder={placeholder}
+            value={search}
+            onValueChange={setSearch}
+          />
+          <CommandList className={listClassName}>
+            <CommandEmpty>{emptyText}</CommandEmpty>
+            {pinnedModels.length > 0 ? (
+              <CommandGroup heading="Pinned">{pinnedModels.map(renderRow)}</CommandGroup>
+            ) : null}
+            {otherModels.length > 0 ? (
+              <CommandGroup heading={heading}>{otherModels.map(renderRow)}</CommandGroup>
+            ) : null}
+            {extraItems ? (
+              <>
+                <CommandSeparator />
+                <CommandGroup>{extraItems}</CommandGroup>
+              </>
+            ) : null}
+          </CommandList>
+        </>
+      )}
       {footer}
     </Command>
   );
@@ -178,6 +184,19 @@ function PinButton({
       {/* Filled when pinned, outline otherwise: the glyph shows the state, the label the action. */}
       <PinIcon className={cn("size-3.5", isPinned && "fill-current")} />
     </Button>
+  );
+}
+
+/** The lab's logo, or a neutral model tile when the lab is unknown, so rows stay aligned. */
+export function ModelAuthorLogo({ author }: { author: ModelOption["author"] }) {
+  if (author) return <ProviderLogo variant="labs" slug={author.slug} className="size-5" />;
+  return (
+    <span
+      aria-hidden
+      className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground ring-1 ring-border/70"
+    >
+      <BoxIcon className="size-3" />
+    </span>
   );
 }
 

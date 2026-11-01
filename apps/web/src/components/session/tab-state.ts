@@ -5,6 +5,7 @@ import {
   type ChatWorkerTool,
 } from "backend/src/worker/chat-config";
 import type { ChatScope } from "./composer";
+import { restoreAgentId } from "./agents";
 
 /** Choices of an unsent draft. Saved chats read these from Convex instead. */
 export type DraftTabSnapshot = {
@@ -29,6 +30,7 @@ export type SessionTabSnapshot = {
   inferenceMode?: string;
   reasoningEffort?: string;
   reasoningBudget?: number;
+  /** Built-in `radium`, or workspace definition `acp:<agentId>`. */
   agentId?: string;
   /** Present only while the Tab is a draft. */
   draft?: DraftTabSnapshot;
@@ -142,6 +144,13 @@ function parseSnapshot(value: object): SessionTabSnapshot {
   if ("agentId" in value && typeof value.agentId === "string") snapshot.agentId = value.agentId;
 
   const draft = "draft" in value ? parseDraft(value.draft) : undefined;
+  if (snapshot.agentId) {
+    const restored = restoreAgentId(snapshot.agentId);
+    snapshot.agentId = restored.id;
+    if (draft && restored.workerId) {
+      draft.worker = { workerId: restored.workerId, tools: draft.worker?.tools ?? [] };
+    }
+  }
   if (draft) snapshot.draft = draft;
   return snapshot;
 }

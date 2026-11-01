@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useAction, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import {
@@ -258,6 +259,19 @@ export function WorkerManagement() {
           onRevoke={setRevokeTarget}
         />
       </GroupList>
+      {isOwner ? (
+        <p className="px-4 text-sm text-muted-foreground">
+          Configure ACP agents and check their availability on each machine in the{" "}
+          <Link
+            to="/chatroom/$section"
+            params={{ section: "acp" }}
+            className="text-foreground underline underline-offset-4"
+          >
+            ACP settings
+          </Link>
+          .
+        </p>
+      ) : null}
 
       <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
         <DialogContent className="sm:max-w-md">

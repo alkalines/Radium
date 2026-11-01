@@ -5,6 +5,7 @@ import {
   type ReactNode,
   type Ref,
   useEffect,
+  useId,
   useImperativeHandle,
   useRef,
   useState,
@@ -105,6 +106,8 @@ export function Composer({
   menuItems,
   toolbarControls,
   textStore,
+  commands,
+  attachmentsDisabledReason,
 }: {
   ref?: Ref<ComposerHandle>;
   layoutId: string;
@@ -123,6 +126,10 @@ export function Composer({
   /** Toolbar buttons right after the `+` menu, such as the Tools control. */
   toolbarControls?: ReactNode;
   textStore?: ComposerTextStore;
+  /** Agent-advertised slash commands; selecting one inserts ordinary prompt text. */
+  commands?: { name: string; description: string; hint?: string }[];
+  /** Disable all attachment entry points when the agent cannot receive files. */
+  attachmentsDisabledReason?: string;
 }) {
   const [value, setValue] = useState("");
   // Async submit and voice callbacks need the latest text, not the text of their render.
@@ -133,6 +140,20 @@ export function Composer({
   const uploadAttachment = useAttachmentUpload(workspace);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const commandsId = useId();
+  const [commandIndex, setCommandIndex] = useState(0);
+  const [commandsDismissed, setCommandsDismissed] = useState(false);
+  const commandQuery = /^\/([^\s]*)$/.exec(value)?.[1];
+  const matchingCommands =
+    commandQuery === undefined
+      ? []
+      : (commands ?? []).filter((command) =>
+          `${command.name} ${command.description}`
+            .toLowerCase()
+            .includes(commandQuery.toLowerCase()),
+        );
+  const commandsOpen = !commandsDismissed && matchingCommands.length > 0;
+  const activeCommandIndex = Math.min(commandIndex, Math.max(0, matchingCommands.length - 1));
   const {
     attachments,
     addFiles,
@@ -142,7 +163,12 @@ export function Composer({
     replaceFiles,
   } = useFileAttachments();
   const hasContent = value.trim().length > 0 || attachments.length > 0;
-  const isSendEnabled = canSend && hasContent && !isRunning && !isSubmitting;
+  const isSendEnabled =
+    canSend &&
+    hasContent &&
+    !isRunning &&
+    !isSubmitting &&
+    !(attachmentsDisabledReason && attachments.length);
 
   // The text lives in Composer state so typing re-renders only the Composer; the store is written
   // directly instead of lifting the text into the Session screen.
@@ -150,6 +176,8 @@ export function Composer({
     valueRef.current = next;
     setValue(next);
     textStore?.write(next);
+    setCommandsDismissed(false);
+    setCommandIndex(0);
   }
 
   // Restore after mount (not in the initial state) so server and client markup match.
@@ -171,6 +199,10 @@ export function Composer({
   }));
 
   async function submit() {
+    if (attachmentsDisabledReason && attachments.length) {
+      toast.info(attachmentsDisabledReason);
+      return;
+    }
     if (!isSendEnabled) return;
 
     const text = value.trim();
@@ -191,8 +223,43 @@ export function Composer({
       setIsSubmitting(false);
     }
   }
+  function selectCommand(name: string) {
+    updateValue(`/${name} `);
+    textareaRef.current?.focus();
+  }
+
+  function attachFiles(files: File[] | FileList) {
+    if (attachmentsDisabledReason) {
+      toast.info(attachmentsDisabledReason);
+      return;
+    }
+    addFiles(files);
+  }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (commandsOpen && !isComposing && !event.nativeEvent.isComposing) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setCommandIndex(
+          (activeCommandIndex + (event.key === "ArrowDown" ? 1 : -1) + matchingCommands.length) %
+            matchingCommands.length,
+        );
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setCommandsDismissed(true);
+        return;
+      }
+      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+        const command = matchingCommands[activeCommandIndex];
+        if (command) {
+          event.preventDefault();
+          selectCommand(command.name);
+          return;
+        }
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       // Enter confirms an IME candidate while composing; it must not send.
       if (isComposing || event.nativeEvent.isComposing) return;
@@ -219,31 +286,68 @@ export function Composer({
     }
     if (files.length > 0) {
       event.preventDefault();
-      addFiles(files);
+      attachFiles(files);
     }
   }
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
     if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
-    setIsDragging(true);
+    if (!attachmentsDisabledReason) setIsDragging(true);
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
     setIsDragging(false);
-    if (event.dataTransfer.files.length > 0) addFiles(event.dataTransfer.files);
+    if (event.dataTransfer.files.length > 0) attachFiles(event.dataTransfer.files);
   }
 
   return (
-    <m.div layout layoutId={layoutId} transition={transitions.layout} className="w-full">
+    <m.div layout layoutId={layoutId} transition={transitions.layout} className="relative w-full">
       <form
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
+        {commandsOpen ? (
+          <div
+            id={commandsId}
+            role="listbox"
+            aria-label="Agent commands"
+            className="absolute inset-x-0 bottom-full mb-2 max-h-64 overflow-y-auto rounded-2xl border bg-popover p-1 text-popover-foreground shadow-lg"
+          >
+            {matchingCommands.map((command, index) => (
+              <button
+                key={command.name}
+                id={`${commandsId}-${index}`}
+                type="button"
+                role="option"
+                tabIndex={-1}
+                aria-selected={index === activeCommandIndex}
+                className={cn(
+                  "flex w-full flex-col gap-0.5 rounded-xl px-3 py-2 text-left text-sm",
+                  index === activeCommandIndex && "bg-accent text-accent-foreground",
+                )}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setCommandIndex(index)}
+                onClick={() => selectCommand(command.name)}
+                ref={(element) => {
+                  if (index === activeCommandIndex) element?.scrollIntoView({ block: "nearest" });
+                }}
+              >
+                <span className="font-mono">
+                  /{command.name}
+                  {command.hint ? (
+                    <span className="ml-2 text-xs text-muted-foreground">{command.hint}</span>
+                  ) : null}
+                </span>
+                <span className="text-xs text-muted-foreground">{command.description}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         <input
           ref={fileInputRef}
           type="file"
@@ -251,8 +355,9 @@ export function Composer({
           className="sr-only"
           tabIndex={-1}
           aria-label="Add photos and files"
+          disabled={Boolean(attachmentsDisabledReason)}
           onChange={(event) => {
-            if (event.currentTarget.files) addFiles(event.currentTarget.files);
+            if (event.currentTarget.files) attachFiles(event.currentTarget.files);
             // Reset so picking a file that was just removed fires `change` again.
             event.currentTarget.value = "";
           }}
@@ -283,6 +388,10 @@ export function Composer({
             value={value}
             autoFocus={autoFocus}
             aria-label="Message"
+            aria-autocomplete={commands ? "list" : undefined}
+            aria-expanded={commands ? commandsOpen : undefined}
+            aria-controls={commandsOpen ? commandsId : undefined}
+            aria-activedescendant={commandsOpen ? `${commandsId}-${activeCommandIndex}` : undefined}
             placeholder="Ask anything, / for commands, @ for context…"
             className="max-h-48 min-h-14 px-4 pt-3.5"
             onChange={(event) => updateValue(event.target.value)}
@@ -299,9 +408,19 @@ export function Composer({
                 </InputGroupButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-60">
-                <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
+                <DropdownMenuItem
+                  disabled={Boolean(attachmentsDisabledReason)}
+                  onSelect={() => fileInputRef.current?.click()}
+                >
                   <PaperclipIcon />
-                  Add photos & files
+                  <span className="flex flex-col">
+                    Add photos & files
+                    {attachmentsDisabledReason ? (
+                      <span className="text-xs text-muted-foreground">
+                        {attachmentsDisabledReason}
+                      </span>
+                    ) : null}
+                  </span>
                 </DropdownMenuItem>
                 {menuItems}
               </DropdownMenuContent>

@@ -3,7 +3,6 @@ import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "lu
 
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { ChatWorkerSelection, ChatWorkerTool } from "backend/src/worker/chat-config";
-import { ProviderLogo } from "@/components/gateway/provider-logo";
 import { ProjectTile } from "@/components/harness/project-tile";
 import { ProjectDialog } from "@/components/projects/project-dialog";
 import { Button } from "@/components/ui/button";
@@ -19,8 +18,18 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { WorkerPresence, useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { WorkspaceIcon } from "@/components/workspaces/workspace-icon";
 import { cn } from "@/lib/utils";
-import type { SessionAgent, SessionProject, SessionWorker } from "./agents";
+import {
+  agentAvailability,
+  firstReadyWorker,
+  type AgentAvailability,
+  type SessionAgent,
+  type SessionAgentRow,
+  type SessionProject,
+  type SessionWorker,
+} from "./agents";
 import { workerToolsFor } from "@/components/chatroom/tool-catalog";
+import { AcpAgentAuth } from "./acp/agent-auth";
+import { AcpAgentIcon } from "./acp/agent-icon";
 
 const noWorkerValue = "__no-worker__";
 const noProjectValue = "__no-project__";
@@ -38,10 +47,12 @@ export type RunTargetProjectChoice = {
   onProjectChange: (project: SessionProject | null) => void;
 };
 
-/** Agent artwork inside the picker: ACP agents use their provider logo, Radium its letter. */
+/** Agent artwork is supplied by the Worker; non-URL icons fall back to a letter tile. */
 export function AgentLogo({ agent, className }: { agent: SessionAgent; className?: string }) {
-  if (agent.logo) return <ProviderLogo slug={agent.logo} className={className} />;
-  return <img src="/letters/R.svg" alt="" className={cn("shrink-0", className)} />;
+  if (agent.protocol === "built-in") {
+    return <img src="/letters/R.svg" alt="" className={cn("shrink-0", className)} />;
+  }
+  return <AcpAgentIcon icon={agent.icon} name={agent.name} className={className} />;
 }
 
 /** A Project's tile: its color and icon, the same mark as in Tabs and the Home list. */
@@ -89,6 +100,7 @@ export function RunTargetPicker({
   defaultWorkerTools,
   agent,
   agents,
+  agentRows,
   isAgentFixed,
   disabled,
   onSelectionChange,
@@ -105,6 +117,7 @@ export function RunTargetPicker({
   defaultWorkerTools: ChatWorkerTool[];
   agent: SessionAgent;
   agents: SessionAgent[];
+  agentRows?: SessionAgentRow[];
   isAgentFixed: boolean;
   disabled?: boolean;
   onSelectionChange: (selection: ChatWorkerSelection | null) => void;
@@ -123,6 +136,7 @@ export function RunTargetPicker({
     (candidate) => candidate.workerId === selection?.workerId,
   );
   const hasWorker = Boolean(selection?.workerId);
+  const availability = agentAvailability(agent, selectedWorker, now, agentRows);
 
   function handleOpenChange(open: boolean) {
     setIsOpen(open);
@@ -143,6 +157,14 @@ export function RunTargetPicker({
     }
     if (workerId === selection?.workerId) return;
     onSelectionChange({ workerId, tools: workerToolsFor(defaultWorkerTools, chosenTools) });
+  }
+
+  function selectAgent(next: SessionAgent) {
+    if (!hasWorker && next.protocol === "acp") {
+      const readyWorker = firstReadyWorker(next, activeWorkers, agentRows, now);
+      if (readyWorker) selectWorker(readyWorker.workerId);
+    }
+    onAgentChange(next);
   }
 
   function openProjectDialog() {
@@ -210,6 +232,9 @@ export function RunTargetPicker({
               <SummaryRow label="Agent" onOpen={isAgentFixed ? undefined : () => setView("agent")}>
                 <AgentLogo agent={agent} className="size-4" />
                 <span className="truncate">{agent.name}</span>
+                {agent.protocol === "acp" && availability !== "ready" ? (
+                  <span className="ml-auto text-xs text-muted-foreground">Unavailable</span>
+                ) : null}
               </SummaryRow>
             </div>
           ) : null}
@@ -256,11 +281,17 @@ export function RunTargetPicker({
                       onSelect={() => pick(() => selectWorker(candidate.workerId))}
                     >
                       <span className="truncate">{candidate.name}</span>
-                      <WorkerPresence
-                        lastSeenAt={candidate.lastSeenAt}
-                        now={now}
-                        className="ml-auto"
-                      />
+                      {agent.protocol === "acp" ? (
+                        <span className="ml-auto text-xs text-muted-foreground">
+                          {workerAgentLabels[agentAvailability(agent, candidate, now, agentRows)]}
+                        </span>
+                      ) : (
+                        <WorkerPresence
+                          lastSeenAt={candidate.lastSeenAt}
+                          now={now}
+                          className="ml-auto"
+                        />
+                      )}
                     </CommandItem>
                   ))}
                 </CommandGroup>
@@ -274,28 +305,54 @@ export function RunTargetPicker({
 
           {view === "agent" ? (
             <DrillList
-              title={selectedWorker ? `Agents on ${selectedWorker.name}` : "Agents"}
+              title="Agents"
               placeholder="Search agents…"
               onBack={() => setView("summary")}
             >
               <CommandGroup>
-                {agents.map((candidate) => (
-                  <CommandItem
-                    key={candidate.id}
-                    value={candidate.id}
-                    keywords={[candidate.name]}
-                    data-checked={candidate.id === agent.id}
-                    onSelect={() => pick(() => onAgentChange(candidate))}
-                  >
-                    <AgentLogo agent={candidate} className="size-4" />
-                    <span className="flex-1 truncate">{candidate.name}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {candidate.protocol === "acp" ? "ACP" : "Built-in"}
-                    </span>
-                  </CommandItem>
-                ))}
+                {agents.map((candidate) => {
+                  const state = agentAvailability(candidate, selectedWorker, now, agentRows);
+                  return (
+                    <div
+                      key={candidate.id}
+                      className="hidden items-center gap-2 has-[[cmdk-item]]:flex"
+                    >
+                      <CommandItem
+                        className="min-w-0 flex-1"
+                        value={candidate.id}
+                        keywords={[candidate.name]}
+                        data-checked={candidate.id === agent.id}
+                        onSelect={() => pick(() => selectAgent(candidate))}
+                      >
+                        <AgentLogo agent={candidate} className="size-4" />
+                        <span className="flex-1 truncate">{candidate.name}</span>
+                        {state !== "ready" && state !== "needs_auth" ? (
+                          <span className="text-xs text-muted-foreground">
+                            {agentStateLabel(state)}
+                          </span>
+                        ) : null}
+                      </CommandItem>
+                      {state === "needs_auth" &&
+                      candidate.protocol === "acp" &&
+                      selectedWorker &&
+                      projectChoice?.workspaceId ? (
+                        <div
+                          className="shrink-0 pr-1"
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
+                          <AcpAgentAuth
+                            workspace={projectChoice.workspaceId}
+                            worker={selectedWorker.workerId}
+                            agentId={candidate.agentId}
+                            name={candidate.name}
+                            authMethods={candidate.installation?.authMethods ?? []}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </CommandGroup>
-              <p className="px-3 pb-3 text-xs text-muted-foreground">ACP agents are planned.</p>
             </DrillList>
           ) : null}
         </PopoverContent>
@@ -567,3 +624,26 @@ function DrillList({
     </Command>
   );
 }
+
+function agentStateLabel(state: AgentAvailability) {
+  switch (state) {
+    case "ready":
+      return "";
+    case "needs_auth":
+      return "Sign in";
+    case "offline":
+      return "Worker offline";
+    case "no_worker":
+      return "Choose a Worker";
+    case "unavailable":
+      return "Unavailable";
+  }
+}
+
+const workerAgentLabels: Record<AgentAvailability, string> = {
+  ready: "Online",
+  needs_auth: "Needs sign in",
+  unavailable: "Unavailable",
+  offline: "Offline",
+  no_worker: "Unavailable",
+};

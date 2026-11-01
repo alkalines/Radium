@@ -77,7 +77,7 @@ Push services require the subject to be a `mailto:` or `https:` URL. Changing th
 ## Limitations
 
 - Toasts and sounds come only from open Radium tabs; no in-app inbox lists past notifications.
-- Session notifications cover the built-in agent's requests; Worker task progress and future ACP agents do not notify yet.
+- Session notifications cover the built-in agent's requests and ACP turns (finished, failed, waiting for approval or an answer, sent to the user who sent the prompt by the Worker's lifecycle mutations); Worker task progress does not notify.
 - The Expo phone channel is planned (`@todo(expo)` in `src/notifications/inbox.ts`).
 - Push delivery is not retried after a non-404/410 failure.
 

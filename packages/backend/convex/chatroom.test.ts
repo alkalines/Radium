@@ -108,12 +108,15 @@ async function chatFixture(t: ReturnType<typeof makeTest>) {
 test("ListChats separates personal chats and marks shared managers", async () => {
   const t = makeTest();
   const ids = await chatFixture(t);
-  const memberChats = await asUser(t, "member").query(anyApi.aisdk.ListChats, {
-    workspace: ids.workspace,
-  });
-  const ownerChats = await asUser(t, "owner").query(anyApi.aisdk.ListChats, {
-    workspace: ids.workspace,
-  });
+  const list = async (userId: string) =>
+    (
+      await asUser(t, userId).query(anyApi.aisdk.ListChats, {
+        workspace: ids.workspace,
+        paginationOpts: { cursor: null, numItems: 50 },
+      })
+    ).page;
+  const memberChats = await list("member");
+  const ownerChats = await list("owner");
 
   expect(memberChats).toEqual([
     expect.objectContaining({ id: ids.memberPersonal, canManage: true }),

@@ -1,9 +1,6 @@
 # Radium Worker
 
-The Worker package implements local machine identity setup, a narrowly scoped
-authenticated Convex subscription, and an edit-task consumer that lazily loads its
-native file-editing service for valid requests. It does not expose an agent protocol
-or receive deployment/admin credentials.
+The Worker package implements local machine identity setup, authenticated outbound Convex subscriptions, local file/Bash execution, and an ACP stdio agent host. It opens no inbound listener and never receives deployment/admin credentials.
 
 ## Setup and run
 
@@ -35,7 +32,7 @@ Run `bun run --cwd packages/worker cli` for an interactive command menu, or
 | Command                   | Purpose                                                                                                         |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `setup` / `add-token`     | Enroll with a one-time setup code; refuses to overwrite an identity.                                            |
-| `start`                   | Run the authenticated outbound Convex control subscription and consume assigned file/Bash tasks.                |
+| `start`                   | Run authenticated Convex control, consume file/Bash tasks, and host configured ACP agents.                      |
 | `status`                  | Inspect local enrollment state and identifiers; no network access.                                              |
 | `refresh`                 | Recover pending identity if needed, then verify a fresh backend token exchange. Prints expiry, never the token. |
 | `forget` / `forget-token` | Remove local identity and credentials. Does not revoke the backend record.                                      |
@@ -110,6 +107,51 @@ The setup code's `backendUrl` and `convexUrl` are treated as explicit origins an
 are never rewritten. HTTP redirects are rejected, request timeouts are bounded,
 and response bodies are size-limited. Setup codes, proofs, machine JWTs, private
 keys, and response bodies are not logged.
+
+## ACP agents
+
+Configure ACP agents in **Settings → ACP** (`/chatroom/acp`) as the workspace owner. Definitions
+are stored in Convex and delivered to every enrolled Worker in that workspace;
+there is no local agents file or separate CLI agent configuration. Chat commands
+select only a configured agent ID and directory, never an executable, arguments
+or environment.
+
+Each Worker validates enabled definitions, resolves the command on its own
+`PATH` (or checks that an explicit path is an executable file), then probes
+present commands with ACP `initialize` and stops the probe process. Missing
+commands are reported as **Not on PATH** without spawning. Failed validation or
+initialization is shown on the ACP settings page, along with version, capabilities and
+authentication actions. Workers re-probe when definitions change and on
+reconnect, not on a polling loop. Registry choices fill pinned `npx`/`uvx`
+launch commands or the binary command to install on each Worker's `PATH`;
+Radium does not download binary archives.
+
+`start` launches one process per agent lazily when needed. Processes stop after
+15 idle minutes; active turns and approval/question waits prevent idle stop.
+Editing a definition applies it to new commands while an existing turn finishes
+on its original process; the superseded process stops once idle. Removing or
+disabling a definition leaves existing Sessions bound to that ID, but new
+prompts fail with `Agent removed`.
+
+To add the real scripted test agent, choose **Custom agent** on the ACP settings page:
+
+- Name: `Scripted ACP agent`; Agent ID: `scripted`
+- Command line:
+  `bun "/absolute/path/to/packages/worker/src/acp/test-agent.ts" --store "/absolute/path/to/sessions.json"`
+- Environment: empty; Enabled: on
+
+The form parses that line into `command: bun` and an argument array starting
+with the absolute `src/acp/test-agent.ts` path. `bun` must be on the Worker's
+`PATH`, and both paths refer to that Worker's filesystem. A persistent store
+lets the script reload its Sessions after a definition change or Worker restart.
+
+Agents run with the Worker's OS permissions: their session directory is not a sandbox. Child environment inherits the local user's agent credentials but excludes `RADIUM_*` and `CONVEX_*`. Configuration rejects executable lookup, loader, proxy and TLS-trust overrides (`PATH`, `LD_*`, `DYLD_*`, Node/Bun options, proxy variables, and related runtime variables). Agent stdout belongs exclusively to ACP JSON-RPC; stderr stays in a bounded 64 KiB local diagnostic ring and is never sent to Convex.
+
+Convex owns authorization, commands, durable interaction answers and session metadata. The Worker claims commands before execution, retries lifecycle delivery without repeating agent work, normalizes agent notifications, and relays bounded frames only while a session is warm. Cold turns retain content locally; opening a session loads/replays or resumes the agent's own history. A Worker restart fails previously claimed work rather than resending prompts. Agent crashes fail active turns with `Agent process exited`; the next command starts the agent lazily with backoff.
+
+Stable ACP v1 session/config/mode/list/load/resume/close/delete, permission and form/URL elicitation are supported; fork uses the SDK unstable method only when advertised. Filesystem/terminal client capabilities are disabled, MCP servers are empty, and prompts carry text/resource links only. Chatroom provides agent selection, Sessions and authentication; binary archive installation, Gateway profiles, terminal login and attachments remain outside this implementation.
+
+The real SDK fixture is available as `bun run test-agent --store /tmp/acp-sessions.json` (or `bun src/acp/test-agent.ts`). Prompt keywords exercise `permission`, `question`, `link`, `slow`, `refuse`, `crash`, and `auth`; the default script emits messages, thoughts, a tool, a plan, usage and a title. Add `--require-auth` to require the `scripted` authentication method before `session/new`. The optional store persists sessions and authentication for replay after process/host restart.
 
 ## Edit Tasks
 

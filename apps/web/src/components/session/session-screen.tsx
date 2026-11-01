@@ -4,7 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useMutation } from "convex/react";
+import { useAction, useMutation } from "convex/react";
 import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
 import { RotateCcwIcon, Undo2Icon } from "lucide-react";
@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { CodeModeInteractionResponse } from "backend/src/chatroom/code-mode";
+import type { AcpDraftConfig } from "backend/src/acp/contract";
 import type { ChatInterruption } from "backend/src/chatroom/interruption";
 import type { ToolSelection } from "backend/src/chatroom/tools";
 import type { ChatWorkerSelection } from "backend/src/worker/chat-config";
@@ -46,7 +47,15 @@ import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { authClient } from "@/lib/auth-client";
 import { variants } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { builtInAgent, sessionAgentById, type SessionAgent, type SessionProject } from "./agents";
+import {
+  agentAvailability,
+  builtInAgent,
+  workspaceAgents,
+  sessionAgentById,
+  type SessionAgent,
+  type SessionProject,
+} from "./agents";
+import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { ApprovalPrompt } from "./approval-gate";
 import { QUESTION_DISMISSED_MESSAGE, QuestionPrompt } from "./question-prompt";
 import { RunInterruptionCard } from "./run-interruption";
@@ -66,6 +75,9 @@ import { SessionContext, SessionWorkerControl } from "./session-context";
 import { patchTabState, readTabState, type DraftTabSnapshot } from "./tab-state";
 import { workerToolsFor } from "@/components/chatroom/tool-catalog";
 import { ToolsDialog } from "./tools-dialog";
+import { AcpSessionScreen } from "./acp/acp-session-screen";
+import { AcpConfigControls, applyAcpDraft } from "./acp/config-controls";
+import { acpActionError } from "./acp/use-acp-session";
 
 /**
  * A user turn the Session reverted to: the messages as they were before (restorable until the next
@@ -125,7 +137,59 @@ export type SessionTabHint = {
  * The client never sends a Worker directory: the backend derives it from the Project folder or the
  * Worker's temp directory.
  */
-export const SessionScreen = memo(function SessionScreen({
+type SessionScreenProps = {
+  tabId: string;
+  chatId?: Id<"aisdk_chats">;
+  isActive: boolean;
+  requestedModel?: string;
+  requestedProvider?: string;
+  /** Project id a new draft starts in; ignored when the Tab restores choices. */
+  requestedProject?: string;
+  onTabHint: (tabId: string, hint: SessionTabHint) => void;
+  onCreated: (tabId: string, chatId: Id<"aisdk_chats">) => void;
+  onUnavailable: (tabId: string) => void;
+};
+
+/** Route metadata before mounting either content transport; both readers share the query cache. */
+export const SessionScreen = memo(function SessionScreen(props: SessionScreenProps) {
+  const { data: chat } = useQuery(
+    convexQuery(api.aisdk.GetChat, props.chatId ? { chatId: props.chatId } : "skip"),
+  );
+  const [handoff, setHandoff] = useState<{ chatId: Id<"aisdk_chats">; prompt?: string }>();
+  const startedAsDraft = useRef(props.chatId === undefined);
+  const onAcpCreated = useCallback(
+    (chatId: Id<"aisdk_chats">, prompt?: string) => {
+      setHandoff({ chatId, prompt });
+      props.onCreated(props.tabId, chatId);
+    },
+    [props.onCreated, props.tabId],
+  );
+  if (
+    props.chatId &&
+    ((typeof chat === "object" && chat?.agent) || handoff?.chatId === props.chatId)
+  ) {
+    return (
+      <AcpSessionScreen
+        tabId={props.tabId}
+        chatId={props.chatId}
+        isActive={props.isActive}
+        pendingPrompt={handoff?.chatId === props.chatId ? handoff.prompt : undefined}
+        onTabHint={props.onTabHint}
+        onUnavailable={props.onUnavailable}
+      />
+    );
+  }
+  if (props.chatId && chat === undefined && !startedAsDraft.current) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Spinner className="text-muted-foreground" />
+      </div>
+    );
+  }
+  return <BuiltInSessionScreen {...props} onAcpCreated={onAcpCreated} />;
+});
+
+const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   tabId,
   chatId,
   isActive,
@@ -135,18 +199,8 @@ export const SessionScreen = memo(function SessionScreen({
   onTabHint,
   onCreated,
   onUnavailable,
-}: {
-  tabId: string;
-  chatId?: Id<"aisdk_chats">;
-  isActive: boolean;
-  requestedModel?: string;
-  requestedProvider?: string;
-  /** Project id a new draft starts in (`/chat?project=`); ignored when the Tab restores choices. */
-  requestedProject?: string;
-  onTabHint: (tabId: string, hint: SessionTabHint) => void;
-  onCreated: (tabId: string, chatId: Id<"aisdk_chats">) => void;
-  onUnavailable: (tabId: string) => void;
-}) {
+  onAcpCreated,
+}: SessionScreenProps & { onAcpCreated: (chatId: Id<"aisdk_chats">, prompt?: string) => void }) {
   const navigate = useNavigate();
   const { workspaceId, workspaces } = useWorkspace();
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
@@ -171,6 +225,11 @@ export const SessionScreen = memo(function SessionScreen({
   const setChatScope = useMutation(api.aisdk.SetChatScope);
   const setChatWorker = useMutation(api.aisdk.SetChatWorker);
   const answerCodeModeInteraction = useMutation(api.code_mode.answerInteraction);
+  const createAcpSession = useMutation(api.acp.CreateSession);
+  const setAcpConfig = useMutation(api.acp.SetConfig);
+  const setAcpMode = useMutation(api.acp.SetMode);
+  const promptAcp = useMutation(api.acp.Prompt);
+  const generateAcpTitle = useAction(api.acp.GenerateTitle);
 
   // An existing chat's settings belong to its own workspace; a draft uses the current one.
   const settingsWorkspaceId = chat?.workspace ?? workspaceId;
@@ -192,7 +251,8 @@ export const SessionScreen = memo(function SessionScreen({
   const [draftWorker, setDraftWorker] = useState<ChatWorkerSelection | null>(null);
   const [draftProject, setDraftProject] = useState<string | null>(null);
   const [draftTools, setDraftTools] = useState<ToolSelection | null>(null);
-  const [agent, setAgent] = useState<SessionAgent>(builtInAgent);
+  const [agentId, setAgentId] = useState(builtInAgent.id);
+  const [acpDraft, setAcpDraft] = useState<AcpDraftConfig>({ config: [] });
   const [isTabStateRestored, setIsTabStateRestored] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState<string>();
   const [isCreating, setIsCreating] = useState(false);
@@ -251,6 +311,54 @@ export const SessionScreen = memo(function SessionScreen({
       isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
     ),
   );
+  const { data: agentRows } = useQuery(
+    convexQuery(
+      api.acp.ListAgents,
+      isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
+  );
+  const { data: agentDefinitions } = useQuery(
+    convexQuery(
+      api.acp.ListAgentDefinitions,
+      isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
+  );
+  const agents = workspaceAgents(agentDefinitions, draftWorker?.workerId, agentRows);
+  const agent = chatId ? builtInAgent : sessionAgentById(agentId, agents);
+  const isAcpDraft = chatId === undefined && agent.protocol === "acp";
+  const acpDefaults = agent.protocol === "acp" ? agent.installation?.defaults?.config : undefined;
+  // Stable while nothing changes, so the agent's (possibly hundreds of) models are not re-mapped.
+  const acpDraftConfig = useMemo(
+    () => applyAcpDraft(acpDefaults, acpDraft),
+    [acpDefaults, acpDraft],
+  );
+  const workerNow = useWorkerPresenceClock();
+  const acpWorker = workers?.find(
+    (candidate) => candidate.workerId === draftWorker?.workerId && candidate.status === "active",
+  );
+  const acpAvailability = agentAvailability(agent, acpWorker, workerNow, agentRows);
+  const acpUnavailableReason =
+    !isAcpDraft || acpAvailability === "ready"
+      ? undefined
+      : acpAvailability === "no_worker"
+        ? "Choose a Worker for this agent."
+        : acpAvailability === "offline"
+          ? "This Worker is offline. Choose an online Worker or wait for it to reconnect."
+          : acpAvailability === "needs_auth"
+            ? "Sign in to this agent from the Agent picker before sending."
+            : "This agent is unavailable on the selected Worker. Choose another Worker or agent.";
+  const setAgent = useCallback((next: SessionAgent) => {
+    setAgentId(next.id);
+    setAcpDraft({ config: [] });
+  }, []);
+  useEffect(() => {
+    if (!isTabStateRestored || !agentDefinitions || chatId) return;
+    const restored = sessionAgentById(agentId, agents);
+    if (restored.id !== agentId) setAgentId(restored.id);
+  }, [agentId, agentDefinitions, agents, chatId, isTabStateRestored]);
+  useEffect(() => {
+    setAcpDraft({ config: [] });
+  }, [draftWorker?.workerId]);
 
   // Restore this Tab's snapshot once, after mount, so server and client render the same markup.
   // A `/chat?project=` request only seeds a draft that had no saved choices.
@@ -268,7 +376,7 @@ export const SessionScreen = memo(function SessionScreen({
       if (snapshot.inferenceMode) setInferenceMode(snapshot.inferenceMode);
       if (snapshot.reasoningEffort) setReasoningEffort(snapshot.reasoningEffort);
       if (snapshot.reasoningBudget) setReasoningBudget(snapshot.reasoningBudget);
-      if (snapshot.agentId) setAgent(sessionAgentById(snapshot.agentId));
+      if (snapshot.agentId) setAgentId(snapshot.agentId);
     }
     if (chatId === undefined && snapshot?.draft) {
       const draft = snapshot.draft;
@@ -298,6 +406,8 @@ export const SessionScreen = memo(function SessionScreen({
     setDraftWorker(null);
     setDraftProject(null);
     setDraftTools(null);
+    setAgentId(builtInAgent.id);
+    setAcpDraft({ config: [] });
   }, [choicesAreStale, settingsWorkspaceId]);
 
   // Persist on change, never before the restore (that would overwrite the snapshot with defaults).
@@ -321,11 +431,11 @@ export const SessionScreen = memo(function SessionScreen({
       inferenceMode,
       reasoningEffort,
       reasoningBudget,
-      agentId: agent.id,
+      agentId,
       draft,
     });
   }, [
-    agent.id,
+    agentId,
     chatId,
     choiceWorkspaceId,
     choicesAreStale,
@@ -732,6 +842,60 @@ export const SessionScreen = memo(function SessionScreen({
   );
 
   async function submitDraft({ text, files }: ComposerMessage) {
+    if (agent.protocol === "acp") {
+      if (!text.trim()) return;
+      if (
+        !settingsWorkspaceId ||
+        !isOwner ||
+        choicesAreStale ||
+        !draftWorker?.workerId ||
+        acpAvailability !== "ready"
+      ) {
+        setCreateError(
+          acpUnavailableReason ??
+            "Choose an available Worker and agent before starting this session.",
+        );
+        throw new Error("ACP session is not ready.");
+      }
+      setCreateError(null);
+      setIsCreating(true);
+      setPendingPrompt(text);
+      let created: Id<"aisdk_chats"> | undefined;
+      try {
+        created = await createAcpSession({
+          workspace: settingsWorkspaceId,
+          scope: draftScope,
+          project: selectedProject?._id,
+          worker: draftWorker.workerId,
+          agentId: agent.agentId,
+        });
+        for (const option of acpDraft.config) await setAcpConfig({ chat: created, ...option });
+        if (acpDraft.modeId) await setAcpMode({ chat: created, modeId: acpDraft.modeId });
+        await promptAcp({
+          chat: created,
+          prompt: [{ type: "text", text }],
+          clientId: crypto.randomUUID(),
+        });
+        void generateAcpTitle({ chat: created, text }).catch(() => {});
+        setCreatedChatId(created);
+        onAcpCreated(created, text);
+      } catch (error) {
+        const message = acpActionError(error) ?? "Could not start the agent session.";
+        if (created) {
+          // A created binding survives failed admission/config: open it, preserving the text to retry.
+          patchTabState(tabId, { text });
+          toast.error(message);
+          onAcpCreated(created);
+        } else {
+          setPendingPrompt(undefined);
+          setCreateError(message);
+        }
+        throw error;
+      } finally {
+        setIsCreating(false);
+      }
+      return;
+    }
     if (!text && files.length === 0) return;
     if (!settingsWorkspaceId || !selectedModel || !selectedModelData) {
       setCreateError("Your account is not ready for chat yet.");
@@ -976,7 +1140,14 @@ export const SessionScreen = memo(function SessionScreen({
   const isRunning = status === "submitted" || status === "streaming";
   const canSend =
     chatId === undefined
-      ? Boolean(settingsWorkspaceId && selectedModelData) && !isModelLoading && !isCreating
+      ? isAcpDraft
+        ? Boolean(
+            settingsWorkspaceId && isOwner && acpAvailability === "ready" && draftWorker?.workerId,
+          ) && !isCreating
+        : Boolean(settingsWorkspaceId && selectedModelData) &&
+          !isModelLoading &&
+          !isCreating &&
+          (agentId === builtInAgent.id || agentDefinitions !== undefined)
       : chat !== undefined &&
         seededChatId === chatId &&
         status === "ready" &&
@@ -1107,7 +1278,13 @@ export const SessionScreen = memo(function SessionScreen({
             <AlertDescription>{createError}</AlertDescription>
           </Alert>
         ) : null}
-        {modelsError ? (
+        {acpUnavailableReason && !createError ? (
+          <Alert>
+            <AlertTitle>Agent unavailable</AlertTitle>
+            <AlertDescription>{acpUnavailableReason}</AlertDescription>
+          </Alert>
+        ) : null}
+        {modelsError && !isAcpDraft ? (
           <Alert variant="destructive">
             <AlertTitle>Workspace unavailable</AlertTitle>
             <AlertDescription>
@@ -1275,25 +1452,51 @@ export const SessionScreen = memo(function SessionScreen({
                 isRunning={isRunning}
                 onSubmit={chatId === undefined ? submitDraft : submitTurn}
                 onStop={() => void stop()}
+                commands={
+                  agent.protocol === "acp" ? agent.installation?.defaults?.commands : undefined
+                }
+                attachmentsDisabledReason={
+                  isAcpDraft ? "Attachments are not supported by the ACP transport yet." : undefined
+                }
                 modelControl={
-                  <ModelPicker
-                    models={models}
-                    isLoading={isModelLoading}
-                    selectedModel={selectedModel}
-                    selectedProvider={selectedProvider}
-                    serviceTier={selectedTier}
-                    inferenceMode={effectiveMode}
-                    reasoningEffort={selectedEffort}
-                    reasoningBudget={reasoningBudget}
-                    onModelChange={setModelOverride}
-                    onProviderChange={setProviderOverride}
-                    onServiceTierChange={setServiceTier}
-                    onInferenceModeChange={setInferenceMode}
-                    onReasoningEffortChange={setReasoningEffort}
-                    onReasoningBudgetChange={setReasoningBudget}
-                    isOpen={isModelPickerOpen}
-                    onOpenChange={setIsModelPickerOpen}
-                  />
+                  isAcpDraft ? (
+                    <AcpConfigControls
+                      agentId={agent.protocol === "acp" ? agent.agentId : undefined}
+                      config={acpDraftConfig}
+                      disabled={isCreating}
+                      isOpen={isModelPickerOpen}
+                      onOpenChange={setIsModelPickerOpen}
+                      onConfigChange={(configId, value) =>
+                        setAcpDraft((draft) => ({
+                          ...draft,
+                          config: [
+                            ...draft.config.filter((option) => option.configId !== configId),
+                            { configId, value },
+                          ],
+                        }))
+                      }
+                      onModeChange={(modeId) => setAcpDraft((draft) => ({ ...draft, modeId }))}
+                    />
+                  ) : (
+                    <ModelPicker
+                      models={models}
+                      isLoading={isModelLoading}
+                      selectedModel={selectedModel}
+                      selectedProvider={selectedProvider}
+                      serviceTier={selectedTier}
+                      inferenceMode={effectiveMode}
+                      reasoningEffort={selectedEffort}
+                      reasoningBudget={reasoningBudget}
+                      onModelChange={setModelOverride}
+                      onProviderChange={setProviderOverride}
+                      onServiceTierChange={setServiceTier}
+                      onInferenceModeChange={setInferenceMode}
+                      onReasoningEffortChange={setReasoningEffort}
+                      onReasoningBudgetChange={setReasoningBudget}
+                      isOpen={isModelPickerOpen}
+                      onOpenChange={setIsModelPickerOpen}
+                    />
+                  )
                 }
                 menuItems={
                   <ConversationVisibilityMenu
@@ -1306,7 +1509,9 @@ export const SessionScreen = memo(function SessionScreen({
                   />
                 }
                 toolbarControls={
-                  isOwner && canManageChat ? (
+                  isAcpDraft ? (
+                    <ToolsDialog disabledReason="The agent brings its own tools" />
+                  ) : isOwner && canManageChat ? (
                     <ToolsDialog
                       workspace={settingsWorkspaceId}
                       chatId={chatId}

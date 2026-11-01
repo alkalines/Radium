@@ -38,10 +38,15 @@ export function ContextUsage({
   usage,
   maxTokens,
   executions,
+  cost,
+  costLabel = "Gateway cost",
 }: {
-  usage: LanguageModelUsage;
+  usage: Partial<LanguageModelUsage>;
   maxTokens: number;
   executions?: GatewayExecution[];
+  /** Native cost reported by an external agent, without Gateway conversion. */
+  cost?: { amount: number; currency: string };
+  costLabel?: string;
 }) {
   const usedTokens = usage.totalTokens ?? 0;
   const usedShare = maxTokens > 0 ? Math.min(usedTokens / maxTokens, 1) : 0;
@@ -120,13 +125,15 @@ export function ContextUsage({
         ) : null}
         <div className="flex flex-col gap-1 border-t pt-3">
           <div className="flex justify-between gap-3">
-            <span className="text-muted-foreground">Gateway cost</span>
+            <span className="text-muted-foreground">{costLabel}</span>
             <span className="tabular-nums">
-              {totalCost === undefined
-                ? "Unknown"
-                : totalCost > 0 && totalCost < 0.000001
-                  ? "<$0.000001"
-                  : usdNumber.format(totalCost)}
+              {cost
+                ? `${cost.amount.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cost.currency}`
+                : totalCost === undefined
+                  ? "Unknown"
+                  : totalCost > 0 && totalCost < 0.000001
+                    ? "<$0.000001"
+                    : usdNumber.format(totalCost)}
             </span>
           </div>
           {sources.size === 1 && executions?.every((execution) => execution.costSource) && (

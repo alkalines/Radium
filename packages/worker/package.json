@@ -12,6 +12,7 @@
     "refresh": "bun src/cli.ts refresh",
     "forget": "bun src/cli.ts forget",
     "forget-token": "bun src/cli.ts forget-token",
+    "test-agent": "bun src/acp/test-agent.ts",
     "test": "bun run test:unit && bun run test:edit && bun run test:bash",
     "test:unit": "vitest run",
     "test:edit": "bun test ./src/edit/service.engine.ts",
@@ -19,6 +20,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "2.2.0",
     "@clack/prompts": "^1.8.1",
     "@napi-rs/keyring": "^2.1.0",
     "@oh-my-pi/pi-natives": "18.8.3",

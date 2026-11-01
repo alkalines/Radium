@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { SearchIcon } from "lucide-react";
 
 import { api } from "backend/convex/_generated/api";
-import { ProviderLogo } from "@/components/gateway/provider-logo";
+import { ModelAuthorLogo } from "./model-list";
 import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
 import { PageHeader } from "@/components/harness/page-header";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
@@ -112,13 +112,7 @@ export function ModelPreferencesPanel() {
               return (
                 <Row
                   key={model.slug}
-                  leading={
-                    model.author ? (
-                      <ProviderLogo variant="labs" slug={model.author.slug} className="size-5" />
-                    ) : (
-                      <span className="size-5 shrink-0" />
-                    )
-                  }
+                  leading={<ModelAuthorLogo author={model.author} />}
                   title={name}
                   description={<span className="font-mono text-[13px]">{model.slug}</span>}
                 >

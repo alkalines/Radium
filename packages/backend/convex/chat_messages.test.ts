@@ -254,7 +254,7 @@ test("old stored files without a referencing row are pruned; referenced ones are
   expect(await isStored(t, telemetry)).toBe(true);
 });
 
-test("ListChats keeps old pinned chats outside the recency window", async () => {
+test("ListChats pages unpinned chats in order while ListPinnedChats keeps old pins", async () => {
   const t = makeTest();
   const { workspace } = await workspaceFixture(t);
   const pinned = await t.run(async (ctx) => {
@@ -267,19 +267,34 @@ test("ListChats keeps old pinned chats outside the recency window", async () => 
     });
     for (let index = 0; index < 40; index++) {
       await ctx.db.insert("aisdk_chats", {
-        userId: "member",
+        userId: index % 2 ? "member" : "owner",
         workspace,
-        scope: "personal",
+        // Odd chats are the member's own, even ones shared by the owner: two merged streams.
+        scope: index % 2 ? "personal" : "workspace",
         lastInteractionAt: 100 + index,
       });
     }
     return old;
   });
+  const member = asUser(t, "member");
 
-  const chats = await asUser(t, "member").query(api.aisdk.ListChats, { workspace });
-  expect(chats).toHaveLength(30);
-  expect(chats[0]?.id).toBe(pinned);
-  expect(chats.slice(1).map((chat) => chat.lastInteractionAt)).toEqual(
-    Array.from({ length: 29 }, (_, index) => 139 - index),
+  await expect(member.query(api.aisdk.ListPinnedChats, { workspace })).resolves.toMatchObject([
+    { id: pinned },
+  ]);
+  const first = await member.query(api.aisdk.ListChats, {
+    workspace,
+    paginationOpts: { cursor: null, numItems: 25 },
+  });
+  const second = await member.query(api.aisdk.ListChats, {
+    workspace,
+    paginationOpts: { cursor: first.continueCursor, numItems: 25 },
+  });
+  expect(first.isDone).toBe(false);
+  expect(second.isDone).toBe(true);
+  // The workspace fixture's own chat (the oldest) follows the 40; the pin never appears in pages.
+  const paged = [...first.page, ...second.page];
+  expect(paged.slice(0, 40).map((chat) => chat.lastInteractionAt)).toEqual(
+    Array.from({ length: 40 }, (_, index) => 139 - index),
   );
+  expect(paged.map((chat) => chat.id)).not.toContain(pinned);
 });

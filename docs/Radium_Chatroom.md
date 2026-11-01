@@ -13,7 +13,7 @@ Completed and failed requests both allow **Revert to this message** on a user tu
 
 Chat documents (`aisdk_chats`) hold only metadata. History is one `chat_messages` row per message; the chat HTTP action saves the full history at request end but writes only positions whose content changed and deletes positions past a revert (`src/chatroom/messages.ts`). Attachments are uploaded by the Composer to Convex File Storage (`chat_files.generateUploadUrl`, then `chat_files.register`, 20 MiB limit) and persisted as storage URLs; the chat action inlines their bytes into the model input only (`src/chatroom/files.ts`). Files are deleted with the last chat that references them; uploads never sent, and stored files no `chat_files` or `telemetry_blobs` row references (such as uploads never registered), are pruned after a day.
 
-Subscriptions follow what is on screen. Home subscribes to `aisdk.ListChats` per Project filter and keeps an inactive filter's subscription for five minutes, so a quick return to Home applies live updates instead of refetching; starting on a session Tab never subscribes it. Every mounted session Tab subscribes to `aisdk.GetChat` (metadata, for its title and run state) but subscribes to `aisdk.GetChatMessages` only after the Tab is first opened, then keeps it while the Tab stays open.
+Subscriptions follow what is on screen. Home lists a filter's pinned chats with `aisdk.ListPinnedChats` and the rest with the paginated `aisdk.ListChats` (50 per page, the creator-owned, shared and legacy indexes merged into one `lastInteractionAt` stream with convex-helpers `mergedStream`, at most 400 rows read per page), merged on the client with the owner's unopened agent sessions (`docs/ACP/Sessions.md#agent-session-index`). Each loaded page is its own subscription, so a chat write re-runs only the page holding it; the pages stay subscribed for five minutes after Home unmounts (`ConvexQueryCacheProvider`), so a quick return applies live updates instead of refetching; starting on a session Tab never subscribes them. Every mounted session Tab subscribes to `aisdk.GetChat` (metadata, for its title and run state) but subscribes to `aisdk.GetChatMessages` only after the Tab is first opened, then keeps it while the Tab stays open.
 
 Chats created before this split keep their history embedded until their next save or `migrations:runChatMessages` moves it out. Inline data-URL attachments in those histories stay inline in their message rows. Narrowing the deprecated `messages`/`chat_completions` fields requires that migration to have completed on the deployment.
 
@@ -179,6 +179,14 @@ require prepaid credits and do not debit a Radium balance.
 
 ## Planned And Limited
 
+- Live in-flight replies in every Tab and device, Stop from any Tab, run
+  admission against overlapping turns, and reload resume are proposed in
+  [Live sessions](Radium_Chatroom/Live_Sessions.md). Today only the sending
+  Tab sees a reply stream; others see it when the turn is saved.
+- ACP agents as a Session's Agent are described in [ACP agents](ACP.md): the
+  harness runs on a Worker, owns the conversation, and Radium stores only
+  metadata and relays content transiently. The Worker host and Convex transport
+  are implemented; the Session screen, picker entries and controls are not.
 - Worker identity, enrollment/recovery, machine authentication, task coordination,
   owner-dispatched file tasks, composer configuration, model file tools, signed
   write approvals, and durable stage receipts are implemented locally. Deployed

@@ -159,7 +159,9 @@ test("workspace builders reject absent and expired Better Auth sessions before r
   const workspace = await t.run((ctx) =>
     ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Private" }),
   );
-  await expect(t.query(api.aisdk.ListChats, { workspace })).rejects.toThrow("Not logged in.");
+  await expect(
+    t.query(api.aisdk.ListChats, { workspace, paginationOpts: { cursor: null, numItems: 50 } }),
+  ).rejects.toThrow("Not logged in.");
   await expect(
     t.mutation(api.aisdk.CreateChat, { workspace, messages_queue: messagesQueue }),
   ).rejects.toThrow("Not logged in.");
@@ -200,9 +202,12 @@ test("workspace mutation uses the Better Auth user once and preserves member att
   });
   await t.run((ctx) => ctx.db.patch("workspaces", workspace, { archivedAt: Date.now() }));
   for (const userId of ["owner", "member"]) {
-    await expect(asUser(t, userId).query(api.aisdk.ListChats, { workspace })).rejects.toThrow(
-      "Workspace not found.",
-    );
+    await expect(
+      asUser(t, userId).query(api.aisdk.ListChats, {
+        workspace,
+        paginationOpts: { cursor: null, numItems: 50 },
+      }),
+    ).rejects.toThrow("Workspace not found.");
     await expect(
       asUser(t, userId).mutation(api.aisdk.ForkChat, { workspace, messages: [] }),
     ).rejects.toThrow("Workspace not found.");

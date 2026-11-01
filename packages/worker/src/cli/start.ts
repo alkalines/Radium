@@ -13,6 +13,8 @@ import { createBashExecutor } from "../bash/service.js";
 import { prepareTempDirectory, startPresenceReporter, type PresenceReporter } from "../presence.js";
 import type { CliOptions } from "./options.js";
 import { storageDescription } from "./prompt.js";
+import { convexAcpTransport } from "../acp/convex-transport.js";
+import { AcpHost } from "../acp/host.js";
 
 const DISCONNECT_GUIDANCE: Record<WorkerControlDisconnectReason, string> = {
   connecting: "Opening the Convex connection.",
@@ -41,10 +43,12 @@ export async function startWorker(options: CliOptions): Promise<void> {
   let bash: ReturnType<typeof createBashExecutor> | undefined;
   let diagnosticsTimer: ReturnType<typeof setInterval> | undefined;
   let presence: PresenceReporter | undefined;
+  let acp: AcpHost | undefined;
   const close = async () => {
     clearInterval(diagnosticsTimer);
     presence?.close();
     try {
+      await acp?.close();
       if (tasks) await tasks.close();
       else {
         await bash?.close();
@@ -62,6 +66,7 @@ export async function startWorker(options: CliOptions): Promise<void> {
     control = connectWorkerControl(state, (status) => {
       tasks?.setAvailable(status.status === "connected");
       presence?.setAvailable(status.status === "connected");
+      acp?.setAvailable(status.status === "connected");
       const statusKey =
         status.status === "connected" ? "connected" : `disconnected:${status.reason}`;
       if (previousStatusKey === statusKey) return;
@@ -82,6 +87,8 @@ export async function startWorker(options: CliOptions): Promise<void> {
       tasks.setAvailable(previousStatusKey === "connected");
       console.info("Worker edit and Bash task consumer enabled.");
     }
+    acp = new AcpHost(convexAcpTransport(control.client));
+    acp.setAvailable(previousStatusKey === "connected");
     await waitForShutdown(close);
   } catch (error) {
     await close().catch(() => undefined);

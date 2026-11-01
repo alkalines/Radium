@@ -11,8 +11,7 @@ import {
   ShieldIcon,
   UserRoundIcon,
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useState, type ComponentType, type ReactNode, type SVGProps } from "react";
 
 import { chatroomSections } from "@/components/chatroom/chatroom-settings";
 import { gatewaySections } from "@/components/gateway/gateway-settings";
@@ -29,7 +28,8 @@ type NavItem = {
   /** Text the sidebar search matches; plugin tab labels may be elements. */
   searchText: string;
   href: string;
-  icon?: LucideIcon;
+  icon?: ComponentType<SVGProps<SVGSVGElement>>;
+  iconClassName?: string;
   /** Also active on nested pages (`/gateway/telemetry/<trace>`). */
   matchNested?: boolean;
 };
@@ -42,6 +42,9 @@ function chatroomItem(section: (typeof chatroomSections)[number]): NavItem {
     searchText: section.label,
     icon: section.icon,
     href: `/chatroom/${section.value}`,
+    // The ACP mark is a wide wordmark: fit its width to the glyph area Lucide icons draw in (14px
+    // of the 16px slot), so its ends line up with the icons above and below.
+    iconClassName: section.value === "acp" ? "w-3.5! h-auto!" : undefined,
   };
 }
 
@@ -53,7 +56,9 @@ const workspaceGroups: NavGroup[] = [
     label: "Workspace",
     items: [
       { label: "General", searchText: "General", icon: BoxesIcon, href: "/settings/workspace" },
-      ...chatroomSections.filter((section) => section.value === "workers").map(chatroomItem),
+      ...chatroomSections
+        .filter((section) => section.value === "workers" || section.value === "acp")
+        .map(chatroomItem),
     ],
   },
   {
@@ -67,7 +72,9 @@ const workspaceGroups: NavGroup[] = [
   },
   {
     label: "Chat",
-    items: chatroomSections.filter((section) => section.value !== "workers").map(chatroomItem),
+    items: chatroomSections
+      .filter((section) => section.value !== "workers" && section.value !== "acp")
+      .map(chatroomItem),
   },
   {
     label: "Observability",
@@ -154,7 +161,11 @@ export function SettingsLayout({
       return (
         <SideColumnItem key={item.href} asChild isActive={isActive}>
           <Link to={item.href}>
-            {item.icon ? <item.icon className="text-muted-foreground" /> : null}
+            {item.icon ? (
+              <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground">
+                <item.icon className={item.iconClassName} />
+              </span>
+            ) : null}
             <span className="truncate">{item.label}</span>
           </Link>
         </SideColumnItem>
