@@ -1,5 +1,13 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { useMutation } from "convex/react";
+import { formatDistanceToNowStrict } from "date-fns";
+
+import { api } from "backend/convex/_generated/api";
+import type { AcpSessionListPage } from "backend/src/acp/contract";
+import { isWorkerOnline } from "backend/src/worker/presence";
 
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { ChatWorkerSelection, ChatWorkerTool } from "backend/src/worker/chat-config";
@@ -18,16 +26,26 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { WorkerPresence, useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { WorkspaceIcon } from "@/components/workspaces/workspace-icon";
 import { cn } from "@/lib/utils";
-import type { SessionAgent, SessionProject, SessionWorker } from "./agents";
+import {
+  agentAvailability,
+  firstReadyWorker,
+  type AcpExistingSession,
+  type AcpSessionAgent,
+  type AgentAvailability,
+  type SessionAgent,
+  type SessionAgentRow,
+  type SessionProject,
+  type SessionWorker,
+} from "./agents";
 import { workerToolsFor } from "@/components/chatroom/tool-catalog";
 import { AcpAgentAuth } from "./acp/agent-auth";
-import { OpenAcpSessionDialog } from "./acp/open-session-dialog";
+import { AcpAgentIcon } from "./acp/agent-icon";
 
 const noWorkerValue = "__no-worker__";
 const noProjectValue = "__no-project__";
 const addProjectValue = "__add-project__";
 
-type View = "summary" | "project" | "worker" | "agent";
+type View = "summary" | "project" | "worker" | "agent" | "session";
 
 /** The Project part of the Run target picker; only a draft offers it (saved Sessions keep theirs). */
 export type RunTargetProjectChoice = {
@@ -44,20 +62,7 @@ export function AgentLogo({ agent, className }: { agent: SessionAgent; className
   if (agent.protocol === "built-in") {
     return <img src="/letters/R.svg" alt="" className={cn("shrink-0", className)} />;
   }
-  if (agent.icon && /^(?:https?:\/\/|data:)/i.test(agent.icon)) {
-    return <img src={agent.icon} alt="" className={cn("shrink-0 object-contain", className)} />;
-  }
-  return (
-    <span
-      aria-hidden="true"
-      className={cn(
-        "flex shrink-0 items-center justify-center rounded bg-muted text-[10px] font-medium uppercase",
-        className,
-      )}
-    >
-      {agent.name.slice(0, 1)}
-    </span>
-  );
+  return <AcpAgentIcon icon={agent.icon} name={agent.name} className={className} />;
 }
 
 /** A Project's tile: its color and icon, the same mark as in Tabs and the Home list. */
@@ -105,12 +110,13 @@ export function RunTargetPicker({
   defaultWorkerTools,
   agent,
   agents,
+  agentRows,
   isAgentFixed,
   disabled,
   onSelectionChange,
   onAgentChange,
-  scope,
-  onCreated,
+  existingSession,
+  onExistingSessionChange,
 }: {
   trigger: ReactNode;
   /** Accessible name of the trigger, e.g. `Run on build-box with Radium`. */
@@ -123,17 +129,18 @@ export function RunTargetPicker({
   defaultWorkerTools: ChatWorkerTool[];
   agent: SessionAgent;
   agents: SessionAgent[];
+  agentRows?: SessionAgentRow[];
   isAgentFixed: boolean;
   disabled?: boolean;
   onSelectionChange: (selection: ChatWorkerSelection | null) => void;
   onAgentChange: (agent: SessionAgent) => void;
-  scope?: "personal" | "workspace";
-  onCreated?: (chatId: Id<"aisdk_chats">) => void;
+  /** An agent session the draft continues instead of starting a new one (Session row). */
+  existingSession?: AcpExistingSession | null;
+  onExistingSessionChange?: (session: AcpExistingSession | null) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [view, setView] = useState<View>("summary");
   const [isProjectDialogOpen, setIsProjectDialogOpen] = useState(false);
-  const [importAgent, setImportAgent] = useState<SessionAgent>();
   const selectProjectWhenListed = usePendingProjectSelection(projectChoice?.projects, (project) =>
     projectChoice?.onProjectChange(project),
   );
@@ -144,6 +151,16 @@ export function RunTargetPicker({
     (candidate) => candidate.workerId === selection?.workerId,
   );
   const hasWorker = Boolean(selection?.workerId);
+  const availability = agentAvailability(agent, selectedWorker, now, agentRows);
+  const listTarget =
+    agent.protocol === "acp" &&
+    agent.installation?.capabilities.list &&
+    selectedWorker &&
+    isWorkerOnline(selectedWorker.lastSeenAt, now) &&
+    projectChoice?.workspaceId &&
+    onExistingSessionChange
+      ? { workspace: projectChoice.workspaceId, worker: selectedWorker.workerId, agent }
+      : null;
 
   function handleOpenChange(open: boolean) {
     setIsOpen(open);
@@ -164,6 +181,14 @@ export function RunTargetPicker({
     }
     if (workerId === selection?.workerId) return;
     onSelectionChange({ workerId, tools: workerToolsFor(defaultWorkerTools, chosenTools) });
+  }
+
+  function selectAgent(next: SessionAgent) {
+    if (!hasWorker && next.protocol === "acp") {
+      const readyWorker = firstReadyWorker(next, activeWorkers, agentRows, now);
+      if (readyWorker) selectWorker(readyWorker.workerId);
+    }
+    onAgentChange(next);
   }
 
   function openProjectDialog() {
@@ -231,7 +256,21 @@ export function RunTargetPicker({
               <SummaryRow label="Agent" onOpen={isAgentFixed ? undefined : () => setView("agent")}>
                 <AgentLogo agent={agent} className="size-4" />
                 <span className="truncate">{agent.name}</span>
+                {agent.protocol === "acp" && availability !== "ready" ? (
+                  <span className="ml-auto text-xs text-muted-foreground">Unavailable</span>
+                ) : null}
               </SummaryRow>
+              {listTarget ? (
+                <SummaryRow label="Session" onOpen={() => setView("session")}>
+                  {existingSession ? (
+                    <span className="truncate" title={existingSession.title}>
+                      {existingSession.title || existingSession.sessionId}
+                    </span>
+                  ) : (
+                    <span className="truncate">New</span>
+                  )}
+                </SummaryRow>
+              ) : null}
             </div>
           ) : null}
 
@@ -277,11 +316,17 @@ export function RunTargetPicker({
                       onSelect={() => pick(() => selectWorker(candidate.workerId))}
                     >
                       <span className="truncate">{candidate.name}</span>
-                      <WorkerPresence
-                        lastSeenAt={candidate.lastSeenAt}
-                        now={now}
-                        className="ml-auto"
-                      />
+                      {agent.protocol === "acp" ? (
+                        <span className="ml-auto text-xs text-muted-foreground">
+                          {workerAgentLabels[agentAvailability(agent, candidate, now, agentRows)]}
+                        </span>
+                      ) : (
+                        <WorkerPresence
+                          lastSeenAt={candidate.lastSeenAt}
+                          now={now}
+                          className="ml-auto"
+                        />
+                      )}
                     </CommandItem>
                   ))}
                 </CommandGroup>
@@ -295,67 +340,69 @@ export function RunTargetPicker({
 
           {view === "agent" ? (
             <DrillList
-              title={selectedWorker ? `Agents on ${selectedWorker.name}` : "Agents"}
+              title="Agents"
               placeholder="Search agents…"
               onBack={() => setView("summary")}
             >
               <CommandGroup>
-                {agents.map((candidate) => (
-                  <CommandItem
-                    key={candidate.id}
-                    value={candidate.id}
-                    keywords={[candidate.name]}
-                    data-checked={candidate.id === agent.id}
-                    onSelect={() => pick(() => onAgentChange(candidate))}
-                  >
-                    <AgentLogo agent={candidate} className="size-4" />
-                    <span className="flex-1 truncate">{candidate.name}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {candidate.protocol === "acp" ? "ACP" : "Built-in"}
-                    </span>
-                  </CommandItem>
-                ))}
+                {agents.map((candidate) => {
+                  const state = agentAvailability(candidate, selectedWorker, now, agentRows);
+                  return (
+                    <div
+                      key={candidate.id}
+                      className="hidden items-center gap-2 has-[[cmdk-item]]:flex"
+                    >
+                      <CommandItem
+                        className="min-w-0 flex-1"
+                        value={candidate.id}
+                        keywords={[candidate.name]}
+                        data-checked={candidate.id === agent.id}
+                        onSelect={() => pick(() => selectAgent(candidate))}
+                      >
+                        <AgentLogo agent={candidate} className="size-4" />
+                        <span className="flex-1 truncate">{candidate.name}</span>
+                        {state !== "ready" && state !== "needs_auth" ? (
+                          <span className="text-xs text-muted-foreground">
+                            {agentStateLabel(state)}
+                          </span>
+                        ) : null}
+                      </CommandItem>
+                      {state === "needs_auth" &&
+                      candidate.protocol === "acp" &&
+                      selectedWorker &&
+                      projectChoice?.workspaceId ? (
+                        <div
+                          className="shrink-0 pr-1"
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
+                          <AcpAgentAuth
+                            workspace={projectChoice.workspaceId}
+                            worker={selectedWorker.workerId}
+                            agentId={candidate.agentId}
+                            name={candidate.name}
+                            authMethods={candidate.installation?.authMethods ?? []}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </CommandGroup>
-              {projectChoice?.workspaceId
-                ? agents.flatMap((candidate) =>
-                    candidate.protocol === "acp"
-                      ? [
-                          <div
-                            key={candidate.id}
-                            className="flex flex-col gap-2 border-t px-3 py-2"
-                          >
-                            {candidate.status === "needs_auth" ? (
-                              <>
-                                <span className="text-xs font-medium">{candidate.name}</span>
-                                <AcpAgentAuth
-                                  workspace={projectChoice.workspaceId!}
-                                  worker={candidate.workerId}
-                                  agentId={candidate.agentId}
-                                  name={candidate.name}
-                                  authMethods={candidate.authMethods}
-                                />
-                              </>
-                            ) : null}
-                            {candidate.capabilities.list &&
-                            candidate.status === "ready" &&
-                            onCreated ? (
-                              <Button
-                                variant="ghost"
-                                size="xs"
-                                className="justify-start"
-                                onClick={() => {
-                                  handleOpenChange(false);
-                                  setImportAgent(candidate);
-                                }}
-                              >
-                                Open existing · {candidate.name}
-                              </Button>
-                            ) : null}
-                          </div>,
-                        ]
-                      : [],
-                  )
-                : null}
+            </DrillList>
+          ) : null}
+          {view === "session" && listTarget ? (
+            <DrillList
+              title="Sessions"
+              placeholder="Search sessions…"
+              onBack={() => setView("summary")}
+            >
+              <AgentSessionOptions
+                key={`${listTarget.workspace}:${listTarget.worker}:${listTarget.agent.agentId}:${project?._id ?? ""}`}
+                {...listTarget}
+                project={project}
+                selected={existingSession ?? null}
+                onSelect={(session) => pick(() => onExistingSessionChange?.(session))}
+              />
             </DrillList>
           ) : null}
         </PopoverContent>
@@ -368,16 +415,6 @@ export function RunTargetPicker({
           workspaceId={projectChoice.workspaceId}
           isOwner
           onCreated={selectProjectWhenListed}
-        />
-      ) : null}
-      {importAgent?.protocol === "acp" && projectChoice?.workspaceId && onCreated ? (
-        <OpenAcpSessionDialog
-          workspace={projectChoice.workspaceId}
-          agent={importAgent}
-          project={project}
-          scope={scope}
-          onClose={() => setImportAgent(undefined)}
-          onCreated={onCreated}
         />
       ) : null}
     </>
@@ -635,5 +672,203 @@ function DrillList({
         {children}
       </CommandList>
     </Command>
+  );
+}
+
+function agentStateLabel(state: AgentAvailability) {
+  switch (state) {
+    case "ready":
+      return "";
+    case "needs_auth":
+      return "Sign in";
+    case "offline":
+      return "Worker offline";
+    case "no_worker":
+      return "Choose a Worker";
+    case "unavailable":
+      return "Unavailable";
+  }
+}
+
+const workerAgentLabels: Record<AgentAvailability, string> = {
+  ready: "Online",
+  needs_auth: "Needs sign in",
+  unavailable: "Unavailable",
+  offline: "Offline",
+  no_worker: "Unavailable",
+};
+
+/** Mounted only while drilling into Session: pages and command subscriptions stay local. */
+function AgentSessionOptions({
+  workspace,
+  worker,
+  agent,
+  project,
+  selected,
+  onSelect,
+}: {
+  workspace: Id<"workspaces">;
+  worker: string;
+  agent: AcpSessionAgent;
+  project: SessionProject | null;
+  selected: AcpExistingSession | null;
+  /** `null` starts a new session; a listed one is continued by the draft's first prompt. */
+  onSelect: (session: AcpExistingSession | null) => void;
+}) {
+  const list = useMutation(api.acp.ListAgentSessions);
+  const [sessions, setSessions] = useState<AcpSessionListPage["sessions"]>([]);
+  const [cursor, setCursor] = useState<string>();
+  const [command, setCommand] = useState<Id<"acp_commands">>();
+  const [loading, setLoading] = useState(false);
+  const [listed, setListed] = useState(false);
+  const [failure, setFailure] = useState<string>();
+  const mounted = useRef(false);
+  const started = useRef(false);
+  const busy = loading || command !== undefined;
+  const { data: result, error } = useQuery(
+    convexQuery(api.acp.GetCommand, command ? { command } : "skip"),
+  );
+
+  async function load(nextCursor?: string) {
+    if (busy) return;
+    setLoading(true);
+    setFailure(undefined);
+    try {
+      const id = await list({
+        workspace,
+        worker,
+        agentId: agent.agentId,
+        project: project?._id,
+        cursor: nextCursor,
+        clientId: crypto.randomUUID(),
+      });
+      if (mounted.current) setCommand(id);
+    } catch (error) {
+      if (mounted.current)
+        setFailure(error instanceof Error ? error.message : "Could not list sessions.");
+    } finally {
+      if (mounted.current) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    mounted.current = true;
+    if (!started.current) {
+      started.current = true;
+      void load();
+    }
+    return () => {
+      mounted.current = false;
+    };
+    // The keyed view fixes the target for this mount; reopening explicitly reloads its first page.
+  }, []);
+
+  useEffect(() => {
+    if (
+      !command ||
+      (!error && result !== null && result?.status !== "done" && result?.status !== "failed")
+    )
+      return;
+    setCommand(undefined);
+    if (error || !result || result.status === "failed") {
+      setFailure(
+        error instanceof Error
+          ? error.message
+          : (result?.error ?? "Session listing is no longer available."),
+      );
+      return;
+    }
+    try {
+      const page: unknown = JSON.parse(result.result ?? "");
+      if (!isSessionPage(page)) throw new Error("The agent returned an invalid session list.");
+      setSessions((previous) => {
+        const seen = new Set(previous.map((session) => session.sessionId));
+        return [...previous, ...page.sessions.filter((session) => !seen.has(session.sessionId))];
+      });
+      setCursor(page.nextCursor);
+      setListed(true);
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : "Could not read the session list.");
+    }
+  }, [command, error, result]);
+
+  return (
+    <>
+      <CommandGroup>
+        <CommandItem
+          value="__new-session__"
+          keywords={["New session"]}
+          data-checked={selected === null}
+          onSelect={() => onSelect(null)}
+        >
+          New session
+        </CommandItem>
+      </CommandGroup>
+      <CommandGroup heading="In this directory">
+        {sessions.map((session) => (
+          <CommandItem
+            key={session.sessionId}
+            value={session.sessionId}
+            keywords={[session.title ?? session.sessionId]}
+            data-checked={selected?.sessionId === session.sessionId}
+            onSelect={() =>
+              onSelect({
+                sessionId: session.sessionId,
+                ...(session.title ? { title: session.title } : {}),
+              })
+            }
+          >
+            <span className="flex-1 truncate" title={session.title ?? session.sessionId}>
+              {session.title || session.sessionId}
+            </span>
+            {session.updatedAt && Number.isFinite(Date.parse(session.updatedAt)) ? (
+              <time
+                dateTime={session.updatedAt}
+                title={session.updatedAt}
+                className="shrink-0 text-xs tabular-nums text-muted-foreground"
+              >
+                {formatDistanceToNowStrict(new Date(session.updatedAt), { addSuffix: true })}
+              </time>
+            ) : null}
+          </CommandItem>
+        ))}
+        {cursor || failure ? (
+          <CommandItem
+            value="__load-more__"
+            keywords={["Load more", "Retry"]}
+            disabled={busy}
+            onSelect={() => void load(cursor)}
+          >
+            {failure ? "Try again" : "Load more"}
+          </CommandItem>
+        ) : null}
+      </CommandGroup>
+      {failure || busy || (listed && sessions.length === 0) ? (
+        <p role="status" className="px-3 pb-3 text-xs text-muted-foreground">
+          {failure ?? (busy ? "Loading sessions…" : "No sessions in this directory.")}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function isSessionPage(page: unknown): page is AcpSessionListPage {
+  return (
+    typeof page === "object" &&
+    page !== null &&
+    "sessions" in page &&
+    Array.isArray(page.sessions) &&
+    page.sessions.every(
+      (session: unknown) =>
+        typeof session === "object" &&
+        session !== null &&
+        "sessionId" in session &&
+        typeof session.sessionId === "string" &&
+        "cwd" in session &&
+        typeof session.cwd === "string" &&
+        (!("title" in session) || typeof session.title === "string") &&
+        (!("updatedAt" in session) || typeof session.updatedAt === "string"),
+    ) &&
+    (!("nextCursor" in page) || typeof page.nextCursor === "string")
   );
 }

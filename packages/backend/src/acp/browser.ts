@@ -393,7 +393,8 @@ export const ListAgentSessions = ownedWorkspaceMutation({
   args: {
     worker: v.string(),
     agentId: v.string(),
-    cwd: v.string(),
+    project: v.optional(v.id("projects")),
+    cwd: v.optional(v.string()),
     cursor: v.optional(v.string()),
     clientId: v.string(),
   },
@@ -404,9 +405,13 @@ export const ListAgentSessions = ownedWorkspaceMutation({
       ctx.workspace._id,
       workspaceWorkerMetadata(ctx, ctx.workspace._id),
     );
+    if (args.project) await requireWorkspaceProject(ctx, args.project, ctx.workspace._id);
     const agent = await findAgent(ctx, ctx.workspace._id, args.worker, args.agentId);
     if (!agent?.capabilities.list) acpError("ACP_UNSUPPORTED");
-    if (!validChatWorkerDirectory(args.cwd)) acpError("ACP_INVALID_CWD");
+    const cwd =
+      args.cwd ??
+      (await deriveChatWorkerDirectory(ctx, ctx.workspace._id, args.worker, args.project));
+    if (!cwd || !validChatWorkerDirectory(cwd)) acpError("ACP_INVALID_CWD");
     return enqueue(
       ctx,
       { workspace: ctx.workspace._id, worker: args.worker },
@@ -414,7 +419,7 @@ export const ListAgentSessions = ownedWorkspaceMutation({
       {
         kind: "list",
         agentId: args.agentId,
-        cwd: args.cwd,
+        cwd,
         ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
       },
       undefined,
@@ -569,7 +574,13 @@ export const GetSession = query({
     const report = await findAgent(ctx, session.workspace, session.worker, session.agentId);
     return {
       agent,
-      ...(report ? { agentName: report.name, capabilities: report.capabilities } : {}),
+      ...(report
+        ? {
+            agentName: report.name,
+            capabilities: report.capabilities,
+            ...(report.icon ? { agentIcon: report.icon } : {}),
+          }
+        : {}),
       status: session.status,
       epoch: session.epoch,
       warm: session.warm,

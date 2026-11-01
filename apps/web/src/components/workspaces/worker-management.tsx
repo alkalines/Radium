@@ -264,10 +264,10 @@ export function WorkerManagement() {
           Configure ACP agents and check their availability on each machine in the{" "}
           <Link
             to="/chatroom/$section"
-            params={{ section: "agents" }}
+            params={{ section: "acp" }}
             className="text-foreground underline underline-offset-4"
           >
-            Agents tab
+            ACP settings
           </Link>
           .
         </p>

@@ -13,6 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation } from "convex/react";
 import { AnimatePresence } from "motion/react";
+import { ArchiveXIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
@@ -20,6 +21,14 @@ import type { AcpInteractionAnswer } from "backend/src/acp/contract";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import type { TabProjectHint } from "@/components/window/window-tabs";
 import {
@@ -230,7 +239,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
         <SessionWorkerControl
           isFixed
           workerName={workerName}
-          agent={{ protocol: "acp", name: agentName }}
+          agent={{ protocol: "acp", name: agentName, icon: session?.agentIcon }}
         />
       </div>
       {waitingForSnapshot && isVisible ? (
@@ -245,6 +254,24 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
             <Spinner className="text-muted-foreground" />
           )}
         </div>
+      ) : ended && !hasContent ? (
+        <Empty className="min-h-0 flex-1">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <ArchiveXIcon />
+            </EmptyMedia>
+            <EmptyTitle>{agentName} no longer has this session</EmptyTitle>
+            <EmptyDescription>
+              The conversation lives in the agent on {workerName}, and the agent can no longer open
+              it, so it cannot continue here.
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button size="sm" onClick={() => void navigate({ to: "/chat" })}>
+              Start a new session
+            </Button>
+          </EmptyContent>
+        </Empty>
       ) : !hasOpened && !hasContent ? (
         <div className="min-h-0 flex-1" />
       ) : (
@@ -280,11 +307,15 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
             Earlier history is not available from this agent
           </p>
         ) : null}
-        {ended ? (
+        {ended && hasContent ? (
           <Alert>
-            <AlertTitle>This Session has ended</AlertTitle>
+            <ArchiveXIcon />
+            <AlertTitle>{agentName} can no longer continue this session</AlertTitle>
             <AlertDescription>
-              This agent cannot reopen the Session. Its content is read-only.
+              <p>Start a new session to keep working.</p>
+              <Button size="sm" className="mt-2" onClick={() => void navigate({ to: "/chat" })}>
+                Start a new session
+              </Button>
             </AlertDescription>
           </Alert>
         ) : null}
@@ -338,7 +369,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
               )}
             </div>
           ) : null}
-          <div hidden={currentInteraction !== undefined}>
+          <div hidden={currentInteraction !== undefined || ended}>
             <Composer
               layoutId={`composer-${tabId}`}
               workspace={chat?.workspace}

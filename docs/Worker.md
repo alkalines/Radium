@@ -86,7 +86,7 @@ bounded output chunks, separate control/output subscriptions and retention limit
 database load. Machine JWT authentication and identity-management wrappers are now
 implemented; file and foreground Bash request/result paths are implemented locally.
 The ACP host and relay are implemented: the Worker launches the agents defined in
-Chatroom → Agents (after checking each command on its `PATH`), speaks stdio ACP through `@agentclientprotocol/sdk`, and relays
+Settings → ACP (after checking each command on its `PATH`), speaks stdio ACP through `@agentclientprotocol/sdk`, and relays
 commands, permission/elicitation decisions, lifecycle and viewer-gated frames
 through Convex (`packages/worker/src/acp/`, `packages/backend/src/acp/`).
 

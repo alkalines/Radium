@@ -236,11 +236,41 @@ limit in [Notifications](../Notifications.md) that ACP agents do not notify.
 
 ## Agent Picker
 
-The Run target picker's Agent list (`run-target-picker.tsx`) replaces "ACP
-agents are planned." with the Worker's `worker_agents` rows: `ready` agents are
-selectable with their registry icon, `needs_auth` agents show Sign in, and the
-built-in agent stays first. An agent's [Gateway profile](Agents.md#gateway-mode)
-is its own entry (`Codex · Gateway`). `agentsOnWorker` and `sessionAgentById` in
-`components/session/agents.ts` read those rows; the fallback to the built-in
-agent when a Worker change removes the chosen agent stays as implemented. After
-the first message, the Session context reads `Worker (Agent)` and is fixed.
+The owner-only Run target picker always lists Radium first and every enabled
+workspace ACP definition after it, with the shared dark-theme-safe agent icon.
+The stable selection is `acp:<agentId>`, independent of the selected Worker;
+availability comes from that Worker's `ListAgents` report and current presence.
+The Worker list always includes every active identity, never revoked ones.
+
+| Worker | Agent report | Agent row | Worker row with ACP selected |
+| --- | --- | --- | --- |
+| None selected | Any | Choose a Worker | — |
+| Offline (heartbeat older than 60 s or absent) | Any | Worker offline | Offline |
+| Online | Ready | No status label | Online |
+| Online | Needs authentication | Inline Sign in | Unavailable |
+| Online | Failed, unavailable, or missing | Unavailable | Unavailable |
+
+Choosing an agent without a Worker selects the first online Worker reporting
+that agent ready, if one exists. Changing Workers never changes the chosen
+agent: invalid combinations stay selected, show Unavailable in the summary and
+Session context, and disable Send with a short Composer-area notice.
+Disabled or deleted definitions restore to Radium once definitions finish
+loading. Old persisted `acp:<workerId>:<agentId>` selections migrate to
+`acp:<agentId>` and recover their original Worker, preserving Worker tools and
+the rest of the draft; malformed ids fall back to Radium.
+
+An online Worker's list-capable agent adds a fourth **Session** row, initially
+**New**. Its searchable drill-down lists New session and existing sessions with
+their title and relative updated time, and offers Load more for paged results.
+Opening this view explicitly issues `ListAgentSessions` and follows `GetCommand`;
+leaving it drops the result subscription. Selecting an existing session makes it the
+row's value (its title); the draft's first prompt then continues that session:
+`CreateSession({ sessionId, ... })` binds the new chat without `session/new`, draft
+config and title generation are skipped, and the Worker loads the session before
+sending the prompt. Changing the agent, Worker or Project resets the row to **New**.
+Both listing and creation derive the directory on the backend: the selected
+Project's folder for this Worker, otherwise its reported temporary directory.
+There is no directory input or separate import dialog.
+
+After the first message, the Session corner keeps `Worker (Agent)` fixed and
+uses the shared ACP agent icon.

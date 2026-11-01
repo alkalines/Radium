@@ -2,7 +2,7 @@ import { convexQuery } from "@convex-dev/react-query";
 import { createFileRoute, notFound } from "@tanstack/react-router";
 
 import { chatroomSections } from "@/components/chatroom/chatroom-settings";
-import { AgentsPanel } from "@/components/chatroom/agents-panel";
+import { AcpPanel } from "@/components/chatroom/acp-panel";
 import { PreferencesPanel } from "@/components/chatroom/preferences-panel";
 import { ToolsPanel } from "@/components/chatroom/tools-panel";
 import { WorkspaceSettingsGate } from "@/components/settings/workspace-settings-gate";
@@ -57,13 +57,13 @@ function ChatroomPage() {
           <PreferencesPanel />
         </WorkspaceSettingsGate>
       );
-    case "agents":
+    case "acp":
       return (
         <WorkspaceSettingsGate
           title={chatroomSection.label}
           ownerOnlyDetail={chatroomOwnerOnlyDetail}
         >
-          <AgentsPanel />
+          <AcpPanel />
         </WorkspaceSettingsGate>
       );
     case "tools":

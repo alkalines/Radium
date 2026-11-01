@@ -47,7 +47,16 @@ import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { authClient } from "@/lib/auth-client";
 import { variants } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { builtInAgent, sessionAgentById, type SessionAgent, type SessionProject } from "./agents";
+import {
+  agentAvailability,
+  builtInAgent,
+  workspaceAgents,
+  sessionAgentById,
+  type AcpExistingSession,
+  type SessionAgent,
+  type SessionProject,
+} from "./agents";
+import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { ApprovalPrompt } from "./approval-gate";
 import { QUESTION_DISMISSED_MESSAGE, QuestionPrompt } from "./question-prompt";
 import { RunInterruptionCard } from "./run-interruption";
@@ -69,6 +78,7 @@ import { workerToolsFor } from "@/components/chatroom/tool-catalog";
 import { ToolsDialog } from "./tools-dialog";
 import { AcpSessionScreen } from "./acp/acp-session-screen";
 import { AcpConfigControls, applyAcpDraft } from "./acp/config-controls";
+import { acpActionError } from "./acp/use-acp-session";
 
 /**
  * A user turn the Session reverted to: the messages as they were before (restorable until the next
@@ -308,21 +318,42 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
     ),
   );
-  const agent = chatId ? builtInAgent : sessionAgentById(agentId, agentRows);
+  const { data: agentDefinitions } = useQuery(
+    convexQuery(
+      api.acp.ListAgentDefinitions,
+      isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
+  );
+  const agents = workspaceAgents(agentDefinitions, draftWorker?.workerId, agentRows);
+  const agent = chatId ? builtInAgent : sessionAgentById(agentId, agents);
   const isAcpDraft = chatId === undefined && agent.protocol === "acp";
+  const workerNow = useWorkerPresenceClock();
+  const acpWorker = workers?.find(
+    (candidate) => candidate.workerId === draftWorker?.workerId && candidate.status === "active",
+  );
+  const acpAvailability = agentAvailability(agent, acpWorker, workerNow, agentRows);
+  const acpUnavailableReason =
+    !isAcpDraft || acpAvailability === "ready"
+      ? undefined
+      : acpAvailability === "no_worker"
+        ? "Choose a Worker for this agent."
+        : acpAvailability === "offline"
+          ? "This Worker is offline. Choose an online Worker or wait for it to reconnect."
+          : acpAvailability === "needs_auth"
+            ? "Sign in to this agent from the Agent picker before sending."
+            : "This agent is unavailable on the selected Worker. Choose another Worker or agent.";
   const setAgent = useCallback((next: SessionAgent) => {
     setAgentId(next.id);
     setAcpDraft({ config: [] });
   }, []);
   useEffect(() => {
-    if (!isTabStateRestored || !agentRows || chatId) return;
-    if (sessionAgentById(agentId, agentRows).id !== agentId) setAgentId(builtInAgent.id);
-  }, [agentId, agentRows, chatId, isTabStateRestored]);
+    if (!isTabStateRestored || !agentDefinitions || chatId) return;
+    const restored = sessionAgentById(agentId, agents);
+    if (restored.id !== agentId) setAgentId(restored.id);
+  }, [agentId, agentDefinitions, agents, chatId, isTabStateRestored]);
   useEffect(() => {
-    if (chatId || agent.protocol !== "acp" || draftWorker?.workerId === agent.workerId) return;
-    setAgentId(builtInAgent.id);
     setAcpDraft({ config: [] });
-  }, [agent, chatId, draftWorker?.workerId]);
+  }, [draftWorker?.workerId]);
 
   // Restore this Tab's snapshot once, after mount, so server and client render the same markup.
   // A `/chat?project=` request only seeds a draft that had no saved choices.
@@ -805,6 +836,16 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     ],
   );
 
+  // The Session row's choice belongs to one agent, Worker and Project (the listing's directory);
+  // changing any of them returns the draft to a new agent session.
+  const existingSessionKey = `${agent.id}:${draftWorker?.workerId ?? ""}:${selectedProject?._id ?? ""}`;
+  const [existingSessionChoice, setExistingSessionChoice] = useState<{
+    key: string;
+    session: AcpExistingSession;
+  } | null>(null);
+  const acpExistingSession =
+    existingSessionChoice?.key === existingSessionKey ? existingSessionChoice.session : null;
+
   async function submitDraft({ text, files }: ComposerMessage) {
     if (agent.protocol === "acp") {
       if (!text.trim()) return;
@@ -812,9 +853,13 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         !settingsWorkspaceId ||
         !isOwner ||
         choicesAreStale ||
-        draftWorker?.workerId !== agent.workerId
+        !draftWorker?.workerId ||
+        acpAvailability !== "ready"
       ) {
-        setCreateError("Select the agent's Worker before starting this session.");
+        setCreateError(
+          acpUnavailableReason ??
+            "Choose an available Worker and agent before starting this session.",
+        );
         throw new Error("ACP session is not ready.");
       }
       setCreateError(null);
@@ -826,22 +871,26 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           workspace: settingsWorkspaceId,
           scope: draftScope,
           project: selectedProject?._id,
-          worker: agent.workerId,
+          worker: draftWorker.workerId,
           agentId: agent.agentId,
+          ...(acpExistingSession ? { sessionId: acpExistingSession.sessionId } : {}),
         });
-        for (const option of acpDraft.config) await setAcpConfig({ chat: created, ...option });
-        if (acpDraft.modeId) await setAcpMode({ chat: created, modeId: acpDraft.modeId });
+        // Draft config applies only to a session the Worker creates; a continued session keeps
+        // the agent's own settings and title.
+        if (!acpExistingSession) {
+          for (const option of acpDraft.config) await setAcpConfig({ chat: created, ...option });
+          if (acpDraft.modeId) await setAcpMode({ chat: created, modeId: acpDraft.modeId });
+        }
         await promptAcp({
           chat: created,
           prompt: [{ type: "text", text }],
           clientId: crypto.randomUUID(),
         });
-        void generateAcpTitle({ chat: created, text }).catch(() => {});
+        if (!acpExistingSession) void generateAcpTitle({ chat: created, text }).catch(() => {});
         setCreatedChatId(created);
         onAcpCreated(created, text);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Could not start the agent session.";
+        const message = acpActionError(error) ?? "Could not start the agent session.";
         if (created) {
           // A created binding survives failed admission/config: open it, preserving the text to retry.
           patchTabState(tabId, { text });
@@ -1103,12 +1152,12 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     chatId === undefined
       ? isAcpDraft
         ? Boolean(
-            settingsWorkspaceId &&
-            isOwner &&
-            agent.status === "ready" &&
-            draftWorker?.workerId === agent.workerId,
+            settingsWorkspaceId && isOwner && acpAvailability === "ready" && draftWorker?.workerId,
           ) && !isCreating
-        : Boolean(settingsWorkspaceId && selectedModelData) && !isModelLoading && !isCreating
+        : Boolean(settingsWorkspaceId && selectedModelData) &&
+          !isModelLoading &&
+          !isCreating &&
+          (agentId === builtInAgent.id || agentDefinitions !== undefined)
       : chat !== undefined &&
         seededChatId === chatId &&
         status === "ready" &&
@@ -1237,6 +1286,12 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           <Alert variant="destructive">
             <AlertTitle>Unable to start chat</AlertTitle>
             <AlertDescription>{createError}</AlertDescription>
+          </Alert>
+        ) : null}
+        {acpUnavailableReason && !createError ? (
+          <Alert>
+            <AlertTitle>Agent unavailable</AlertTitle>
+            <AlertDescription>{acpUnavailableReason}</AlertDescription>
           </Alert>
         ) : null}
         {modelsError && !isAcpDraft ? (
@@ -1407,14 +1462,16 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                 isRunning={isRunning}
                 onSubmit={chatId === undefined ? submitDraft : submitTurn}
                 onStop={() => void stop()}
-                commands={agent.protocol === "acp" ? agent.defaults?.commands : undefined}
+                commands={
+                  agent.protocol === "acp" ? agent.installation?.defaults?.commands : undefined
+                }
                 attachmentsDisabledReason={
                   isAcpDraft ? "Attachments are not supported by the ACP transport yet." : undefined
                 }
                 modelControl={
                   isAcpDraft ? (
                     <AcpConfigControls
-                      config={applyAcpDraft(agent.defaults?.config, acpDraft)}
+                      config={applyAcpDraft(agent.installation?.defaults?.config, acpDraft)}
                       disabled={isCreating}
                       isOpen={isModelPickerOpen}
                       onOpenChange={setIsModelPickerOpen}
@@ -1497,8 +1554,10 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
             onProjectChange={selectDraftProject}
             onSelectionChange={(selection) => void changeWorker(selection)}
             onAgentChange={setAgent}
-            scope={draftScope}
-            onCreated={(chatId) => onAcpCreated(chatId)}
+            existingSession={acpExistingSession}
+            onExistingSessionChange={(session) =>
+              setExistingSessionChoice(session ? { key: existingSessionKey, session } : null)
+            }
           />
         ) : null}
       </div>

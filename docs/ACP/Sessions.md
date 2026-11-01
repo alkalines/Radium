@@ -213,7 +213,7 @@ there when the agent advertises `mcpCapabilities.http`.
 - **Overlap:** ACP does not report which MCP servers an agent already has in its
   own config, so Radium cannot detect duplicates; two copies of a server mean
   duplicated tools and possible name clashes in the agent. The Session menu is
-  the fix, and Chatroom → Agents can keep a per-agent default exclusion list
+  the fix, and Settings → ACP can keep a per-agent default exclusion list
   ("this agent already has GitHub").
 - **Applying changes:** servers are fixed at session setup. A change mid-Session
   applies the next time the Worker sets the session up (load/resume after
@@ -227,18 +227,22 @@ there when the agent advertises `mcpCapabilities.http`.
 ## Import
 
 Sessions created outside Radium (Zed, the agent's own CLI) are not listed
-automatically. New session → Run target → **Open existing** runs `session/list`
-on demand:
+automatically. In a New session, the Run target picker's **Session** row (shown for
+an ACP agent whose Worker is online and advertises `list`) drills into the agent's
+existing sessions on demand:
 
-1. The owner picks Worker, agent and directory; the browser calls
-   `acp.ListAgentSessions` (a `list` command with `cwd` set to that directory).
+1. The owner picks Worker and agent; opening the Session row calls
+   `acp.ListAgentSessions` with the draft's Project, and the backend derives the
+   directory exactly like `acp.CreateSession` (a `list` command with that `cwd`).
 2. The Worker calls `session/list` and returns one page (`sessionId`, `title`,
    `updatedAt`) in the command's transient `result`, read through
    `acp.GetCommand` by the owner only and pruned five minutes later. The opaque
    `nextCursor` stays inside that result and browser memory only; ACP forbids
    persisting cursors.
-3. Choosing one calls `acp.CreateSession` with that `sessionId` (no
-   `session/new`); the reopen flow above loads it.
+3. Choosing one makes it the draft's Session; the first prompt calls `acp.CreateSession`
+   with that `sessionId` (no `session/new`) and then `acp.Prompt`, and the reopen flow
+   above loads the session before the prompt runs. A session already bound to another
+   Radium chat is rejected with "This agent session is already open in another Session".
 
 Requires `sessionCapabilities.list`. Without it the action is hidden.
 

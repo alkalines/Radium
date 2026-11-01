@@ -3,7 +3,8 @@
 Status: **workspace agent definitions, registry selection, Worker discovery and Chatroom authentication implemented.** Binary archive installation, terminal login and Gateway mode remain open. Overview: [ACP Agents](../ACP.md).
 
 An ACP agent is a program on the Worker's machine. The workspace owner configures
-it in **Chatroom → Agents**, not the Workers tab or a local Worker file. Convex
+it in **Settings → ACP**, in the Workspace group immediately after Workers, not
+in a local Worker file. Convex
 stores workspace-wide definitions in `acp_agents`; every enrolled Worker
 subscribes to enabled definitions through machine-authorized
 `acp.agentDefinitions`. A chat request selects an agent ID and Session directory,
@@ -13,28 +14,40 @@ never an executable, arguments or environment.
 
 | Source   | Where it comes from                                                                                                                          | Who adds it                          |
 | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| Registry | [ACP Registry](https://agentclientprotocol.com/get-started/registry), `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` | Workspace owner in Chatroom → Agents |
-| Custom   | Any ACP program installed on the Worker, defined by a command and arguments                                                                  | Workspace owner in Chatroom → Agents |
+| Registry | [ACP Registry](https://agentclientprotocol.com/get-started/registry), `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` | Workspace owner in Settings → ACP |
+| Custom   | Any ACP program installed on the Worker, defined by a command and arguments                                                                  | Workspace owner in Settings → ACP |
 
-The Agents tab lists each definition's name, source, command, Enabled switch and
-Edit/Delete actions. Add agent offers a searchable **From registry** list or
-**Custom** form. The command-line field supports quotes and backslashes and
-previews the parsed argument vector. Agent IDs are editable only when creating:
-Sessions retain that ID permanently. Environment rows are stored in Convex and
-visible to the owner; they are **not secret storage**. Agents keep their own login
-and credentials on each Worker's machine.
+The ACP page uses the same workspace header and Group lists as other Settings
+pages, with an **About ACP** link to the protocol site. Its **Agents** group lists
+configured definitions: icon, name and muted version, a truncated command with
+the full command in a tooltip, per-Worker availability pills, and an Enabled
+switch. One actions menu holds Edit, per-Worker Sign in/Sign out where supported,
+and Delete with confirmation.
+
+The **Add agents** group shows the searchable registry inline, initially the first
+eight matches with **Show all** for the remainder. Each row includes the agent's
+icon, name, version, description and launch type. **Add** saves an enabled
+`npx`/`uvx` definition directly; **Set up** opens a prefilled form for binary
+entries. An existing agent ID shows **Added** instead. **Custom agent** and Edit
+open a focused form, without a source toggle. Registry icons adapt to the theme.
+
+The command-line field supports quotes and backslashes and previews the parsed
+argument vector. Agent IDs appear only when creating: Sessions retain that ID
+permanently. Environment rows are stored in Convex and visible to the owner;
+they are **not secret storage**. Agents keep their own login and credentials on
+each Worker's machine.
 
 Definitions contain `agentId`, `name`, `command`, `args`, `env: [{name, value}]`,
 `enabled`, `source: "registry" | "custom"` and optional `icon`/`version`.
 Convex and the Worker share the same launch validation and forbidden environment
 policy. At most 64 definitions can be configured per workspace.
 
-The registry is fetched on demand by an owner-authorized Convex action (bounded
-to 1 MiB, 10 seconds and 200 valid entries). `npx` entries fill
-`npx -y <package> ...`; `uvx` entries fill `uvx <package> ...`, using the registry's
-versioned package names. Binary entries fill the command basename and arguments
-with an instruction to install the binary on each Worker's `PATH`. Radium does
-not download, extract or automatically upgrade binary archives.
+The registry is fetched when the ACP page opens by an owner-authorized Convex
+action (bounded to 1 MiB, 10 seconds and 200 valid entries). `npx` entries save
+`npx -y <package> ...`; `uvx` entries save `uvx <package> ...`, using the registry's
+versioned package names. Binary entries prefill the command basename and
+arguments with an instruction to install the binary on each Worker's `PATH`.
+Radium does not download, extract or automatically upgrade binary archives.
 
 ## Discovery And Availability
 
@@ -54,11 +67,15 @@ There is no discovery polling loop. The configured name, source and icon are
 used for display; the version comes from `agentInfo`, falling back to the
 definition's version and then `unknown`. Native is the only implemented profile.
 
-Each definition shows one line per active Worker: **Available** with version,
-**Needs sign in** with agent authentication, **Not on PATH**, **Failed** with
-error, or **Waiting for Worker** when offline/not yet reported. Disabled
-definitions show **Disabled**. Sign out appears when the agent supports it.
-The Workers tab links to Agents rather than duplicating this management surface.
+Each definition shows a compact pill for every active Worker. Its tooltip reports
+**Available** (with version), **Needs sign in**, **Not on PATH**, **Failed** (with
+the reported error), **Offline** when Worker presence is stale, or **Waiting**
+when an online Worker has not reported the agent yet. Offline takes precedence
+over stale agent reports. Disabled agents wait for discovery after being enabled.
+Sign in and supported Sign out actions live in the agent's menu and name the
+online Worker they affect. Terminal-only login instructs the owner to use the
+agent's CLI on that machine. The Workers page links to ACP settings rather than
+duplicating this management surface.
 
 `worker_agents` is one availability row per (Worker, agentId), written only by
 that machine. It contains identity (`name`, `source`, `icon`, `version`), status,

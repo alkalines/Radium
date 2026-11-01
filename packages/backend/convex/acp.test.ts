@@ -634,6 +634,102 @@ test("draft config validates advertised choices; live commands and results remai
   await expect(f.member.query(api.acp.ListAgents, { workspace: f.workspace })).rejects.toThrow();
 });
 
+test("session listing derives the same Project or temporary directory as session creation", async () => {
+  const f = await fixture();
+  const worker = f.first.identity.workerId;
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/agent" });
+  const project = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "Code",
+    folders: [{ workerId: worker, directory: "/projects/code" }],
+  });
+  const noFolder = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "No folder",
+  });
+  const targets = [
+    { project: undefined, cwd: undefined, expected: "/tmp/agent" },
+    { project, cwd: undefined, expected: "/projects/code" },
+    { project: noFolder, cwd: undefined, expected: "/tmp/agent" },
+    { project, cwd: "/explicit", expected: "/explicit" },
+  ];
+  for (const [index, target] of targets.entries()) {
+    const binding = {
+      workspace: f.workspace,
+      worker,
+      agentId: agent.agentId,
+      project: target.project,
+      cwd: target.cwd,
+    };
+    const command = await f.owner.mutation(api.acp.ListAgentSessions, {
+      ...binding,
+      clientId: `directory-${index}`,
+      cursor: index === 1 ? "next-page" : undefined,
+    });
+    expect(await f.t.run((ctx) => ctx.db.get(command))).toMatchObject({
+      payload: {
+        kind: "list",
+        agentId: agent.agentId,
+        cwd: target.expected,
+        ...(index === 1 ? { cursor: "next-page" } : {}),
+      },
+    });
+    const chat = await f.owner.mutation(api.acp.CreateSession, binding);
+    expect(await f.t.run((ctx) => ctx.db.get(chat))).toMatchObject({
+      agent: { cwd: target.expected },
+    });
+  }
+  await expect(
+    f.owner.mutation(api.acp.ListAgentSessions, {
+      workspace: f.workspace,
+      worker: f.second.identity.workerId,
+      agentId: agent.agentId,
+      clientId: "no-directory",
+    }),
+  ).rejects.toThrow("ACP_INVALID_CWD");
+  await expect(
+    f.owner.mutation(api.acp.ListAgentSessions, {
+      workspace: f.workspace,
+      worker,
+      agentId: agent.agentId,
+      cwd: "relative",
+      clientId: "invalid-directory",
+    }),
+  ).rejects.toThrow("ACP_INVALID_CWD");
+  const foreignProject = await f.t.run(async (ctx) => {
+    const workspace = await ctx.db.insert("workspaces", {
+      ownerType: "user",
+      ownerId: "owner",
+      name: "Other",
+    });
+    return ctx.db.insert("projects", {
+      workspace,
+      userId: "owner",
+      name: "Foreign",
+      folders: [{ workerId: worker, directory: "/secret" }],
+    });
+  });
+  await expect(
+    f.owner.mutation(api.acp.ListAgentSessions, {
+      workspace: f.workspace,
+      worker,
+      agentId: agent.agentId,
+      project: foreignProject,
+      cwd: "/explicit",
+      clientId: "foreign-project",
+    }),
+  ).rejects.toThrow();
+  await expect(
+    f.member.mutation(api.acp.ListAgentSessions, {
+      workspace: f.workspace,
+      worker,
+      agentId: agent.agentId,
+      project,
+      clientId: "member-list",
+    }),
+  ).rejects.toThrow();
+});
+
 test("contract answers reject wrong kinds, undeclared or duplicate fields, and form bounds", () => {
   expect(acpAnswerError(permission, { kind: "permission", optionId: "allow" })).toBeNull();
   expect(acpAnswerError(permission, { kind: "elicitation", action: "cancel" })).not.toBeNull();

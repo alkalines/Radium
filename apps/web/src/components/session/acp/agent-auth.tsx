@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useConvex, useMutation } from "convex/react";
 import { toast } from "sonner";
+import { LogInIcon, LogOutIcon } from "lucide-react";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { AcpAuthMethod } from "backend/src/acp/contract";
 import { Button } from "@/components/ui/button";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 
 /** Agent authentication stays on the Worker; only the issuing owner follows the command. */
 export function AcpAgentAuth({
@@ -15,6 +17,7 @@ export function AcpAgentAuth({
   name,
   authMethods,
   logout = false,
+  menuLabel,
 }: {
   workspace: Id<"workspaces">;
   worker: string;
@@ -22,6 +25,8 @@ export function AcpAgentAuth({
   name: string;
   authMethods: AcpAuthMethod[];
   logout?: boolean;
+  /** Settings renders the same authentication flow inside the agent's actions menu. */
+  menuLabel?: string;
 }) {
   const convex = useConvex();
   const authenticate = useMutation(api.acp.Authenticate);
@@ -71,13 +76,58 @@ export function AcpAgentAuth({
     }
   }
 
+  const methods = authMethods.filter((method) => method.type === "agent");
+  if (menuLabel) {
+    if (logout) {
+      return (
+        <DropdownMenuItem
+          disabled={busy}
+          onSelect={(event) => {
+            event.preventDefault();
+            void start();
+          }}
+        >
+          <LogOutIcon />
+          {busy ? "Signing out…" : menuLabel}
+        </DropdownMenuItem>
+      );
+    }
+    return (
+      <>
+        {methods.map((method) => (
+          <DropdownMenuItem
+            key={method.id}
+            disabled={busy}
+            title={method.description}
+            onSelect={(event) => {
+              event.preventDefault();
+              void start(method.id);
+            }}
+          >
+            <LogInIcon />
+            {busy
+              ? "Signing in…"
+              : methods.length === 1
+                ? menuLabel
+                : `${menuLabel} · ${method.name}`}
+          </DropdownMenuItem>
+        ))}
+        {authMethods.some((method) => method.type === "terminal") || methods.length === 0 ? (
+          <DropdownMenuItem disabled title="Use the agent's own CLI on the Worker machine.">
+            <LogInIcon />
+            {menuLabel} · use CLI
+          </DropdownMenuItem>
+        ) : null}
+      </>
+    );
+  }
+
   if (logout)
     return (
       <Button size="xs" variant="outline" disabled={busy} onClick={() => void start()}>
         {busy ? "Signing out…" : "Sign out"}
       </Button>
     );
-  const methods = authMethods.filter((method) => method.type === "agent");
   return (
     <div className="flex flex-col items-start gap-1.5">
       {methods.map((method) => (

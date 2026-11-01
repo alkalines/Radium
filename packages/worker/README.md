@@ -110,7 +110,7 @@ keys, and response bodies are not logged.
 
 ## ACP agents
 
-Configure ACP agents in **Chatroom → Agents** as the workspace owner. Definitions
+Configure ACP agents in **Settings → ACP** (`/chatroom/acp`) as the workspace owner. Definitions
 are stored in Convex and delivered to every enrolled Worker in that workspace;
 there is no local agents file or separate CLI agent configuration. Chat commands
 select only a configured agent ID and directory, never an executable, arguments
@@ -120,7 +120,7 @@ Each Worker validates enabled definitions, resolves the command on its own
 `PATH` (or checks that an explicit path is an executable file), then probes
 present commands with ACP `initialize` and stops the probe process. Missing
 commands are reported as **Not on PATH** without spawning. Failed validation or
-initialization is shown in the Agents tab, along with version, capabilities and
+initialization is shown on the ACP settings page, along with version, capabilities and
 authentication actions. Workers re-probe when definitions change and on
 reconnect, not on a polling loop. Registry choices fill pinned `npx`/`uvx`
 launch commands or the binary command to install on each Worker's `PATH`;
@@ -133,7 +133,7 @@ on its original process; the superseded process stops once idle. Removing or
 disabling a definition leaves existing Sessions bound to that ID, but new
 prompts fail with `Agent removed`.
 
-To add the real scripted test agent, choose **Custom** in the Agents tab:
+To add the real scripted test agent, choose **Custom agent** on the ACP settings page:
 
 - Name: `Scripted ACP agent`; Agent ID: `scripted`
 - Command line:
