@@ -179,6 +179,9 @@ require prepaid credits and do not debit a Radium balance.
 
 ## Planned And Limited
 
+- ACP agents as a Session's Agent are proposed in [ACP agents](ACP.md): the
+  harness runs on a Worker, owns the conversation, and Radium stores only
+  metadata and relays content transiently.
 - Worker identity, enrollment/recovery, machine authentication, task coordination,
   owner-dispatched file tasks, composer configuration, model file tools, signed
   write approvals, and durable stage receipts are implemented locally. Deployed

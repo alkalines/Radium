@@ -10,6 +10,7 @@ start.
 - [Radium Chatroom](Radium_Chatroom.md)
 - [Notifications](Notifications.md) — session and usage-limit notifications: toasts and sound in open tabs, system notifications, Web Push, preferences, and the planned phone channel
 - [Interface design](Interface_Design.md) — web UI spec: layout model, visual tokens, Run state, and Motion rules
+- [ACP agents](ACP.md) — proposed: external harnesses (Claude Agent, Codex, Gemini CLI, …) over the Agent Client Protocol on a Worker, with [agents](ACP/Agents.md), [sessions](ACP/Sessions.md), [transport](ACP/Transport.md), and [Chatroom mapping](ACP/Interactions.md)
 - [Worker](Worker.md) — machine authentication, identity persistence, task status coordination, and proposed execution transport
 - [Worker machine authentication](Worker/Machine_Authentication.md) — setup codes, key proofs, JWT refresh, owner management and configuration
 - [Worker identity component](Worker/Component.md) — workspace package, internal enrollment/recovery/revocation API, and integration boundary

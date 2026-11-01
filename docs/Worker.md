@@ -87,6 +87,10 @@ database load. Machine JWT authentication and identity-management wrappers are n
 implemented; file and foreground Bash request/result paths are implemented locally. ACP,
 streaming/batched output and approval transport remain planned.
 
+The [ACP agents design](ACP.md) details the Worker as ACP client: agent
+install and launch, viewer-gated frames, commands and durable permission
+decisions through Convex, with conversation content kept by the agent.
+
 The [authentication research](Worker/Authentication.md) supplies the enrollment
 and per-worker proof-of-possession foundation. Its transport recommendation and
 the [WSS/Tailscale connectivity research](Worker/Connectivity.md) are historical,

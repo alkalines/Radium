@@ -197,6 +197,10 @@ durable completion. Keep streaming chunks for a defined recovery/debugging windo
 then remove them in bounded background batches. Exact retention durations and
 cleanup scheduling are open; no retention implementation is implied.
 
+ACP Sessions are the exception: their conversation stays in the ACP agent, and
+relayed frames, prompts and interaction payloads are deleted after delivery
+instead of being saved as final messages. See [ACP transport](../ACP/Transport.md).
+
 Large completed artifacts or intentionally retained transcripts can use Convex
 file storage, with authorized metadata and retrieval. Verify the file-serving
 access contract before choosing URL delivery; a storage reference alone is not
