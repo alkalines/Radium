@@ -8,6 +8,7 @@ start.
 
 - [Radium Gateway](Radium_Gateway.md)
 - [Radium Chatroom](Radium_Chatroom.md)
+- [Live sessions across Tabs](Radium_Chatroom/Live_Sessions.md) — proposed: live in-flight replies, Stop and reload resume in every Tab and device through short-lived Convex frames instead of Redis; shared with ACP
 - [Notifications](Notifications.md) — session and usage-limit notifications: toasts and sound in open tabs, system notifications, Web Push, preferences, and the planned phone channel
 - [Interface design](Interface_Design.md) — web UI spec: layout model, visual tokens, Run state, and Motion rules
 - [ACP agents](ACP.md) — proposed: external harnesses (Claude Agent, Codex, Gemini CLI, …) over the Agent Client Protocol on a Worker, with [agents](ACP/Agents.md), [sessions](ACP/Sessions.md), [transport](ACP/Transport.md), and [Chatroom mapping](ACP/Interactions.md)

@@ -179,6 +179,10 @@ require prepaid credits and do not debit a Radium balance.
 
 ## Planned And Limited
 
+- Live in-flight replies in every Tab and device, Stop from any Tab, run
+  admission against overlapping turns, and reload resume are proposed in
+  [Live sessions](Radium_Chatroom/Live_Sessions.md). Today only the sending
+  Tab sees a reply stream; others see it when the turn is saved.
 - ACP agents as a Session's Agent are proposed in [ACP agents](ACP.md): the
   harness runs on a Worker, owns the conversation, and Radium stores only
   metadata and relays content transiently.
