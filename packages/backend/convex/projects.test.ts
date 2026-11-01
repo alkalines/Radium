@@ -303,32 +303,33 @@ test("ListChats with a Project keeps personal chats private to their creator", a
     lastInteractionAt: 4,
   });
 
-  const memberChats = await member.query(api.aisdk.ListChats, {
-    workspace: ids.workspace,
-    project,
-  });
+  const list = async (user: typeof owner, project?: Id<"projects"> | null) =>
+    (
+      await user.query(api.aisdk.ListChats, {
+        workspace: ids.workspace,
+        project,
+        paginationOpts: { cursor: null, numItems: 50 },
+      })
+    ).page;
+
+  const memberChats = await list(member, project);
   expect(memberChats.map((chat) => chat.id)).toEqual([memberPersonal, ownerShared]);
   expect(memberChats[0]).toMatchObject({ project, canManage: true });
 
-  const ownerChats = await owner.query(api.aisdk.ListChats, { workspace: ids.workspace, project });
+  const ownerChats = await list(owner, project);
   expect(ownerChats.map((chat) => chat.id)).toEqual([ownerShared]);
 
-  const otherChats = await otherMember.query(api.aisdk.ListChats, {
-    workspace: ids.workspace,
-    project,
-  });
+  const otherChats = await list(otherMember, project);
   expect(otherChats.map((chat) => chat.id)).toEqual([ownerShared, otherPersonal]);
 
-  const allMemberChats = await member.query(api.aisdk.ListChats, { workspace: ids.workspace });
+  const allMemberChats = await list(member);
   expect(allMemberChats.map((chat) => chat.id)).toEqual([unfiled, memberPersonal, ownerShared]);
 
   const foreignProject = await owner.mutation(api.projects.create, {
     workspace: ids.otherWorkspace,
     name: "Elsewhere",
   });
-  await expect(
-    owner.query(api.aisdk.ListChats, { workspace: ids.workspace, project: foreignProject }),
-  ).rejects.toThrow("Project not found.");
+  await expect(list(owner, foreignProject)).rejects.toThrow("Project not found.");
 });
 
 test("ListChats with project null lists only unfiled chats under the same privacy filter", async () => {
@@ -373,17 +374,19 @@ test("ListChats with project null lists only unfiled chats under the same privac
     lastInteractionAt: 7,
   });
 
-  const memberChats = await member.query(api.aisdk.ListChats, {
-    workspace: ids.workspace,
-    project: null,
-  });
+  const list = async (user: typeof owner) =>
+    (
+      await user.query(api.aisdk.ListChats, {
+        workspace: ids.workspace,
+        project: null,
+        paginationOpts: { cursor: null, numItems: 50 },
+      })
+    ).page;
+  const memberChats = await list(member);
   expect(memberChats.map((chat) => chat.id)).toEqual([memberUnfiled, ownerUnfiledShared]);
 
   // Workspace ownership never reveals a member's personal chat, filed or not.
-  const ownerChats = await owner.query(api.aisdk.ListChats, {
-    workspace: ids.workspace,
-    project: null,
-  });
+  const ownerChats = await list(owner);
   expect(ownerChats.map((chat) => chat.id)).toEqual([ownerUnfiledShared]);
   expect(ownerChats.map((chat) => chat.id)).not.toContain(otherUnfiledPersonal);
 });
@@ -486,6 +489,10 @@ test("removing a Project detaches every chat in batches and never deletes chats"
   expect(chats.every((chat) => chat !== null && chat.project === undefined)).toBe(true);
   await expect(t.run((ctx) => ctx.db.get(project))).resolves.toBeNull();
   await expect(
-    owner.query(api.aisdk.ListChats, { workspace: ids.workspace, project }),
-  ).resolves.toEqual([]);
+    owner.query(api.aisdk.ListChats, {
+      workspace: ids.workspace,
+      project,
+      paginationOpts: { cursor: null, numItems: 50 },
+    }),
+  ).resolves.toMatchObject({ page: [], isDone: true });
 });

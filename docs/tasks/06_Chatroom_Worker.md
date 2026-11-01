@@ -431,7 +431,8 @@ every list-capable agent's sessions (`acp_agent_sessions`, `worker_agents.sessio
 with diff-only writes (`acp.knownAgentSessions` / `acp.syncAgentSessions`), after each
 definitions probe and on `sync_sessions` commands from `acp.SyncAgentSessions`
 (online Workers, 60 s debounce). Home → Agents browses it (`ListAgentSessionIndex`,
-`SearchAgentSessionIndex`) and `acp.OpenAgentSession` binds a chat on demand. Agents
+`SearchAgentSessionIndex`), every Home list pages its unopened rows among its Sessions
+(`ListUnopenedAgentSessions`), and `acp.OpenAgentSession` binds a chat on demand. Agents
 with `delete` get draft defaults from a throwaway session after the probe. The ACP
 Model menu infers the lab per model (neutral tile when unknown), lists a model routed
 through several agent providers once with a Provider selector, and holds Provider,

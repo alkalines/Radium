@@ -262,12 +262,25 @@ sequenceDiagram
   link (and removes the row when the session was also deleted in the agent).
 - **Opening:** Home → Agents → an agent lists its rows (paged by `updatedAt`,
   searchable by title) with their Project (matched by the Project folder for that
-  Worker), Worker and an **Offline** marker. A row with a chat opens it;
+  Worker, ignoring a trailing separator on either side), Worker and an
+  **Offline** marker. A row with a chat opens it;
   otherwise `acp.OpenAgentSession({worker, agentId, sessionId})` creates the chat
   bound to that session (title and time from the index, Project from the
   directory), and the [reopen flow](#reopening-and-recovery) loads it on the
   first viewer or prompt. Opening works while the Worker is offline; the Session
   then shows its offline state until the Worker returns.
+- **In the session list:** for the owner, every Home list (All sessions, No
+  project, a Project) also holds the index rows without a chat, through
+  `acp.ListUnopenedAgentSessions({project?, paginationOpts})`: pages newest first
+  by `updatedAt`, enabled agents only. All sessions reads
+  `by_workspace_and_chat_and_updatedAt` with `chat` unset; No project filters
+  out rows in any Project folder; a Project merges
+  `by_worker_and_cwd_and_chat_and_updatedAt` over its folders, each in both
+  spellings (with and without the trailing separator). A page never scans more
+  than 400 rows. Opening one is the same `OpenAgentSession`; the new chat then
+  lists as a normal Session. Showing a list runs `SyncAgentSessions` for each
+  listed agent. Exact folder only: sessions in a subdirectory are not part of the
+  Project.
 - Requires `sessionCapabilities.list`; agents without it have no Home entry.
   Browsing and opening are owner-only, like every agent-level action.
 

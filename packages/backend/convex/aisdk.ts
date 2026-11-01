@@ -1,4 +1,6 @@
 import { ConvexError, v } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
+import { mergedStream, stream } from "convex-helpers/server/stream";
 import {
   internalMutation,
   internalQuery,
@@ -7,6 +9,7 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
+import schema from "./schema";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
 import { internal } from "./_generated/api";
@@ -34,8 +37,9 @@ import { findSession, requireChatActor } from "../src/acp/policy";
 import { queueChatDeletion } from "../src/acp/retention";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
-const LIST_LIMIT = 30;
-// Pinned chats sort first however old they are, so they are read apart from the recency window.
+// A Home page never scans more than this many chats, whatever its filters skip.
+const CHAT_PAGE_MAX_ROWS_READ = 400;
+// Pinned chats sort first however old they are, so they are read apart from the pages.
 const MAX_PINNED_CANDIDATES = 100;
 // Legacy balance-only chats have no workspace index; keep the wider pre-split window for them.
 const MAX_LEGACY_CANDIDATES = 100;
@@ -409,159 +413,192 @@ function chatBelongsToWorkspace(chat: Doc<"aisdk_chats">, workspace: Doc<"worksp
   );
 }
 
-/**
- * Bounded chat candidates visible to `userId`: their own chats plus workspace-scoped chats, and
- * their legacy balance-only chats. `project` filters to one Project's chats, `null` to chats
- * without a Project, and `undefined` applies no Project filter.
- *
- * Reads the `LIST_LIMIT` most recent chats of each stream plus every pinned chat: the list holds
- * P pinned chats and `LIST_LIMIT - P` unpinned ones, and a stream's recency window holds at most
- * P pinned chats, so it always contains enough unpinned ones. Keep this read set small: the
- * Home list stays subscribed, so any chat write re-runs it.
- */
-async function chatCandidates(
+/** A legacy balance-only chat visible to `userId`: personal and theirs. */
+function isLegacyChatOf(chat: Doc<"aisdk_chats">, userId: string) {
+  return (
+    chat.workspace === undefined &&
+    chat.userId === userId &&
+    (chat.scope === undefined || chat.scope === "personal")
+  );
+}
+
+/** Validates a Project filter: a deleted Project lists nothing, a foreign one is an error. */
+async function projectFilterExists(
+  ctx: QueryCtx,
+  workspace: Id<"workspaces">,
+  project: Id<"projects"> | null | undefined,
+) {
+  if (!project) return true;
+  const row = await ctx.db.get("projects", project);
+  if (!row) return false;
+  if (row.workspace !== workspace) throw new Error("Project not found.");
+  return true;
+}
+
+/** Home row for a chat, with its ACP agent's configured name. */
+async function chatRows(
   ctx: QueryCtx,
   workspace: Doc<"workspaces">,
   userId: string,
-  project: Id<"projects"> | null | undefined,
-): Promise<Doc<"aisdk_chats">[]> {
-  const projectKey = project ?? undefined;
+  chats: Doc<"aisdk_chats">[],
+) {
+  const agentIds = new Set(chats.flatMap((chat) => (chat.agent ? [chat.agent.agentId] : [])));
+  const agentNames = new Map(
+    await Promise.all(
+      [...agentIds].map(async (agentId) => {
+        const definition = await ctx.db
+          .query("acp_agents")
+          .withIndex("by_workspace_and_agentId", (q) =>
+            q.eq("workspace", workspace._id).eq("agentId", agentId),
+          )
+          .unique();
+        return [agentId, definition?.name ?? agentId] as const;
+      }),
+    ),
+  );
+  return chats.map((chat) => ({
+    id: chat._id,
+    title: chat.title,
+    emoji: chat.emoji,
+    pinnedAt: chat.pinnedAt,
+    lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
+    activeStream: chat.activeStream ?? false,
+    agent: chat.agent
+      ? {
+          agentId: chat.agent.agentId,
+          name: agentNames.get(chat.agent.agentId) ?? chat.agent.agentId,
+          worker: chat.agent.worker,
+        }
+      : null,
+    canManage: canManageChat(chat, workspace, userId),
+    project: chat.project,
+  }));
+}
 
-  // Read creator-owned and explicitly shared chats separately: workspace membership, including
-  // ownership, must never expose another user's personal chats, and filing a chat under a
-  // Project never shares it.
-  const ownChats =
-    project === undefined
-      ? ctx.db
-          .query("aisdk_chats")
-          .withIndex("by_workspace_and_userId_and_lastInteractionAt", (q) =>
+const projectFilterValidator = v.optional(v.union(v.id("projects"), v.null()));
+
+/**
+ * One page of the visible, unpinned chats in a workspace, most recent first (pinned ones come
+ * from `ListPinnedChats`). `project` narrows to that Project's chats, `project: null` to chats
+ * without a Project; the privacy filter (own chats plus workspace-scoped chats, and the caller's
+ * legacy balance-only chats) is the same in every case.
+ *
+ * The creator-owned, shared and legacy indexes are merged into one stream by
+ * `lastInteractionAt`, so a page reads only its own rows. Pages are reactive: clients pass
+ * `endCursor` (convex-helpers `usePaginatedQuery` with `customPagination`) to keep them gapless.
+ */
+export const ListChats = workspaceQuery({
+  args: { project: projectFilterValidator, paginationOpts: paginationOptsValidator },
+  handler: async (ctx, args) => {
+    if (!(await projectFilterExists(ctx, ctx.workspace._id, args.project))) {
+      return { page: [], isDone: true, continueCursor: "" };
+    }
+    const workspace = ctx.workspace;
+    const userId = ctx.identity._id;
+    const project = args.project ?? undefined;
+    const chats = () => stream(ctx.db, schema).query("aisdk_chats");
+
+    // Read creator-owned and explicitly shared chats separately: workspace membership, including
+    // ownership, must never expose another user's personal chats, and filing a chat under a
+    // Project never shares it. The caller's own shared chats come from the first stream.
+    const own =
+      args.project === undefined
+        ? chats().withIndex("by_workspace_and_userId_and_lastInteractionAt", (q) =>
             q.eq("workspace", workspace._id).eq("userId", userId),
           )
-      : ctx.db
-          .query("aisdk_chats")
-          .withIndex("by_workspace_and_userId_and_project_and_lastInteractionAt", (q) =>
-            q.eq("workspace", workspace._id).eq("userId", userId).eq("project", projectKey),
+        : chats().withIndex("by_workspace_and_userId_and_project_and_lastInteractionAt", (q) =>
+            q.eq("workspace", workspace._id).eq("userId", userId).eq("project", project),
           );
-  const sharedChats =
-    project === undefined
-      ? ctx.db
-          .query("aisdk_chats")
-          .withIndex("by_workspace_and_scope_and_lastInteractionAt", (q) =>
+    const shared =
+      args.project === undefined
+        ? chats().withIndex("by_workspace_and_scope_and_lastInteractionAt", (q) =>
             q.eq("workspace", workspace._id).eq("scope", "workspace"),
           )
-      : ctx.db
-          .query("aisdk_chats")
-          .withIndex("by_workspace_and_scope_and_project_and_lastInteractionAt", (q) =>
-            q.eq("workspace", workspace._id).eq("scope", "workspace").eq("project", projectKey),
+        : chats().withIndex("by_workspace_and_scope_and_project_and_lastInteractionAt", (q) =>
+            q.eq("workspace", workspace._id).eq("scope", "workspace").eq("project", project),
           );
-
-  // Pinned chats are few; read them across Projects and filter here instead of adding a Project
-  // variant of each pinned index.
-  const ownPinned = ctx.db
-    .query("aisdk_chats")
-    .withIndex("by_workspace_and_userId_and_pinnedAt", (q) =>
-      q.eq("workspace", workspace._id).eq("userId", userId).gt("pinnedAt", 0),
-    );
-  const sharedPinned = ctx.db
-    .query("aisdk_chats")
-    .withIndex("by_workspace_and_scope_and_pinnedAt", (q) =>
-      q.eq("workspace", workspace._id).eq("scope", "workspace").gt("pinnedAt", 0),
-    );
-
-  const [own, shared, pinnedOwn, pinnedShared, legacy] = await Promise.all([
-    ownChats.order("desc").take(LIST_LIMIT),
-    sharedChats.order("desc").take(LIST_LIMIT),
-    ownPinned.order("desc").take(MAX_PINNED_CANDIDATES),
-    sharedPinned.order("desc").take(MAX_PINNED_CANDIDATES),
-    workspace.legacyBalance
-      ? ctx.db
-          .query("aisdk_chats")
+    const streams = [
+      own.order("desc").filterWith(async (chat) => chatBelongsToWorkspace(chat, workspace)),
+      shared
+        .order("desc")
+        .filterWith(
+          async (chat) => chat.userId !== userId && chatBelongsToWorkspace(chat, workspace),
+        ),
+    ];
+    if (workspace.legacyBalance) {
+      streams.push(
+        chats()
           .withIndex("by_balance_and_lastInteractionAt", (q) =>
             q.eq("balance", workspace.legacyBalance!),
           )
           .order("desc")
-          .take(MAX_LEGACY_CANDIDATES)
-      : Promise.resolve([]),
-  ]);
-
-  const matchesProject = (chat: Doc<"aisdk_chats">) =>
-    project === undefined || chat.project === projectKey;
-  const chatsById = new Map<Id<"aisdk_chats">, Doc<"aisdk_chats">>();
-  for (const chat of [...own, ...shared]) {
-    if (chatBelongsToWorkspace(chat, workspace)) chatsById.set(chat._id, chat);
-  }
-  for (const chat of [...pinnedOwn, ...pinnedShared]) {
-    if (chatBelongsToWorkspace(chat, workspace) && matchesProject(chat)) {
-      chatsById.set(chat._id, chat);
+          .filterWith(
+            async (chat) =>
+              isLegacyChatOf(chat, userId) &&
+              (args.project === undefined || chat.project === project),
+          ),
+      );
     }
-  }
-  for (const chat of legacy) {
-    if (
-      matchesProject(chat) &&
-      chat.workspace === undefined &&
-      chat.userId === userId &&
-      (chat.scope === undefined || chat.scope === "personal")
-    ) {
-      chatsById.set(chat._id, chat);
-    }
-  }
-  return [...chatsById.values()];
-}
+    const result = await mergedStream(streams, ["lastInteractionAt"])
+      .filterWith(async (chat) => !chat.pinnedAt)
+      .paginate({ ...args.paginationOpts, maximumRowsRead: CHAT_PAGE_MAX_ROWS_READ });
+    return { ...result, page: await chatRows(ctx, workspace, userId, result.page) };
+  },
+});
 
 /**
- * List up to 30 visible chats in a workspace, pinned first then most recent. `project` narrows
- * to that Project's chats, `project: null` to chats without a Project; the privacy filter (own
- * chats plus workspace-scoped chats) is the same in every case.
+ * Every visible pinned chat (bounded) under the same filters as `ListChats`, newest pin first.
+ * Pinned chats sort first however old they are, so they are read apart from the pages.
  */
-export const ListChats = workspaceQuery({
-  args: { project: v.optional(v.union(v.id("projects"), v.null())) },
+export const ListPinnedChats = workspaceQuery({
+  args: { project: projectFilterValidator },
   handler: async (ctx, args) => {
-    if (args.project) {
-      const project = await ctx.db.get("projects", args.project);
-      // A Project deleted while a list is subscribed has no chats left; a foreign one is an error.
-      if (!project) return [];
-      if (project.workspace !== ctx.workspace._id) throw new Error("Project not found.");
-    }
+    if (!(await projectFilterExists(ctx, ctx.workspace._id, args.project))) return [];
+    const workspace = ctx.workspace;
+    const userId = ctx.identity._id;
+    const project = args.project ?? undefined;
+    const matchesProject = (chat: Doc<"aisdk_chats">) =>
+      args.project === undefined || chat.project === project;
 
-    const chats = await chatCandidates(ctx, ctx.workspace, ctx.identity._id, args.project);
-
-    const listed = chats
-      .sort((a, b) => {
-        const pinnedDelta = (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0);
-        if (pinnedDelta !== 0) return pinnedDelta;
-        return (b.lastInteractionAt ?? b._creationTime) - (a.lastInteractionAt ?? a._creationTime);
-      })
-      .slice(0, LIST_LIMIT);
-    const agentIds = new Set(listed.flatMap((chat) => (chat.agent ? [chat.agent.agentId] : [])));
-    const agentNames = new Map(
-      await Promise.all(
-        [...agentIds].map(async (agentId) => {
-          const definition = await ctx.db
-            .query("acp_agents")
-            .withIndex("by_workspace_and_agentId", (q) =>
-              q.eq("workspace", ctx.workspace._id).eq("agentId", agentId),
+    // Pinned chats are few; read them across Projects and filter here instead of adding a Project
+    // variant of each pinned index.
+    const [own, shared, legacy] = await Promise.all([
+      ctx.db
+        .query("aisdk_chats")
+        .withIndex("by_workspace_and_userId_and_pinnedAt", (q) =>
+          q.eq("workspace", workspace._id).eq("userId", userId).gt("pinnedAt", 0),
+        )
+        .order("desc")
+        .take(MAX_PINNED_CANDIDATES),
+      ctx.db
+        .query("aisdk_chats")
+        .withIndex("by_workspace_and_scope_and_pinnedAt", (q) =>
+          q.eq("workspace", workspace._id).eq("scope", "workspace").gt("pinnedAt", 0),
+        )
+        .order("desc")
+        .take(MAX_PINNED_CANDIDATES),
+      workspace.legacyBalance
+        ? ctx.db
+            .query("aisdk_chats")
+            .withIndex("by_balance_and_lastInteractionAt", (q) =>
+              q.eq("balance", workspace.legacyBalance!),
             )
-            .unique();
-          return [agentId, definition?.name ?? agentId] as const;
-        }),
-      ),
-    );
-    return listed.map((chat) => ({
-      id: chat._id,
-      title: chat.title,
-      emoji: chat.emoji,
-      pinnedAt: chat.pinnedAt,
-      lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
-      activeStream: chat.activeStream ?? false,
-      agent: chat.agent
-        ? {
-            agentId: chat.agent.agentId,
-            name: agentNames.get(chat.agent.agentId) ?? chat.agent.agentId,
-            worker: chat.agent.worker,
-          }
-        : null,
-      canManage: canManageChat(chat, ctx.workspace, ctx.identity._id),
-      project: chat.project,
-    }));
+            .order("desc")
+            .take(MAX_LEGACY_CANDIDATES)
+        : Promise.resolve([]),
+    ]);
+    const pinned = new Map<Id<"aisdk_chats">, Doc<"aisdk_chats">>();
+    for (const chat of [...own, ...shared]) {
+      if (chatBelongsToWorkspace(chat, workspace) && matchesProject(chat)) {
+        pinned.set(chat._id, chat);
+      }
+    }
+    for (const chat of legacy) {
+      if (chat.pinnedAt && isLegacyChatOf(chat, userId) && matchesProject(chat)) {
+        pinned.set(chat._id, chat);
+      }
+    }
+    const chats = [...pinned.values()].sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0));
+    return chatRows(ctx, workspace, userId, chats);
   },
 });

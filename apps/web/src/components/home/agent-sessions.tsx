@@ -28,7 +28,47 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { formatRelativeTime, groupByRecency } from "./recency";
 
-type AgentSession = FunctionReturnType<typeof api.acp.SearchAgentSessionIndex>[number];
+type AgentSession = Pick<
+  FunctionReturnType<typeof api.acp.SearchAgentSessionIndex>[number],
+  "_id" | "worker" | "agentId" | "sessionId" | "chat"
+>;
+
+/**
+ * Opens an indexed agent session: its chat when Radium has one, otherwise a chat bound to it
+ * (`acp.OpenAgentSession`). `pending` holds the rows being opened so repeated clicks are ignored.
+ */
+export function useOpenAgentSession() {
+  const open = useMutation(api.acp.OpenAgentSession);
+  const navigate = useNavigate();
+  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+
+  async function openRow(workspace: Id<"workspaces">, row: AgentSession) {
+    if (pending.has(row._id)) return;
+    setPending((current) => new Set(current).add(row._id));
+    try {
+      const chatId =
+        row.chat ??
+        (await open({
+          workspace,
+          worker: row.worker,
+          agentId: row.agentId,
+          sessionId: row.sessionId,
+        }));
+      await navigate({ to: "/chat/$chatId", params: { chatId } });
+    } catch (error) {
+      const message = acpActionError(error);
+      if (message) toast.error(message);
+    } finally {
+      setPending((current) => {
+        const next = new Set(current);
+        next.delete(row._id);
+        return next;
+      });
+    }
+  }
+
+  return { pending, openRow };
+}
 
 export function AgentSessions({
   workspace,
@@ -52,9 +92,7 @@ export function AgentSessions({
   presenceNow: number;
 }) {
   const sync = useMutation(api.acp.SyncAgentSessions);
-  const open = useMutation(api.acp.OpenAgentSession);
-  const navigate = useNavigate();
-  const [pending, setPending] = useState<Set<string>>(() => new Set());
+  const { pending, openRow } = useOpenAgentSession();
   const search = query.trim();
   const { results, status, loadMore } = usePaginatedQuery(
     api.acp.ListAgentSessionIndex,
@@ -80,31 +118,6 @@ export function AgentSessions({
   const loading = search ? searchResults === undefined : status === "LoadingFirstPage";
   const groups = groupByRecency(rows ?? [], now, (row) => row.updatedAt);
   const multipleWorkers = new Set(reports.map((report) => report.worker)).size > 1;
-
-  async function openRow(row: AgentSession) {
-    if (pending.has(row._id)) return;
-    setPending((current) => new Set(current).add(row._id));
-    try {
-      const chatId =
-        row.chat ??
-        (await open({
-          workspace,
-          worker: row.worker,
-          agentId: agent.agentId,
-          sessionId: row.sessionId,
-        }));
-      await navigate({ to: "/chat/$chatId", params: { chatId } });
-    } catch (error) {
-      const message = acpActionError(error);
-      if (message) toast.error(message);
-    } finally {
-      setPending((current) => {
-        const next = new Set(current);
-        next.delete(row._id);
-        return next;
-      });
-    }
-  }
 
   return (
     <>
@@ -196,7 +209,7 @@ export function AgentSessions({
                   <li key={row._id}>
                     <button
                       type="button"
-                      onClick={() => void openRow(row)}
+                      onClick={() => void openRow(workspace, row)}
                       disabled={pending.has(row._id)}
                       className="flex h-10 w-full items-center gap-2.5 rounded-xl px-3 text-left text-sm outline-none transition-colors hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-60"
                     >

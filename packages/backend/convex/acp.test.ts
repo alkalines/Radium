@@ -188,7 +188,14 @@ test("chat listings use agent definition names, fall back to IDs and mark built-
     workspace: f.workspace,
     messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
   });
-  const chats = await f.owner.query(api.aisdk.ListChats, { workspace: f.workspace });
+  const list = async () =>
+    (
+      await f.owner.query(api.aisdk.ListChats, {
+        workspace: f.workspace,
+        paginationOpts: { cursor: null, numItems: 50 },
+      })
+    ).page;
+  const chats = await list();
   expect(chats.find((chat) => chat.id === f.chat)?.agent).toEqual({
     agentId: agent.agentId,
     name: agent.agentId,
@@ -199,14 +206,14 @@ test("chat listings use agent definition names, fall back to IDs and mark built-
     workspace: f.workspace,
     definition: { ...definition, agentId: agent.agentId, name: "Workspace agent name" },
   });
-  const renamed = await f.owner.query(api.aisdk.ListChats, { workspace: f.workspace });
+  const renamed = await list();
   expect(renamed.find((chat) => chat.id === f.chat)?.agent).toEqual({
     agentId: agent.agentId,
     name: "Workspace agent name",
     worker: f.first.identity.workerId,
   });
   await f.owner.mutation(api.acp.DeleteAgentDefinition, { workspace: f.workspace, id });
-  const removed = await f.owner.query(api.aisdk.ListChats, { workspace: f.workspace });
+  const removed = await list();
   expect(removed.find((chat) => chat.id === f.chat)?.agent?.name).toBe(agent.agentId);
   expect((await f.owner.query(api.acp.GetSession, { chat: f.chat })).agent.agentId).toBe(
     agent.agentId,
@@ -316,6 +323,111 @@ test("opening an indexed agent session creates and links a personal chat while o
       workspace: f.workspace,
       agentId: agent.agentId,
       paginationOpts: { cursor: null, numItems: 30 },
+    }),
+  ).rejects.toThrow();
+});
+
+test("Home lists unopened agent sessions by Project folder, either spelling, until opened", async () => {
+  const f = await fixture();
+  const first = f.first.identity.workerId;
+  const second = f.second.identity.workerId;
+  await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, agentId: agent.agentId },
+  });
+  await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, agentId: "disabled", enabled: false },
+  });
+  const project = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "Code",
+    folders: [
+      { workerId: first, directory: "/work/" },
+      { workerId: second, directory: "/repo" },
+    ],
+  });
+  const sync = (
+    machine: typeof f.first.machine,
+    agentId: string,
+    upserts: { sessionId: string; cwd: string; title: string; updatedAt: number }[],
+  ) =>
+    machine.mutation(api.acp.syncAgentSessions, {
+      agentId,
+      upserts,
+      removals: [],
+      finish: { count: upserts.length, truncated: false },
+    });
+  await sync(f.first.machine, agent.agentId, [
+    // Agents report a folder without its trailing separator; Radium-created ones keep the folder's.
+    { sessionId: "plain", cwd: "/work", title: "Plain", updatedAt: 1500 },
+    { sessionId: "older", cwd: "/work/", title: "Older", updatedAt: 1000 },
+    { sessionId: "elsewhere", cwd: "/other", title: "Elsewhere", updatedAt: 3000 },
+    { sessionId: "nested", cwd: "/work/sub", title: "Nested", updatedAt: 4000 },
+  ]);
+  // A session of a disabled agent the Worker indexed before it was disabled.
+  await f.t.run((ctx) =>
+    ctx.db.insert("acp_agent_sessions", {
+      workspace: f.workspace,
+      worker: first,
+      agentId: "disabled",
+      sessionId: "hidden",
+      cwd: "/work",
+      title: "Disabled agent",
+      updatedAt: 6000,
+    }),
+  );
+  // The same directory on another Worker is not this Project's folder there.
+  await sync(f.second.machine, agent.agentId, [
+    { sessionId: "newer", cwd: "/repo", title: "Newer", updatedAt: 2000 },
+    { sessionId: "wrong-worker", cwd: "/work", title: "Wrong Worker", updatedAt: 5000 },
+  ]);
+  const list = async (filter: Id<"projects"> | null | undefined, numItems = 50) =>
+    f.owner.query(api.acp.ListUnopenedAgentSessions, {
+      workspace: f.workspace,
+      project: filter,
+      paginationOpts: { cursor: null, numItems },
+    });
+  const ids = async (filter: Id<"projects"> | null | undefined) =>
+    (await list(filter)).page.map((row) => row.sessionId);
+
+  expect((await list(project)).page).toMatchObject([
+    { sessionId: "newer", worker: second, project, chat: null },
+    { sessionId: "plain", worker: first, project, chat: null },
+    { sessionId: "older", worker: first, project, chat: null },
+  ]);
+  expect(await ids(null)).toEqual(["wrong-worker", "nested", "elsewhere"]);
+  expect(await ids(undefined)).toEqual([
+    "wrong-worker",
+    "nested",
+    "elsewhere",
+    "newer",
+    "plain",
+    "older",
+  ]);
+  const firstPage = await list(undefined, 4);
+  const rest = await f.owner.query(api.acp.ListUnopenedAgentSessions, {
+    workspace: f.workspace,
+    paginationOpts: { cursor: firstPage.continueCursor, numItems: 4 },
+  });
+  expect([...firstPage.page, ...rest.page].map((row) => row.sessionId)).toEqual(
+    await ids(undefined),
+  );
+
+  const chat = await f.owner.mutation(api.acp.OpenAgentSession, {
+    workspace: f.workspace,
+    worker: first,
+    agentId: agent.agentId,
+    sessionId: "plain",
+  });
+  expect(await f.t.run((ctx) => ctx.db.get(chat))).toMatchObject({ project });
+  expect(await ids(project)).toEqual(["newer", "older"]);
+  expect(await ids(undefined)).not.toContain("plain");
+
+  await expect(
+    f.member.query(api.acp.ListUnopenedAgentSessions, {
+      workspace: f.workspace,
+      paginationOpts: { cursor: null, numItems: 50 },
     }),
   ).rejects.toThrow();
 });

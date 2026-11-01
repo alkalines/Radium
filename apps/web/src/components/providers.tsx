@@ -3,6 +3,7 @@ import { useSession } from "@better-auth-ui/react";
 import { ConvexBetterAuthProvider } from "@convex-dev/better-auth/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConvexAuth, type ConvexReactClient } from "convex/react";
+import { ConvexQueryCacheProvider } from "convex-helpers/react/cache";
 import { ThemeProvider, useTheme } from "next-themes";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -70,7 +71,9 @@ function OperationalLogging({ children }: { children: ReactNode }) {
 
 /**
  * Convex query keys do not include the Better Auth identity, so discard the
- * client cache before a different user can reuse the previous user's data.
+ * client cache before a different user can reuse the previous user's data. The
+ * convex-helpers subscription cache (Home's paginated lists) unmounts with the
+ * hidden descendants, so it starts empty for the next identity too.
  */
 function ConvexAuthQueryCache({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
@@ -98,5 +101,7 @@ function ConvexAuthQueryCache({ children }: { children: ReactNode }) {
     setCacheIdentity({ initialized: true, userId });
   }, [cacheIdentity.initialized, identityChanged, isPending, queryClient, userId]);
 
-  return identityChanged ? null : children;
+  if (identityChanged) return null;
+  // Unmounted subscriptions stay open five minutes, so a quick return to Home reuses its pages.
+  return <ConvexQueryCacheProvider expiration={5 * 60_000}>{children}</ConvexQueryCacheProvider>;
 }

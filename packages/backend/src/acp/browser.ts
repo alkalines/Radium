@@ -1,5 +1,7 @@
 import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
+import { mergedStream, stream } from "convex-helpers/server/stream";
+import schema from "../../convex/schema";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
 import { isWorkerOnline } from "../worker/presence";
@@ -17,6 +19,7 @@ import {
 } from "../worker/chat-selection";
 import { generateChatTitle } from "../chatroom/titles";
 import {
+  ACP_AGENT_DEFINITIONS_MAX,
   ACP_BUSY_STATUSES,
   ACP_HISTORY_PAGE_ITEMS,
   ACP_PROMPT_BYTES,
@@ -89,7 +92,31 @@ async function insertAgentChat(
   return chat;
 }
 
-/** Project catalog is bounded by the workspace's 200-Project limit, read once per page. */
+/** A directory without trailing separators; the root keeps its own. */
+function bareDirectory(directory: string) {
+  return directory.replace(/[\\/]+$/, "") || directory;
+}
+
+/**
+ * Matches an agent session's `cwd` to a Project folder on the same Worker. Agents report a
+ * directory without its trailing separator while a Project folder may keep one, so neither counts.
+ */
+function folderKey(worker: string, directory: string) {
+  return `${worker}\0${bareDirectory(directory)}`;
+}
+
+/** The `cwd` spellings an agent may index a folder under: with and without a trailing separator. */
+function directorySpellings(directory: string) {
+  const bare = bareDirectory(directory);
+  if (/[\\/]$/.test(bare)) return [bare];
+  const separator = bare.includes("\\") && !bare.includes("/") ? "\\" : "/";
+  return [bare, `${bare}${separator}`];
+}
+
+/**
+ * Project of each `folderKey`; a folder in several Projects belongs to the first. The catalog is
+ * bounded by the workspace's 200-Project limit, read once per page.
+ */
 async function projectFolders(ctx: QueryCtx | MutationCtx, workspace: Id<"workspaces">) {
   const projects = await ctx.db
     .query("projects")
@@ -97,13 +124,14 @@ async function projectFolders(ctx: QueryCtx | MutationCtx, workspace: Id<"worksp
     .take(200);
   const folders = new Map<string, Id<"projects">>();
   for (const project of projects)
-    for (const folder of project.folders ?? [])
-      if (!folders.has(`${folder.workerId}\0${folder.directory}`))
-        folders.set(`${folder.workerId}\0${folder.directory}`, project._id);
+    for (const folder of project.folders ?? []) {
+      const key = folderKey(folder.workerId, folder.directory);
+      if (!folders.has(key)) folders.set(key, project._id);
+    }
   return folders;
 }
 
-function indexedSessionRow(row: Doc<"acp_agent_sessions">, folders: Map<string, Id<"projects">>) {
+function indexedSessionRow(row: Doc<"acp_agent_sessions">, project: Id<"projects"> | null) {
   return {
     _id: row._id,
     worker: row.worker,
@@ -113,7 +141,7 @@ function indexedSessionRow(row: Doc<"acp_agent_sessions">, folders: Map<string, 
     title: row.title,
     updatedAt: row.updatedAt,
     chat: row.chat ?? null,
-    project: folders.get(`${row.worker}\0${row.cwd}`) ?? null,
+    project,
   };
 }
 
@@ -440,7 +468,12 @@ export const ListAgentSessionIndex = ownedWorkspaceQuery({
       .order("desc")
       .paginate(args.paginationOpts);
     const folders = await projectFolders(ctx, ctx.workspace._id);
-    return { ...page, page: page.page.map((row) => indexedSessionRow(row, folders)) };
+    return {
+      ...page,
+      page: page.page.map((row) =>
+        indexedSessionRow(row, folders.get(folderKey(row.worker, row.cwd)) ?? null),
+      ),
+    };
   },
 });
 
@@ -456,7 +489,87 @@ export const SearchAgentSessionIndex = ownedWorkspaceQuery({
       )
       .take(50);
     const folders = await projectFolders(ctx, ctx.workspace._id);
-    return rows.map((row) => indexedSessionRow(row, folders));
+    return rows.map((row) =>
+      indexedSessionRow(row, folders.get(folderKey(row.worker, row.cwd)) ?? null),
+    );
+  },
+});
+
+// An agent-session page never scans more than this many index rows, whatever its filters skip.
+const AGENT_SESSIONS_PAGE_MAX_ROWS_READ = 400;
+
+/**
+ * One page of the agent sessions Radium has not opened yet (opened ones are chats, listed by
+ * `aisdk.ListChats`), newest first, for Home's session list. `project` narrows to sessions in
+ * that Project's folders (a folder shared by several Projects belongs to the one
+ * `OpenAgentSession` would file it under), `project: null` to sessions outside every Project
+ * folder. Only enabled agents' sessions are listed. Pages are reactive: clients pass `endCursor`
+ * (convex-helpers `usePaginatedQuery` with `customPagination`) to keep them gapless.
+ */
+export const ListUnopenedAgentSessions = ownedWorkspaceQuery({
+  args: {
+    project: v.optional(v.union(v.id("projects"), v.null())),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, args) => {
+    const none = { page: [], isDone: true, continueCursor: "" };
+    const workspace = ctx.workspace._id;
+    const project = args.project ? await ctx.db.get(args.project) : null;
+    if (args.project) {
+      // A Project deleted while a list is subscribed has no sessions left; a foreign one is an error.
+      if (!project) return none;
+      if (project.workspace !== workspace) throw new Error("Project not found.");
+    }
+    const definitions = await ctx.db
+      .query("acp_agents")
+      .withIndex("by_workspace_and_agentId", (q) => q.eq("workspace", workspace))
+      .take(ACP_AGENT_DEFINITIONS_MAX);
+    const enabled = new Set(definitions.filter((row) => row.enabled).map((row) => row.agentId));
+    if (enabled.size === 0) return none;
+    const folders = await projectFolders(ctx, workspace);
+    const rows = () => stream(ctx.db, schema).query("acp_agent_sessions");
+
+    let sessions;
+    if (project) {
+      const streams = (project.folders ?? [])
+        .filter(
+          (folder) => folders.get(folderKey(folder.workerId, folder.directory)) === project._id,
+        )
+        .flatMap((folder) =>
+          directorySpellings(folder.directory).map((cwd) =>
+            rows()
+              .withIndex("by_worker_and_cwd_and_chat_and_updatedAt", (q) =>
+                q
+                  .eq("workspace", workspace)
+                  .eq("worker", folder.workerId)
+                  .eq("cwd", cwd)
+                  .eq("chat", undefined),
+              )
+              .order("desc"),
+          ),
+        );
+      if (streams.length === 0) return none;
+      sessions = mergedStream(streams, ["updatedAt"]);
+    } else {
+      sessions = rows()
+        .withIndex("by_workspace_and_chat_and_updatedAt", (q) =>
+          q.eq("workspace", workspace).eq("chat", undefined),
+        )
+        .order("desc");
+    }
+    const result = await sessions
+      .filterWith(
+        async (row) =>
+          enabled.has(row.agentId) &&
+          (args.project !== null || !folders.has(folderKey(row.worker, row.cwd))),
+      )
+      .paginate({ ...args.paginationOpts, maximumRowsRead: AGENT_SESSIONS_PAGE_MAX_ROWS_READ });
+    return {
+      ...result,
+      page: result.page.map((row) =>
+        indexedSessionRow(row, folders.get(folderKey(row.worker, row.cwd)) ?? null),
+      ),
+    };
   },
 });
 
@@ -554,7 +667,7 @@ export const OpenAgentSession = ownedWorkspaceMutation({
       version: agent.version,
       title: row.title,
       updatedAt: row.updatedAt,
-      project: folders.get(`${row.worker}\0${row.cwd}`),
+      project: folders.get(folderKey(row.worker, row.cwd)),
     });
     await ctx.db.patch(row._id, { chat });
     return chat;

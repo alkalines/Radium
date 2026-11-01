@@ -83,6 +83,15 @@ export default defineSchema({
   })
     .index("by_workspace_and_agentId_and_updatedAt", ["workspace", "agentId", "updatedAt"])
     .index("by_worker_and_agentId_and_sessionId", ["workspace", "worker", "agentId", "sessionId"])
+    // Home lists the sessions Radium has not opened (`chat` unset), newest first.
+    .index("by_workspace_and_chat_and_updatedAt", ["workspace", "chat", "updatedAt"])
+    .index("by_worker_and_cwd_and_chat_and_updatedAt", [
+      "workspace",
+      "worker",
+      "cwd",
+      "chat",
+      "updatedAt",
+    ])
     .index("by_chat", ["chat"])
     .searchIndex("search_title", { searchField: "title", filterFields: ["workspace", "agentId"] }),
   /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
@@ -827,7 +836,7 @@ export default defineSchema({
       "userId",
       "lastInteractionAt",
     ])
-    // Pinned chats can be older than the recency window, so ListChats reads them separately.
+    // Pinned chats can be older than any loaded page, so ListPinnedChats reads them separately.
     .index("by_workspace_and_userId_and_pinnedAt", ["workspace", "userId", "pinnedAt"])
     .index("by_workspace_and_scope_and_pinnedAt", ["workspace", "scope", "pinnedAt"])
     .index("by_workspace_and_userId_and_project_and_lastInteractionAt", [

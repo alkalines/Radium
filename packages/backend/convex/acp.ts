@@ -26,6 +26,7 @@ export {
   Fork,
   ListAgentSessionIndex,
   SearchAgentSessionIndex,
+  ListUnopenedAgentSessions,
   SyncAgentSessions,
   OpenAgentSession,
   Authenticate,

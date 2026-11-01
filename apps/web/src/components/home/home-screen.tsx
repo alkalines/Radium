@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState, type ReactNode } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
+import { useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
+import { usePaginatedQuery } from "convex-helpers/react/cache";
 import {
   FolderMinusIcon,
   FolderPlusIcon,
@@ -12,6 +14,7 @@ import {
   RotateCcwIcon,
   SquarePenIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
@@ -20,6 +23,8 @@ import { AgentStatus } from "@/components/agentic/agent-status";
 import { ProjectActionsMenu } from "@/components/projects/project-actions-menu";
 import { ProjectDialog } from "@/components/projects/project-dialog";
 import { AcpAgentIcon } from "@/components/session/acp/agent-icon";
+import { acpActionError } from "@/components/session/acp/use-acp-session";
+import type { SessionAgentDefinition, SessionWorker } from "@/components/session/agents";
 import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { ProjectGlyph, type ProjectSummary } from "@/components/projects/project-glyph";
 import {
@@ -39,15 +44,35 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { newTabId } from "@/components/window/window-tabs";
 import { SessionActionsMenu } from "./session-actions-menu";
-import { AgentSessions } from "./agent-sessions";
+import { AgentSessions, useOpenAgentSession } from "./agent-sessions";
+import { HOME_PAGE_SIZE, useMergedPages, type PagedSource } from "./merged-pages";
 import { formatRelativeTime, groupByRecency } from "./recency";
 
-type ChatList = Exclude<FunctionReturnType<typeof api.aisdk.ListChats>, string>;
-type HomeSession = ChatList[number];
+type HomeSession = FunctionReturnType<typeof api.aisdk.ListPinnedChats>[number];
+type UnopenedAgentSession = FunctionReturnType<
+  typeof api.acp.ListUnopenedAgentSessions
+>["page"][number];
+type RowAgent = Pick<SessionAgentDefinition, "name" | "icon">;
+
+/**
+ * A Home Row: a Radium session, or (for the owner) an agent session that Radium has not opened
+ * yet, such as one started in Zed or the agent's own CLI.
+ */
+type HomeRow =
+  | { kind: "chat"; id: string; title: string; at: number; session: HomeSession }
+  | {
+      kind: "agent";
+      id: string;
+      title: string;
+      at: number;
+      row: UnopenedAgentSession;
+      agent: RowAgent;
+    };
 
 const minute = 60_000;
 
@@ -61,7 +86,8 @@ type ProjectSelection = { workspace: Id<"workspaces">; project: Id<"projects"> |
  * Home (`docs/Interface_Design.md` §5.1): a side column with `New session`, a small search, and
  * the workspace's Projects, plus its sessions grouped by recency as plain Rows on the Panel.
  * Selecting a Project, or `No project`, filters the list (selecting it again, or `All sessions`,
- * clears the filter). Opening a Row navigates to its session, which focuses or appends its Tab.
+ * clears the filter); for the owner every list also holds the agent sessions not yet opened in
+ * Radium. Opening a Row navigates to its session, which focuses or appends its Tab.
  */
 export function HomeScreen() {
   const navigate = useNavigate();
@@ -120,29 +146,24 @@ export function HomeScreen() {
   let projectFilter: Id<"projects"> | null | undefined = selectedProject?._id;
   if (isNoProjectSelected) projectFilter = null;
 
-  const { data: chats, error: chatsError } = useQuery({
-    ...convexQuery(
-      api.aisdk.ListChats,
-      workspaceId ? { workspace: workspaceId, project: projectFilter } : "skip",
-    ),
-    // A quick return Home reuses the live subscription instead of refetching; inactive filtered
-    // lists are dropped after five minutes so their subscriptions stop costing reads.
-    gcTime: 5 * minute,
-  });
+  // Refreshes the agents' session indexes whenever the owner looks at a session list, as opening
+  // an agent under Agents does; the backend skips offline Workers and anything synced in the
+  // last minute.
+  const syncAgentSessions = useMutation(api.acp.SyncAgentSessions);
+  const agentIdsToSync =
+    isOwner && !selectedAgent ? agents.map((agent) => agent.agentId).join("\n") : "";
+  const filterKey = `${workspaceId}:${String(projectFilter)}`;
+  useEffect(() => {
+    if (!workspaceId || !agentIdsToSync) return;
+    for (const agentId of agentIdsToSync.split("\n")) {
+      void syncAgentSessions({ workspace: workspaceId, agentId }).catch((error) => {
+        const message = acpActionError(error);
+        if (message) toast.error(message);
+      });
+    }
+  }, [agentIdsToSync, filterKey, syncAgentSessions, workspaceId]);
 
   const workspaceName = workspace?.name ?? "workspace";
-  const normalizedQuery = query.trim().toLowerCase();
-  const sessions = Array.isArray(chats) ? chats : [];
-  const matches = sessions.filter((session) =>
-    sessionTitle(session).toLowerCase().includes(normalizedQuery),
-  );
-  const groups = groupByRecency(
-    matches,
-    now,
-    (session) => session.lastInteractionAt,
-    (session) => Boolean(session.pinnedAt),
-  );
-  const projectsById = new Map(projects.map((project) => [project._id, project]));
 
   /** Starts a draft Tab; with `project`, the Session screen seeds the draft's Project from it. */
   function openNewSession(project?: Id<"projects">) {
@@ -159,34 +180,9 @@ export function HomeScreen() {
     setProjectSelection({ workspace: workspaceId, project });
   }
 
-  let content;
-  if (provisionError) {
-    content = (
-      <Alert variant="destructive">
-        <AlertTitle>Workspace setup failed</AlertTitle>
-        <AlertDescription>{provisionError.message}</AlertDescription>
-        <AlertAction>
-          <Button variant="outline" size="sm" onClick={retryProvisioning}>
-            <RotateCcwIcon data-icon="inline-start" />
-            Retry
-          </Button>
-        </AlertAction>
-      </Alert>
-    );
-  } else if (chatsError || typeof chats === "string") {
-    content = (
-      <Alert>
-        <AlertTitle>Sessions unavailable</AlertTitle>
-        <AlertDescription>
-          This workspace is no longer available to your account. Choose another workspace from the
-          Tab strip.
-        </AlertDescription>
-      </Alert>
-    );
-  } else if (isWorkspaceLoading || isProvisioning || !workspaceId || chats === undefined) {
-    content = <SessionListSkeleton />;
-  } else if (sessions.length === 0 && selectedProject) {
-    content = (
+  let empty;
+  if (selectedProject) {
+    empty = (
       <Empty className="border-0">
         <EmptyHeader>
           <EmptyMedia variant="icon">
@@ -197,8 +193,8 @@ export function HomeScreen() {
         </EmptyHeader>
       </Empty>
     );
-  } else if (sessions.length === 0 && isNoProjectSelected) {
-    content = (
+  } else if (isNoProjectSelected) {
+    empty = (
       <Empty className="border-0">
         <EmptyHeader>
           <EmptyMedia variant="icon">
@@ -209,8 +205,8 @@ export function HomeScreen() {
         </EmptyHeader>
       </Empty>
     );
-  } else if (sessions.length === 0) {
-    content = (
+  } else {
+    empty = (
       <Empty className="border-0">
         <EmptyHeader>
           <EmptyMedia variant="icon">
@@ -227,33 +223,42 @@ export function HomeScreen() {
         </EmptyContent>
       </Empty>
     );
-  } else if (groups.length === 0) {
-    content = <p className="px-3 text-sm text-muted-foreground">No sessions match “{query}”.</p>;
+  }
+
+  let content;
+  if (provisionError) {
+    content = (
+      <Alert variant="destructive">
+        <AlertTitle>Workspace setup failed</AlertTitle>
+        <AlertDescription>{provisionError.message}</AlertDescription>
+        <AlertAction>
+          <Button variant="outline" size="sm" onClick={retryProvisioning}>
+            <RotateCcwIcon data-icon="inline-start" />
+            Retry
+          </Button>
+        </AlertAction>
+      </Alert>
+    );
+  } else if (isWorkspaceLoading || isProvisioning || !workspaceId) {
+    content = <SessionListSkeleton />;
   } else {
-    content = groups.map((group) => (
-      <div key={group.label} className="flex flex-col gap-1">
-        <h2 className="flex h-8 items-center px-3 text-sm font-normal text-subtle-foreground">
-          {group.label}
-        </h2>
-        {/* Rows sit directly on the Panel; only the hovered or menu-open Row gets a surface. */}
-        <ul className="flex flex-col">
-          {group.sessions.map((session) => (
-            <SessionRow
-              key={session.id}
-              session={session}
-              project={session.project ? projectsById.get(session.project) : undefined}
-              projects={projects}
-              now={now}
-              offline={
-                isOwner &&
-                session.agent !== null &&
-                isWorkerOffline(workers, session.agent.worker, presenceNow)
-              }
-            />
-          ))}
-        </ul>
-      </div>
-    ));
+    // Keyed by filter: a new filter starts over at one page.
+    content = (
+      <SessionListBoundary key={filterKey}>
+        <SessionList
+          workspaceId={workspaceId}
+          projectFilter={projectFilter}
+          isOwner={isOwner}
+          query={query}
+          now={now}
+          presenceNow={presenceNow}
+          projects={projects}
+          definitions={definitions}
+          workers={workers}
+          empty={empty}
+        />
+      </SessionListBoundary>
+    );
   }
 
   let projectList;
@@ -440,6 +445,176 @@ export function HomeScreen() {
   );
 }
 
+/** A failed list query (the workspace or Project became unavailable) shows a notice, not a crash. */
+class SessionListBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <Alert>
+        <AlertTitle>Sessions unavailable</AlertTitle>
+        <AlertDescription>
+          This workspace is no longer available to your account. Choose another workspace from the
+          Tab strip.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+}
+
+/**
+ * One filter's session list: pinned sessions, then the Radium sessions and (for the owner) the
+ * unopened agent sessions merged by recency, `HOME_PAGE_SIZE` rows at a time. Both lists are
+ * paginated on the server, and their subscriptions outlive the screen for five minutes
+ * (`ConvexQueryCacheProvider`), so returning Home reuses the loaded pages.
+ */
+function SessionList({
+  workspaceId,
+  projectFilter,
+  isOwner,
+  query,
+  now,
+  presenceNow,
+  projects,
+  definitions,
+  workers,
+  empty,
+}: {
+  workspaceId: Id<"workspaces">;
+  /** `undefined` lists every session; `null` lists sessions without a Project. */
+  projectFilter: Id<"projects"> | null | undefined;
+  isOwner: boolean;
+  query: string;
+  now: number;
+  presenceNow: number;
+  projects: ProjectSummary[];
+  definitions: SessionAgentDefinition[] | undefined;
+  workers: SessionWorker[] | undefined;
+  empty: ReactNode;
+}) {
+  const filter = { workspace: workspaceId, project: projectFilter };
+  const { data: pinned, error: pinnedError } = useQuery({
+    ...convexQuery(api.aisdk.ListPinnedChats, filter),
+    gcTime: 5 * minute,
+  });
+  const chats = usePaginatedQuery(api.aisdk.ListChats, filter, {
+    initialNumItems: HOME_PAGE_SIZE,
+    customPagination: true,
+  });
+  const agentSessions = usePaginatedQuery(
+    api.acp.ListUnopenedAgentSessions,
+    isOwner ? filter : "skip",
+    { initialNumItems: HOME_PAGE_SIZE, customPagination: true },
+  );
+  const { pending: openingAgentSessions, openRow: openAgentSession } = useOpenAgentSession();
+  if (pinnedError) throw pinnedError;
+
+  const definitionsById = new Map((definitions ?? []).map((agent) => [agent.agentId, agent]));
+  const sources: PagedSource<HomeRow>[] = [
+    { items: chats.results.map(chatRow), status: chats.status, loadMore: chats.loadMore },
+    isOwner
+      ? {
+          items: agentSessions.results.map((row) => ({
+            kind: "agent" as const,
+            id: row._id,
+            title: row.title?.trim() || "Untitled session",
+            at: row.updatedAt,
+            row,
+            agent: definitionsById.get(row.agentId) ?? { name: row.agentId },
+          })),
+          status: agentSessions.status,
+          loadMore: agentSessions.loadMore,
+        }
+      : { items: [], status: "Exhausted", loadMore: () => {} },
+  ];
+  const merged = useMergedPages(sources, (row) => row.at);
+
+  // Agent rows wait for the agent catalog so their icons do not pop in.
+  if (merged.loading || pinned === undefined || (isOwner && definitions === undefined)) {
+    return <SessionListSkeleton />;
+  }
+  const rows = [...pinned.map(chatRow), ...merged.items];
+  if (rows.length === 0 && !merged.hasMore) return empty;
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const groups = groupByRecency(
+    rows.filter((row) => row.title.toLowerCase().includes(normalizedQuery)),
+    now,
+    (row) => row.at,
+    (row) => row.kind === "chat" && Boolean(row.session.pinnedAt),
+  );
+  const projectsById = new Map(projects.map((project) => [project._id, project]));
+
+  return (
+    <>
+      {groups.length === 0 && rows.length > 0 ? (
+        <p className="px-3 text-sm text-muted-foreground">No loaded sessions match “{query}”.</p>
+      ) : null}
+      {groups.map((group) => (
+        <div key={group.label} className="flex flex-col gap-1">
+          <h2 className="flex h-8 items-center px-3 text-sm font-normal text-subtle-foreground">
+            {group.label}
+          </h2>
+          {/* Rows sit directly on the Panel; only the hovered or menu-open Row gets a surface. */}
+          <ul className="flex flex-col">
+            {group.sessions.map((row) =>
+              row.kind === "chat" ? (
+                <SessionRow
+                  key={row.id}
+                  session={row.session}
+                  project={row.session.project ? projectsById.get(row.session.project) : undefined}
+                  projects={projects}
+                  now={now}
+                  offline={
+                    isOwner &&
+                    row.session.agent !== null &&
+                    isWorkerOffline(workers, row.session.agent.worker, presenceNow)
+                  }
+                />
+              ) : (
+                <AgentSessionRow
+                  key={row.id}
+                  title={row.title}
+                  untitled={!row.row.title?.trim()}
+                  updatedAt={row.at}
+                  agent={row.agent}
+                  project={row.row.project ? projectsById.get(row.row.project) : undefined}
+                  now={now}
+                  offline={isWorkerOffline(workers, row.row.worker, presenceNow)}
+                  opening={openingAgentSessions.has(row.id)}
+                  onOpen={() => void openAgentSession(workspaceId, row.row)}
+                />
+              ),
+            )}
+          </ul>
+        </div>
+      ))}
+      {merged.loadingMore ? (
+        <Spinner className="self-center text-muted-foreground" />
+      ) : merged.hasMore ? (
+        <Button variant="outline" size="sm" className="self-center" onClick={merged.showMore}>
+          Load more
+        </Button>
+      ) : null}
+    </>
+  );
+}
+
+function chatRow(session: HomeSession): HomeRow {
+  return {
+    kind: "chat",
+    id: session.id,
+    title: sessionTitle(session),
+    at: session.lastInteractionAt,
+    session,
+  };
+}
+
 function SessionRow({
   session,
   project,
@@ -490,6 +665,68 @@ function SessionRow({
         // Keeps the time aligned with Rows that have a menu.
         <span aria-hidden="true" className="size-6 shrink-0" />
       )}
+    </li>
+  );
+}
+
+/**
+ * An agent session Radium has not opened yet. It reads like a Session Row: the Project tile when
+ * its directory is a Project folder (otherwise the agent's icon), the title, time and agent name;
+ * opening it creates the bound session, then opens it.
+ */
+function AgentSessionRow({
+  title,
+  untitled,
+  updatedAt,
+  agent,
+  project,
+  now,
+  offline,
+  opening,
+  onOpen,
+}: {
+  title: string;
+  untitled: boolean;
+  updatedAt: number;
+  agent: RowAgent;
+  project: ProjectSummary | undefined;
+  now: number;
+  offline: boolean;
+  opening: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <li className="group/session relative flex h-10 items-center gap-2.5 rounded-xl pr-1.5 pl-3 text-sm transition-colors hover:bg-accent">
+      {opening ? (
+        <Spinner className="size-4 shrink-0 text-muted-foreground" />
+      ) : project ? (
+        <ProjectGlyph project={project} />
+      ) : (
+        <AcpAgentIcon icon={agent.icon} name={agent.name} className="size-4" />
+      )}
+      {/* The overlay makes the whole Row open the session, like a Session Row's link. */}
+      <button
+        type="button"
+        onClick={onOpen}
+        disabled={opening}
+        title={title}
+        className="min-w-0 flex-1 truncate text-left outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:ring-3 focus-visible:after:ring-ring/30"
+      >
+        {untitled ? <span className="text-muted-foreground">{title}</span> : title}
+      </button>
+      <time
+        dateTime={new Date(updatedAt).toISOString()}
+        title={new Date(updatedAt).toLocaleString()}
+        className="shrink-0 text-xs text-subtle-foreground tabular-nums"
+      >
+        {formatRelativeTime(updatedAt, now)}
+      </time>
+      <span className="max-w-32 truncate text-xs text-muted-foreground" title={agent.name}>
+        {agent.name}
+      </span>
+      {offline ? <span className="shrink-0 text-xs text-muted-foreground">Offline</span> : null}
+      {/* Keeps the time aligned with Rows that have a menu. */}
+      <span aria-hidden="true" className="size-6 shrink-0" />
     </li>
   );
 }
