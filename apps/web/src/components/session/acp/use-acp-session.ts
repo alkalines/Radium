@@ -89,7 +89,7 @@ export function useAcpSession({
   const previousVisible = useRef(false);
   const [loadingBefore, setLoadingBefore] = useState<number>();
   const requestedHistory = useRef(new Set<string>());
-  const [now, setNow] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
   const lastWorker = useRef<WorkerStatus | undefined>(undefined);
   const watch = useMutation(api.chatroom.Watch);
   const promptMutation = useMutation(api.acp.Prompt);
@@ -286,8 +286,14 @@ export function useAcpSession({
     ...view,
     runState: acpRunState(session?.status, session?.stopReason, timeline),
     chatStatus: acpChatStatus(session?.status),
-    workerOnline: now > 0 && isWorkerOnline(lastWorker.current?.lastSeenAt ?? undefined, now),
-    workerKnown: worker !== undefined && !(worker instanceof Error),
+    // Hidden Tabs drop the WorkerStatus subscription, so presence is unknown rather than offline.
+    workerOnline:
+      isVisible &&
+      worker !== undefined &&
+      !(worker instanceof Error) &&
+      isWorkerOnline(worker.lastSeenAt ?? undefined, now),
+    workerKnown: isVisible && worker !== undefined && !(worker instanceof Error),
+    workerLastSeenAt: lastWorker.current?.lastSeenAt,
     workerName: lastWorker.current?.name,
     interactions: interactions && !(interactions instanceof Error) ? interactions : noInteractions,
     contentError: frames instanceof Error ? frames : undefined,

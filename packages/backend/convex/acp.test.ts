@@ -10,6 +10,7 @@ import { normalizeWorkerKey, tokenDigest, workerIssuer } from "../src/worker/aut
 import {
   ACP_COLD_AFTER_MS,
   ACP_COMMAND_RETENTION_MS,
+  ACP_COMMAND_EXPIRY_MS,
   ACP_INTERACTION_RETENTION_MS,
   acpAnswerError,
   type AcpAgentReport,
@@ -191,6 +192,7 @@ test("chat listings use agent definition names, fall back to IDs and mark built-
   expect(chats.find((chat) => chat.id === f.chat)?.agent).toEqual({
     agentId: agent.agentId,
     name: agent.agentId,
+    worker: f.first.identity.workerId,
   });
   expect(chats.find((chat) => chat.id === builtin)?.agent).toBeNull();
   const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
@@ -201,6 +203,7 @@ test("chat listings use agent definition names, fall back to IDs and mark built-
   expect(renamed.find((chat) => chat.id === f.chat)?.agent).toEqual({
     agentId: agent.agentId,
     name: "Workspace agent name",
+    worker: f.first.identity.workerId,
   });
   await f.owner.mutation(api.acp.DeleteAgentDefinition, { workspace: f.workspace, id });
   const removed = await f.owner.query(api.aisdk.ListChats, { workspace: f.workspace });
@@ -253,34 +256,141 @@ test("ACP title generation authorizes viewers and skips titled or user-titled ch
   ).rejects.toThrow(/ACP_NOT_ACP/);
 });
 
-test("import binds an agent session to one chat only", async () => {
+test("opening an indexed agent session creates and links a personal chat while offline", async () => {
   const f = await fixture();
-  const imported = {
+  const worker = f.first.identity.workerId;
+  const project = await f.owner.mutation(api.projects.create, {
     workspace: f.workspace,
-    worker: f.first.identity.workerId,
+    name: "Code",
+    folders: [{ workerId: worker, directory: "/work" }],
+  });
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
     agentId: agent.agentId,
-    cwd: "/work",
+    upserts: [
+      { sessionId: "outside-session", cwd: "/work", title: "Earlier work", updatedAt: 1234 },
+    ],
+    removals: [],
+    finish: { count: 1, truncated: false },
+  });
+  const binding = {
+    workspace: f.workspace,
+    worker,
+    agentId: agent.agentId,
     sessionId: "outside-session",
   };
-  const chat = await f.owner.mutation(api.acp.CreateSession, imported);
-  expect((await f.owner.query(api.acp.GetSession, { chat })).agent.sessionId).toBe(
-    "outside-session",
-  );
-  // The Worker may still confirm the same ID after loading it, but never replace it.
+  const chat = await f.owner.mutation(api.acp.OpenAgentSession, binding);
+  expect(await f.t.run((ctx) => ctx.db.get(chat))).toMatchObject({
+    title: "Earlier work",
+    lastInteractionAt: 1234,
+    project,
+    scope: "personal",
+    agent: { sessionId: "outside-session", cwd: "/work" },
+  });
+  const rows = await f.owner.query(api.acp.ListAgentSessionIndex, {
+    workspace: f.workspace,
+    agentId: agent.agentId,
+    paginationOpts: { cursor: null, numItems: 30 },
+  });
+  expect(rows.page).toMatchObject([{ chat, project, sessionId: "outside-session" }]);
+  expect(
+    await f.owner.query(api.acp.SearchAgentSessionIndex, {
+      workspace: f.workspace,
+      agentId: agent.agentId,
+      query: "Earlier",
+    }),
+  ).toMatchObject([{ chat, project, sessionId: "outside-session" }]);
+  expect(await f.owner.mutation(api.acp.OpenAgentSession, binding)).toBe(chat);
   await f.first.machine.mutation(api.acp.updateSession, {
     chat,
     patch: { sessionId: "outside-session", history: "full" },
   });
   await expect(
-    f.first.machine.mutation(api.acp.updateSession, { chat, patch: { sessionId: "other" } }),
+    f.first.machine.mutation(api.acp.updateSession, {
+      chat,
+      patch: { sessionId: "other" },
+    }),
   ).rejects.toThrow(/ACP_SESSION_BOUND/);
+  await expect(f.member.mutation(api.acp.OpenAgentSession, binding)).rejects.toThrow();
+  await expect(
+    f.member.query(api.acp.ListAgentSessionIndex, {
+      workspace: f.workspace,
+      agentId: agent.agentId,
+      paginationOpts: { cursor: null, numItems: 30 },
+    }),
+  ).rejects.toThrow();
+});
 
-  await expect(f.owner.mutation(api.acp.CreateSession, imported)).rejects.toThrow(
+test("opening a stale linked index recreates its chat, but never duplicates an existing binding", async () => {
+  const f = await fixture();
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "bound" },
+  });
+  const binding = {
+    workspace: f.workspace,
+    worker: f.first.identity.workerId,
+    agentId: agent.agentId,
+    sessionId: "bound",
+  };
+  expect(await f.owner.mutation(api.acp.OpenAgentSession, binding)).toBe(f.chat);
+  const indexed = await f.t.run((ctx) => ctx.db.query("acp_agent_sessions").first());
+  await f.t.run((ctx) => ctx.db.patch(indexed!._id, { chat: undefined }));
+  await expect(f.owner.mutation(api.acp.OpenAgentSession, binding)).rejects.toThrow(
     /ACP_SESSION_BOUND/,
   );
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(indexed!._id, { chat: f.chat });
+    await ctx.db.delete(f.chat);
+    const session = await ctx.db
+      .query("acp_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", f.chat))
+      .first();
+    await ctx.db.delete(session!._id);
+  });
+  expect(await f.owner.mutation(api.acp.OpenAgentSession, binding)).not.toBe(f.chat);
+});
+
+test("new sessions always create fresh bindings and derive Project or temporary directories", async () => {
+  const f = await fixture();
+  const worker = f.first.identity.workerId;
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/agent" });
+  const project = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "Code",
+    folders: [{ workerId: worker, directory: "/projects/code" }],
+  });
+  const noFolder = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "No folder",
+  });
+  for (const target of [
+    { project: undefined, cwd: undefined, expected: "/tmp/agent" },
+    { project, cwd: undefined, expected: "/projects/code" },
+    { project: noFolder, cwd: undefined, expected: "/tmp/agent" },
+    { project, cwd: "/explicit", expected: "/explicit" },
+  ]) {
+    const args = {
+      workspace: f.workspace,
+      worker,
+      agentId: agent.agentId,
+      project: target.project,
+      cwd: target.cwd,
+    };
+    const first = await f.owner.mutation(api.acp.CreateSession, args);
+    const second = await f.owner.mutation(api.acp.CreateSession, args);
+    expect(second).not.toBe(first);
+    const chat = await f.t.run((ctx) => ctx.db.get(first));
+    expect(chat?.agent?.cwd).toBe(target.expected);
+    expect(chat?.agent).not.toHaveProperty("sessionId");
+  }
   await expect(
-    f.member.mutation(api.acp.CreateSession, { ...imported, sessionId: "member-import" }),
-  ).rejects.toThrow();
+    f.owner.mutation(api.acp.CreateSession, {
+      workspace: f.workspace,
+      worker,
+      agentId: agent.agentId,
+      cwd: "relative",
+    }),
+  ).rejects.toThrow("ACP_INVALID_CWD");
 });
 
 test("prompt admission is busy-aware, ended-aware and retry-idempotent; claim erases content", async () => {
@@ -478,6 +588,20 @@ test("lifecycle mirrors boundaries, preserves user titles and writes the ACP ses
     title: "Agent title",
     agent: { sessionId: "bound" },
   });
+  expect(await f.t.run((ctx) => ctx.db.query("acp_agent_sessions").first())).toMatchObject({
+    chat: f.chat,
+    sessionId: "bound",
+    cwd: "/work",
+    title: "Agent title",
+  });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { title: "Changed title" },
+  });
+  expect(await f.t.run((ctx) => ctx.db.query("acp_agent_sessions").first())).toMatchObject({
+    chat: f.chat,
+    title: "Changed title",
+  });
   await f.first.machine.mutation(api.acp.updateSession, {
     chat: f.chat,
     patch: { sessionId: "bound" },
@@ -570,6 +694,12 @@ test.each([false, true])(
     });
     expect(await f.t.run((ctx) => ctx.db.get(f.chat))).toBeNull();
     expect(await f.t.run((ctx) => ctx.db.query("acp_sessions").take(1))).toEqual([]);
+    const indexed = await f.t.run((ctx) => ctx.db.query("acp_agent_sessions").first());
+    if (deleteInAgent) expect(indexed).toBeNull();
+    else {
+      expect(indexed).toMatchObject({ sessionId: "bound" });
+      expect(indexed).not.toHaveProperty("chat");
+    }
   },
 );
 
@@ -613,6 +743,27 @@ test("pruning keeps fresh receipts and removes expired terminal content", async 
   expect(await f.t.run((ctx) => ctx.db.get(rows.fresh))).not.toBeNull();
 });
 
+test("pruning expires stale agent-level sync commands without needing a chat", async () => {
+  const f = await fixture();
+  const command = await f.t.run((ctx) =>
+    ctx.db.insert("acp_commands", {
+      workspace: f.workspace,
+      worker: f.first.identity.workerId,
+      agentId: agent.agentId,
+      kind: "sync_sessions",
+      payload: { kind: "sync_sessions", agentId: agent.agentId },
+      clientId: "stale-sync",
+      by: "owner",
+      status: "pending",
+    }),
+  );
+  vi.useFakeTimers();
+  // A full second past expiry: convex-test creation times can lead the faked clock by a tick.
+  vi.setSystemTime(Date.now() + ACP_COMMAND_EXPIRY_MS + 1_000);
+  await f.t.mutation(internal.acp.prune, {});
+  expect(await f.t.run((ctx) => ctx.db.get(command))).toBeNull();
+});
+
 test("draft config validates advertised choices; live commands and results remain issuer-only", async () => {
   const f = await fixture();
   await expect(
@@ -623,111 +774,135 @@ test("draft config validates advertised choices; live commands and results remai
   expect(await f.owner.query(api.acp.GetSession, { chat: f.chat })).toMatchObject({
     draft: { config: [{ configId: "model", value: "b" }], modeId: "code" },
   });
-  const command = await f.owner.mutation(api.acp.ListAgentSessions, {
+  const command = await f.owner.mutation(api.acp.Authenticate, {
     workspace: f.workspace,
     worker: f.first.identity.workerId,
     agentId: agent.agentId,
-    cwd: "/work",
-    clientId: "list",
+    methodId: "login",
+    clientId: "login",
   });
   expect(await f.member.query(api.acp.GetCommand, { command })).toBeNull();
   await expect(f.member.query(api.acp.ListAgents, { workspace: f.workspace })).rejects.toThrow();
 });
 
-test("session listing derives the same Project or temporary directory as session creation", async () => {
+test("agent session sync is online-only and debounces pending, claimed and fresh syncs", async () => {
   const f = await fixture();
-  const worker = f.first.identity.workerId;
+  const args = { workspace: f.workspace, agentId: agent.agentId };
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
   await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/agent" });
-  const project = await f.owner.mutation(api.projects.create, {
-    workspace: f.workspace,
-    name: "Code",
-    folders: [{ workerId: worker, directory: "/projects/code" }],
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  let commands = await f.first.machine.query(api.acp.assignedCommands, {});
+  expect(commands).toHaveLength(1);
+  expect(commands[0]?.kind).toBe("sync_sessions");
+  const command = commands[0]!._id;
+  expect((await f.first.machine.mutation(api.acp.claimCommand, { command }))?.payload).toEqual({
+    kind: "sync_sessions",
+    agentId: agent.agentId,
   });
-  const noFolder = await f.owner.mutation(api.projects.create, {
-    workspace: f.workspace,
-    name: "No folder",
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.first.machine.mutation(api.acp.finishCommand, { command, status: "done" });
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId: agent.agentId,
+    upserts: [],
+    removals: [],
+    finish: { count: 0, truncated: false },
   });
-  const targets = [
-    { project: undefined, cwd: undefined, expected: "/tmp/agent" },
-    { project, cwd: undefined, expected: "/projects/code" },
-    { project: noFolder, cwd: undefined, expected: "/tmp/agent" },
-    { project, cwd: "/explicit", expected: "/explicit" },
-  ];
-  for (const [index, target] of targets.entries()) {
-    const binding = {
-      workspace: f.workspace,
-      worker,
-      agentId: agent.agentId,
-      project: target.project,
-      cwd: target.cwd,
-    };
-    const command = await f.owner.mutation(api.acp.ListAgentSessions, {
-      ...binding,
-      clientId: `directory-${index}`,
-      cursor: index === 1 ? "next-page" : undefined,
-    });
-    expect(await f.t.run((ctx) => ctx.db.get(command))).toMatchObject({
-      payload: {
-        kind: "list",
-        agentId: agent.agentId,
-        cwd: target.expected,
-        ...(index === 1 ? { cursor: "next-page" } : {}),
-      },
-    });
-    const chat = await f.owner.mutation(api.acp.CreateSession, binding);
-    expect(await f.t.run((ctx) => ctx.db.get(chat))).toMatchObject({
-      agent: { cwd: target.expected },
-    });
-  }
-  await expect(
-    f.owner.mutation(api.acp.ListAgentSessions, {
-      workspace: f.workspace,
-      worker: f.second.identity.workerId,
-      agentId: agent.agentId,
-      clientId: "no-directory",
-    }),
-  ).rejects.toThrow("ACP_INVALID_CWD");
-  await expect(
-    f.owner.mutation(api.acp.ListAgentSessions, {
-      workspace: f.workspace,
-      worker,
-      agentId: agent.agentId,
-      cwd: "relative",
-      clientId: "invalid-directory",
-    }),
-  ).rejects.toThrow("ACP_INVALID_CWD");
-  const foreignProject = await f.t.run(async (ctx) => {
-    const workspace = await ctx.db.insert("workspaces", {
-      ownerType: "user",
-      ownerId: "owner",
-      name: "Other",
-    });
-    return ctx.db.insert("projects", {
-      workspace,
-      userId: "owner",
-      name: "Foreign",
-      folders: [{ workerId: worker, directory: "/secret" }],
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId: agent.agentId,
+    upserts: [],
+    removals: [],
+    start: true,
+  });
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.t.run(async (ctx) => {
+    const row = await ctx.db
+      .query("worker_agents")
+      .withIndex("by_worker_and_agentId", (q) =>
+        q
+          .eq("workspace", f.workspace)
+          .eq("worker", f.first.identity.workerId)
+          .eq("agentId", agent.agentId),
+      )
+      .first();
+    await ctx.db.patch(row!._id, {
+      sessionsSync: { status: "done", at: Date.now() - 60_001, count: 0, truncated: false },
     });
   });
-  await expect(
-    f.owner.mutation(api.acp.ListAgentSessions, {
-      workspace: f.workspace,
-      worker,
-      agentId: agent.agentId,
-      project: foreignProject,
-      cwd: "/explicit",
-      clientId: "foreign-project",
-    }),
-  ).rejects.toThrow();
-  await expect(
-    f.member.mutation(api.acp.ListAgentSessions, {
-      workspace: f.workspace,
-      worker,
-      agentId: agent.agentId,
-      project,
-      clientId: "member-list",
-    }),
-  ).rejects.toThrow();
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  commands = await f.first.machine.query(api.acp.assignedCommands, {});
+  expect(commands).toHaveLength(1);
+  expect(await f.second.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await expect(f.member.mutation(api.acp.SyncAgentSessions, args)).rejects.toThrow();
+});
+
+test("machine sync applies metadata diffs, keeps links and finishes state across agent reports", async () => {
+  const f = await fixture();
+  const agentId = agent.agentId;
+  const before = { sessionId: "one", cwd: "/one", title: "Original", updatedAt: 10 };
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId,
+    upserts: [before, { sessionId: "gone", cwd: "/gone", updatedAt: 1 }],
+    removals: [],
+    start: true,
+  });
+  expect(
+    (await f.owner.query(api.acp.ListAgents, { workspace: f.workspace })).find(
+      (row) => row.worker === f.first.identity.workerId,
+    )?.sessionsSync?.status,
+  ).toBe("running");
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "one", title: "Bound title" },
+  });
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId,
+    upserts: [
+      { sessionId: "one", cwd: "/changed", updatedAt: 20 },
+      { sessionId: "two", cwd: "/two", title: "Second", updatedAt: 30 },
+    ],
+    removals: ["gone"],
+    finish: { count: 2, truncated: false },
+  });
+  expect(await f.first.machine.query(api.acp.knownAgentSessions, { agentId })).toEqual([
+    { sessionId: "one", cwd: "/changed", updatedAt: 20 },
+    { sessionId: "two", cwd: "/two", title: "Second", updatedAt: 30 },
+  ]);
+  const linked = await f.t.run((ctx) =>
+    ctx.db
+      .query("acp_agent_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", f.chat))
+      .first(),
+  );
+  expect(linked).toMatchObject({ sessionId: "one", chat: f.chat });
+  expect(linked).not.toHaveProperty("title");
+  const { defaults: _defaults, ...probe } = agent;
+  expect(await f.first.machine.mutation(api.acp.reportAgents, { agents: [probe] })).toEqual({
+    [agentId]: agent.defaults,
+  });
+  expect(
+    (await f.owner.query(api.acp.ListAgents, { workspace: f.workspace })).find(
+      (row) => row.worker === f.first.identity.workerId,
+    ),
+  ).toMatchObject({
+    defaults: agent.defaults,
+    sessionsSync: { status: "done", count: 2, truncated: false },
+  });
+  await f.second.machine.mutation(api.acp.syncAgentSessions, {
+    agentId,
+    upserts: [{ sessionId: "one", cwd: "/other-worker", updatedAt: 40 }],
+    removals: [],
+    finish: { error: "Cannot list" },
+  });
+  expect(await f.first.machine.query(api.acp.knownAgentSessions, { agentId })).toHaveLength(2);
+  expect(await f.second.machine.query(api.acp.knownAgentSessions, { agentId })).toEqual([
+    { sessionId: "one", cwd: "/other-worker", updatedAt: 40 },
+  ]);
 });
 
 test("contract answers reject wrong kinds, undeclared or duplicate fields, and form bounds", () => {

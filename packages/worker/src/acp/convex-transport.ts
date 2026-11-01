@@ -31,6 +31,8 @@ export function convexAcpTransport(client: ConvexClient): AcpTransport {
     updateSession: ({ chat, ...args }) =>
       client.mutation(api.acp.updateSession, { ...args, chat: chat as Id<"aisdk_chats"> }),
     reportAgents: (args) => client.mutation(api.acp.reportAgents, args),
+    knownAgentSessions: (args) => client.query(api.acp.knownAgentSessions, args),
+    syncAgentSessions: (args) => client.mutation(api.acp.syncAgentSessions, args),
     recoverWorker: (args) => client.mutation(api.acp.recoverWorker, args),
   };
 }

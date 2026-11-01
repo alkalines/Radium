@@ -557,6 +557,7 @@ export const ListChats = workspaceQuery({
         ? {
             agentId: chat.agent.agentId,
             name: agentNames.get(chat.agent.agentId) ?? chat.agent.agentId,
+            worker: chat.agent.worker,
           }
         : null,
       canManage: canManageChat(chat, ctx.workspace, ctx.identity._id),

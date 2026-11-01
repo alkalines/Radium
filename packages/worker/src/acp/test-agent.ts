@@ -20,6 +20,8 @@ export interface ScriptedAgentOptions {
   store?: string;
   /** Gate session creation before a prompt keyword can be inspected. */
   requireAuth?: boolean;
+  /** Exercise discovery's safety gate: no throwaway session without advertised deletion. */
+  noDelete?: boolean;
 }
 
 interface StoredSession {
@@ -137,7 +139,12 @@ export async function runScriptedAgent(options: ScriptedAgentOptions = {}): Prom
     agentInfo: { name: "radium-scripted-agent", title: "Scripted ACP Agent", version: "1.0.0" },
     agentCapabilities: {
       loadSession: true,
-      sessionCapabilities: { list: {}, resume: {}, close: {}, delete: {} },
+      sessionCapabilities: {
+        list: {},
+        resume: {},
+        close: {},
+        ...(options.noDelete ? {} : { delete: {} }),
+      },
       auth: { logout: {} },
       promptCapabilities: { image: false, audio: false, embeddedContext: false },
     },
@@ -507,6 +514,8 @@ function parseOptions(args: string[]): ScriptedAgentOptions {
     const argument = args[index];
     if (argument === "--require-auth") {
       options.requireAuth = true;
+    } else if (argument === "--no-delete") {
+      options.noDelete = true;
     } else if (argument === "--store") {
       const value = args[++index];
       if (!value || value.startsWith("--")) throw new Error("--store requires a file path");

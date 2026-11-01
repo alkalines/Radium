@@ -81,8 +81,11 @@ duplicating this management surface.
 that machine. It contains identity (`name`, `source`, `icon`, `version`), status,
 capabilities (`loadSession`, list/resume/close/delete/fork/logout, prompt
 image/audio/embeddedContext, MCP HTTP/SSE), auth methods and probe time. Session
-creation can add last-seen defaults (config, modes, available commands) for draft
-Composer controls.
+creation adds last-seen defaults (config, modes, available commands) for draft
+Composer controls; an agent advertising `delete` gets them right after its probe
+from a throwaway session ([Draft Defaults](Sessions.md#draft-defaults)).
+`sessionsSync` records the last [session index](Sessions.md#agent-session-index)
+sync on that Worker.
 
 ### Editing And Removing Definitions
 

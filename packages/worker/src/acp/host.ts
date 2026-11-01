@@ -15,15 +15,17 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { ForkSessionRequest, ForkSessionResponse } from "@agentclientprotocol/sdk/unstable";
 import {
-  ACP_COMMAND_RESULT_BYTES,
+  ACP_AGENT_SESSIONS_MAX,
+  ACP_AGENT_SESSIONS_SYNC_CHUNK,
   ACP_INTERACTION_REQUEST_BYTES,
   utf8Bytes,
   acpAgentDefinitionError,
+  validAcpToken,
+  type AcpAgentSessionEntry,
   type AcpAgentDefinition,
   type AcpAgentReport,
   type AcpInteractionAnswer,
   type AcpInteractionRequest,
-  type AcpSessionListPage,
 } from "backend/src/acp/contract";
 import { resolveAgentCommand } from "./config.js";
 import { AcpAgentProcess, agentReport, probeAgent } from "./process.js";
@@ -31,6 +33,8 @@ import { AcpLifecycle, acpDelay } from "./lifecycle.js";
 import { normalizeElicitation } from "./interactions.js";
 import { AcpTimeline, normalizeConfig, normalizeToolContent } from "./timeline.js";
 import { AcpRelay } from "./relay.js";
+import { prepareTempDirectory } from "../presence.js";
+import { validChatWorkerDirectory } from "backend/src/worker/chat-config";
 import type {
   AcpTransport,
   AcpAssignment,
@@ -93,6 +97,7 @@ export class AcpHost {
   private initializing?: Promise<void>;
   private definitionsReady = false;
   private definitionsRevision = 0;
+  private maintenance: Promise<void> = Promise.resolve();
 
   constructor(private readonly transport: AcpTransport) {
     this.retry = setInterval(() => {
@@ -209,17 +214,169 @@ export class AcpHost {
     void this.stopRetiredAgents();
     try {
       const reports = await Promise.all(
-        [...this.slots.values()].map((slot) => probeAgent(slot.definition, this.abort.signal)),
+        [...this.slots.values()].map(async (slot) => {
+          const report = await probeAgent(slot.definition, this.abort.signal);
+          const defaults = this.reports.find((entry) => entry.agentId === report.agentId)?.defaults;
+          return defaults ? { ...report, defaults } : report;
+        }),
       );
       if (this.stopped || revision !== this.definitionsRevision) return;
       this.reports = reports;
-      await this.lifecycle.run("worker", () => this.transport.reportAgents({ agents: reports }));
+      const defaults = await this.lifecycle.run("worker", () =>
+        this.transport.reportAgents({ agents: reports }),
+      );
       if (this.stopped || revision !== this.definitionsRevision) return;
+      for (const report of reports)
+        if (defaults[report.agentId]) report.defaults = defaults[report.agentId];
       this.definitionsReady = true;
       void this.pump();
       void this.syncWarm();
+      this.maintenance = this.maintenance
+        .catch(() => undefined)
+        .then(async () => {
+          for (const report of reports) {
+            if (this.stopped || !this.available || revision !== this.definitionsRevision) return;
+            if (report.status !== "ready") continue;
+            const key = `agent:${report.agentId}`;
+            const work = (this.commandTails.get(key) ?? Promise.resolve())
+              .catch(() => undefined)
+              .then(async () => {
+                await this.discoverDefaults(report.agentId);
+                if (report.capabilities.list) await this.syncAgentSessions(report.agentId);
+              })
+              .catch(() => undefined);
+            this.commandTails.set(key, work);
+            await work;
+            if (this.commandTails.get(key) === work) this.commandTails.delete(key);
+          }
+        });
     } catch {
       // The Convex subscription delivers a fresh definition set after reconnect.
+    }
+  }
+
+  /** Discovery is optional and must never turn a successfully probed agent into a failed one. */
+  private async discoverDefaults(agentId: string): Promise<void> {
+    const report = this.reports.find((entry) => entry.agentId === agentId);
+    if (
+      !report ||
+      report.status !== "ready" ||
+      !report.capabilities.delete ||
+      report.defaults?.config
+    )
+      return;
+    let process: AcpAgentProcess | undefined;
+    let sessionId: string | undefined;
+    try {
+      process = await this.processFor(agentId);
+      const created = await process.connection.agent.request(methods.agent.session.new, {
+        cwd: await prepareTempDirectory(),
+        mcpServers: [],
+      });
+      sessionId = created.sessionId;
+      const timeline = new AcpTimeline();
+      for (const notification of this.earlyUpdates.get(process) ?? [])
+        if (notification.sessionId === sessionId) timeline.update(notification.update);
+      const defaults = {
+        config: normalizeConfig(created),
+        ...(timeline.sessionPatch.commands ? { commands: timeline.sessionPatch.commands } : {}),
+      };
+      this.reports = this.reports.map((entry) =>
+        entry.agentId === agentId ? { ...entry, defaults } : entry,
+      );
+      await this.lifecycle.run("worker", () =>
+        this.transport.reportAgents({ agents: this.reports }),
+      );
+    } catch {
+      // Some agents cannot create a session before sign-in; discovery is best effort only.
+    } finally {
+      if (process && sessionId) {
+        await process.connection.agent
+          .request(methods.agent.session.delete, { sessionId })
+          .catch(() => undefined);
+        this.earlyUpdates.set(
+          process,
+          (this.earlyUpdates.get(process) ?? []).filter(
+            (notification) => notification.sessionId !== sessionId,
+          ),
+        );
+      }
+    }
+  }
+
+  /** Enumerate all directories once, diff locally, and send only changed metadata in chunks. */
+  private async syncAgentSessions(agentId: string): Promise<void> {
+    const write = (args: Omit<Parameters<AcpTransport["syncAgentSessions"]>[0], "agentId">) =>
+      this.lifecycle.run(`agent-index:${agentId}`, () =>
+        this.transport.syncAgentSessions({ agentId, ...args }),
+      );
+    await write({ upserts: [], removals: [], start: true });
+    try {
+      const known = new Map(
+        (await this.transport.knownAgentSessions({ agentId })).map((row) => [row.sessionId, row]),
+      );
+      const process = await this.processFor(agentId);
+      const sessions = new Map<string, AcpAgentSessionEntry>();
+      let cursor: string | undefined;
+      let truncated = false;
+      for (let page = 0; page < 50; page++) {
+        const response = await process.connection.agent.request(
+          methods.agent.session.list,
+          cursor ? { cursor } : {},
+        );
+        for (const session of response.sessions) {
+          if (!validAcpToken(session.sessionId) || !validChatWorkerDirectory(session.cwd))
+            throw new Error("Agent returned invalid session metadata");
+          if (!sessions.has(session.sessionId) && sessions.size === ACP_AGENT_SESSIONS_MAX) {
+            truncated = true;
+            break;
+          }
+          const parsed = session.updatedAt ? Date.parse(session.updatedAt) : NaN;
+          const previous = sessions.get(session.sessionId) ?? known.get(session.sessionId);
+          const title = session.title?.trim().slice(0, 500);
+          sessions.set(session.sessionId, {
+            sessionId: session.sessionId,
+            cwd: session.cwd,
+            ...(title ? { title } : {}),
+            updatedAt: Number.isFinite(parsed) ? parsed : (previous?.updatedAt ?? Date.now()),
+          });
+        }
+        cursor = response.nextCursor ?? undefined;
+        if (truncated || !cursor) break;
+        if (sessions.size >= ACP_AGENT_SESSIONS_MAX || page === 49) {
+          truncated = true;
+          break;
+        }
+      }
+      const upserts = [...sessions.values()].filter((row) => {
+        const previous = known.get(row.sessionId);
+        return (
+          !previous ||
+          previous.cwd !== row.cwd ||
+          previous.title !== row.title ||
+          previous.updatedAt !== row.updatedAt
+        );
+      });
+      const removals = truncated ? [] : [...known.keys()].filter((id) => !sessions.has(id));
+      for (
+        let offset = 0;
+        offset < Math.max(upserts.length, removals.length);
+        offset += ACP_AGENT_SESSIONS_SYNC_CHUNK
+      )
+        await write({
+          upserts: upserts.slice(offset, offset + ACP_AGENT_SESSIONS_SYNC_CHUNK),
+          removals: removals.slice(offset, offset + ACP_AGENT_SESSIONS_SYNC_CHUNK),
+        });
+      await write({ upserts: [], removals: [], finish: { count: sessions.size, truncated } });
+    } catch (error) {
+      await write({
+        upserts: [],
+        removals: [],
+        finish: {
+          error: error instanceof Error ? error.message.slice(0, 500) : "Agent session sync failed",
+        },
+      });
+      throw error;
     }
   }
 
@@ -623,26 +780,8 @@ export class AcpHost {
           if (payload.epoch === local.relay.epoch)
             local.relay.push(local.timeline.history(payload.before, payload.limit), "history");
         }
-      } else if (payload.kind === "list") {
-        const process = await this.processFor(payload.agentId);
-        const response = await process.connection.agent.request(methods.agent.session.list, {
-          cwd: payload.cwd,
-          ...(payload.cursor ? { cursor: payload.cursor } : {}),
-        });
-        const page: AcpSessionListPage = {
-          sessions: response.sessions.map((session) => ({
-            sessionId: session.sessionId,
-            cwd: session.cwd,
-            ...(session.title ? { title: session.title } : {}),
-            ...(session.updatedAt ? { updatedAt: session.updatedAt } : {}),
-          })),
-          ...(response.nextCursor ? { nextCursor: response.nextCursor } : {}),
-        };
-        const result = JSON.stringify(page);
-        if (utf8Bytes(result) > ACP_COMMAND_RESULT_BYTES)
-          throw new Error("Agent session list exceeds result limit");
-        await this.finish(claim, "done", undefined, result);
-        return;
+      } else if (payload.kind === "sync_sessions") {
+        await this.syncAgentSessions(payload.agentId);
       } else if (payload.kind === "authenticate" || payload.kind === "logout") {
         const process = await this.processFor(payload.agentId);
         if (payload.kind === "authenticate")
@@ -702,6 +841,14 @@ export class AcpHost {
           await process.connection.agent.request(
             payload.kind === "close" ? methods.agent.session.close : methods.agent.session.delete,
             { sessionId: payload.sessionId },
+          );
+        if (capability && payload.kind === "delete")
+          await this.lifecycle.run(`agent-index:${payload.agentId}`, () =>
+            this.transport.syncAgentSessions({
+              agentId: payload.agentId,
+              upserts: [],
+              removals: [payload.sessionId],
+            }),
           );
         for (const [chat, session] of this.sessions)
           if (
@@ -979,6 +1126,6 @@ export class AcpHost {
     );
     for (const local of this.sessions.values()) local.relay.stop();
     await this.lifecycle.close();
-    await Promise.allSettled([...this.commandTails.values(), ...this.turns]);
+    await Promise.allSettled([...this.commandTails.values(), ...this.turns, this.maintenance]);
   }
 }

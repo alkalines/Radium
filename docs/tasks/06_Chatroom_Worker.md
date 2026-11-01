@@ -422,6 +422,31 @@ session rendered as ended.
 Open: registry binary install, terminal-auth `agent login`, Gateway profiles, MCP
 pass-through and prompt attachments.
 
+### ACP Session Index, Model Menu And Offline States (2026-11-01)
+
+The Run target picker's **Session** row and the import path through
+`CreateSession({sessionId})`/`ListAgentSessions`/the `list` command are gone: a New
+session always starts a new agent session. Instead the Worker mirrors a small index of
+every list-capable agent's sessions (`acp_agent_sessions`, `worker_agents.sessionsSync`)
+with diff-only writes (`acp.knownAgentSessions` / `acp.syncAgentSessions`), after each
+definitions probe and on `sync_sessions` commands from `acp.SyncAgentSessions`
+(online Workers, 60 s debounce). Home → Agents browses it (`ListAgentSessionIndex`,
+`SearchAgentSessionIndex`) and `acp.OpenAgentSession` binds a chat on demand. Agents
+with `delete` get draft defaults from a throwaway session after the probe. The ACP
+Model menu infers the lab per model (neutral tile when unknown), lists a model routed
+through several agent providers once with a Provider selector, and holds Provider,
+Mode, Reasoning and Options in its footer. Offline Workers are marked on Home rows and
+explained in the Session screen.
+
+Verification: backend 50 files / 392 tests; Worker unit 16 files / 115 tests; web 43
+tests; web typecheck at the 113-error baseline with none in touched files. Dev
+deployment with the real OpenCode agent: the first sync indexed 766 sessions over 33
+directories, a session deleted in OpenCode disappeared on the next sync, defaults
+discovery produced 448 models, `effort` and `mode` for drafts, a June session was
+found by title search and opened from Home with its history replayed, and pausing the
+Worker (`SIGSTOP`) produced the offline Alert in the Session and `Offline` on Home rows,
+clearing after it resumed.
+
 ## Acceptance
 
 - The design covers offline workers, duplicate dispatch, crash/restart, cancellation, unauthorized jobs, and output backpressure.

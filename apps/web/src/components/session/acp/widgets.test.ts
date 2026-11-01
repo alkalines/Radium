@@ -205,11 +205,25 @@ describe("ACP shared model picker adapter", () => {
       ],
     };
     const adapter = acpModelConfig(config);
+    // The value's `provider/` prefix is where the agent routes the model; its group, else the
+    // provider's display name, names it.
     expect(adapter.models).toEqual([
-      { slug: "native/a", name: "Alpha", author: null },
-      { slug: "native/b", name: "Beta", author: null },
+      {
+        slug: "a",
+        name: "Alpha",
+        author: null,
+        providers: [{ id: "native", name: "Native", logo: "native" }],
+      },
+      {
+        slug: "b",
+        name: "Beta",
+        author: null,
+        providers: [{ id: "native", name: "Native", logo: "native" }],
+      },
     ]);
     expect(adapter.model?.currentValue).toBe("native/b");
+    expect(adapter.selectedModel).toBe("b");
+    expect(adapter.selectedProvider).toBe("native");
     expect(adapter.reasoning?.currentValue).toBe("deep");
     expect(adapter.reasoning?.choices).toEqual(
       config.options[1]!.type === "select" ? config.options[1]!.choices : [],
@@ -224,6 +238,56 @@ describe("ACP shared model picker adapter", () => {
       ).reasoning?.currentValue,
     ).toBe("quick");
     expect(config.options[1]!.currentValue).toBe("deep");
+  });
+
+  test("one model routed through several providers is one row with a provider choice", () => {
+    const adapter = acpModelConfig({
+      options: [
+        {
+          id: "model",
+          category: "model",
+          name: "Model",
+          type: "select",
+          currentValue: "openrouter/anthropic/claude-sonnet-4.6",
+          choices: [
+            { value: "claude-agent/claude-sonnet-4-6", name: "claude-agent/Sonnet 4.6" },
+            { value: "github-copilot/claude-sonnet-4.6", name: "github-copilot/Claude Sonnet 4.6" },
+            {
+              value: "openrouter/anthropic/claude-sonnet-4.6",
+              name: "openrouter/Claude Sonnet 4.6",
+            },
+            { value: "claude-agent/claude-haiku-4-5-20251001", name: "claude-agent/Haiku 4.5" },
+            { value: "openrouter/anthropic/claude-haiku-4.5", name: "openrouter/Claude Haiku 4.5" },
+            { value: "openrouter/z-ai/glm-5", name: "openrouter/GLM-5" },
+            { value: "openrouter/z-ai/glm.5", name: "openrouter/GLM.5" },
+          ],
+        },
+      ],
+    });
+    // Alphabetical by `Lab: Model`; models.dev provider IDs get their names, unknown ones title-case.
+    expect(
+      adapter.models.map(({ slug, name, providers }) => [
+        slug,
+        name,
+        providers?.map((p) => p.name),
+      ]),
+    ).toEqual([
+      // On a tie the more descriptive name wins.
+      ["claude-haiku-4-5", "Claude Haiku 4.5", ["Claude Agent", "OpenRouter"]],
+      ["claude-sonnet-4-6", "Claude Sonnet 4.6", ["Claude Agent", "GitHub Copilot", "OpenRouter"]],
+      ["glm-5", "GLM-5", ["OpenRouter"]],
+      // Two choices of one provider never merge into one row.
+      ["openrouter/z-ai/glm.5", "GLM.5", ["OpenRouter"]],
+    ]);
+    expect(adapter.selectedModel).toBe("claude-sonnet-4-6");
+    expect(adapter.selectedProvider).toBe("openrouter");
+    expect(adapter.valueFor("claude-sonnet-4-6", "github-copilot")).toBe(
+      "github-copilot/claude-sonnet-4.6",
+    );
+    // A provider the model lacks falls back to its first provider.
+    expect(adapter.valueFor("claude-haiku-4-5", "github-copilot")).toBe(
+      "claude-agent/claude-haiku-4-5-20251001",
+    );
   });
 
   test("missing and non-select primary options stay safe and visible in overflow", () => {

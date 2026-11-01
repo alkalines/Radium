@@ -6,12 +6,10 @@ import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { ChatWorkerSelection, ChatWorkerTool } from "backend/src/worker/chat-config";
 import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
-import { AcpAgentIcon } from "./acp/agent-icon";
 import { cn } from "@/lib/utils";
 import {
   agentAvailability,
   workspaceAgents,
-  type AcpExistingSession,
   type SessionAgent,
   type SessionProject,
 } from "./agents";
@@ -32,9 +30,6 @@ type WorkerControlProps = {
   agent: SessionAgent;
   onSelectionChange: (selection: ChatWorkerSelection | null) => void;
   onAgentChange: (agent: SessionAgent) => void;
-  /** The agent session a New session continues (Run target picker's Session row). */
-  existingSession?: AcpExistingSession | null;
-  onExistingSessionChange?: (session: AcpExistingSession | null) => void;
 };
 
 /**
@@ -101,8 +96,6 @@ export function SessionContext({
         agent={workerProps.agent}
         agents={worker.agents}
         agentRows={worker.agentRows}
-        existingSession={workerProps.existingSession}
-        onExistingSessionChange={workerProps.onExistingSessionChange}
         isAgentFixed={false}
         disabled={isSaving}
         onSelectionChange={worker.changeSelection}
@@ -158,7 +151,7 @@ export function SessionWorkerControl(
     | {
         isFixed: true;
         workerName: string;
-        agent: Pick<SessionAgent, "name" | "protocol"> & { icon?: string };
+        agent: Pick<SessionAgent, "name" | "protocol">;
       },
 ) {
   if ("workerName" in props) {
@@ -292,21 +285,19 @@ function useSessionWorker({
   };
 }
 
+/** `Worker (Agent)` as text only; agent artwork stays inside the Run target picker. */
 function WorkerTargetLabel({
   name,
   agent,
 }: {
   name: string;
-  agent: Pick<SessionAgent, "name" | "protocol"> & { icon?: string };
+  agent: Pick<SessionAgent, "name" | "protocol">;
 }) {
   return (
     <>
       <span className="truncate">{name}</span>
       {agent.protocol === "acp" ? (
-        <>
-          <AcpAgentIcon icon={agent.icon} name={agent.name} className="size-3.5" />
-          <span className="shrink-0 text-subtle-foreground">({agent.name})</span>
-        </>
+        <span className="shrink-0 text-subtle-foreground">({agent.name})</span>
       ) : null}
     </>
   );

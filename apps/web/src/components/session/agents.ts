@@ -22,8 +22,6 @@ export type AcpSessionAgent = Pick<SessionAgentDefinition, "agentId" | "name" | 
 export type SessionAgent = BuiltInAgent | AcpSessionAgent;
 export type AgentAvailability = "ready" | "needs_auth" | "unavailable" | "offline" | "no_worker";
 
-/** An agent session listed by the Session row; the draft's first prompt continues it. */
-export type AcpExistingSession = { sessionId: string; title?: string };
 export const builtInAgent: BuiltInAgent = { id: "radium", name: "Radium", protocol: "built-in" };
 
 /** Every enabled definition stays visible, even without a Worker or a successful report. */

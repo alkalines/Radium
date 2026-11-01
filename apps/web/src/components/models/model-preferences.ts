@@ -11,6 +11,7 @@ const noModels: string[] = [];
  * The signed-in user's model preferences (`api.preferences`): pinned models show first in a
  * `Pinned` group and hidden models leave pickers unless currently selected. User-level, so they
  * follow the user across workspaces; slugs of models a workspace cannot route are simply unused.
+ * ACP agent models pin as `acp:<agentId>:<model>` (see `ModelPicker`'s `pinScope`).
  * Setters report failures with a toast; pinning un-hides and hiding un-pins on the server.
  */
 export function useModelPreferences() {

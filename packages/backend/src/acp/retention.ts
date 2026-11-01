@@ -177,6 +177,20 @@ export async function queueChatDeletion(
   if (sessionId) {
     const agent = await findAgent(ctx, chat.workspace, chat.agent.worker, chat.agent.agentId);
     const kind = deleteInAgent && agent?.capabilities.delete ? "delete" : "close";
+    const indexed = await ctx.db
+      .query("acp_agent_sessions")
+      .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
+        q
+          .eq("workspace", chat.workspace!)
+          .eq("worker", chat.agent!.worker)
+          .eq("agentId", chat.agent!.agentId)
+          .eq("sessionId", sessionId),
+      )
+      .first();
+    if (indexed) {
+      if (kind === "delete") await ctx.db.delete(indexed._id);
+      else await ctx.db.patch(indexed._id, { chat: undefined });
+    }
     await enqueue(ctx, { workspace: chat.workspace, worker: chat.agent.worker }, by, {
       kind,
       agentId: chat.agent.agentId,
@@ -193,6 +207,12 @@ export const cleanupChat = internalMutation({
   returns: v.null(),
   handler: async (ctx, { chatId }) => {
     let more = false;
+    const indexed = await ctx.db
+      .query("acp_agent_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", chatId))
+      .take(BATCH);
+    for (const row of indexed) await ctx.db.patch(row._id, { chat: undefined });
+    if (indexed.length === BATCH) more = true;
     const sessions = await ctx.db
       .query("acp_sessions")
       .withIndex("by_chat", (q) => q.eq("chat", chatId))

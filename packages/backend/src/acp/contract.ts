@@ -30,10 +30,13 @@ export const ACP_ITEM_CONTENT_BYTES = 256 * 1024;
 export const ACP_PROMPT_BYTES = 64 * 1024;
 /** Largest serialized interaction request (permission content, elicitation schema). */
 export const ACP_INTERACTION_REQUEST_BYTES = 32 * 1024;
-/** Largest serialized command result (one `session/list` page). */
+/** Largest serialized transient command result (UTF-8 bytes). */
 export const ACP_COMMAND_RESULT_BYTES = 64 * 1024;
 /** Most items one history page may return. */
 export const ACP_HISTORY_PAGE_ITEMS = 50;
+/** Maximum agent sessions indexed by one sync; writes are sent in bounded chunks. */
+export const ACP_AGENT_SESSIONS_MAX = 2000;
+export const ACP_AGENT_SESSIONS_SYNC_CHUNK = 200;
 
 /** A Tab showing a Session renews its viewer row this often. */
 export const ACP_VIEWER_HEARTBEAT_MS = 60_000;
@@ -345,7 +348,7 @@ export type AcpPromptBlock = Infer<typeof acpPromptBlockValidator>;
 
 /**
  * Command payloads by kind. `chat` on the row names the Session for session-level kinds;
- * agent-level kinds (`list`, `authenticate`, `logout`) and post-deletion kinds (`close`,
+ * agent-level kinds (`sync_sessions`, `authenticate`, `logout`) and post-deletion kinds (`close`,
  * `delete`) carry their own target because no chat row exists or applies.
  */
 export const acpCommandPayloadValidator = v.union(
@@ -364,10 +367,8 @@ export const acpCommandPayloadValidator = v.union(
     limit: v.number(),
   }),
   v.object({
-    kind: v.literal("list"),
+    kind: v.literal("sync_sessions"),
     agentId: v.string(),
-    cwd: v.string(),
-    cursor: v.optional(v.string()),
   }),
   v.object({ kind: v.literal("authenticate"), agentId: v.string(), methodId: v.string() }),
   v.object({ kind: v.literal("logout"), agentId: v.string() }),
@@ -395,7 +396,7 @@ export const acpCommandKindValidator = v.union(
   v.literal("set_config"),
   v.literal("set_mode"),
   v.literal("history"),
-  v.literal("list"),
+  v.literal("sync_sessions"),
   v.literal("authenticate"),
   v.literal("logout"),
   v.literal("fork"),
@@ -419,12 +420,14 @@ export const acpCommandStatusValidator = v.union(
   v.literal("failed"),
 );
 
-/** One `session/list` page, returned as a `list` command's transient result. */
-export type AcpSessionListPage = {
-  sessions: { sessionId: string; cwd: string; title?: string; updatedAt?: string }[];
-  /** Opaque ACP cursor; kept only in this transient result and browser memory. */
-  nextCursor?: string;
-};
+/** Small agent-owned metadata index, never conversation content. Bounds are checked on ingestion. */
+export const acpAgentSessionEntryValidator = v.object({
+  sessionId: v.string(),
+  cwd: v.string(),
+  title: v.optional(v.string()),
+  updatedAt: v.number(),
+});
+export type AcpAgentSessionEntry = Infer<typeof acpAgentSessionEntryValidator>;
 
 // ---------------------------------------------------------------------------------------------
 // Interactions (`acp_interactions`): agent requests answered in Chatroom

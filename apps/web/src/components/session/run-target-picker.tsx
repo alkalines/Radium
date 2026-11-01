@@ -1,13 +1,5 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
-import { formatDistanceToNowStrict } from "date-fns";
-
-import { api } from "backend/convex/_generated/api";
-import type { AcpSessionListPage } from "backend/src/acp/contract";
-import { isWorkerOnline } from "backend/src/worker/presence";
 
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { ChatWorkerSelection, ChatWorkerTool } from "backend/src/worker/chat-config";
@@ -29,8 +21,6 @@ import { cn } from "@/lib/utils";
 import {
   agentAvailability,
   firstReadyWorker,
-  type AcpExistingSession,
-  type AcpSessionAgent,
   type AgentAvailability,
   type SessionAgent,
   type SessionAgentRow,
@@ -45,7 +35,7 @@ const noWorkerValue = "__no-worker__";
 const noProjectValue = "__no-project__";
 const addProjectValue = "__add-project__";
 
-type View = "summary" | "project" | "worker" | "agent" | "session";
+type View = "summary" | "project" | "worker" | "agent";
 
 /** The Project part of the Run target picker; only a draft offers it (saved Sessions keep theirs). */
 export type RunTargetProjectChoice = {
@@ -115,8 +105,6 @@ export function RunTargetPicker({
   disabled,
   onSelectionChange,
   onAgentChange,
-  existingSession,
-  onExistingSessionChange,
 }: {
   trigger: ReactNode;
   /** Accessible name of the trigger, e.g. `Run on build-box with Radium`. */
@@ -134,9 +122,6 @@ export function RunTargetPicker({
   disabled?: boolean;
   onSelectionChange: (selection: ChatWorkerSelection | null) => void;
   onAgentChange: (agent: SessionAgent) => void;
-  /** An agent session the draft continues instead of starting a new one (Session row). */
-  existingSession?: AcpExistingSession | null;
-  onExistingSessionChange?: (session: AcpExistingSession | null) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [view, setView] = useState<View>("summary");
@@ -152,15 +137,6 @@ export function RunTargetPicker({
   );
   const hasWorker = Boolean(selection?.workerId);
   const availability = agentAvailability(agent, selectedWorker, now, agentRows);
-  const listTarget =
-    agent.protocol === "acp" &&
-    agent.installation?.capabilities.list &&
-    selectedWorker &&
-    isWorkerOnline(selectedWorker.lastSeenAt, now) &&
-    projectChoice?.workspaceId &&
-    onExistingSessionChange
-      ? { workspace: projectChoice.workspaceId, worker: selectedWorker.workerId, agent }
-      : null;
 
   function handleOpenChange(open: boolean) {
     setIsOpen(open);
@@ -260,17 +236,6 @@ export function RunTargetPicker({
                   <span className="ml-auto text-xs text-muted-foreground">Unavailable</span>
                 ) : null}
               </SummaryRow>
-              {listTarget ? (
-                <SummaryRow label="Session" onOpen={() => setView("session")}>
-                  {existingSession ? (
-                    <span className="truncate" title={existingSession.title}>
-                      {existingSession.title || existingSession.sessionId}
-                    </span>
-                  ) : (
-                    <span className="truncate">New</span>
-                  )}
-                </SummaryRow>
-              ) : null}
             </div>
           ) : null}
 
@@ -388,21 +353,6 @@ export function RunTargetPicker({
                   );
                 })}
               </CommandGroup>
-            </DrillList>
-          ) : null}
-          {view === "session" && listTarget ? (
-            <DrillList
-              title="Sessions"
-              placeholder="Search sessions…"
-              onBack={() => setView("summary")}
-            >
-              <AgentSessionOptions
-                key={`${listTarget.workspace}:${listTarget.worker}:${listTarget.agent.agentId}:${project?._id ?? ""}`}
-                {...listTarget}
-                project={project}
-                selected={existingSession ?? null}
-                onSelect={(session) => pick(() => onExistingSessionChange?.(session))}
-              />
             </DrillList>
           ) : null}
         </PopoverContent>
@@ -697,178 +647,3 @@ const workerAgentLabels: Record<AgentAvailability, string> = {
   offline: "Offline",
   no_worker: "Unavailable",
 };
-
-/** Mounted only while drilling into Session: pages and command subscriptions stay local. */
-function AgentSessionOptions({
-  workspace,
-  worker,
-  agent,
-  project,
-  selected,
-  onSelect,
-}: {
-  workspace: Id<"workspaces">;
-  worker: string;
-  agent: AcpSessionAgent;
-  project: SessionProject | null;
-  selected: AcpExistingSession | null;
-  /** `null` starts a new session; a listed one is continued by the draft's first prompt. */
-  onSelect: (session: AcpExistingSession | null) => void;
-}) {
-  const list = useMutation(api.acp.ListAgentSessions);
-  const [sessions, setSessions] = useState<AcpSessionListPage["sessions"]>([]);
-  const [cursor, setCursor] = useState<string>();
-  const [command, setCommand] = useState<Id<"acp_commands">>();
-  const [loading, setLoading] = useState(false);
-  const [listed, setListed] = useState(false);
-  const [failure, setFailure] = useState<string>();
-  const mounted = useRef(false);
-  const started = useRef(false);
-  const busy = loading || command !== undefined;
-  const { data: result, error } = useQuery(
-    convexQuery(api.acp.GetCommand, command ? { command } : "skip"),
-  );
-
-  async function load(nextCursor?: string) {
-    if (busy) return;
-    setLoading(true);
-    setFailure(undefined);
-    try {
-      const id = await list({
-        workspace,
-        worker,
-        agentId: agent.agentId,
-        project: project?._id,
-        cursor: nextCursor,
-        clientId: crypto.randomUUID(),
-      });
-      if (mounted.current) setCommand(id);
-    } catch (error) {
-      if (mounted.current)
-        setFailure(error instanceof Error ? error.message : "Could not list sessions.");
-    } finally {
-      if (mounted.current) setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    mounted.current = true;
-    if (!started.current) {
-      started.current = true;
-      void load();
-    }
-    return () => {
-      mounted.current = false;
-    };
-    // The keyed view fixes the target for this mount; reopening explicitly reloads its first page.
-  }, []);
-
-  useEffect(() => {
-    if (
-      !command ||
-      (!error && result !== null && result?.status !== "done" && result?.status !== "failed")
-    )
-      return;
-    setCommand(undefined);
-    if (error || !result || result.status === "failed") {
-      setFailure(
-        error instanceof Error
-          ? error.message
-          : (result?.error ?? "Session listing is no longer available."),
-      );
-      return;
-    }
-    try {
-      const page: unknown = JSON.parse(result.result ?? "");
-      if (!isSessionPage(page)) throw new Error("The agent returned an invalid session list.");
-      setSessions((previous) => {
-        const seen = new Set(previous.map((session) => session.sessionId));
-        return [...previous, ...page.sessions.filter((session) => !seen.has(session.sessionId))];
-      });
-      setCursor(page.nextCursor);
-      setListed(true);
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : "Could not read the session list.");
-    }
-  }, [command, error, result]);
-
-  return (
-    <>
-      <CommandGroup>
-        <CommandItem
-          value="__new-session__"
-          keywords={["New session"]}
-          data-checked={selected === null}
-          onSelect={() => onSelect(null)}
-        >
-          New session
-        </CommandItem>
-      </CommandGroup>
-      <CommandGroup heading="In this directory">
-        {sessions.map((session) => (
-          <CommandItem
-            key={session.sessionId}
-            value={session.sessionId}
-            keywords={[session.title ?? session.sessionId]}
-            data-checked={selected?.sessionId === session.sessionId}
-            onSelect={() =>
-              onSelect({
-                sessionId: session.sessionId,
-                ...(session.title ? { title: session.title } : {}),
-              })
-            }
-          >
-            <span className="flex-1 truncate" title={session.title ?? session.sessionId}>
-              {session.title || session.sessionId}
-            </span>
-            {session.updatedAt && Number.isFinite(Date.parse(session.updatedAt)) ? (
-              <time
-                dateTime={session.updatedAt}
-                title={session.updatedAt}
-                className="shrink-0 text-xs tabular-nums text-muted-foreground"
-              >
-                {formatDistanceToNowStrict(new Date(session.updatedAt), { addSuffix: true })}
-              </time>
-            ) : null}
-          </CommandItem>
-        ))}
-        {cursor || failure ? (
-          <CommandItem
-            value="__load-more__"
-            keywords={["Load more", "Retry"]}
-            disabled={busy}
-            onSelect={() => void load(cursor)}
-          >
-            {failure ? "Try again" : "Load more"}
-          </CommandItem>
-        ) : null}
-      </CommandGroup>
-      {failure || busy || (listed && sessions.length === 0) ? (
-        <p role="status" className="px-3 pb-3 text-xs text-muted-foreground">
-          {failure ?? (busy ? "Loading sessions…" : "No sessions in this directory.")}
-        </p>
-      ) : null}
-    </>
-  );
-}
-
-function isSessionPage(page: unknown): page is AcpSessionListPage {
-  return (
-    typeof page === "object" &&
-    page !== null &&
-    "sessions" in page &&
-    Array.isArray(page.sessions) &&
-    page.sessions.every(
-      (session: unknown) =>
-        typeof session === "object" &&
-        session !== null &&
-        "sessionId" in session &&
-        typeof session.sessionId === "string" &&
-        "cwd" in session &&
-        typeof session.cwd === "string" &&
-        (!("title" in session) || typeof session.title === "string") &&
-        (!("updatedAt" in session) || typeof session.updatedAt === "string"),
-    ) &&
-    (!("nextCursor" in page) || typeof page.nextCursor === "string")
-  );
-}

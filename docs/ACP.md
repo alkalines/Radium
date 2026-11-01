@@ -1,6 +1,6 @@
 # ACP Agents
 
-Status: **transport and Chatroom implemented.** Snapshot of the protocol: 2026-10-31. The Worker hosts ACP agents with `@agentclientprotocol/sdk` and relays them through Convex; Chatroom creates, opens and drives ACP Sessions on the same controls as the built-in agent (agent picker, Session screen, approvals, questions, Model picker, Stop, import, delete). Agents are configured in Settings → ACP (`/chatroom/acp`: registry presets or custom commands, stored in Convex); every Worker checks each command on its own `PATH` and reports it available or not, and the New session picker lists every agent and Worker with that availability. Still open: attachments, registry binary install, Gateway mode, MCP pass-through, terminal login. Code: `packages/backend/src/acp/` (contract, Convex functions, client frame fold), `packages/worker/src/acp/` (Worker host), `apps/web/src/components/session/acp/` (Session) and `apps/web/src/components/chatroom/acp-panel.tsx` (settings).
+Status: **transport and Chatroom implemented.** Snapshot of the protocol: 2026-10-31. The Worker hosts ACP agents with `@agentclientprotocol/sdk` and relays them through Convex; Chatroom creates, opens and drives ACP Sessions on the same controls as the built-in agent (agent picker, Session screen, approvals, questions, Model menu, Stop, delete), and Home browses each agent's synced session index to reopen old sessions. Agents are configured in Settings → ACP (`/chatroom/acp`: registry presets or custom commands, stored in Convex); every Worker checks each command on its own `PATH` and reports it available or not, and the New session picker lists every agent and Worker with that availability. Still open: attachments, registry binary install, Gateway mode, MCP pass-through, terminal login. Code: `packages/backend/src/acp/` (contract, Convex functions, client frame fold), `packages/worker/src/acp/` (Worker host), `apps/web/src/components/session/acp/` (Session), `apps/web/src/components/home/` (agent session browser) and `apps/web/src/components/chatroom/acp-panel.tsx` (settings).
 
 ACP ([Agent Client Protocol](https://agentclientprotocol.com)) lets an editor or
 other client drive an independent agent harness (Claude Agent, Codex, Gemini CLI,
@@ -14,7 +14,7 @@ Focused guides:
 | Guide                                    | Contents                                                                                        |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | [Agents and the Worker](ACP/Agents.md)   | Registry, install, discovery, launch, agent authentication, capabilities Radium advertises      |
-| [Sessions](ACP/Sessions.md)              | Chat ↔ ACP session binding, lifecycle, config/model/mode, history on reopen, import, fork, delete |
+| [Sessions](ACP/Sessions.md)              | Chat ↔ ACP session binding, lifecycle, config/model/mode, history on reopen, session index, fork, delete |
 | [Transport](ACP/Transport.md)            | Convex relay: commands, viewer-gated frames, interactions, batching, retention, recovery         |
 | [Chatroom mapping](ACP/Interactions.md)  | Rendering, tools, permissions, questions, plans, slash commands, run state, notifications       |
 
@@ -35,9 +35,10 @@ Focused guides:
    change meaning. Only the model *inside* the harness can change, through the
    agent's own config options. Cross-agent handoff may be a future feature, but
    it must be an explicit new Session, never an in-place switch.
-3. **No background crawling.** Radium never enumerates every session an agent
-   has. It knows the sessions it created; anything else is imported one at a
-   time, on request.
+3. **Index, don't copy.** Radium mirrors only a small index of each agent's
+   sessions (ID, title, directory, updated time) so Home can browse and reopen
+   them; the Worker refreshes it with `session/list` after discovery and when
+   the owner looks, writing only what changed. Content is never crawled.
 4. **Content is warm only while viewed.** Live output is written to Convex only
    while someone has the Session open (and for five minutes after). Otherwise
    the Worker keeps the turn local and reports only lifecycle changes (running,
@@ -152,7 +153,7 @@ that, access follows the chat's scope:
 A shared ACP Session therefore lets members run the agent on the owner's
 machine with the owner's agent login; making an ACP Session `workspace`-scoped
 is that grant, and the scope control says so. Agent-level actions outside a chat
-(install, custom agents, sign-in, Gateway access, importing sessions) stay
+(install, custom agents, sign-in, Gateway access, browsing agent sessions) stay
 owner-only.
 
 ## Protocol Surface
@@ -164,7 +165,7 @@ owner-only.
 | `session/new`, `session/prompt`, `session/cancel` | Yes | Core turn |
 | `session/load` | Yes when `loadSession` | Replay is consumed on the Worker, not relayed in full |
 | `session/resume`, `session/close` | Yes when advertised | Resume after Worker restart; close on idle |
-| `session/list` | Import only | On demand, paginated, cwd-filtered |
+| `session/list` | Session index | All directories, paginated, capped at 2,000 per agent; after discovery and on demand from Home ([Sessions](ACP/Sessions.md#agent-session-index)) |
 | `session/delete` | On chat delete, when advertised, after a second confirmation | [Sessions](ACP/Sessions.md#delete) |
 | `session/fork` | Unstable; behind a flag | Fork from the latest point only |
 | `session/set_config_option`, `session/set_mode` | Yes | Model selection uses the `model` config category; `session/set_model` was removed from ACP |
@@ -182,7 +183,7 @@ owner-only.
 | M1 Relay | `acp_sessions`, `acp_commands`, `chat_frames` and `chat_viewers` (shared with [Live Sessions](Radium_Chatroom/Live_Sessions.md)), warm/cold cron, snapshots, history pages | Implemented, verified against the dev deployment |
 | M2 Chatroom | Agent picker in the Run target picker, `aisdk_chats.agent`, ACP Session screen on shared renderers, Stop, run state, notifications | Implemented, smoke-tested with the scripted agent against the dev deployment |
 | M3 Interactions | Permissions, elicitation, plan → Todo panel, config options and modes in the Composer, slash commands, attachments | Implemented except attachments (the attach control is disabled for ACP Sessions) |
-| M4 Agents | Registry and custom agents from Settings, auth states, Gateway mode, MCP pass-through, import from `session/list`, fork (unstable) | Settings → ACP (registry and custom agents, per-Worker availability, sign in/out), import (the picker's **Session** row), close/delete and fork (behind `VITE_ACP_FORK`) implemented; registry binary install, Gateway mode, MCP pass-through and terminal login open |
+| M4 Agents | Registry and custom agents from Settings, auth states, Gateway mode, MCP pass-through, session index from `session/list`, fork (unstable) | Settings → ACP (registry and custom agents, per-Worker availability, sign in/out), session index browsed from Home, close/delete and fork (behind `VITE_ACP_FORK`) implemented; registry binary install, Gateway mode, MCP pass-through and terminal login open |
 | M5 Protocol | ACP v2 adapter behind a per-agent flag once agents ship it | Open |
 
 ## Decisions

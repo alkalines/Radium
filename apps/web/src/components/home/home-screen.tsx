@@ -15,9 +15,12 @@ import {
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import { isWorkerOnline } from "backend/src/worker/presence";
 import { AgentStatus } from "@/components/agentic/agent-status";
 import { ProjectActionsMenu } from "@/components/projects/project-actions-menu";
 import { ProjectDialog } from "@/components/projects/project-dialog";
+import { AcpAgentIcon } from "@/components/session/acp/agent-icon";
+import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { ProjectGlyph, type ProjectSummary } from "@/components/projects/project-glyph";
 import {
   SideColumnItem,
@@ -40,16 +43,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { newTabId } from "@/components/window/window-tabs";
 import { SessionActionsMenu } from "./session-actions-menu";
+import { AgentSessions } from "./agent-sessions";
+import { formatRelativeTime, groupByRecency } from "./recency";
 
 type ChatList = Exclude<FunctionReturnType<typeof api.aisdk.ListChats>, string>;
 type HomeSession = ChatList[number];
 
-type SessionGroup = { label: string; sessions: HomeSession[] };
-
 const minute = 60_000;
-const hour = 60 * minute;
-const day = 24 * hour;
-const week = 7 * day;
 
 /**
  * A Home session filter, remembered with the workspace it was picked in. `project: null` is the
@@ -75,8 +75,34 @@ export function HomeScreen() {
   } = useWorkspace();
   const [query, setQuery] = useState("");
   const [projectSelection, setProjectSelection] = useState<ProjectSelection | null>(null);
+  const [agentSelection, setAgentSelection] = useState<{
+    workspace: Id<"workspaces">;
+    agentId: string;
+  } | null>(null);
   const [isCreateProjectOpen, setIsCreateProjectOpen] = useState(false);
   const now = useMinuteClock();
+  const presenceNow = useWorkerPresenceClock();
+  const isOwner = workspace?.role === "owner";
+  const ownerArgs = workspaceId && isOwner ? { workspace: workspaceId } : "skip";
+  const { data: workers } = useQuery(convexQuery(api.workers.list, ownerArgs));
+  const { data: definitions } = useQuery(convexQuery(api.acp.ListAgentDefinitions, ownerArgs));
+  const { data: agentRows } = useQuery(convexQuery(api.acp.ListAgents, ownerArgs));
+  const activeWorkers = (workers ?? []).filter((worker) => worker.status === "active");
+  const activeWorkerIds = new Set(activeWorkers.map((worker) => worker.workerId));
+  const agents = (definitions ?? []).filter(
+    (definition) =>
+      definition.enabled &&
+      agentRows?.some(
+        (row) =>
+          row.agentId === definition.agentId &&
+          row.capabilities?.list &&
+          activeWorkerIds.has(row.worker),
+      ),
+  );
+  const selectedAgent =
+    agentSelection && agentSelection.workspace === workspaceId
+      ? agents.find((agent) => agent.agentId === agentSelection.agentId)
+      : undefined;
 
   const { data: projectsData, error: projectsError } = useQuery(
     convexQuery(api.projects.list, workspaceId ? { workspace: workspaceId } : "skip"),
@@ -104,14 +130,18 @@ export function HomeScreen() {
     gcTime: 5 * minute,
   });
 
-  const isOwner = workspace?.role === "owner";
   const workspaceName = workspace?.name ?? "workspace";
   const normalizedQuery = query.trim().toLowerCase();
   const sessions = Array.isArray(chats) ? chats : [];
   const matches = sessions.filter((session) =>
     sessionTitle(session).toLowerCase().includes(normalizedQuery),
   );
-  const groups = groupByRecency(matches, now);
+  const groups = groupByRecency(
+    matches,
+    now,
+    (session) => session.lastInteractionAt,
+    (session) => Boolean(session.pinnedAt),
+  );
   const projectsById = new Map(projects.map((project) => [project._id, project]));
 
   /** Starts a draft Tab; with `project`, the Session screen seeds the draft's Project from it. */
@@ -121,6 +151,7 @@ export function HomeScreen() {
 
   /** Selects a Project (or `null`, No project); selecting the current filter again clears it. */
   function toggleProject(project: Id<"projects"> | null) {
+    setAgentSelection(null);
     if (!workspaceId || (projectFilter !== undefined && projectFilter === project)) {
       setProjectSelection(null);
       return;
@@ -213,6 +244,11 @@ export function HomeScreen() {
               project={session.project ? projectsById.get(session.project) : undefined}
               projects={projects}
               now={now}
+              offline={
+                isOwner &&
+                session.agent !== null &&
+                isWorkerOffline(workers, session.agent.worker, presenceNow)
+              }
             />
           ))}
         </ul>
@@ -224,13 +260,31 @@ export function HomeScreen() {
   if (projectsError || typeof projectsData === "string") {
     projectList = <p className="px-3 text-sm text-muted-foreground">Projects unavailable</p>;
   } else if (projectsData !== undefined && projects.length === 0) {
-    projectList = <p className="px-3 text-sm text-muted-foreground">No projects yet</p>;
+    projectList = (
+      <>
+        {isOwner ? (
+          <SideColumnItem
+            isActive={!selectedAgent}
+            onClick={() => {
+              setProjectSelection(null);
+              setAgentSelection(null);
+            }}
+          >
+            <MessagesSquareIcon /> All sessions
+          </SideColumnItem>
+        ) : null}
+        <p className="px-3 text-sm text-muted-foreground">No projects yet</p>
+      </>
+    );
   } else if (projects.length > 0) {
     projectList = (
       <>
         <SideColumnItem
-          isActive={projectFilter === undefined}
-          onClick={() => setProjectSelection(null)}
+          isActive={projectFilter === undefined && !selectedAgent}
+          onClick={() => {
+            setProjectSelection(null);
+            setAgentSelection(null);
+          }}
         >
           <MessagesSquareIcon />
           All sessions
@@ -292,6 +346,27 @@ export function HomeScreen() {
           >
             {projectList}
           </SideColumnSection>
+          {isOwner && agents.length > 0 ? (
+            <SideColumnSection title="Agents">
+              {agents.map((agent) => (
+                <SideColumnItem
+                  key={agent.agentId}
+                  isActive={selectedAgent?.agentId === agent.agentId}
+                  onClick={() => {
+                    setProjectSelection(null);
+                    setAgentSelection(
+                      selectedAgent?.agentId === agent.agentId || !workspaceId
+                        ? null
+                        : { workspace: workspaceId, agentId: agent.agentId },
+                    );
+                  }}
+                >
+                  <AcpAgentIcon icon={agent.icon} name={agent.name} className="size-4" />
+                  <span className="truncate">{agent.name}</span>
+                </SideColumnItem>
+              ))}
+            </SideColumnSection>
+          ) : null}
 
           {workspaceId ? (
             <ProjectDialog
@@ -299,7 +374,10 @@ export function HomeScreen() {
               onOpenChange={setIsCreateProjectOpen}
               workspaceId={workspaceId}
               isOwner={isOwner}
-              onCreated={(project) => setProjectSelection({ workspace: workspaceId, project })}
+              onCreated={(project) => {
+                setAgentSelection(null);
+                setProjectSelection({ workspace: workspaceId, project });
+              }}
             />
           ) : null}
         </>
@@ -340,7 +418,24 @@ export function HomeScreen() {
           <span aria-hidden="true" className="size-8 shrink-0" />
         </header>
       ) : null}
-      {content}
+      {selectedAgent && workspaceId ? (
+        <AgentSessions
+          key={`${workspaceId}:${selectedAgent.agentId}`}
+          workspace={workspaceId}
+          agent={selectedAgent}
+          reports={(agentRows ?? []).filter(
+            (row) => row.agentId === selectedAgent.agentId && activeWorkerIds.has(row.worker),
+          )}
+          workers={activeWorkers}
+          workersLoaded={workers !== undefined}
+          projects={projects}
+          query={query}
+          now={now}
+          presenceNow={presenceNow}
+        />
+      ) : (
+        content
+      )}
     </SideColumnLayout>
   );
 }
@@ -350,12 +445,14 @@ function SessionRow({
   project,
   projects,
   now,
+  offline,
 }: {
   session: HomeSession;
   /** The session's Project, when it has one and it is in the list. */
   project: ProjectSummary | undefined;
   projects: ProjectSummary[];
   now: number;
+  offline: boolean;
 }) {
   const title = sessionTitle(session);
 
@@ -386,6 +483,7 @@ function SessionRow({
           {session.agent.name}
         </span>
       ) : null}
+      {offline ? <span className="shrink-0 text-xs text-muted-foreground">Offline</span> : null}
       {session.canManage ? (
         <SessionActionsMenu session={session} projects={projects} />
       ) : (
@@ -443,49 +541,21 @@ function SessionListSkeleton() {
   );
 }
 
+/** Owner-only presence: unknown Workers count as offline once the Worker list has loaded. */
+function isWorkerOffline(
+  workers: readonly { workerId: string; status: string; lastSeenAt?: number }[] | undefined,
+  workerId: string,
+  now: number,
+) {
+  if (!workers || now === 0) return false;
+  const worker = workers.find((item) => item.workerId === workerId);
+  return !worker || worker.status !== "active" || !isWorkerOnline(worker.lastSeenAt, now);
+}
+
 function sessionTitle(session: HomeSession) {
   const title = session.title?.trim();
   if (title) return title;
   return session.activeStream ? "Generating title…" : "Untitled session";
-}
-
-/** Pinned first (the backend sorts them first), then Today / Yesterday / Older by local day. */
-function groupByRecency(sessions: HomeSession[], now: number): SessionGroup[] {
-  const startOfToday = new Date(now).setHours(0, 0, 0, 0);
-  const startOfYesterday = startOfToday - day;
-  const groups: SessionGroup[] = [
-    { label: "Pinned", sessions: [] },
-    { label: "Today", sessions: [] },
-    { label: "Yesterday", sessions: [] },
-    { label: "Older", sessions: [] },
-  ];
-
-  for (const session of sessions) {
-    if (session.pinnedAt) {
-      groups[0].sessions.push(session);
-    } else if (session.lastInteractionAt >= startOfToday) {
-      groups[1].sessions.push(session);
-    } else if (session.lastInteractionAt >= startOfYesterday) {
-      groups[2].sessions.push(session);
-    } else {
-      groups[3].sessions.push(session);
-    }
-  }
-
-  return groups.filter((group) => group.sessions.length > 0);
-}
-
-/** Compact age (`now`, `12m`, `2h`, `3d`, `2w`), then a short date once older than a month. */
-function formatRelativeTime(timestamp: number, now: number) {
-  const age = Math.max(0, now - timestamp);
-
-  if (age < minute) return "now";
-  if (age < hour) return `${Math.floor(age / minute)}m`;
-  if (age < day) return `${Math.floor(age / hour)}h`;
-  if (age < week) return `${Math.floor(age / day)}d`;
-  if (age < 5 * week) return `${Math.floor(age / week)}w`;
-
-  return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 /** Current time, refreshed every minute so relative times stay true while Home is open. */

@@ -155,7 +155,7 @@ frame is `{chat, stream: "acp:<epoch>", seqFrom, seqTo, format: "acp", kind,
 payload}`, read by `(chat, stream, seqFrom)`; `payload` is the JSON of the ops.
 
 - `kind`: `snapshot`, `live`, `history` (an older page, shared by all viewers).
-  Command results that belong to one user (a `session/list` page) are not
+  Command results that belong to one user (an `authenticate` receipt) are not
   frames: they return in the command row's transient `result`, readable only by
   its issuer through `acp.GetCommand`, and pruned with the row.
 - Size: at most 32 KiB of ops per frame (Convex documents cap at 1 MiB; small
@@ -197,14 +197,14 @@ error?, result?}`; the Worker subscribes through `acp.assignedCommands` (its
 | `cancel` | `session/cancel` | Also answers open permissions/elicitations as cancelled. An unclaimed prompt is cancelled in Convex without a command |
 | `set_config`, `set_mode` | `session/set_config_option`, `session/set_mode` | Response config replaces `acp_sessions.config`; before the ACP session exists the choice is stored in `acp_sessions.draft` and applied after `session/new` |
 | `history` | — | Worker-local timeline read |
-| `list` | `session/list` | Import; one page per command, returned in the command's `result` |
+| `sync_sessions` | `session/list` (all pages, no `cwd`) | Refreshes the [agent session index](Sessions.md#agent-session-index) with diff writes through `acp.knownAgentSessions` / `acp.syncAgentSessions`; also run by the Worker after each definitions probe |
 | `authenticate`, `logout` | `authenticate`, `logout` | Agent-level, not session-level; the Worker re-initializes and reports the agent again |
 | `fork` | `session/fork` (unstable) | Binds the new chat created by `acp.Fork` |
 | `close`, `delete` | `session/close`, `session/delete` | Survive chat deletion; expire after 7 days |
 
 Only a user who can act on the chat inserts commands: the creator of a personal
 Session, any member of a workspace Session ([Who Can Use It](../ACP.md#who-can-use-it));
-agent-level commands (`authenticate`, `logout`, `list`) are owner-only. The
+agent-level commands (`authenticate`, `logout`, `sync_sessions`) are owner-only. The
 mutation checks the chat's
 binding, Worker identity and workspace in the same transaction. The Worker
 claims a command with a mutation that also clears its payload, so a prompt's
@@ -266,7 +266,7 @@ answer?, answeredBy?}`, with `pending` → `answered` (durable decision) →
 | Data | Deleted |
 | --- | --- |
 | Command payload | On claim |
-| Command row (and a `list` result) | 5 minutes after `done`/`failed`; unclaimed commands after 7 days |
+| Command row (and its `result`) | 5 minutes after `done`/`failed`; unclaimed commands after 7 days |
 | Frames (snapshot, live, history) | When the session goes cold (5 minutes without a heartbeat); superseded epochs one minute after the switch |
 | Interactions | 10 minutes after resolution |
 | Viewer heartbeats | With the frames, when the session goes cold |

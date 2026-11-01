@@ -52,7 +52,6 @@ import {
   builtInAgent,
   workspaceAgents,
   sessionAgentById,
-  type AcpExistingSession,
   type SessionAgent,
   type SessionProject,
 } from "./agents";
@@ -327,6 +326,12 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const agents = workspaceAgents(agentDefinitions, draftWorker?.workerId, agentRows);
   const agent = chatId ? builtInAgent : sessionAgentById(agentId, agents);
   const isAcpDraft = chatId === undefined && agent.protocol === "acp";
+  const acpDefaults = agent.protocol === "acp" ? agent.installation?.defaults?.config : undefined;
+  // Stable while nothing changes, so the agent's (possibly hundreds of) models are not re-mapped.
+  const acpDraftConfig = useMemo(
+    () => applyAcpDraft(acpDefaults, acpDraft),
+    [acpDefaults, acpDraft],
+  );
   const workerNow = useWorkerPresenceClock();
   const acpWorker = workers?.find(
     (candidate) => candidate.workerId === draftWorker?.workerId && candidate.status === "active",
@@ -836,16 +841,6 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     ],
   );
 
-  // The Session row's choice belongs to one agent, Worker and Project (the listing's directory);
-  // changing any of them returns the draft to a new agent session.
-  const existingSessionKey = `${agent.id}:${draftWorker?.workerId ?? ""}:${selectedProject?._id ?? ""}`;
-  const [existingSessionChoice, setExistingSessionChoice] = useState<{
-    key: string;
-    session: AcpExistingSession;
-  } | null>(null);
-  const acpExistingSession =
-    existingSessionChoice?.key === existingSessionKey ? existingSessionChoice.session : null;
-
   async function submitDraft({ text, files }: ComposerMessage) {
     if (agent.protocol === "acp") {
       if (!text.trim()) return;
@@ -873,20 +868,15 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           project: selectedProject?._id,
           worker: draftWorker.workerId,
           agentId: agent.agentId,
-          ...(acpExistingSession ? { sessionId: acpExistingSession.sessionId } : {}),
         });
-        // Draft config applies only to a session the Worker creates; a continued session keeps
-        // the agent's own settings and title.
-        if (!acpExistingSession) {
-          for (const option of acpDraft.config) await setAcpConfig({ chat: created, ...option });
-          if (acpDraft.modeId) await setAcpMode({ chat: created, modeId: acpDraft.modeId });
-        }
+        for (const option of acpDraft.config) await setAcpConfig({ chat: created, ...option });
+        if (acpDraft.modeId) await setAcpMode({ chat: created, modeId: acpDraft.modeId });
         await promptAcp({
           chat: created,
           prompt: [{ type: "text", text }],
           clientId: crypto.randomUUID(),
         });
-        if (!acpExistingSession) void generateAcpTitle({ chat: created, text }).catch(() => {});
+        void generateAcpTitle({ chat: created, text }).catch(() => {});
         setCreatedChatId(created);
         onAcpCreated(created, text);
       } catch (error) {
@@ -1471,7 +1461,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                 modelControl={
                   isAcpDraft ? (
                     <AcpConfigControls
-                      config={applyAcpDraft(agent.installation?.defaults?.config, acpDraft)}
+                      agentId={agent.protocol === "acp" ? agent.agentId : undefined}
+                      config={acpDraftConfig}
                       disabled={isCreating}
                       isOpen={isModelPickerOpen}
                       onOpenChange={setIsModelPickerOpen}
@@ -1554,10 +1545,6 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
             onProjectChange={selectDraftProject}
             onSelectionChange={(selection) => void changeWorker(selection)}
             onAgentChange={setAgent}
-            existingSession={acpExistingSession}
-            onExistingSessionChange={(session) =>
-              setExistingSessionChoice(session ? { key: existingSessionKey, session } : null)
-            }
           />
         ) : null}
       </div>

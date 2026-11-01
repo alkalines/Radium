@@ -42,8 +42,9 @@ function chatroomItem(section: (typeof chatroomSections)[number]): NavItem {
     searchText: section.label,
     icon: section.icon,
     href: `/chatroom/${section.value}`,
-    // The ACP mark is a wide wordmark: fit its width to the 16px icon slot instead of its height.
-    iconClassName: section.value === "acp" ? "w-4! h-auto!" : undefined,
+    // The ACP mark is a wide wordmark: fit its width to the glyph area Lucide icons draw in (14px
+    // of the 16px slot), so its ends line up with the icons above and below.
+    iconClassName: section.value === "acp" ? "w-3.5! h-auto!" : undefined,
   };
 }
 

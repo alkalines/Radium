@@ -173,11 +173,25 @@ shown. Each `plan` update replaces the list, like `todo_write`.
 
 ## Composer
 
-- **Model / Reasoning / Mode** come from the agent's config options
-  ([Sessions](Sessions.md#config-model-and-mode)). The normal `ModelPicker`
-  displays the agent's models and thought-level labels in drafts and Sessions;
-  mode stays a chip beside it and extra options stay in overflow. Gateway
-  providers, service tiers, Pro/Normal presets and token budgets are hidden.
+- **Model menu** comes from the agent's config options
+  ([Sessions](Sessions.md#config-model-and-mode)) in the shared `ModelPicker`,
+  in drafts and Sessions alike. Rows read like the built-in harness: lab logo
+  (a neutral model tile when the lab is unknown) and `Lab: Model`, the lab
+  inferred from the model ID (`session/acp/model-author.ts`). Agents that route
+  models through their own providers (OpenCode's `provider/model` values) list
+  each model once: choices whose last ID segment matches (ignoring case, `.`
+  versus `-` and a `-YYYYMMDD` date) become one row with those providers'
+  logos, and the footer's **Provider** selector picks which choice is sent, like
+  the Gateway picker. Provider IDs show as names (`components/models/provider-names.ts`,
+  models.dev names; unknown IDs title-cased). Models list alphabetically by
+  `Lab: Model` and pin like Gateway models: pins are the user's model
+  preferences stored as `acp:<agentId>:<model>`, so they are per agent and never
+  collide with Gateway slugs (no hidden list or `Manage models`). The footer
+  also holds **Mode** (the agent's `modes` or its
+  `mode` option), **Reasoning** (the `thought_level` option) and **Options**
+  (every other option, including `model_config`), so the whole agent surface is
+  one menu; the trigger reads `Model Reasoning Mode`. Gateway service tiers,
+  Pro/Normal presets and token budgets are hidden.
 - **Tools:** the normal `ToolsDialog` trigger remains visible but disabled,
   explaining **The agent brings its own tools**. ACP does not substitute a
   separate tool picker.
@@ -212,8 +226,14 @@ Mapped once in `useAcpSession`:
 | `failed`                                         | `failed`    |
 
 A Worker that goes offline (presence older than 60 s) during a turn keeps the
-last state with a `Worker offline` label; the turn becomes `failed` only when
-the Worker reports it lost or restarts.
+last state; the turn becomes `failed` only when the Worker reports it lost or
+restarts. While the Worker is offline the Session shows **`<Worker>` is
+offline** above the Composer (with when it was last seen): during a turn, that
+the turn continues if the Worker reconnects and fails if it restarted;
+otherwise, that the Session continues once it is back. Content already in the
+Tab stays readable; sending and the Model menu are disabled. With no content
+loaded yet, the conversation area explains that the content lives on that
+Worker and appears once it is online.
 
 Stop reasons and failures surface on `RunInterruptionCard`:
 
@@ -259,18 +279,11 @@ loading. Old persisted `acp:<workerId>:<agentId>` selections migrate to
 `acp:<agentId>` and recover their original Worker, preserving Worker tools and
 the rest of the draft; malformed ids fall back to Radium.
 
-An online Worker's list-capable agent adds a fourth **Session** row, initially
-**New**. Its searchable drill-down lists New session and existing sessions with
-their title and relative updated time, and offers Load more for paged results.
-Opening this view explicitly issues `ListAgentSessions` and follows `GetCommand`;
-leaving it drops the result subscription. Selecting an existing session makes it the
-row's value (its title); the draft's first prompt then continues that session:
-`CreateSession({ sessionId, ... })` binds the new chat without `session/new`, draft
-config and title generation are skipped, and the Worker loads the session before
-sending the prompt. Changing the agent, Worker or Project resets the row to **New**.
-Both listing and creation derive the directory on the backend: the selected
-Project's folder for this Worker, otherwise its reported temporary directory.
-There is no directory input or separate import dialog.
+A New session always starts a **new** agent session: the picker has no
+Session row. Existing agent sessions are opened from Home
+([Sessions](Sessions.md#agent-session-index)). The directory is derived on the
+backend: the selected Project's folder for this Worker, otherwise its reported
+temporary directory. There is no directory input.
 
-After the first message, the Session corner keeps `Worker (Agent)` fixed and
-uses the shared ACP agent icon.
+After the first message, the Session corner keeps `Worker (Agent)` fixed, as
+text only; agent icons appear only inside the Run target picker.

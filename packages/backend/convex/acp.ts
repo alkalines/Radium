@@ -12,6 +12,8 @@ export {
   updateSession,
   reportAgents,
   recoverWorker,
+  knownAgentSessions,
+  syncAgentSessions,
 } from "../src/acp/machine";
 export {
   CreateSession,
@@ -22,7 +24,10 @@ export {
   Answer,
   RequestHistory,
   Fork,
-  ListAgentSessions,
+  ListAgentSessionIndex,
+  SearchAgentSessionIndex,
+  SyncAgentSessions,
+  OpenAgentSession,
   Authenticate,
   Logout,
   GetCommand,

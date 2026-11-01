@@ -1,6 +1,6 @@
 # ACP Sessions
 
-Status: **implemented** (backend, Worker and Chatroom). Overview: [ACP Agents](../ACP.md). Sessions are created with `acp.CreateSession` (owner only) from a New session whose Run target is an ACP agent; the binding validator is `acpChatAgentValidator` in `packages/backend/src/acp/contract.ts`. Before the ACP session exists, `acp.GetSession` also returns the agent's last advertised `defaultConfig` and commands, so draft choices can be shown and changed.
+Status: **implemented** (backend, Worker and Chatroom). Overview: [ACP Agents](../ACP.md). New Sessions are created with `acp.CreateSession` (owner only, always a brand-new agent session) from a New session whose Run target is an ACP agent; existing agent sessions are opened from Home through the [agent session index](#agent-session-index) (`acp.OpenAgentSession`). The binding validator is `acpChatAgentValidator` in `packages/backend/src/acp/contract.ts`. Before the ACP session exists, `acp.GetSession` also returns the agent's last advertised `defaultConfig` and commands, so draft choices can be shown and changed.
 
 A Radium Session (`aisdk_chats` row) with an ACP agent is bound to exactly one
 ACP session on one Worker. Radium keeps the binding and a small status record;
@@ -24,10 +24,10 @@ type ChatAgent = {
 
 Invariants, enforced server-side:
 
-- `agent` is set only by `acp.CreateSession` (including import) or `acp.Fork`, and
-  no mutation changes `kind`, `worker`, `agentId`, `profile` or `cwd` afterwards.
-  `sessionId` is written once, by the bound Worker (`ACP_SESSION_BOUND` otherwise),
-  unless an import set it at creation.
+- `agent` is set only by `acp.CreateSession`, `acp.OpenAgentSession` or
+  `acp.Fork`, and no mutation changes `kind`, `worker`, `agentId`, `profile` or
+  `cwd` afterwards. `sessionId` is written once, by the bound Worker
+  (`ACP_SESSION_BOUND` otherwise), unless `OpenAgentSession` set it at creation.
 - `SetChatWorker` rejects ACP chats; Worker tool selections (`aisdk_chats.worker`,
   `tools`) do not apply to them. The built-in agent's Worker tools stay editable
   as today.
@@ -64,8 +64,10 @@ with the agent's name and capabilities.
 
 Home's session list shows the configured agent name next to the row's actions
 for ACP Sessions; built-in Radium Sessions have no extra label. `ListChats.agent`
-is `{agentId, name}` for ACP Sessions and `null` for the built-in agent. A deleted
-definition falls back to its stable agent ID rather than changing the binding.
+is `{agentId, name, worker}` for ACP Sessions and `null` for the built-in agent;
+for the owner, rows whose Worker is offline add a muted **Offline** marker. A
+deleted definition falls back to its stable agent ID rather than changing the
+binding.
 
 ## Creating A Session
 
@@ -136,10 +138,10 @@ The agent, not Radium, defines which models and modes exist:
 
 | ACP                                                           | Composer control                                                                 |
 | ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| config option, category `model`                               | Shared `ModelPicker` lists the agent's choices instead of Gateway models         |
-| config option, category `thought_level`                       | Reasoning options in the same `ModelPicker`, using the agent's values and labels |
-| `modes` / `current_mode_update` (or a `mode` category option) | Mode chip next to Model                                                          |
-| Other config options (select, boolean)                        | Overflow menu in the Composer                                                    |
+| config option, category `model`                               | Shared `ModelPicker` lists the agent's choices (lab inferred from the ID; one row per model across the agent's providers, with a Provider selector) instead of Gateway models |
+| config option, category `thought_level`                       | **Reasoning** in the picker footer, using the agent's values and labels          |
+| `modes` / `current_mode_update` (or a `mode` category option) | **Mode** in the picker footer; its name also shows on the trigger                |
+| Other config options (select, boolean, `model_config`)        | **Options** in the picker footer                                                 |
 
 Changing a value sends a `set_config` command; the Worker calls
 `session/set_config_option` (or `session/set_mode`), and the response's complete
@@ -224,27 +226,60 @@ there when the agent advertises `mcpCapabilities.http`.
   They never pass through the browser, commands or frames. Passing a server to
   an agent means trusting that agent with its token.
 
-## Import
+## Agent Session Index
 
-Sessions created outside Radium (Zed, the agent's own CLI) are not listed
-automatically. In a New session, the Run target picker's **Session** row (shown for
-an ACP agent whose Worker is online and advertises `list`) drills into the agent's
-existing sessions on demand:
+Radium keeps a small, owner-only index of every session each list-capable agent
+has on each Worker, so old sessions (created in Radium, Zed or the agent's own
+CLI) can be browsed and reopened from Home without asking the Worker first.
 
-1. The owner picks Worker and agent; opening the Session row calls
-   `acp.ListAgentSessions` with the draft's Project, and the backend derives the
-   directory exactly like `acp.CreateSession` (a `list` command with that `cwd`).
-2. The Worker calls `session/list` and returns one page (`sessionId`, `title`,
-   `updatedAt`) in the command's transient `result`, read through
-   `acp.GetCommand` by the owner only and pruned five minutes later. The opaque
-   `nextCursor` stays inside that result and browser memory only; ACP forbids
-   persisting cursors.
-3. Choosing one makes it the draft's Session; the first prompt calls `acp.CreateSession`
-   with that `sessionId` (no `session/new`) and then `acp.Prompt`, and the reopen flow
-   above loads the session before the prompt runs. A session already bound to another
-   Radium chat is rejected with "This agent session is already open in another Session".
+`acp_agent_sessions`: one row per (Worker, agent, `sessionId`) with `cwd`,
+`title`, `updatedAt` and, when a Radium chat is bound to it, `chat`. It holds no
+conversation content. Sync state per (Worker, agent) is
+`worker_agents.sessionsSync` (`running`/`done`/`failed`, time, count, whether the
+list was truncated).
 
-Requires `sessionCapabilities.list`. Without it the action is hidden.
+```mermaid
+sequenceDiagram
+    participant Home
+    participant CX as Convex
+    participant W as Worker
+    participant A as Agent
+
+    Note over W: after each definitions probe (start, reconnect, edit)
+    Home->>CX: acp.SyncAgentSessions {agentId} (on opening the agent view, Refresh)
+    CX-->>W: sync_sessions command (online Workers with list, debounced 60 s)
+    W->>A: session/list (no cwd) × pages, capped at 2,000 sessions
+    W->>CX: acp.knownAgentSessions
+    W->>W: diff by sessionId (title, cwd, updatedAt)
+    W->>CX: acp.syncAgentSessions {upserts, removals} in chunks of 200, then finish
+```
+
+- **Efficient:** a sync with nothing changed writes only its finish state; the
+  first sync of an agent with hundreds of sessions is a handful of mutations.
+  Removals apply only when the listing was complete (not truncated).
+- **Radium sessions** link themselves: when the Worker binds a `sessionId` to a
+  chat, the index row is upserted with that `chat`. Deleting the chat clears the
+  link (and removes the row when the session was also deleted in the agent).
+- **Opening:** Home → Agents → an agent lists its rows (paged by `updatedAt`,
+  searchable by title) with their Project (matched by the Project folder for that
+  Worker), Worker and an **Offline** marker. A row with a chat opens it;
+  otherwise `acp.OpenAgentSession({worker, agentId, sessionId})` creates the chat
+  bound to that session (title and time from the index, Project from the
+  directory), and the [reopen flow](#reopening-and-recovery) loads it on the
+  first viewer or prompt. Opening works while the Worker is offline; the Session
+  then shows its offline state until the Worker returns.
+- Requires `sessionCapabilities.list`; agents without it have no Home entry.
+  Browsing and opening are owner-only, like every agent-level action.
+
+## Draft Defaults
+
+Drafts show the agent's last advertised config (`worker_agents.defaults`). An
+agent that has never had a session on a Worker would have none, so after its
+probe the Worker discovers them once when the agent advertises
+`sessionCapabilities.delete`: a throwaway `session/new` in the Worker's
+temporary directory, whose config and commands become the defaults, followed by
+`session/delete`. Agents without `delete` get defaults from their first real
+session instead.
 
 ## Fork
 

@@ -13,13 +13,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation } from "convex/react";
 import { AnimatePresence } from "motion/react";
-import { ArchiveXIcon } from "lucide-react";
+import { ArchiveXIcon, ServerOffIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { AcpInteractionAnswer } from "backend/src/acp/contract";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Empty,
@@ -30,6 +29,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
+import { modelDisplayName } from "@/components/models/model-options";
 import type { TabProjectHint } from "@/components/window/window-tabs";
 import {
   Composer,
@@ -46,7 +46,7 @@ import { TodoPanel, useTodoTrayItems } from "../todo-list";
 import { ContextUsage } from "../context-usage";
 import { SessionWorkerControl } from "../session-context";
 import { ToolsDialog } from "../tools-dialog";
-import { AcpConfigControls, applyAcpDraft } from "./config-controls";
+import { AcpConfigControls, acpModelConfig, applyAcpDraft } from "./config-controls";
 import { AcpElicitationPrompt } from "./elicitation-prompt";
 import { AcpPermissionPrompt } from "./permission-prompt";
 import { useAcpSession } from "./use-acp-session";
@@ -171,11 +171,10 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   const config = session?.agent.sessionId
     ? session.config
     : applyAcpDraft(session?.config ?? session?.defaultConfig, session?.draft);
-  const modelOption = config?.options.find((option) => option.category === "model");
-  const modelName =
-    modelOption?.type === "select"
-      ? modelOption.choices.find((choice) => choice.value === modelOption.currentValue)?.name
-      : undefined;
+  // Same `Lab: Model` label as built-in turns, without the agent's routing-provider prefix.
+  const { models: modelOptions, selectedModel } = useMemo(() => acpModelConfig(config), [config]);
+  const currentModel = modelOptions.find((option) => option.slug === selectedModel);
+  const modelName = currentModel ? modelDisplayName(currentModel) : undefined;
   const agentName = session?.agentName ?? session?.agent.agentId ?? chat?.agent?.agentId ?? "Agent";
   const workerName = acp.workerName ?? "Worker";
   const running =
@@ -194,7 +193,10 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     });
   }, [fork, navigate]);
   const canFork =
-    session?.capabilities?.fork === true && import.meta.env.VITE_ACP_FORK === "true" && !ended;
+    session?.capabilities?.fork === true &&
+    import.meta.env.VITE_ACP_FORK === "true" &&
+    !ended &&
+    acp.workerOnline;
 
   async function changeScope(scope: ChatScope) {
     if (!chat?.canManageScope || scopeSaving) return;
@@ -220,6 +222,10 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
 
   const hasContent = messages.length > 0 || visiblePendingPrompt !== undefined;
   const waitingForSnapshot = hasOpened && !timeline.hasSnapshot && !hasContent && !ended;
+  const offline = acp.workerKnown && !acp.workerOnline;
+  const lastSeen = acp.workerLastSeenAt
+    ? `Last seen ${formatLastSeen(acp.workerLastSeenAt)}.`
+    : undefined;
   return (
     <div className="relative flex h-full flex-col">
       <div className="relative flex h-11 shrink-0 items-center justify-end gap-1 px-3">
@@ -233,22 +239,27 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
             />
           </div>
         ) : null}
-        {acp.workerKnown && !acp.workerOnline ? (
-          <Badge variant="outline">Worker offline</Badge>
-        ) : null}
         <SessionWorkerControl
           isFixed
           workerName={workerName}
-          agent={{ protocol: "acp", name: agentName, icon: session?.agentIcon }}
+          agent={{ protocol: "acp", name: agentName }}
         />
       </div>
-      {waitingForSnapshot && isVisible ? (
+      {offline && !hasContent && isVisible ? (
+        <Empty className="min-h-0 flex-1">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <ServerOffIcon />
+            </EmptyMedia>
+            <EmptyTitle>{workerName} is offline</EmptyTitle>
+            <EmptyDescription>
+              The conversation lives on {workerName} and shows here when it is online. {lastSeen}
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : waitingForSnapshot && isVisible ? (
         <div className="flex min-h-0 flex-1 items-center justify-center px-6">
-          {acp.workerKnown && !acp.workerOnline ? (
-            <p className="max-w-sm text-center text-sm text-muted-foreground">
-              Content lives on {workerName}. It shows here when the Worker is online.
-            </p>
-          ) : session?.error && !running ? (
+          {session?.error && !running ? (
             <p className="max-w-sm text-center text-sm text-muted-foreground">{session.error}</p>
           ) : (
             <Spinner className="text-muted-foreground" />
@@ -302,6 +313,18 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
         />
       )}
       <div className="relative mx-auto flex w-full max-w-190 flex-col gap-2 px-4 pb-4">
+        {offline ? (
+          <Alert>
+            <ServerOffIcon />
+            <AlertTitle>{workerName} is offline</AlertTitle>
+            <AlertDescription>
+              {running
+                ? "The turn continues if the Worker reconnects, but fails if it restarted."
+                : "This Session continues when the Worker is back."}{" "}
+              {lastSeen}
+            </AlertDescription>
+          </Alert>
+        ) : null}
         {session?.history === "resumed" ? (
           <p className="text-center text-xs text-muted-foreground">
             Earlier history is not available from this agent
@@ -380,6 +403,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
               onStop={() => void acp.cancel()}
               modelControl={
                 <AcpConfigControls
+                  agentId={session?.agent.agentId}
                   config={config}
                   disabled={ended || !acp.workerOnline}
                   isOpen={modelOpen}
@@ -407,3 +431,20 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     </div>
   );
 });
+
+function formatLastSeen(timestamp: number) {
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  const units = [
+    ["day", 86_400],
+    ["hour", 3_600],
+    ["minute", 60],
+  ] as const;
+  for (const [unit, size] of units) {
+    if (seconds >= size)
+      return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(
+        -Math.floor(seconds / size),
+        unit,
+      );
+  }
+  return "just now";
+}

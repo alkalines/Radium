@@ -63,6 +63,7 @@ import {
   acpFrameKindValidator,
   acpAgentReportValidator,
   acpAgentDefinitionValidator,
+  acpAgentSessionEntryValidator,
 } from "../src/acp/contract";
 
 export default defineSchema({
@@ -72,6 +73,18 @@ export default defineSchema({
     ...acpAgentDefinitionValidator.fields,
     updatedAt: v.number(),
   }).index("by_workspace_and_agentId", ["workspace", "agentId"]),
+  /** Owner-only agent session catalog, independent of Radium chat creation. */
+  acp_agent_sessions: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    agentId: v.string(),
+    ...acpAgentSessionEntryValidator.fields,
+    chat: v.optional(v.id("aisdk_chats")),
+  })
+    .index("by_workspace_and_agentId_and_updatedAt", ["workspace", "agentId", "updatedAt"])
+    .index("by_worker_and_agentId_and_sessionId", ["workspace", "worker", "agentId", "sessionId"])
+    .index("by_chat", ["chat"])
+    .searchIndex("search_title", { searchField: "title", filterFields: ["workspace", "agentId"] }),
   /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
   acp_sessions: defineTable({
     chat: v.id("aisdk_chats"),
@@ -113,6 +126,8 @@ export default defineSchema({
     worker: v.string(),
     chat: v.optional(v.id("aisdk_chats")),
     kind: acpCommandKindValidator,
+    /** Agent-level target survives payload erasure, so sync admission can debounce claimed work. */
+    agentId: v.optional(v.string()),
     payload: v.optional(acpCommandPayloadValidator),
     clientId: v.string(),
     by: v.string(),
@@ -171,8 +186,19 @@ export default defineSchema({
     workspace: v.id("workspaces"),
     worker: v.string(),
     ...acpAgentReportValidator.fields,
+    sessionsSync: v.optional(
+      v.object({
+        status: v.union(v.literal("running"), v.literal("done"), v.literal("failed")),
+        at: v.number(),
+        count: v.optional(v.number()),
+        truncated: v.optional(v.boolean()),
+        error: v.optional(v.string()),
+      }),
+    ),
     checkedAt: v.number(),
-  }).index("by_worker_and_agentId", ["workspace", "worker", "agentId"]),
+  })
+    .index("by_worker_and_agentId", ["workspace", "worker", "agentId"])
+    .index("by_workspace_and_agentId", ["workspace", "agentId"]),
   /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
   worker_tasks: defineTable(workerTaskFields)
     .index("by_worker_request", ["workspace", "workerId", "requestId"])

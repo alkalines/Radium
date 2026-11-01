@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   BrainIcon,
@@ -5,6 +6,7 @@ import {
   CpuIcon,
   GaugeIcon,
   LeafIcon,
+  ListChecksIcon,
   RocketIcon,
   SettingsIcon,
   SparklesIcon,
@@ -61,7 +63,8 @@ export function validReasoningEffort(model: PickerModel | undefined, effort: str
  * Fully controlled, including whether the popover is open (so other Session controls can open
  * it); selecting a model keeps the provider and effort valid for it and closes it. The user's
  * pinned models list first and hidden ones drop out (`useModelPreferences`); rows pin inline and
- * `Manage models`, the last option in the list, opens Settings → Models.
+ * `Manage models`, the last option in the list, opens Settings → Models. Agent models pin under
+ * `pinScope` (their IDs are not Gateway slugs) and have no hidden list or `Manage models`.
  */
 export function ModelPicker({
   models,
@@ -82,6 +85,9 @@ export function ModelPicker({
   onOpenChange,
   variant = "gateway",
   reasoningOptions,
+  agentMode,
+  agentOptions,
+  pinScope,
   disabled = false,
 }: {
   models: PickerModel[] | undefined;
@@ -101,9 +107,17 @@ export function ModelPicker({
   onReasoningBudgetChange?: (budget: number | undefined) => void;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Agent choices share the picker without Gateway providers, presets or model preferences. */
+  /** Agent choices share the picker without Gateway presets, hidden models or `Manage models`. */
   variant?: "gateway" | "agent";
   reasoningOptions?: readonly ReasoningOption[];
+  agentMode?: {
+    value: string;
+    choices: readonly ReasoningOption[];
+    onChange: (value: string) => void;
+  };
+  agentOptions?: ReactNode;
+  /** Prefix that keeps agent model pins apart from Gateway slugs; agents without it cannot pin. */
+  pinScope?: string;
   disabled?: boolean;
 }) {
   const navigate = useNavigate();
@@ -115,6 +129,14 @@ export function ModelPicker({
       ?.inference_modes?.find((item) => item.id === inferenceMode),
   );
   const hasModels = Boolean(models?.length);
+  // Gateway pins are bare slugs; agent pins live under their scope and are read back without it.
+  const pinPrefix = variant === "gateway" ? "" : pinScope;
+  const pinnedSlugs =
+    pinPrefix === undefined
+      ? undefined
+      : pinnedModels.flatMap((pinned) =>
+          pinned.startsWith(pinPrefix) ? [pinned.slice(pinPrefix.length)] : [],
+        );
 
   // Keep the provider and effort valid for the new model instead of silently sending stale ones.
   function selectModel(next: PickerModel) {
@@ -123,8 +145,13 @@ export function ModelPicker({
       onServiceTierChange?.(undefined);
       onInferenceModeChange?.(undefined);
     }
+    // Agents resolve the provider together with the model, in one config change.
     const firstProvider = next.providers?.[0]?.id;
-    if (firstProvider && !next.providers?.some((provider) => provider.id === selectedProvider)) {
+    if (
+      variant === "gateway" &&
+      firstProvider &&
+      !next.providers?.some((provider) => provider.id === selectedProvider)
+    ) {
       onProviderChange?.(firstProvider);
     }
     const nextEffort =
@@ -155,7 +182,10 @@ export function ModelPicker({
       <PopoverTrigger asChild>
         <InputGroupButton
           size="xs"
-          disabled={disabled || (!hasModels && !reasoningOptions?.length)}
+          disabled={
+            disabled ||
+            (!hasModels && !reasoningOptions?.length && !agentMode?.choices.length && !agentOptions)
+          }
           aria-label={`Model: ${modelName}`}
           className="max-w-60 min-w-0 shrink gap-1.5 text-muted-foreground hover:text-foreground"
         >
@@ -164,6 +194,12 @@ export function ModelPicker({
             <span className="shrink-0 text-subtle-foreground">
               {reasoningOptions?.find((option) => option.value === reasoningEffort)?.name ??
                 effortLabel(reasoningEffort)}
+            </span>
+          ) : null}
+          {agentMode ? (
+            <span className="shrink-0 text-subtle-foreground">
+              {agentMode.choices.find((option) => option.value === agentMode.value)?.name ??
+                agentMode.value}
             </span>
           ) : null}
           <ChevronDownIcon data-icon="inline-end" />
@@ -177,12 +213,13 @@ export function ModelPicker({
           models={models ?? []}
           selectedSlug={selectedModel}
           onSelect={selectModel}
-          pinnedSlugs={variant === "gateway" ? pinnedModels : undefined}
+          pinnedSlugs={pinnedSlugs}
+          noModelsMessage={variant === "agent" ? "This agent chooses its own model." : undefined}
           hiddenSlugs={variant === "gateway" ? hiddenModels : undefined}
           onTogglePin={
-            variant === "gateway"
-              ? (target, pinned) => void setModelPinned(target.slug, pinned)
-              : undefined
+            pinPrefix === undefined
+              ? undefined
+              : (target, pinned) => void setModelPinned(`${pinPrefix}${target.slug}`, pinned)
           }
           extraItems={
             variant === "gateway" ? (
@@ -244,15 +281,48 @@ export function ModelPicker({
                     }}
                   />
                 </>
+              ) : model?.providers?.length && onProviderChange ? (
+                <ProviderDropdown
+                  providers={model.providers}
+                  providerId={selectedProvider}
+                  onProviderChange={onProviderChange}
+                />
+              ) : null}
+              {variant === "agent" && agentMode?.choices.length ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button type="button" aria-label="Mode" className={footerTriggerClassName}>
+                      <ListChecksIcon data-icon="inline-start" />
+                      {agentMode.choices.find((option) => option.value === agentMode.value)?.name ??
+                        agentMode.value}
+                      <ChevronDownIcon className="size-3 shrink-0" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuLabel>Mode</DropdownMenuLabel>
+                    <DropdownMenuRadioGroup
+                      value={agentMode.value}
+                      onValueChange={agentMode.onChange}
+                    >
+                      {agentMode.choices.map((option) => (
+                        <DropdownMenuRadioItem key={option.value} value={option.value}>
+                          <span title={option.description}>{option.name}</span>
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               ) : null}
               <ReasoningDropdown
                 model={model}
                 options={reasoningOptions}
+                isAgent={variant === "agent"}
                 effort={reasoningEffort}
                 budget={reasoningBudget}
                 onEffortChange={onReasoningEffortChange}
                 onBudgetChange={variant === "gateway" ? onReasoningBudgetChange : undefined}
               />
+              {variant === "agent" ? agentOptions : null}
             </div>
           }
         />
@@ -261,7 +331,7 @@ export function ModelPicker({
   );
 }
 
-const footerTriggerClassName =
+export const footerTriggerClassName =
   "flex h-8 min-w-0 items-center gap-1.5 rounded-xl border bg-background px-2 text-xs text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/30 disabled:pointer-events-none disabled:opacity-50 [&>svg[data-icon]]:size-3.5 [&>svg[data-icon]]:shrink-0";
 
 function serviceTierIcon(tier: string | undefined) {
@@ -405,6 +475,7 @@ function ProviderDropdown({
 function ReasoningDropdown({
   model,
   options,
+  isAgent,
   effort,
   budget,
   onEffortChange,
@@ -412,6 +483,7 @@ function ReasoningDropdown({
 }: {
   model: PickerModel | undefined;
   options?: readonly ReasoningOption[];
+  isAgent: boolean;
   effort: string | undefined;
   budget: number | undefined;
   onEffortChange: (effort: string) => void;
@@ -447,7 +519,11 @@ function ReasoningDropdown({
             ))}
           </DropdownMenuRadioGroup>
         ) : (
-          <DropdownMenuItem disabled>This model does not support reasoning.</DropdownMenuItem>
+          <DropdownMenuItem disabled>
+            {isAgent
+              ? "This agent does not offer reasoning levels."
+              : "This model does not support reasoning."}
+          </DropdownMenuItem>
         )}
 
         {model?.features?.reasoning_budget && onBudgetChange ? (

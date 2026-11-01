@@ -121,6 +121,7 @@ export async function enqueue(
     ...binding,
     by,
     kind: payload.kind,
+    agentId: "agentId" in payload ? payload.agentId : undefined,
     payload,
     chat,
     clientId,
@@ -195,12 +196,54 @@ export async function applySessionPatch(
       (chat.agent.sessionId && chat.agent.sessionId !== sessionId)
     )
       acpError("ACP_SESSION_BOUND");
+    if (!session.sessionId) {
+      const bound = await ctx.db
+        .query("acp_sessions")
+        .withIndex("by_worker_and_sessionId", (q) =>
+          q
+            .eq("workspace", session.workspace)
+            .eq("worker", session.worker)
+            .eq("sessionId", sessionId),
+        )
+        .take(8);
+      if (bound.some((row) => row.agentId === session.agentId && row.chat !== session.chat))
+        acpError("ACP_SESSION_BOUND");
+    }
     updates.sessionId = sessionId;
     chatPatch.agent = { ...chat.agent, sessionId };
   }
   if (title !== undefined && !session.userTitled) {
     const normalized = title.replace(/\s+/g, " ").trim().slice(0, 80);
     if (normalized) chatPatch.title = normalized;
+  }
+  const indexedSessionId = sessionId ?? session.sessionId;
+  if (indexedSessionId && (sessionId !== undefined || chatPatch.title !== undefined)) {
+    const row = await ctx.db
+      .query("acp_agent_sessions")
+      .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
+        q
+          .eq("workspace", session.workspace)
+          .eq("worker", session.worker)
+          .eq("agentId", session.agentId)
+          .eq("sessionId", indexedSessionId),
+      )
+      .first();
+    const indexedTitle = chatPatch.title ?? chat.title ?? row?.title;
+    if (row) {
+      if (row.chat !== chat._id || row.title !== indexedTitle)
+        await ctx.db.patch(row._id, { chat: chat._id, title: indexedTitle });
+    } else {
+      await ctx.db.insert("acp_agent_sessions", {
+        workspace: session.workspace,
+        worker: session.worker,
+        agentId: session.agentId,
+        sessionId: indexedSessionId,
+        cwd: session.cwd,
+        title: indexedTitle,
+        updatedAt: now,
+        chat: chat._id,
+      });
+    }
   }
   let notification: "session_finished" | "session_failed" | undefined;
   let detail: string | undefined;

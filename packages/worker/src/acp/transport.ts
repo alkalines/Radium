@@ -1,6 +1,7 @@
 import type {
   AcpAgentDefinition,
   AcpAgentReport,
+  AcpAgentSessionEntry,
   AcpCommandKind,
   AcpCommandPayload,
   AcpConfig,
@@ -109,6 +110,16 @@ export interface AcpTransport {
     frames: AcpFrameInput[];
   }): Promise<{ accepted: boolean; bytes: number }>;
   updateSession(args: { chat: string; patch: AcpSessionPatch }): Promise<unknown>;
-  reportAgents(args: { agents: AcpAgentReport[] }): Promise<unknown>;
+  reportAgents(args: {
+    agents: AcpAgentReport[];
+  }): Promise<Record<string, NonNullable<AcpAgentReport["defaults"]>>>;
+  knownAgentSessions(args: { agentId: string }): Promise<AcpAgentSessionEntry[]>;
+  syncAgentSessions(args: {
+    agentId: string;
+    upserts: AcpAgentSessionEntry[];
+    removals: string[];
+    start?: boolean;
+    finish?: { count: number; truncated: boolean } | { error: string };
+  }): Promise<unknown>;
   recoverWorker(args: Record<string, never>): Promise<{ more: boolean }>;
 }

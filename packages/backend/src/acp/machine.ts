@@ -1,8 +1,12 @@
 import { v } from "convex/values";
 import { internal } from "../../convex/_generated/api";
 import { workerMutation, workerQuery } from "../worker/machine";
+import { validChatWorkerDirectory } from "../worker/chat-config";
 import {
   ACP_COMMAND_RESULT_BYTES,
+  ACP_AGENT_SESSIONS_MAX,
+  ACP_AGENT_SESSIONS_SYNC_CHUNK,
+  acpAgentSessionEntryValidator,
   ACP_FRAME_BYTES,
   ACP_FRAMES_PER_APPEND,
   ACP_INTERACTION_REQUEST_BYTES,
@@ -20,8 +24,16 @@ import {
   utf8Bytes,
   validAcpAgentId,
   validAcpToken,
+  type AcpAgentReport,
 } from "./contract";
-import { acpError, applySessionPatch, checkWorker, findSession, machineSession } from "./policy";
+import {
+  acpError,
+  applySessionPatch,
+  checkWorker,
+  findAgent,
+  findSession,
+  machineSession,
+} from "./policy";
 
 /** Pending intent for this verified machine, without transient prompt payloads. */
 export const assignedCommands = workerQuery({
@@ -364,7 +376,13 @@ export const updateSession = workerMutation({
 /** Replace this machine's bounded catalog, retaining defaults across probe-only reports. */
 export const reportAgents = workerMutation({
   args: { agents: v.array(acpAgentReportValidator) },
-  returns: v.null(),
+  returns: v.record(
+    v.string(),
+    v.object({
+      config: v.optional(acpConfigValidator),
+      commands: v.optional(v.array(acpCommandInfoValidator)),
+    }),
+  ),
   handler: async (ctx, { agents }) => {
     if (
       agents.length > 32 ||
@@ -378,6 +396,7 @@ export const reportAgents = workerMutation({
         q.eq("workspace", ctx.worker.workspaceId).eq("worker", ctx.worker.workerId),
       )
       .take(33);
+    const defaults: Record<string, NonNullable<AcpAgentReport["defaults"]>> = {};
     for (const agent of agents) {
       const existing = rows.find((row) => row.agentId === agent.agentId);
       const report = {
@@ -385,6 +404,7 @@ export const reportAgents = workerMutation({
         defaults: agent.defaults ?? existing?.defaults,
         checkedAt: Date.now(),
       };
+      if (report.defaults) defaults[agent.agentId] = report.defaults;
       if (existing) await ctx.db.patch(existing._id, report);
       else
         await ctx.db.insert("worker_agents", {
@@ -395,6 +415,129 @@ export const reportAgents = workerMutation({
     }
     for (const row of rows)
       if (!agents.some((agent) => agent.agentId === row.agentId)) await ctx.db.delete(row._id);
+    return defaults;
+  },
+});
+
+/** This Worker's small agent index, read once before computing a metadata-only diff. */
+export const knownAgentSessions = workerQuery({
+  args: { agentId: v.string() },
+  returns: v.array(acpAgentSessionEntryValidator),
+  handler: async (ctx, { agentId }) => {
+    const rows = await ctx.db
+      .query("acp_agent_sessions")
+      .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
+        q
+          .eq("workspace", ctx.worker.workspaceId)
+          .eq("worker", ctx.worker.workerId)
+          .eq("agentId", agentId),
+      )
+      .take(ACP_AGENT_SESSIONS_MAX);
+    return rows.map(({ sessionId, cwd, title, updatedAt }) => ({
+      sessionId,
+      cwd,
+      title,
+      updatedAt,
+    }));
+  },
+});
+
+/** `start` marks a background sync running; unchanged syncs only write start/finish state. */
+export const syncAgentSessions = workerMutation({
+  args: {
+    agentId: v.string(),
+    upserts: v.array(acpAgentSessionEntryValidator),
+    removals: v.array(v.string()),
+    start: v.optional(v.boolean()),
+    finish: v.optional(
+      v.union(
+        v.object({ count: v.number(), truncated: v.boolean() }),
+        v.object({ error: v.string() }),
+      ),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const agent = await findAgent(ctx, ctx.worker.workspaceId, ctx.worker.workerId, args.agentId);
+    if (!agent) acpError("ACP_AGENT_UNAVAILABLE");
+    if (
+      args.upserts.length > ACP_AGENT_SESSIONS_SYNC_CHUNK ||
+      args.removals.length > ACP_AGENT_SESSIONS_SYNC_CHUNK ||
+      args.upserts.some(
+        (row) =>
+          !validAcpToken(row.sessionId) ||
+          !validChatWorkerDirectory(row.cwd) ||
+          !Number.isFinite(row.updatedAt) ||
+          (row.title !== undefined && (row.title.length > 500 || row.title !== row.title.trim())),
+      ) ||
+      args.removals.some((id) => !validAcpToken(id))
+    )
+      acpError("ACP_INVALID_AGENT_SESSIONS");
+    if (
+      args.finish &&
+      "count" in args.finish &&
+      (!Number.isSafeInteger(args.finish.count) ||
+        args.finish.count < 0 ||
+        args.finish.count > ACP_AGENT_SESSIONS_MAX)
+    )
+      acpError("ACP_INVALID_AGENT_SESSIONS");
+    for (const entry of args.upserts) {
+      const row = await ctx.db
+        .query("acp_agent_sessions")
+        .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
+          q
+            .eq("workspace", ctx.worker.workspaceId)
+            .eq("worker", ctx.worker.workerId)
+            .eq("agentId", args.agentId)
+            .eq("sessionId", entry.sessionId),
+        )
+        .first();
+      if (row) {
+        if (row.cwd !== entry.cwd || row.title !== entry.title || row.updatedAt !== entry.updatedAt)
+          await ctx.db.patch(row._id, { ...entry, title: entry.title });
+      } else {
+        const bound = await ctx.db
+          .query("acp_sessions")
+          .withIndex("by_worker_and_sessionId", (q) =>
+            q
+              .eq("workspace", ctx.worker.workspaceId)
+              .eq("worker", ctx.worker.workerId)
+              .eq("sessionId", entry.sessionId),
+          )
+          .take(8);
+        await ctx.db.insert("acp_agent_sessions", {
+          workspace: ctx.worker.workspaceId,
+          worker: ctx.worker.workerId,
+          agentId: args.agentId,
+          ...entry,
+          chat: bound.find((session) => session.agentId === args.agentId)?.chat,
+        });
+      }
+    }
+    for (const sessionId of args.removals) {
+      const row = await ctx.db
+        .query("acp_agent_sessions")
+        .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
+          q
+            .eq("workspace", ctx.worker.workspaceId)
+            .eq("worker", ctx.worker.workerId)
+            .eq("agentId", args.agentId)
+            .eq("sessionId", sessionId),
+        )
+        .first();
+      if (row) await ctx.db.delete(row._id);
+    }
+    if (args.finish) {
+      const finish = args.finish;
+      await ctx.db.patch(agent._id, {
+        sessionsSync:
+          "error" in finish
+            ? { status: "failed", at: Date.now(), error: finish.error.slice(0, 500) }
+            : { status: "done", at: Date.now(), count: finish.count, truncated: finish.truncated },
+      });
+    } else if (args.start) {
+      await ctx.db.patch(agent._id, { sessionsSync: { status: "running", at: Date.now() } });
+    }
     return null;
   },
 });

@@ -1,4 +1,8 @@
 import { v } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
+import type { Doc, Id } from "../../convex/_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
+import { isWorkerOnline } from "../worker/presence";
 import { action, mutation, query } from "../../convex/_generated/server";
 import { components, internal } from "../../convex/_generated/api";
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
@@ -33,11 +37,87 @@ import {
   validateMode,
 } from "./policy";
 
-/**
- * Owner-selected immutable native agent binding; no process starts until the first prompt or
- * the first viewer. `sessionId` imports an existing agent session (from an `acp.ListAgentSessions`
- * page): the Worker reopens it with `session/load` or `session/resume` instead of `session/new`.
- */
+/** Shared atomic chat + lifecycle creation for new and indexed agent sessions. */
+async function insertAgentChat(
+  ctx: MutationCtx,
+  args: {
+    workspace: Id<"workspaces">;
+    userId: string;
+    worker: string;
+    agentId: string;
+    cwd: string;
+    version: string;
+    scope?: "personal" | "workspace";
+    project?: Id<"projects">;
+    sessionId?: string;
+    title?: string;
+    updatedAt?: number;
+  },
+) {
+  const now = Date.now();
+  const chat = await ctx.db.insert("aisdk_chats", {
+    workspace: args.workspace,
+    userId: args.userId,
+    scope: args.scope ?? "personal",
+    project: args.project,
+    title: args.title,
+    agent: {
+      kind: "acp",
+      profile: "native",
+      worker: args.worker,
+      agentId: args.agentId,
+      agentVersion: args.version,
+      cwd: args.cwd,
+      sessionId: args.sessionId,
+    },
+    activeStream: false,
+    lastInteractionAt: args.updatedAt ?? now,
+  });
+  await ctx.db.insert("acp_sessions", {
+    chat,
+    workspace: args.workspace,
+    worker: args.worker,
+    agentId: args.agentId,
+    cwd: args.cwd,
+    sessionId: args.sessionId,
+    status: "idle",
+    epoch: 0,
+    warm: false,
+    history: "none",
+    updatedAt: now,
+  });
+  return chat;
+}
+
+/** Project catalog is bounded by the workspace's 200-Project limit, read once per page. */
+async function projectFolders(ctx: QueryCtx | MutationCtx, workspace: Id<"workspaces">) {
+  const projects = await ctx.db
+    .query("projects")
+    .withIndex("by_workspace", (q) => q.eq("workspace", workspace))
+    .take(200);
+  const folders = new Map<string, Id<"projects">>();
+  for (const project of projects)
+    for (const folder of project.folders ?? [])
+      if (!folders.has(`${folder.workerId}\0${folder.directory}`))
+        folders.set(`${folder.workerId}\0${folder.directory}`, project._id);
+  return folders;
+}
+
+function indexedSessionRow(row: Doc<"acp_agent_sessions">, folders: Map<string, Id<"projects">>) {
+  return {
+    _id: row._id,
+    worker: row.worker,
+    agentId: row.agentId,
+    sessionId: row.sessionId,
+    cwd: row.cwd,
+    title: row.title,
+    updatedAt: row.updatedAt,
+    chat: row.chat ?? null,
+    project: folders.get(`${row.worker}\0${row.cwd}`) ?? null,
+  };
+}
+
+/** Owner-selected immutable native binding; every creation starts a new agent session. */
 export const CreateSession = ownedWorkspaceMutation({
   args: {
     scope: v.optional(v.union(v.literal("personal"), v.literal("workspace"))),
@@ -45,7 +125,6 @@ export const CreateSession = ownedWorkspaceMutation({
     worker: v.string(),
     agentId: v.string(),
     cwd: v.optional(v.string()),
-    sessionId: v.optional(v.string()),
   },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args) => {
@@ -58,59 +137,20 @@ export const CreateSession = ownedWorkspaceMutation({
     const agent = await findAgent(ctx, ctx.workspace._id, args.worker, args.agentId);
     if (!agent || (agent.status !== "ready" && agent.status !== "needs_auth"))
       acpError("ACP_AGENT_UNAVAILABLE");
-    if (args.sessionId !== undefined) {
-      const reopenable = agent.capabilities.loadSession || agent.capabilities.resume;
-      if (!validAcpToken(args.sessionId) || !reopenable) acpError("ACP_UNSUPPORTED");
-      // One agent session feeds one chat: the Worker routes agent updates by session ID.
-      const bound = await ctx.db
-        .query("acp_sessions")
-        .withIndex("by_worker_and_sessionId", (q) =>
-          q
-            .eq("workspace", ctx.workspace._id)
-            .eq("worker", args.worker)
-            .eq("sessionId", args.sessionId),
-        )
-        .take(8);
-      if (bound.some((session) => session.agentId === args.agentId)) {
-        acpError("ACP_SESSION_BOUND");
-      }
-    }
     const cwd =
       args.cwd ??
       (await deriveChatWorkerDirectory(ctx, ctx.workspace._id, args.worker, args.project));
     if (!cwd || !validChatWorkerDirectory(cwd)) acpError("ACP_INVALID_CWD");
-    const now = Date.now();
-    const chat = await ctx.db.insert("aisdk_chats", {
+    return insertAgentChat(ctx, {
       workspace: ctx.workspace._id,
       userId: ctx.identity._id,
-      scope: args.scope ?? "personal",
-      project: args.project,
-      agent: {
-        kind: "acp",
-        profile: "native",
-        worker: args.worker,
-        agentId: args.agentId,
-        agentVersion: agent.version,
-        cwd,
-        sessionId: args.sessionId,
-      },
-      activeStream: false,
-      lastInteractionAt: now,
-    });
-    await ctx.db.insert("acp_sessions", {
-      chat,
-      workspace: ctx.workspace._id,
       worker: args.worker,
       agentId: args.agentId,
       cwd,
-      sessionId: args.sessionId,
-      status: "idle",
-      epoch: 0,
-      warm: false,
-      history: "none",
-      updatedAt: now,
+      version: agent.version,
+      scope: args.scope,
+      project: args.project,
     });
-    return chat;
   },
 });
 
@@ -388,43 +428,136 @@ export const Fork = mutation({
   },
 });
 
-/** Owner-only, on-demand agent session enumeration; no background crawling. */
-export const ListAgentSessions = ownedWorkspaceMutation({
-  args: {
-    worker: v.string(),
-    agentId: v.string(),
-    project: v.optional(v.id("projects")),
-    cwd: v.optional(v.string()),
-    cursor: v.optional(v.string()),
-    clientId: v.string(),
-  },
-  returns: v.id("acp_commands"),
+/** Paginate metadata without contacting the Worker or reading conversation content. */
+export const ListAgentSessionIndex = ownedWorkspaceQuery({
+  args: { agentId: v.string(), paginationOpts: paginationOptsValidator },
   handler: async (ctx, args) => {
+    const page = await ctx.db
+      .query("acp_agent_sessions")
+      .withIndex("by_workspace_and_agentId_and_updatedAt", (q) =>
+        q.eq("workspace", ctx.workspace._id).eq("agentId", args.agentId),
+      )
+      .order("desc")
+      .paginate(args.paginationOpts);
+    const folders = await projectFolders(ctx, ctx.workspace._id);
+    return { ...page, page: page.page.map((row) => indexedSessionRow(row, folders)) };
+  },
+});
+
+export const SearchAgentSessionIndex = ownedWorkspaceQuery({
+  args: { agentId: v.string(), query: v.string() },
+  handler: async (ctx, args) => {
+    const text = args.query.trim().slice(0, 500);
+    if (!text) return [];
+    const rows = await ctx.db
+      .query("acp_agent_sessions")
+      .withSearchIndex("search_title", (q) =>
+        q.search("title", text).eq("workspace", ctx.workspace._id).eq("agentId", args.agentId),
+      )
+      .take(50);
+    const folders = await projectFolders(ctx, ctx.workspace._id);
+    return rows.map((row) => indexedSessionRow(row, folders));
+  },
+});
+
+/** Safe on every Home open: online-only, coalesced intent and a one-minute freshness window. */
+export const SyncAgentSessions = ownedWorkspaceMutation({
+  args: { agentId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const agents = await ctx.db
+      .query("worker_agents")
+      .withIndex("by_workspace_and_agentId", (q) =>
+        q.eq("workspace", ctx.workspace._id).eq("agentId", args.agentId),
+      )
+      .collect();
+    for (const agent of agents) {
+      if (agent.status !== "ready" || !agent.capabilities.list) continue;
+      if (
+        agent.sessionsSync &&
+        agent.sessionsSync.status !== "failed" &&
+        now - agent.sessionsSync.at < 60_000
+      )
+        continue;
+      const presence = await findWorkerPresence(ctx, ctx.workspace._id, agent.worker);
+      if (!isWorkerOnline(presence?.lastSeenAt, now)) continue;
+      let pending = false;
+      for (const status of ["pending", "claimed"] as const) {
+        const command = await ctx.db
+          .query("acp_commands")
+          .withIndex("by_worker_and_status", (q) =>
+            q.eq("workspace", ctx.workspace._id).eq("worker", agent.worker).eq("status", status),
+          )
+          .filter((q) =>
+            q.and(q.eq(q.field("kind"), "sync_sessions"), q.eq(q.field("agentId"), args.agentId)),
+          )
+          .first();
+        if (command) {
+          pending = true;
+          break;
+        }
+      }
+      if (pending) continue;
+      await enqueue(ctx, { workspace: ctx.workspace._id, worker: agent.worker }, ctx.identity._id, {
+        kind: "sync_sessions",
+        agentId: args.agentId,
+      });
+    }
+    return null;
+  },
+});
+
+/** Open an indexed session even while offline; the immutable binding reopens when it reconnects. */
+export const OpenAgentSession = ownedWorkspaceMutation({
+  args: { worker: v.string(), agentId: v.string(), sessionId: v.string() },
+  returns: v.id("aisdk_chats"),
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("acp_agent_sessions")
+      .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
+        q
+          .eq("workspace", ctx.workspace._id)
+          .eq("worker", args.worker)
+          .eq("agentId", args.agentId)
+          .eq("sessionId", args.sessionId),
+      )
+      .first();
+    if (!row) acpError("ACP_SESSION_NOT_FOUND");
+    if (row.chat && (await ctx.db.get(row.chat))) return row.chat;
     await requireActiveWorkspaceWorker(
       args.worker,
       ctx.workspace._id,
       workspaceWorkerMetadata(ctx, ctx.workspace._id),
     );
-    if (args.project) await requireWorkspaceProject(ctx, args.project, ctx.workspace._id);
     const agent = await findAgent(ctx, ctx.workspace._id, args.worker, args.agentId);
-    if (!agent?.capabilities.list) acpError("ACP_UNSUPPORTED");
-    const cwd =
-      args.cwd ??
-      (await deriveChatWorkerDirectory(ctx, ctx.workspace._id, args.worker, args.project));
-    if (!cwd || !validChatWorkerDirectory(cwd)) acpError("ACP_INVALID_CWD");
-    return enqueue(
-      ctx,
-      { workspace: ctx.workspace._id, worker: args.worker },
-      ctx.identity._id,
-      {
-        kind: "list",
-        agentId: args.agentId,
-        cwd,
-        ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
-      },
-      undefined,
-      args.clientId,
-    );
+    if (!agent || !(agent.capabilities.loadSession || agent.capabilities.resume))
+      acpError("ACP_UNSUPPORTED");
+    const bound = await ctx.db
+      .query("acp_sessions")
+      .withIndex("by_worker_and_sessionId", (q) =>
+        q
+          .eq("workspace", ctx.workspace._id)
+          .eq("worker", args.worker)
+          .eq("sessionId", args.sessionId),
+      )
+      .take(8);
+    if (bound.some((session) => session.agentId === args.agentId)) acpError("ACP_SESSION_BOUND");
+    const folders = await projectFolders(ctx, ctx.workspace._id);
+    const chat = await insertAgentChat(ctx, {
+      workspace: ctx.workspace._id,
+      userId: ctx.identity._id,
+      worker: args.worker,
+      agentId: args.agentId,
+      sessionId: args.sessionId,
+      cwd: row.cwd,
+      version: agent.version,
+      title: row.title,
+      updatedAt: row.updatedAt,
+      project: folders.get(`${row.worker}\0${row.cwd}`),
+    });
+    await ctx.db.patch(row._id, { chat });
+    return chat;
   },
 });
 

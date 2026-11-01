@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import type {
   AcpAgentDefinition,
   AcpAgentReport,
+  AcpAgentSessionEntry,
   AcpCommandPayload,
   AcpFrameInput,
   AcpInteractionAnswer,
@@ -33,6 +34,9 @@ class FakeTransport implements AcpTransport {
   reports: AcpAgentReport[] = [];
   definitions: AcpAgentDefinition[] = [definition()];
   reportCount = 0;
+  savedDefaults: Record<string, NonNullable<AcpAgentReport["defaults"]>> = {};
+  indexed = new Map<string, AcpAgentSessionEntry>();
+  syncs: Parameters<AcpTransport["syncAgentSessions"]>[0][] = [];
   frames: { epoch: number; frame: AcpFrameInput }[] = [];
   opened: { id: string; key: string; request: AcpInteractionRequest }[] = [];
   resolved: { interaction: string; status: string }[] = [];
@@ -102,7 +106,9 @@ class FakeTransport implements AcpTransport {
   }
   add(payload: AcpCommandPayload): string {
     const command = crypto.randomUUID();
-    const agentLevel = ["list", "authenticate", "logout", "close", "delete"].includes(payload.kind);
+    const agentLevel = ["sync_sessions", "authenticate", "logout", "close", "delete"].includes(
+      payload.kind,
+    );
     this.claims.set(command, {
       command,
       kind: payload.kind,
@@ -156,8 +162,22 @@ class FakeTransport implements AcpTransport {
     this.publishWarm();
   }
   async reportAgents({ agents }: { agents: AcpAgentReport[] }) {
-    this.reports = structuredClone(agents);
+    for (const agent of agents)
+      if (agent.defaults) this.savedDefaults[agent.agentId] = structuredClone(agent.defaults);
+    this.reports = structuredClone(agents).map((agent) => ({
+      ...agent,
+      ...(this.savedDefaults[agent.agentId] ? { defaults: this.savedDefaults[agent.agentId] } : {}),
+    }));
     this.reportCount++;
+    return structuredClone(this.savedDefaults);
+  }
+  async knownAgentSessions() {
+    return [...this.indexed.values()];
+  }
+  async syncAgentSessions(args: Parameters<AcpTransport["syncAgentSessions"]>[0]) {
+    this.syncs.push(structuredClone(args));
+    for (const entry of args.upserts) this.indexed.set(entry.sessionId, structuredClone(entry));
+    for (const id of args.removals) this.indexed.delete(id);
   }
   async recoverWorker() {
     return { more: false };
@@ -213,7 +233,12 @@ async function start(transport: FakeTransport, args: string[] = []) {
   const host = new AcpHost(transport);
   hosts.push(host);
   host.setAvailable(true);
-  await until(() => transport.reports.length > 0);
+  const previousSyncs = transport.syncs.length;
+  await until(
+    () =>
+      transport.reports.length > 0 &&
+      transport.syncs.slice(previousSyncs).some((sync) => sync.finish),
+  );
   return host;
 }
 afterEach(async () => {
@@ -223,6 +248,62 @@ afterEach(async () => {
 });
 
 describe("ACP host with real stdio agent", () => {
+  it("discovers defaults with a temporary session and deletes it before indexing", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "radium-acp-defaults-"));
+    directories.push(directory);
+    const store = join(directory, "sessions.json");
+    const transport = new FakeTransport();
+    transport.warm = false;
+    const host = await start(transport, ["--store", store]);
+    expect(transport.reports[0]?.defaults?.config?.options).toContainEqual(
+      expect.objectContaining({ id: "model", currentValue: "scripted-small" }),
+    );
+    expect(transport.reports[0]?.defaults?.commands?.length).toBeGreaterThan(0);
+    const state = JSON.parse(await readFile(store, "utf8"));
+    expect(state.sessions).toEqual([]);
+    expect(transport.binding.sessionId).toBeNull();
+    expect(transport.indexed.size).toBe(0);
+    expect(transport.syncs.at(-1)?.finish).toEqual({ count: 0, truncated: false });
+    await host.close();
+    transport.reports = [];
+    const reports = transport.reportCount;
+    await start(transport, ["--store", store]);
+    expect(transport.reportCount).toBe(reports + 1);
+  });
+
+  it("never discovers defaults for an agent without deletion support", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "radium-acp-no-delete-"));
+    directories.push(directory);
+    const store = join(directory, "sessions.json");
+    const transport = new FakeTransport();
+    transport.warm = false;
+    await start(transport, ["--store", store, "--no-delete"]);
+    expect(transport.reports[0]?.capabilities.delete).toBe(false);
+    expect(transport.reports[0]?.defaults).toBeUndefined();
+    await expect(readFile(store, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(transport.indexed.size).toBe(0);
+  });
+
+  it("syncs agent sessions by diff and writes no upserts on an unchanged second sync", async () => {
+    const transport = new FakeTransport();
+    await start(transport);
+    const prompt = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
+    await until(() => transport.receipts.has(prompt));
+    const first = transport.add({ kind: "sync_sessions", agentId: "scripted" });
+    await until(() => transport.receipts.has(first));
+    expect(transport.receipts.get(first)?.status).toBe("done");
+    expect([...transport.indexed.values()]).toMatchObject([
+      { sessionId: transport.binding.sessionId, cwd: tmpdir(), updatedAt: expect.any(Number) },
+    ]);
+    expect(transport.syncs.flatMap((sync) => sync.upserts)).toHaveLength(1);
+    const writes = transport.syncs.length;
+    const second = transport.add({ kind: "sync_sessions", agentId: "scripted" });
+    await until(() => transport.receipts.has(second));
+    expect(transport.syncs.slice(writes).flatMap((sync) => sync.upserts)).toEqual([]);
+    expect(transport.syncs.slice(writes).flatMap((sync) => sync.removals)).toEqual([]);
+    expect(transport.syncs.at(-1)?.finish).toEqual({ count: 1, truncated: false });
+  });
+
   it("keeps a running turn on its old definition and uses the replacement for the next prompt", async () => {
     const directory = await mkdtemp(join(tmpdir(), "radium-acp-redefine-"));
     directories.push(directory);
@@ -432,9 +513,11 @@ describe("ACP host with real stdio agent", () => {
     expect(transport.frames).toEqual([]);
   });
 
-  it("reports auth_required, authenticates, lists bounded sessions and handles refusal", async () => {
+  it("reports auth_required, authenticates, syncs sessions and handles refusal", async () => {
     const transport = new FakeTransport();
     await start(transport, ["--require-auth"]);
+    expect(transport.reports[0]?.status).toBe("ready");
+    expect(transport.reports[0]?.defaults).toBeUndefined();
     const denied = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
     await until(() => transport.receipts.has(denied));
     expect(transport.reports[0]?.status).toBe("needs_auth");
@@ -445,9 +528,9 @@ describe("ACP host with real stdio agent", () => {
     const refuse = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "refuse" }] });
     await until(() => transport.receipts.has(refuse));
     expect(transport.patches.at(-1)).toMatchObject({ status: "failed", stopReason: "refusal" });
-    const list = transport.add({ kind: "list", agentId: "scripted", cwd: tmpdir() });
-    await until(() => transport.receipts.has(list));
-    expect(JSON.parse(transport.receipts.get(list)!.result!).sessions).toMatchObject([
+    const sync = transport.add({ kind: "sync_sessions", agentId: "scripted" });
+    await until(() => transport.receipts.has(sync));
+    expect([...transport.indexed.values()]).toMatchObject([
       { sessionId: transport.binding.sessionId },
     ]);
   });
@@ -504,8 +587,8 @@ describe("ACP host with real stdio agent", () => {
       sessionId: transport.binding.sessionId!,
     });
     await until(() => transport.receipts.has(removed));
-    const list = transport.add({ kind: "list", agentId: "scripted", cwd: tmpdir() });
-    await until(() => transport.receipts.has(list));
-    expect(JSON.parse(transport.receipts.get(list)!.result!).sessions).toEqual([]);
+    const sync = transport.add({ kind: "sync_sessions", agentId: "scripted" });
+    await until(() => transport.receipts.has(sync));
+    expect([...transport.indexed.values()]).toEqual([]);
   });
 });
