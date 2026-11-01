@@ -94,7 +94,7 @@ export type BuiltinToolSet = {
  * Executable sets have a builder where `streamText` is configured (see
  * `src/http/aisdk.chat.ts`); `available: false` entries are selectable
  * placeholders until theirs exists. The session sets (`question`,
- * `todo_write`) are default-on.
+ * `todo_write`) and Code Mode are default-on.
  */
 export const BUILTIN_TOOL_SETS = [
   {
@@ -118,10 +118,13 @@ export const BUILTIN_TOOL_SETS = [
     available: true,
   },
   {
+    // Shipped as the "Code Interpreter" placeholder; the id stays as the persisted contract.
     id: "code_interpreter",
-    name: "Code Interpreter",
-    description: "Run code in a sandbox to compute answers and analyse data.",
-    available: false,
+    name: "Code Mode",
+    description:
+      "Let the model run JavaScript that calls your tools and MCP servers in one step. When off, MCP servers in Code Mode become direct tool calls.",
+    available: true,
+    defaultEnabled: true,
   },
   {
     id: "image_generation",
@@ -143,6 +146,9 @@ export const WEB_SEARCH_TOOL_ID = "web_search" satisfies BuiltinToolSetId;
 /** Ids of the session tool sets; each contributes one model tool of the same name. */
 export const QUESTION_TOOL_ID = "question" satisfies BuiltinToolSetId;
 export const TODO_TOOL_ID = "todo_write" satisfies BuiltinToolSetId;
+
+/** Id of the Code Mode tool set, which contributes the `execute` tool. */
+export const CODE_MODE_TOOL_SET_ID = "code_interpreter" satisfies BuiltinToolSetId;
 
 /** Look up a built-in tool set definition by id. */
 export function getBuiltinToolSet(id: string): BuiltinToolSet | undefined {

@@ -18,8 +18,8 @@ import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 /**
  * Chat defaults of the current workspace (owner-only; the route gates members): the model new
- * chats pre-select, the model that titles chats, and the Chain of Thought timeline. Unset models
- * fall back to the first available model.
+ * chats pre-select, the model that titles chats, the Chain of Thought timeline, and the system
+ * prompt sent with every request. Unset models fall back to the first available model.
  */
 export function PreferencesPanel() {
   const { workspaceId } = useWorkspace();
@@ -46,9 +46,16 @@ export function PreferencesPanel() {
       signedIn && workspaceId ? { workspace: workspaceId } : "skip",
     ),
   );
+  const { data: systemPrompt } = useQuery(
+    convexQuery(
+      api.chatroom.getSystemPromptSettings,
+      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    ),
+  );
   const setModelDefault = useMutation(api.chatroom.setModelDefault);
   const setTitleModelDefault = useMutation(api.chatroom.setTitleModelDefault);
   const setChainOfThoughtEnabled = useMutation(api.chatroom.setChainOfThoughtEnabled);
+  const setSystemPromptSettings = useMutation(api.chatroom.setSystemPromptSettings);
 
   const [open, setOpen] = useState(false);
   const [titleOpen, setTitleOpen] = useState(false);
@@ -103,15 +110,31 @@ export function PreferencesPanel() {
     [signedIn, setChainOfThoughtEnabled, workspaceId],
   );
 
+  const persistSystemPrompt = useCallback(
+    async (settings: { enabled: boolean; modelIdentity: boolean }) => {
+      if (!signedIn) return;
+      try {
+        if (!workspaceId) return;
+        await setSystemPromptSettings({ workspace: workspaceId, ...settings });
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to update system prompt setting.",
+        );
+      }
+    },
+    [signedIn, setSystemPromptSettings, workspaceId],
+  );
+
   const signInRequired = userInfo !== undefined && typeof userInfo === "string";
   const modelsLoading = userInfo === undefined || models === undefined;
   const chainOfThoughtLoading = userInfo === undefined || chainOfThoughtEnabled === undefined;
+  const systemPromptLoading = userInfo === undefined || systemPrompt === undefined;
 
   return (
     <>
       <WorkspacePageHeader
         title="Chat defaults"
-        description="How new chats start: the models they use and how the conversation is shown."
+        description="How chats run: the models new chats start with, how the conversation is shown, and the system prompt."
       />
 
       <GroupList title="Model">
@@ -168,6 +191,41 @@ export function PreferencesPanel() {
               checked={chainOfThoughtEnabled}
               disabled={!signedIn}
               onCheckedChange={(checked) => void persistChainOfThought(checked)}
+            />
+          )}
+        </Row>
+      </GroupList>
+
+      <GroupList title="System prompt">
+        <Row
+          title="System prompt"
+          description="Tell the model it runs in Radium, how Radium is organized, and its rules."
+        >
+          {systemPromptLoading ? (
+            <Skeleton className="h-5 w-8 shrink-0" />
+          ) : (
+            <Switch
+              aria-label="Send the system prompt"
+              checked={systemPrompt.enabled}
+              disabled={!signedIn}
+              onCheckedChange={(enabled) => void persistSystemPrompt({ ...systemPrompt, enabled })}
+            />
+          )}
+        </Row>
+        <Row
+          title="Model identity"
+          description="Include the model's name, author, and slug. Needs the system prompt."
+        >
+          {systemPromptLoading ? (
+            <Skeleton className="h-5 w-8 shrink-0" />
+          ) : (
+            <Switch
+              aria-label="Include the model identity"
+              checked={systemPrompt.enabled && systemPrompt.modelIdentity}
+              disabled={!signedIn || !systemPrompt.enabled}
+              onCheckedChange={(modelIdentity) =>
+                void persistSystemPrompt({ ...systemPrompt, modelIdentity })
+              }
             />
           )}
         </Row>

@@ -1,9 +1,11 @@
 import { NoObjectGeneratedError, Output, generateText, type LanguageModel } from "ai";
 import * as z from "zod";
 
+// Keep provider-facing constraints in descriptions: OpenAI strict JSON Schema rejects
+// `format: "emoji"`, and sanitizeTitle enforces length and fallbacks after generation.
 const titleSchema = z.object({
-  emoji: z.string().emoji().describe("Exactly one emoji that represents the user's first message."),
-  title: z.string().min(1).max(32).describe("A concise chat title, no emoji, 2 to 5 words."),
+  emoji: z.string().describe("Exactly one emoji that represents the user's first message."),
+  title: z.string().describe("A concise chat title, no emoji, 2 to 5 words, at most 32 characters."),
 });
 
 type GeneratedChatTitle = z.infer<typeof titleSchema>;

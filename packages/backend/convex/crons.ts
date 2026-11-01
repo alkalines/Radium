@@ -14,6 +14,12 @@ crons.interval("usage limit polling", { minutes: 5 }, internal.limits.pollDue, {
 crons.interval("expired limit events", { hours: 1 }, internal.limits.pruneEvents, {});
 crons.interval("expired notifications", { hours: 1 }, internal.notifications.prune, {});
 crons.interval(
+  "expired code mode interactions",
+  { minutes: 5 },
+  internal.code_mode.pruneExpiredInteractions,
+  {},
+);
+crons.interval(
   "unsent chat attachments",
   { hours: 1 },
   internal.chat_files.prunePendingUploads,

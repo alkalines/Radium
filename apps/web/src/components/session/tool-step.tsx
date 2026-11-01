@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { getToolName, type ToolUIPart } from "ai";
 import {
+  CodeXmlIcon,
   FilePenLineIcon,
   FilePlusIcon,
   FileTextIcon,
@@ -22,6 +23,7 @@ import {
   TraceIcon,
   TraceLine,
   TraceTitle,
+  Trace,
 } from "@/components/ui/trace";
 import { TodoList } from "./todo-list";
 import {
@@ -35,6 +37,8 @@ import {
 } from "./tool-code";
 import { countDiffLines, getReceiptFiles, parseNumberedRead, parsePatch } from "./tool-diff";
 import {
+  codeModeCallPart,
+  getCodeModeOutput,
   getBashResult,
   getInputNumber,
   getInputString,
@@ -65,6 +69,14 @@ export function traceStatusFor(state: RunState) {
 type ToolPhase = "active" | "awaiting" | "succeeded" | "failed" | "denied" | "stopped";
 
 const toolVerbs: Record<ToolKind, Record<ToolPhase, string>> = {
+  code: {
+    active: "Running code",
+    awaiting: "Running code",
+    succeeded: "Ran code",
+    failed: "Failed to run code",
+    denied: "Denied code",
+    stopped: "Stopped code",
+  },
   bash: {
     active: "Running",
     awaiting: "Run",
@@ -132,6 +144,7 @@ const toolVerbs: Record<ToolKind, Record<ToolPhase, string>> = {
 };
 
 const toolIcons: Record<ToolKind, LucideIcon> = {
+  code: CodeXmlIcon,
   bash: TerminalIcon,
   read: FileTextIcon,
   edit: FilePenLineIcon,
@@ -164,6 +177,8 @@ function toolSubject(part: ToolUIPart, kind: ToolKind): string | undefined {
   const input = getToolInput(part);
 
   switch (kind) {
+    case "code":
+      return undefined;
     case "bash":
       return getInputString(input, "command");
     case "read":
@@ -193,6 +208,7 @@ function toolSubject(part: ToolUIPart, kind: ToolKind): string | undefined {
 
 /** Kinds whose subject is Machine text (commands and paths) rather than prose. */
 const machineSubjects: Record<ToolKind, boolean> = {
+  code: false,
   bash: true,
   read: true,
   edit: true,
@@ -233,6 +249,7 @@ function toolDetail(part: ToolUIPart, kind: ToolKind): ReactNode {
       return `${done}/${items.length} done`;
     }
     case "bash":
+    case "code":
     case "web-search":
     case "question":
     case "other":
@@ -261,6 +278,7 @@ export function ToolStep({
 }) {
   const kind = getToolKind(part);
   const state = getToolRunState(part, isLive);
+  // A program folds away once it starts running; the calls it makes show on their own rail.
   const isRunningInput =
     (part.state === "input-streaming" || part.state === "input-available") && state !== "awaiting";
   const shouldAutoClose = !isRunningInput || hasLaterContent;
@@ -312,7 +330,7 @@ export function ToolStep({
     return line;
   }
 
-  return (
+  const step = (
     <TraceCollapsible open={isOpen} onOpenChange={setIsOpen}>
       <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
       <TraceCollapsibleContent className="flex flex-col gap-2">
@@ -320,10 +338,34 @@ export function ToolStep({
       </TraceCollapsibleContent>
     </TraceCollapsible>
   );
+  if (kind !== "code") return step;
+
+  // The program and its result fold away under "Ran code"; the calls it made stay visible on a
+  // rail beneath it, each as the same step a direct call of that tool gets.
+  const calls = getCodeModeOutput(part)?.calls ?? [];
+  const isProgramRunning = isLive && part.state === "output-available" && part.preliminary === true;
+  return (
+    <div className="flex w-full min-w-0 flex-col gap-2">
+      {step}
+      {calls.length > 0 ? (
+        <Trace className="ml-[calc(--spacing(2)-1px)] w-auto border-l pl-4">
+          {calls.map((call) => (
+            <ToolStep
+              key={call.id}
+              part={codeModeCallPart(call)}
+              isLive={isProgramRunning}
+              hasLaterContent={false}
+            />
+          ))}
+        </Trace>
+      ) : null}
+    </div>
+  );
 }
 
 function hasToolBody(part: ToolUIPart, kind: ToolKind) {
   switch (kind) {
+    case "code":
     case "bash":
     case "edit":
     case "create":
@@ -339,6 +381,24 @@ function hasToolBody(part: ToolUIPart, kind: ToolKind) {
 }
 
 function ToolBody({ part, kind, state }: { part: ToolUIPart; kind: ToolKind; state: RunState }) {
+  if (kind === "code") {
+    const snapshot = getCodeModeOutput(part);
+    return (
+      <>
+        <ToolInputBlock part={part} />
+        {snapshot?.output ? (
+          <ToolCodeBlock
+            code={snapshot.output}
+            title="result"
+            variant={snapshot.error ? "destructive" : "default"}
+          />
+        ) : null}
+        {part.state === "output-error" ? (
+          <ToolCodeBlock code={part.errorText} variant="destructive" />
+        ) : null}
+      </>
+    );
+  }
   if (kind === "bash") {
     return (
       <div className="max-h-64 overflow-y-auto rounded-xl bg-muted p-3">
@@ -369,7 +429,7 @@ function ToolBody({ part, kind, state }: { part: ToolUIPart; kind: ToolKind; sta
   const failure = part.state === "output-available" ? getWorkerFailure(part.output) : undefined;
 
   if (kind === "web-search") {
-    if (part.state !== "output-available") return null;
+    if (part.state !== "output-available" || part.output === undefined) return null;
 
     const results = getWebSearchResults(part.output);
     return results.length > 0 ? (
@@ -398,7 +458,7 @@ function ToolBody({ part, kind, state }: { part: ToolUIPart; kind: ToolKind; sta
     <>
       <ToolInputBlock part={part} />
       {failure ? <FailureBlock failure={failure} /> : null}
-      {kind === "other" && part.state === "output-available" ? (
+      {kind === "other" && part.state === "output-available" && part.output !== undefined ? (
         <JsonCodeBlock value={part.output} title="output" />
       ) : null}
     </>
@@ -408,7 +468,9 @@ function ToolBody({ part, kind, state }: { part: ToolUIPart; kind: ToolKind; sta
 /** A `worker_read` result: the file's lines numbered from where the read started. */
 function ReadOutput({ part }: { part: ToolUIPart & { state: "output-available" } }) {
   const content = getInputString(part.output, "content");
-  if (content === undefined) return <JsonCodeBlock value={part.output} />;
+  if (content === undefined) {
+    return part.output === undefined ? null : <JsonCodeBlock value={part.output} />;
+  }
 
   const path = getInputString(getToolInput(part), "path");
   const { startLine, text } = parseNumberedRead(content);
@@ -434,12 +496,16 @@ function QuestionAnswers({ part }: { part: ToolUIPart }) {
   return (
     <dl className="flex flex-col gap-2 pl-1 text-[13px]">
       {questions.map((question, index) => {
-        const answer = answers?.[index] ?? [];
+        const answer = answers?.[index];
         return (
           <div key={index} className="flex min-w-0 flex-col">
             <dt className="text-muted-foreground">{question.question}</dt>
-            <dd className={answer.length > 0 ? "text-foreground" : "text-muted-foreground italic"}>
-              {answer.length > 0 ? answer.join(", ") : "Unanswered"}
+            <dd className={answer?.length ? "text-foreground" : "text-muted-foreground italic"}>
+              {answer === undefined
+                ? "Answers not retained"
+                : answer.length > 0
+                  ? answer.join(", ")
+                  : "Unanswered"}
             </dd>
           </div>
         );
@@ -478,7 +544,9 @@ function bashTerminalLines(part: ToolUIPart, state: RunState): TerminalLine[] {
 
   const result = getBashResult(part.output);
   if (!result) {
-    lines.push({ id: `${id}-output`, stream: "stdout", text: JSON.stringify(part.output) });
+    if (part.output !== undefined) {
+      lines.push({ id: `${id}-output`, stream: "stdout", text: JSON.stringify(part.output) });
+    }
     return lines;
   }
 

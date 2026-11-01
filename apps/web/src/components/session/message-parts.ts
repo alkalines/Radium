@@ -6,6 +6,7 @@ import {
   type ToolUIPart,
   type UIMessage,
 } from "ai";
+import { codeModeCallPart, getCodeModeOutput, type CodeModeToolPart } from "./tool-parts";
 
 /**
  * Pure readers over AI SDK `UIMessage`s for the Session screen and thread. Metadata fields
@@ -153,7 +154,7 @@ export function getToolContinuationKey(messages: UIMessage[]) {
 
   const canContinue = toolParts.every(
     (part) =>
-      part.state === "output-available" ||
+      (part.state === "output-available" && !part.preliminary) ||
       part.state === "output-error" ||
       part.state === "approval-responded",
   );
@@ -183,7 +184,7 @@ export function withoutUnfinishedStep(messages: UIMessage[]): UIMessage[] {
     lastStepTools.length > 0 &&
     lastStepTools.every(
       (part) =>
-        part.state === "output-available" ||
+        (part.state === "output-available" && !part.preliminary) ||
         part.state === "output-error" ||
         part.state === "output-denied" ||
         part.state === "approval-responded",
@@ -195,35 +196,42 @@ export function withoutUnfinishedStep(messages: UIMessage[]): UIMessage[] {
   return [...messages.slice(0, -1), { ...message, parts: finishedParts }];
 }
 
+/** Last-turn direct calls and awaiting Code Mode calls, preserving part and inner-call order. */
+function pendingToolParts(messages: UIMessage[]): CodeModeToolPart[] {
+  const message = messages.at(-1);
+  if (!message || message.role !== "assistant") return [];
+  return message.parts.flatMap((part) => {
+    if (!isToolPart(part)) return [];
+    const snapshot = getCodeModeOutput(part);
+    if (!snapshot) return [part];
+    return snapshot.calls
+      .filter((call) => call.status === "awaiting" && call.interaction !== undefined)
+      .map(codeModeCallPart);
+  });
+}
+
 /**
- * Tool calls the conversation waits on the user for: the `approval-requested` calls of the last
- * message when it is an assistant turn, in call order. Non-empty maps to the `awaiting` RunState
- * at the data boundary.
+ * Direct and Code Mode approval requests of the latest assistant turn, in call order.
+ * Inner requests carry `codeModeInteraction` and must be answered through its Convex mutation.
  */
 export function getPendingApprovals(
   messages: UIMessage[],
-): (ToolUIPart & { state: "approval-requested" })[] {
-  const message = messages.at(-1);
-  if (!message || message.role !== "assistant") return [];
-
-  return message.parts.filter(
-    (part): part is ToolUIPart & { state: "approval-requested" } =>
-      isToolPart(part) && part.state === "approval-requested",
+): (CodeModeToolPart & { state: "approval-requested" })[] {
+  return pendingToolParts(messages).filter(
+    (part): part is CodeModeToolPart & { state: "approval-requested" } =>
+      part.state === "approval-requested",
   );
 }
 
 /**
- * `question` calls of the last assistant turn still waiting for the user's answers, in call order.
- * They have no server execution, so the turn stays `input-available` until the browser answers.
+ * Direct and Code Mode questions of the latest assistant turn waiting for the user's answers.
+ * Inner questions wait in-stream; direct questions are answered through the AI SDK continuation.
  */
 export function getPendingQuestions(
   messages: UIMessage[],
-): (ToolUIPart & { state: "input-available" })[] {
-  const message = messages.at(-1);
-  if (!message || message.role !== "assistant") return [];
-
-  return message.parts.filter(
-    (part): part is ToolUIPart & { state: "input-available" } =>
-      isToolPart(part) && part.state === "input-available" && getToolName(part) === "question",
+): (CodeModeToolPart & { state: "input-available" })[] {
+  return pendingToolParts(messages).filter(
+    (part): part is CodeModeToolPart & { state: "input-available" } =>
+      part.state === "input-available" && getToolName(part) === "question",
   );
 }

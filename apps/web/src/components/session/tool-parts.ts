@@ -1,4 +1,9 @@
-import { getToolName, type ToolUIPart, type UIMessage } from "ai";
+import { getToolName, isToolUIPart, type ToolUIPart, type UIMessage } from "ai";
+import type {
+  CodeModeCall,
+  CodeModeInteraction,
+  CodeModeOutput,
+} from "backend/src/chatroom/code-mode";
 import type { QuestionOutput, QuestionPrompt, TodoItem } from "backend/src/chatroom/session-tools";
 
 import type { RunState } from "@/components/agentic/agent-status";
@@ -13,6 +18,7 @@ import { isToolPart } from "./message-parts";
 
 /** How a tool call renders. `other` covers MCP tools and anything unknown: generic JSON. */
 export type ToolKind =
+  | "code"
   | "bash"
   | "read"
   | "edit"
@@ -23,6 +29,7 @@ export type ToolKind =
   | "other";
 
 const namedToolKinds: Record<string, ToolKind> = {
+  execute: "code",
   question: "question",
   todo_write: "todo",
   worker_bash: "bash",
@@ -31,6 +38,49 @@ const namedToolKinds: Record<string, ToolKind> = {
   worker_create: "create",
 };
 
+/** A synthesized inner call keeps its interaction identity outside the AI SDK approval protocol. */
+export type CodeModeToolPart = ToolUIPart & { codeModeInteraction?: CodeModeInteraction };
+
+/** Reads the latest full Code Mode snapshot; unfinished input and legacy outputs have none. */
+export function getCodeModeOutput(part: ToolUIPart): CodeModeOutput | undefined {
+  if (getToolName(part) !== "execute" || part.state !== "output-available") return undefined;
+  const output = part.output;
+  if (typeof output !== "object" || output === null) return undefined;
+  if (!("calls" in output) || !Array.isArray(output.calls)) return undefined;
+  if (!("output" in output) || typeof output.output !== "string") return undefined;
+  return output as CodeModeOutput;
+}
+
+/** Adapts an inner call to the normal tool renderers without inventing an output receipt. */
+export function codeModeCallPart(call: CodeModeCall): CodeModeToolPart {
+  const base = {
+    type: `tool-${call.tool}` as const,
+    toolCallId: call.id,
+    input: call.input,
+    codeModeInteraction: call.interaction,
+  };
+  switch (call.status) {
+    case "running":
+      return { ...base, state: "input-available" };
+    case "awaiting":
+      if (call.interaction?.kind === "approval") {
+        return { ...base, state: "approval-requested", approval: { id: call.interaction.id } };
+      }
+      return { ...base, state: "input-available" };
+    case "completed":
+      return { ...base, state: "output-available", output: undefined };
+    case "error":
+      return { ...base, state: "output-error", errorText: call.error ?? "Tool call failed." };
+    case "denied":
+      return {
+        ...base,
+        state: "output-denied",
+        approval: { id: call.id, approved: false, reason: call.error },
+      };
+  }
+}
+
+/** Selects a tool's existing per-tool visuals; namespaced MCP paths stay generic. */
 export function getToolKind(part: ToolUIPart): ToolKind {
   const name = getToolName(part);
   const namedKind = namedToolKinds[name];
@@ -72,6 +122,16 @@ export function getInputNumber(input: unknown, key: string) {
  * Worker tools report their own failure as an `{ ok: false }` output, which counts as failed.
  */
 export function getToolRunState(part: ToolUIPart, isLive: boolean): RunState {
+  const snapshot = getCodeModeOutput(part);
+  if (snapshot) {
+    if (snapshot.calls.some((call) => call.status === "awaiting")) {
+      return isLive ? "awaiting" : "cancelled";
+    }
+    if (part.state === "output-available" && part.preliminary) {
+      return isLive ? "executing" : "cancelled";
+    }
+    if (snapshot.error) return "failed";
+  }
   switch (part.state) {
     case "input-streaming":
       return isLive ? "streaming" : "cancelled";
@@ -246,17 +306,27 @@ export function getTodoItems(input: unknown): TodoItem[] {
 }
 
 /**
- * The Session's current todo list: the input of the latest `todo_write` call whose input is
- * complete and that was not rejected. A call still streaming keeps the previous list on screen, so
- * the list swaps once instead of shrinking and regrowing. Undefined when the model never wrote one.
+ * The Session's current todo list: the latest non-rejected direct `todo_write` input or completed
+ * inner `todo_write` input, ordered by message, part, then inner-call order. A call still streaming
+ * keeps the previous list on screen. Undefined when the model never wrote one.
  */
 export function getLatestTodos(messages: UIMessage[]): TodoItem[] | undefined {
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
     const parts = messages[messageIndex]?.parts ?? [];
     for (let partIndex = parts.length - 1; partIndex >= 0; partIndex--) {
       const part = parts[partIndex];
-      if (!part || !isToolPart(part) || getToolKind(part) !== "todo") continue;
-      if (part.state === "input-streaming" || part.state === "output-error") continue;
+      if (!part || !isToolPart(part)) continue;
+      const snapshot = getCodeModeOutput(part);
+      if (snapshot) {
+        const call = snapshot.calls.findLast(
+          (call) => call.tool === "todo_write" && call.status === "completed",
+        );
+        if (call) return getTodoItems(call.input);
+      }
+      if (getToolKind(part) !== "todo") continue;
+      if (part.state === "input-streaming" || part.state === "output-error" || isDeniedTool(part)) {
+        continue;
+      }
 
       return getTodoItems(part.input);
     }
@@ -274,5 +344,5 @@ export function hasRenderableAssistantContent(part: UIMessage["parts"][number]) 
     return part.text.trim().length > 0;
   }
 
-  return !isToolPart(part) && part.type !== "step-start";
+  return !isToolUIPart(part) && part.type !== "step-start";
 }

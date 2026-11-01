@@ -236,6 +236,7 @@ export function ToolsPanel() {
               tag={server.auth.type === "none" ? "No auth" : server.auth.type}
               description={<span className="font-mono text-[13px]">{server.url}</span>}
             >
+              <Tag>{server.codeMode ? "Code Mode" : "Direct"}</Tag>
               <Switch
                 checked={selection.mcpServers.includes(server._id)}
                 onCheckedChange={(checked) => toggleServer(server._id, checked)}
@@ -263,6 +264,7 @@ export function ToolsPanel() {
                         auth: server.auth,
                         preview: server.preview,
                         hasSecret: server.hasSecret,
+                        codeMode: server.codeMode,
                       });
                       setDialogOpen(true);
                     }}

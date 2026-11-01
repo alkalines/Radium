@@ -12,6 +12,7 @@ import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import type { CodeModeInteractionResponse } from "backend/src/chatroom/code-mode";
 import type { ChatInterruption } from "backend/src/chatroom/interruption";
 import type { ToolSelection } from "backend/src/chatroom/tools";
 import type { ChatWorkerSelection } from "backend/src/worker/chat-config";
@@ -97,8 +98,9 @@ export type SessionTabHint = {
  *   `POST /api/aisdk/chat` on the Convex site. Either query failing or losing access shows an inline
  *   notice and calls `onUnavailable` once.
  * - A pending tool approval, then a pending `question` call, takes the Composer's place
- *   (`ApprovalPrompt`, `QuestionPrompt`) until it is answered. The latest `todo_write` list docks
- *   above that slot while it has open items or the run is working.
+ *   (`ApprovalPrompt`, `QuestionPrompt`) until it is answered. Code Mode approvals and questions
+ *   each run a server deadline, so every live one shows at once instead of in turn. The latest
+ *   `todo_write` list docks above that slot while it has open items or the run is working.
  * - Reverting to a user turn drops it and everything after it, puts its text and files back in
  *   the Composer, and offers a Restore card until the next send makes the revert durable.
  * - A turn that stopped short (Stop, a reload mid-reply, a request error) shows
@@ -168,6 +170,7 @@ export const SessionScreen = memo(function SessionScreen({
   const forkChat = useMutation(api.aisdk.ForkChat);
   const setChatScope = useMutation(api.aisdk.SetChatScope);
   const setChatWorker = useMutation(api.aisdk.SetChatWorker);
+  const answerCodeModeInteraction = useMutation(api.code_mode.answerInteraction);
 
   // An existing chat's settings belong to its own workspace; a draft uses the current one.
   const settingsWorkspaceId = chat?.workspace ?? workspaceId;
@@ -550,6 +553,45 @@ export const SessionScreen = memo(function SessionScreen({
       return true;
     },
   });
+
+  const pendingApprovals = getPendingApprovals(messages);
+  const pendingQuestions = getPendingQuestions(messages);
+  const submittedInteractions = useRef(new Set<string>());
+  const [hiddenInteractions, setHiddenInteractions] = useState<ReadonlySet<string>>(new Set());
+
+  // A successful mutation can beat the next stream snapshot. Hide its prompt until the row
+  // leaves awaiting, and guard synchronously so keyboard and pointer submits cannot race.
+  useEffect(() => {
+    const pendingIds = new Set(
+      [...getPendingApprovals(messages), ...getPendingQuestions(messages)].flatMap((part) =>
+        part.codeModeInteraction ? [part.codeModeInteraction.id] : [],
+      ),
+    );
+    let changed = false;
+    for (const id of submittedInteractions.current) {
+      if (!pendingIds.has(id)) {
+        submittedInteractions.current.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) setHiddenInteractions(new Set(submittedInteractions.current));
+  }, [messages]);
+
+  async function respondToCodeMode(id: string, response: CodeModeInteractionResponse) {
+    if (submittedInteractions.current.has(id)) return;
+    submittedInteractions.current.add(id);
+    setHiddenInteractions(new Set(submittedInteractions.current));
+    try {
+      await answerCodeModeInteraction({
+        interaction: id as Id<"codemode_interactions">,
+        response,
+      });
+    } catch (error) {
+      submittedInteractions.current.delete(id);
+      setHiddenInteractions(new Set(submittedInteractions.current));
+      toast.error(error instanceof Error ? error.message : "Failed to answer the tool.");
+    }
+  }
 
   // Seed useChat once per chat from persisted messages; later query updates must not overwrite
   // its live state. A chat opened while a request runs elsewhere (another Tab, or this page before
@@ -949,12 +991,31 @@ export const SessionScreen = memo(function SessionScreen({
   if (usesDraftChoices) workerSelection = choicesAreStale ? null : draftWorker;
   const isRunTargetFixed = messages.length > 0 && agent.protocol === "acp";
   const isWorkerBusy = isWorkerSaving || (chatId !== undefined && status !== "ready");
-  const pendingApprovals = getPendingApprovals(messages);
-  const currentApproval = pendingApprovals[0];
-  // A question shows once its turn has stopped streaming, after every approval of that step.
+  // Code Mode prompts wait inside this Tab's live request; a stopped or saved run cannot answer.
+  // Each runs its own server deadline, so all of them show together; none waits hidden in a queue.
+  const codeModeApprovals = pendingApprovals.flatMap((part) =>
+    part.codeModeInteraction && isRunning && !hiddenInteractions.has(part.codeModeInteraction.id)
+      ? [{ part, interaction: part.codeModeInteraction }]
+      : [],
+  );
+  const codeModeQuestions = pendingQuestions.flatMap((part) =>
+    part.codeModeInteraction && isRunning && !hiddenInteractions.has(part.codeModeInteraction.id)
+      ? [{ part, interaction: part.codeModeInteraction }]
+      : [],
+  );
+  // Native approvals and questions have no deadline and are answered one at a time; native
+  // questions wait for the step to finish.
+  const nativeApprovals = pendingApprovals.filter((part) => !part.codeModeInteraction);
+  const currentApproval = nativeApprovals[0];
   const currentQuestion =
-    isRunning || currentApproval ? undefined : getPendingQuestions(messages)[0];
-  const isComposerReplaced = currentApproval !== undefined || currentQuestion !== undefined;
+    currentApproval || isRunning
+      ? undefined
+      : pendingQuestions.find((part) => !part.codeModeInteraction);
+  const isComposerReplaced =
+    currentApproval !== undefined ||
+    currentQuestion !== undefined ||
+    codeModeApprovals.length > 0 ||
+    codeModeQuestions.length > 0;
   const revertedCount = pendingRevert ? pendingRevert.messages.length - messages.length : 0;
   // A revert or a pending answer comes first; Retry would resend the reverted or unanswered turn.
   const visibleInterruption =
@@ -1107,8 +1168,56 @@ export const SessionScreen = memo(function SessionScreen({
           <AnimatePresence initial={false} onExitComplete={() => setIsTrayAttached(false)}>
             {trayTodos ? <TodoPanel key="todos" items={trayTodos} isRunning={isRunning} /> : null}
           </AnimatePresence>
-          <div className="flex flex-col">
+          <div className="flex flex-col gap-2">
             <AnimatePresence initial={false}>
+              {/* Shortcuts go to the first prompt only, so one key never answers several. */}
+              {codeModeApprovals.map(({ part, interaction }, index) => (
+                <m.div
+                  key={`codemode-${interaction.id}`}
+                  variants={variants.swap}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                >
+                  <ApprovalPrompt
+                    part={part}
+                    total={1}
+                    shortcutsEnabled={isActive && index === 0}
+                    expiresAt={interaction.expiresAt}
+                    onApprovalResponse={(response) => {
+                      void respondToCodeMode(interaction.id, {
+                        kind: "approval",
+                        approved: response.approved,
+                        ...(response.reason ? { reason: response.reason } : {}),
+                      });
+                    }}
+                  />
+                </m.div>
+              ))}
+              {codeModeQuestions.map(({ part, interaction }, index) => (
+                <m.div
+                  key={`codemode-${interaction.id}`}
+                  variants={variants.swap}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                >
+                  <QuestionPrompt
+                    part={part}
+                    shortcutsEnabled={isActive && codeModeApprovals.length === 0 && index === 0}
+                    expiresAt={interaction.expiresAt}
+                    onAnswer={(output) => {
+                      void respondToCodeMode(interaction.id, {
+                        kind: "question",
+                        answers: output.answers,
+                      });
+                    }}
+                    onDismiss={() => {
+                      void respondToCodeMode(interaction.id, { kind: "question", dismissed: true });
+                    }}
+                  />
+                </m.div>
+              ))}
               {currentApproval ? (
                 <m.div
                   key="approval"
@@ -1119,9 +1228,9 @@ export const SessionScreen = memo(function SessionScreen({
                 >
                   <ApprovalPrompt
                     part={currentApproval}
-                    total={pendingApprovals.length}
+                    total={nativeApprovals.length}
                     shortcutsEnabled={isActive}
-                    onApprovalResponse={addToolApprovalResponse}
+                    onApprovalResponse={(response) => void addToolApprovalResponse(response)}
                   />
                 </m.div>
               ) : null}
@@ -1136,21 +1245,21 @@ export const SessionScreen = memo(function SessionScreen({
                   <QuestionPrompt
                     part={currentQuestion}
                     shortcutsEnabled={isActive}
-                    onAnswer={(output) =>
+                    onAnswer={(output) => {
                       void addToolOutput({
                         tool: "question",
                         toolCallId: currentQuestion.toolCallId,
                         output,
-                      })
-                    }
-                    onDismiss={() =>
+                      });
+                    }}
+                    onDismiss={() => {
                       void addToolOutput({
                         tool: "question",
                         toolCallId: currentQuestion.toolCallId,
                         state: "output-error",
                         errorText: QUESTION_DISMISSED_MESSAGE,
-                      })
-                    }
+                      });
+                    }}
                   />
                 </m.div>
               ) : null}
@@ -1267,8 +1376,18 @@ function sessionRunState(
   activeStream: boolean,
 ): RunState {
   if (status === "error") return "failed";
-  if (getPendingApprovals(messages).length > 0) return "awaiting";
-  if (status === "ready" && getPendingQuestions(messages).length > 0) return "awaiting";
+  // Code Mode prompts only wait while this Tab's request streams.
+  const isLive = status === "streaming" || status === "submitted";
+  if (getPendingApprovals(messages).some((part) => !part.codeModeInteraction || isLive)) {
+    return "awaiting";
+  }
+  if (
+    getPendingQuestions(messages).some((part) =>
+      part.codeModeInteraction ? isLive : status === "ready",
+    )
+  ) {
+    return "awaiting";
+  }
   if (status === "streaming") return "streaming";
   if (status === "submitted") return "thinking";
   // A run this Tab did not start (another browser tab, before a reload, or a Tab whose messages
@@ -1276,7 +1395,9 @@ function sessionRunState(
   if (activeStream) return "streaming";
   if (isStarting) return "queued";
   if (interruption?.kind === "failed") return "failed";
-  if (interruption?.kind === "interrupted") return "cancelled";
+  if (interruption?.kind === "interrupted" || interruption?.kind === "step_limit") {
+    return "cancelled";
+  }
   return "idle";
 }
 

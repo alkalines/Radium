@@ -191,6 +191,16 @@ export function ToolInputBlock({ part }: { part: ToolUIPart }) {
   if (typeof input === "string") return <ToolCodeBlock code={input} title="input" />;
 
   switch (getToolKind(part)) {
+    case "code":
+      return (
+        <ToolCodeBlock
+          code={getInputString(input, "code") ?? ""}
+          language="javascript"
+          title="javascript"
+          startLine={1}
+          followTail={isStreaming}
+        />
+      );
     case "bash": {
       const command = getInputString(input, "command");
       if (command === undefined) break;

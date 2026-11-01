@@ -143,6 +143,7 @@ export const listMcpServers = workspaceQuery({
         auth: { type: server.auth.type },
         preview: server.auth.type === "bearer" ? server.preview : undefined,
         hasSecret: workspaceSecret?.ok === true || legacySecret?.ok === true,
+        codeMode: server.codeMode ?? true,
       });
     }
 
@@ -150,7 +151,10 @@ export const listMcpServers = workspaceQuery({
   },
 });
 
-/** Create an MCP server, storing any supplied bearer token in Secret Store. */
+/**
+ * Create an MCP server, storing any supplied bearer token in Secret Store. `codeMode` (default
+ * `true`) keeps its tools inside Code Mode; `false` exposes them as direct tool calls.
+ */
 export const createMcpServer = mutation({
   args: {
     workspace: v.id("workspaces"),
@@ -158,6 +162,7 @@ export const createMcpServer = mutation({
     url: v.string(),
     auth: mcpAuthValidator,
     secret: v.optional(v.string()),
+    codeMode: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -179,6 +184,7 @@ export const createMcpServer = mutation({
       transport: "http",
       auth: args.auth,
       preview,
+      codeMode: args.codeMode ?? true,
     });
 
     if (args.auth.type === "bearer") {
@@ -197,7 +203,8 @@ export const createMcpServer = mutation({
 /**
  * Update an MCP server. `secret` is only touched when provided: passing a new
  * value replaces the stored token, while omitting it preserves the existing one
- * (unless the auth type changes away from `bearer`, which clears it).
+ * (unless the auth type changes away from `bearer`, which clears it). `codeMode`
+ * is only changed when provided.
  */
 export const updateMcpServer = mutation({
   args: {
@@ -207,6 +214,7 @@ export const updateMcpServer = mutation({
     url: v.optional(v.string()),
     auth: v.optional(mcpAuthValidator),
     secret: v.optional(v.string()),
+    codeMode: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
@@ -224,6 +232,9 @@ export const updateMcpServer = mutation({
     }
     if (args.url !== undefined) {
       patch.url = normalizeMcpUrl(args.url);
+    }
+    if (args.codeMode !== undefined) {
+      patch.codeMode = args.codeMode;
     }
 
     // Resolve the secret. A non-bearer auth type drops any stored token.
