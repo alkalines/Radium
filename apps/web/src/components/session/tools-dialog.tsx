@@ -52,7 +52,41 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
  * shows an `Unavailable` Tag because nothing runs it until a Worker is picked. Callers only render
  * this for owners who may manage the chat.
  */
-export function ToolsDialog({
+type ToolsDialogProps = {
+  workspace: Id<"workspaces"> | undefined;
+  chatId?: Id<"aisdk_chats">;
+  draftTools: ToolSelection | null;
+  onDraftToolsChange: (selection: ToolSelection) => void;
+  workerSelection: ChatWorkerSelection | null;
+  isWorkerLocked: boolean;
+  onWorkerSelectionChange: (selection: ChatWorkerSelection | null) => void;
+};
+
+/** A disabled trigger does not mount the owner-only tool subscriptions or configuration dialog. */
+export function ToolsDialog(props: ToolsDialogProps | { disabledReason: string }) {
+  if ("disabledReason" in props) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span tabIndex={0} className="inline-flex" aria-label={`Tools: ${props.disabledReason}`}>
+            <InputGroupButton
+              size="icon-sm"
+              aria-label="Tools"
+              title={props.disabledReason}
+              disabled
+            >
+              <WrenchIcon />
+            </InputGroupButton>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{props.disabledReason}</TooltipContent>
+      </Tooltip>
+    );
+  }
+  return <EnabledToolsDialog {...props} />;
+}
+
+function EnabledToolsDialog({
   workspace,
   chatId,
   draftTools,
@@ -60,16 +94,7 @@ export function ToolsDialog({
   workerSelection,
   isWorkerLocked,
   onWorkerSelectionChange,
-}: {
-  workspace: Id<"workspaces"> | undefined;
-  chatId?: Id<"aisdk_chats">;
-  draftTools: ToolSelection | null;
-  onDraftToolsChange: (selection: ToolSelection) => void;
-  workerSelection: ChatWorkerSelection | null;
-  /** The Worker is saving, or fixed for this Session (an ACP agent): Worker tools stay read-only. */
-  isWorkerLocked: boolean;
-  onWorkerSelectionChange: (selection: ChatWorkerSelection | null) => void;
-}) {
+}: ToolsDialogProps) {
   const [isOpen, setIsOpen] = useState(false);
   const { data: servers } = useQuery(
     convexQuery(api.aisdk_tools.listMcpServers, workspace ? { workspace } : "skip"),

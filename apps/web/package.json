@@ -11,7 +11,8 @@
     "start": "bun .output/server/index.mjs",
     "lint": "eslint",
     "format": "oxfmt",
-    "format:check": "oxfmt --check"
+    "format:check": "oxfmt --check",
+    "test": "bun test src"
   },
   "dependencies": {
     "@ai-sdk/react": "4.0.157",

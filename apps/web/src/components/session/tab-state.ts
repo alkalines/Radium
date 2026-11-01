@@ -29,6 +29,7 @@ export type SessionTabSnapshot = {
   inferenceMode?: string;
   reasoningEffort?: string;
   reasoningBudget?: number;
+  /** Built-in `radium`, or Worker-qualified `acp:<workerId>:<agentId>`; unknown agents fall back. */
   agentId?: string;
   /** Present only while the Tab is a draft. */
   draft?: DraftTabSnapshot;

@@ -15,6 +15,8 @@ import {
   type AcpAgentReport,
   type AcpInteractionRequest,
 } from "../src/acp/contract";
+import { normalizeRegistryAgents } from "../src/acp/agents";
+import { ACP_AGENT_DEFINITIONS_MAX, type AcpAgentDefinition } from "../src/acp/contract";
 
 vi.mock("./auth", () => ({
   authComponent: {
@@ -79,6 +81,7 @@ const prompt = [{ type: "text" as const, text: "Hello" }];
 const frame = { seqFrom: 0, seqTo: 1, kind: "snapshot" as const, payload: "[]" };
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.useRealTimers();
 });
@@ -135,6 +138,120 @@ async function fixture() {
   });
   return { t, workspace, first, second, owner, member, chat };
 }
+
+test("visible ACP Worker status includes identity and the latest machine heartbeat", async () => {
+  const f = await fixture();
+  expect(await f.owner.query(api.acp.WorkerStatus, { chat: f.chat })).toEqual({
+    name: "first",
+    lastSeenAt: null,
+  });
+  const before = Date.now();
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/acp" });
+  const status = await f.owner.query(api.acp.WorkerStatus, { chat: f.chat });
+  expect(status.name).toBe("first");
+  expect(status.lastSeenAt).toBeGreaterThanOrEqual(before);
+  expect(status.lastSeenAt).toBeLessThanOrEqual(Date.now());
+
+  await expect(f.member.query(api.acp.WorkerStatus, { chat: f.chat })).rejects.toThrow();
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { scope: "workspace" }));
+  expect(await f.member.query(api.acp.WorkerStatus, { chat: f.chat })).toEqual(status);
+});
+
+test("revoked or unknown ACP Workers have no display name", async () => {
+  const f = await fixture();
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/acp" });
+  await f.owner.mutation(api.workers.revoke, {
+    workspace: f.workspace,
+    workerId: f.first.identity.workerId,
+  });
+  expect(await f.owner.query(api.acp.WorkerStatus, { chat: f.chat })).toEqual({
+    name: null,
+    lastSeenAt: null,
+  });
+  await f.t.run(async (ctx) => {
+    const session = await ctx.db
+      .query("acp_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", f.chat))
+      .unique();
+    await ctx.db.patch(session!._id, { worker: "unknown-worker" });
+  });
+  expect(await f.owner.query(api.acp.WorkerStatus, { chat: f.chat })).toEqual({
+    name: null,
+    lastSeenAt: null,
+  });
+});
+
+test("chat listings use agent definition names, fall back to IDs and mark built-in chats null", async () => {
+  const f = await fixture();
+  const builtin = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+  });
+  const chats = await f.owner.query(api.aisdk.ListChats, { workspace: f.workspace });
+  expect(chats.find((chat) => chat.id === f.chat)?.agent).toEqual({
+    agentId: agent.agentId,
+    name: agent.agentId,
+  });
+  expect(chats.find((chat) => chat.id === builtin)?.agent).toBeNull();
+  const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, agentId: agent.agentId, name: "Workspace agent name" },
+  });
+  const renamed = await f.owner.query(api.aisdk.ListChats, { workspace: f.workspace });
+  expect(renamed.find((chat) => chat.id === f.chat)?.agent).toEqual({
+    agentId: agent.agentId,
+    name: "Workspace agent name",
+  });
+  await f.owner.mutation(api.acp.DeleteAgentDefinition, { workspace: f.workspace, id });
+  const removed = await f.owner.query(api.aisdk.ListChats, { workspace: f.workspace });
+  expect(removed.find((chat) => chat.id === f.chat)?.agent?.name).toBe(agent.agentId);
+  expect((await f.owner.query(api.acp.GetSession, { chat: f.chat })).agent.agentId).toBe(
+    agent.agentId,
+  );
+});
+
+test("ACP title generation authorizes viewers and skips titled or user-titled chats", async () => {
+  const f = await fixture();
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { title: "Agent title", emoji: "💡" }));
+  await expect(
+    f.owner.action(api.acp.GenerateTitle, { chat: f.chat, text: "  A first prompt  " }),
+  ).resolves.toBeNull();
+  expect(await f.t.run((ctx) => ctx.db.get(f.chat))).toMatchObject({
+    title: "Agent title",
+    emoji: "💡",
+  });
+  await expect(
+    f.member.action(api.acp.GenerateTitle, { chat: f.chat, text: "Private prompt" }),
+  ).rejects.toThrow();
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { scope: "workspace" }));
+  await expect(
+    f.member.action(api.acp.GenerateTitle, { chat: f.chat, text: "Shared prompt" }),
+  ).resolves.toBeNull();
+
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(f.chat, { title: undefined });
+    const session = await ctx.db
+      .query("acp_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", f.chat))
+      .unique();
+    await ctx.db.patch(session!._id, { userTitled: true });
+  });
+  expect(
+    await f.owner.query(internal.chatroom.acpTitleGenerationInfo, { chatId: f.chat }),
+  ).toBeNull();
+  await expect(
+    f.owner.action(api.acp.GenerateTitle, { chat: f.chat, text: "Do not retitle" }),
+  ).resolves.toBeNull();
+  expect(await f.t.run((ctx) => ctx.db.get(f.chat))).not.toHaveProperty("title");
+
+  const builtin = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+  });
+  await expect(
+    f.owner.action(api.acp.GenerateTitle, { chat: builtin, text: "Not an ACP chat" }),
+  ).rejects.toThrow(/ACP_NOT_ACP/);
+});
 
 test("import binds an agent session to one chat only", async () => {
   const f = await fixture();
@@ -552,4 +669,310 @@ test("contract answers reject wrong kinds, undeclared or duplicate fields, and f
       { name: "extra", value: true },
     ]),
   ).not.toBeNull();
+});
+
+const definition: AcpAgentDefinition = {
+  agentId: "configured-agent",
+  name: "Configured agent",
+  command: "test-acp",
+  args: ["--acp"],
+  env: [{ name: "AGENT_MODE", value: "code" }],
+  enabled: true,
+  source: "custom",
+};
+
+test("workspace owners create, sort, update and delete launch definitions", async () => {
+  const f = await fixture();
+  const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, name: "  Zebra  ", command: "  test-acp  " },
+  });
+  const alpha = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, agentId: "alpha", name: "Alpha" },
+  });
+  const rows = await f.owner.query(api.acp.ListAgentDefinitions, { workspace: f.workspace });
+  expect(rows.map((row) => row._id)).toEqual([alpha, id]);
+  expect(rows[1]).toMatchObject({ name: "Zebra", command: "test-acp" });
+  expect(rows[1]).not.toHaveProperty("workspace");
+  expect(rows[1]).not.toHaveProperty("_creationTime");
+  expect(rows[1]?.updatedAt).toBeTypeOf("number");
+  expect(
+    await f.owner.mutation(api.acp.SaveAgentDefinition, {
+      workspace: f.workspace,
+      id,
+      definition: { ...definition, name: "New name", enabled: false, args: ["changed"] },
+    }),
+  ).toBe(id);
+  expect(await f.owner.query(api.acp.ListAgentDefinitions, { workspace: f.workspace })).toEqual([
+    expect.objectContaining({ _id: alpha, name: "Alpha" }),
+    expect.objectContaining({ _id: id, name: "New name", enabled: false, args: ["changed"] }),
+  ]);
+  expect(
+    await f.owner.mutation(api.acp.DeleteAgentDefinition, { workspace: f.workspace, id }),
+  ).toBeNull();
+  expect(
+    await f.owner.query(api.acp.ListAgentDefinitions, { workspace: f.workspace }),
+  ).toHaveLength(1);
+});
+
+test("agent definitions reject members, foreign owners and foreign document IDs", async () => {
+  const f = await fixture();
+  const otherWorkspace = await f.t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "other", name: "Other" }),
+  );
+  const other = f.t.withIdentity({ subject: "other" });
+  const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition,
+  });
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+  for (const unauthorized of [f.member, other]) {
+    await expect(
+      unauthorized.query(api.acp.ListAgentDefinitions, { workspace: f.workspace }),
+    ).rejects.toThrow();
+    await expect(
+      unauthorized.mutation(api.acp.SaveAgentDefinition, { workspace: f.workspace, definition }),
+    ).rejects.toThrow();
+    await expect(
+      unauthorized.mutation(api.acp.SaveAgentDefinition, {
+        workspace: f.workspace,
+        id,
+        definition,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      unauthorized.mutation(api.acp.DeleteAgentDefinition, { workspace: f.workspace, id }),
+    ).rejects.toThrow();
+    await expect(
+      unauthorized.action(api.acp.RegistryAgents, { workspace: f.workspace }),
+    ).rejects.toThrow();
+  }
+  expect(fetchMock).not.toHaveBeenCalled();
+  await expect(
+    other.mutation(api.acp.SaveAgentDefinition, { workspace: otherWorkspace, id, definition }),
+  ).rejects.toThrow(/ACP_AGENT_NOT_FOUND/);
+  await expect(
+    other.mutation(api.acp.DeleteAgentDefinition, { workspace: otherWorkspace, id }),
+  ).rejects.toThrow(/ACP_AGENT_NOT_FOUND/);
+});
+
+test("agent definitions reject duplicate and changed IDs, unsafe env and malformed IDs", async () => {
+  const f = await fixture();
+  const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition,
+  });
+  await expect(
+    f.owner.mutation(api.acp.SaveAgentDefinition, { workspace: f.workspace, definition }),
+  ).rejects.toThrow(/ACP_AGENT_EXISTS/);
+  await expect(
+    f.owner.mutation(api.acp.SaveAgentDefinition, {
+      workspace: f.workspace,
+      id,
+      definition: { ...definition, agentId: "changed" },
+    }),
+  ).rejects.toThrow(/ACP_INVALID_AGENT/);
+  for (const invalid of [
+    { ...definition, agentId: "bad id" },
+    { ...definition, env: [{ name: "PATH", value: "/tmp/bin" }] },
+  ]) {
+    await expect(
+      f.owner.mutation(api.acp.SaveAgentDefinition, {
+        workspace: f.workspace,
+        definition: invalid,
+      }),
+    ).rejects.toThrow(/ACP_INVALID_AGENT/);
+    await expect(
+      f.owner.mutation(api.acp.SaveAgentDefinition, {
+        workspace: f.workspace,
+        id,
+        definition: invalid,
+      }),
+    ).rejects.toThrow(/ACP_INVALID_AGENT/);
+  }
+  expect(
+    await f.owner.query(api.acp.ListAgentDefinitions, { workspace: f.workspace }),
+  ).toHaveLength(1);
+});
+
+test("definition capacity is per workspace and updates still work at capacity", async () => {
+  const f = await fixture();
+  const ids = await f.t.run(async (ctx) => {
+    const ids = [];
+    for (let index = 0; index < ACP_AGENT_DEFINITIONS_MAX; index++) {
+      ids.push(
+        await ctx.db.insert("acp_agents", {
+          workspace: f.workspace,
+          ...definition,
+          agentId: `agent-${index}`,
+          updatedAt: Date.now(),
+        }),
+      );
+    }
+    return ids;
+  });
+  await expect(
+    f.owner.mutation(api.acp.SaveAgentDefinition, { workspace: f.workspace, definition }),
+  ).rejects.toThrow(/ACP_INVALID_AGENT/);
+  await expect(
+    f.owner.mutation(api.acp.SaveAgentDefinition, {
+      workspace: f.workspace,
+      id: ids[0],
+      definition: { ...definition, agentId: "agent-0", name: "Updated" },
+    }),
+  ).resolves.toBe(ids[0]);
+  expect(await f.first.machine.query(api.acp.agentDefinitions, {})).toHaveLength(
+    ACP_AGENT_DEFINITIONS_MAX,
+  );
+});
+
+test("machine definition subscriptions expose only enabled definitions in their workspace", async () => {
+  const f = await fixture();
+  await f.owner.mutation(api.acp.SaveAgentDefinition, { workspace: f.workspace, definition });
+  await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, agentId: "disabled", enabled: false },
+  });
+  const foreignWorkspace = await f.t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "foreign", name: "Foreign" }),
+  );
+  await f.t.withIdentity({ subject: "foreign" }).mutation(api.acp.SaveAgentDefinition, {
+    workspace: foreignWorkspace,
+    definition: { ...definition, name: "Foreign agent" },
+  });
+  expect(await f.first.machine.query(api.acp.agentDefinitions, {})).toEqual([definition]);
+  expect(await f.second.machine.query(api.acp.agentDefinitions, {})).toEqual([definition]);
+  await expect(f.owner.query(api.acp.agentDefinitions, {})).rejects.toThrow(/WORKER_AUTH_DENIED/);
+});
+
+const registryFixture = {
+  version: "1",
+  agents: [
+    {
+      id: "npm-agent",
+      name: "Npm agent",
+      version: "1.2.3",
+      description: "An npm agent",
+      icon: "https://example.invalid/icon.svg",
+      distribution: {
+        npx: { package: "@example/agent@1.2.3", args: ["--acp"], env: { MODE: "code" } },
+      },
+    },
+    {
+      id: "python-agent",
+      name: "Python agent",
+      version: "2",
+      distribution: { uvx: { package: "agent==2", args: ["acp"] } },
+    },
+    {
+      id: "binary-agent",
+      name: "Binary agent",
+      version: "3",
+      distribution: {
+        binary: {
+          "windows-x86_64": { cmd: "bin\\\\agent.exe", args: ["acp"] },
+          "linux-x86_64": { cmd: "./bin/agent", args: ["acp"] },
+        },
+      },
+    },
+    { id: "bad id", name: "Invalid", version: "1", distribution: { npx: { package: "bad@1" } } },
+    { id: "no-launch", name: "Invalid", version: "1", distribution: {} },
+    {
+      id: "bad-args",
+      name: "Invalid",
+      version: "1",
+      distribution: { uvx: { package: "bad", args: [2] } },
+    },
+    {
+      id: "bad-env",
+      name: "Invalid",
+      version: "1",
+      distribution: { npx: { package: "bad", env: { PATH: "/tmp" } } },
+    },
+    {
+      id: "bad-package",
+      name: "Invalid",
+      version: "1",
+      distribution: { npx: { package: "--eval=bad" } },
+    },
+    { id: "no-version", name: "Invalid", distribution: { npx: { package: "bad" } } },
+    null,
+  ],
+};
+
+test("registry normalization handles npx, uvx and binary PATH hints and skips invalid entries", () => {
+  expect(normalizeRegistryAgents(registryFixture)).toEqual([
+    {
+      id: "npm-agent",
+      name: "Npm agent",
+      version: "1.2.3",
+      description: "An npm agent",
+      icon: "https://example.invalid/icon.svg",
+      launch: {
+        command: "npx",
+        args: ["-y", "@example/agent@1.2.3", "--acp"],
+        env: [{ name: "MODE", value: "code" }],
+      },
+    },
+    {
+      id: "python-agent",
+      name: "Python agent",
+      version: "2",
+      launch: { command: "uvx", args: ["agent==2", "acp"], env: [] },
+    },
+    {
+      id: "binary-agent",
+      name: "Binary agent",
+      version: "3",
+      pathCommand: { command: "agent", args: ["acp"] },
+    },
+  ]);
+  expect(normalizeRegistryAgents(null)).toEqual([]);
+  expect(normalizeRegistryAgents({ agents: [] })).toEqual([]);
+  expect(
+    normalizeRegistryAgents({
+      version: "1",
+      agents: Array.from({ length: 201 }, (_, index) => ({
+        ...registryFixture.agents[0],
+        id: `agent-${index}`,
+      })),
+    }),
+  ).toHaveLength(200);
+});
+
+test("owner registry actions fetch and normalize on demand without a Worker", async () => {
+  const f = await fixture();
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(registryFixture)));
+  vi.stubGlobal("fetch", fetchMock);
+  expect(await f.owner.action(api.acp.RegistryAgents, { workspace: f.workspace })).toEqual(
+    normalizeRegistryAgents(registryFixture),
+  );
+  expect(fetchMock).toHaveBeenCalledWith(
+    "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
+});
+
+test("registry actions reject responses exceeding one MiB while streaming", async () => {
+  const f = await fixture();
+  const cancel = vi.fn();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+          },
+          cancel,
+        }),
+      ),
+    ),
+  );
+  await expect(f.owner.action(api.acp.RegistryAgents, { workspace: f.workspace })).rejects.toThrow(
+    /1 MiB/,
+  );
+  expect(cancel).toHaveBeenCalledOnce();
 });

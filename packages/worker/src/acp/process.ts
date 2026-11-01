@@ -13,8 +13,12 @@ import {
   type CreateElicitationRequest,
   type CreateElicitationResponse,
 } from "@agentclientprotocol/sdk";
-import type { AcpAgentReport } from "backend/src/acp/contract";
-import { agentEnvironment, type AcpAgentDefinition } from "./config.js";
+import {
+  acpAgentDefinitionError,
+  type AcpAgentDefinition,
+  type AcpAgentReport,
+} from "backend/src/acp/contract";
+import { agentEnvironment, resolveAgentCommand } from "./config.js";
 
 /** Local protocol callbacks; raw requests never cross the Convex boundary. */
 export interface AcpProcessHandlers {
@@ -35,8 +39,8 @@ export class AcpAgentProcess {
   private readonly exited = Promise.withResolvers<void>();
   private stopPromise?: Promise<void>;
 
-  constructor(definition: AcpAgentDefinition, handlers: AcpProcessHandlers) {
-    this.child = spawn(definition.command, definition.args ?? [], {
+  constructor(definition: AcpAgentDefinition, command: string, handlers: AcpProcessHandlers) {
+    this.child = spawn(command, definition.args, {
       env: agentEnvironment(definition),
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -135,11 +139,11 @@ export function agentReport(
   const capabilities = response?.agentCapabilities;
   const session = capabilities?.sessionCapabilities;
   return {
-    agentId: definition.id,
-    name:
-      response?.agentInfo?.title ?? definition.name ?? response?.agentInfo?.name ?? definition.id,
-    version: response?.agentInfo?.version ?? "unknown",
-    source: "custom",
+    agentId: definition.agentId,
+    name: definition.name,
+    version: response?.agentInfo?.version ?? definition.version ?? "unknown",
+    source: definition.source,
+    ...(definition.icon ? { icon: definition.icon } : {}),
     status: "ready",
     capabilities: {
       loadSession: capabilities?.loadSession ?? false,
@@ -169,7 +173,18 @@ export async function probeAgent(
   definition: AcpAgentDefinition,
   signal?: AbortSignal,
 ): Promise<AcpAgentReport> {
-  const process = new AcpAgentProcess(definition, {
+  const report = agentReport(definition);
+  const invalid = acpAgentDefinitionError(definition);
+  if (invalid) return { ...report, status: "failed", error: invalid };
+  const command = await resolveAgentCommand(definition.command);
+  if (!command)
+    return {
+      ...report,
+      status: "unavailable",
+      error: `${definition.command} was not found on this Worker's PATH`,
+    };
+  if (signal?.aborted) return { ...report, status: "failed", error: "ACP host stopped" };
+  const process = new AcpAgentProcess(definition, command, {
     update: () => undefined,
     exited: () => undefined,
     permission: async () => ({ outcome: { outcome: "cancelled" } }),
@@ -182,11 +197,7 @@ export async function probeAgent(
   if (signal?.aborted) abort();
   try {
     return agentReport(definition, await process.ready);
-  } catch (error) {
-    const report = agentReport(definition);
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { ...report, status: "unavailable", error: "Command not found" };
-    }
+  } catch {
     return { ...report, status: "failed", error: "Agent initialization failed" };
   } finally {
     signal?.removeEventListener("abort", abort);

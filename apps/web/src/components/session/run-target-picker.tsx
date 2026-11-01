@@ -3,7 +3,6 @@ import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "lu
 
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { ChatWorkerSelection, ChatWorkerTool } from "backend/src/worker/chat-config";
-import { ProviderLogo } from "@/components/gateway/provider-logo";
 import { ProjectTile } from "@/components/harness/project-tile";
 import { ProjectDialog } from "@/components/projects/project-dialog";
 import { Button } from "@/components/ui/button";
@@ -21,6 +20,8 @@ import { WorkspaceIcon } from "@/components/workspaces/workspace-icon";
 import { cn } from "@/lib/utils";
 import type { SessionAgent, SessionProject, SessionWorker } from "./agents";
 import { workerToolsFor } from "@/components/chatroom/tool-catalog";
+import { AcpAgentAuth } from "./acp/agent-auth";
+import { OpenAcpSessionDialog } from "./acp/open-session-dialog";
 
 const noWorkerValue = "__no-worker__";
 const noProjectValue = "__no-project__";
@@ -38,10 +39,25 @@ export type RunTargetProjectChoice = {
   onProjectChange: (project: SessionProject | null) => void;
 };
 
-/** Agent artwork inside the picker: ACP agents use their provider logo, Radium its letter. */
+/** Agent artwork is supplied by the Worker; non-URL icons fall back to a letter tile. */
 export function AgentLogo({ agent, className }: { agent: SessionAgent; className?: string }) {
-  if (agent.logo) return <ProviderLogo slug={agent.logo} className={className} />;
-  return <img src="/letters/R.svg" alt="" className={cn("shrink-0", className)} />;
+  if (agent.protocol === "built-in") {
+    return <img src="/letters/R.svg" alt="" className={cn("shrink-0", className)} />;
+  }
+  if (agent.icon && /^(?:https?:\/\/|data:)/i.test(agent.icon)) {
+    return <img src={agent.icon} alt="" className={cn("shrink-0 object-contain", className)} />;
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "flex shrink-0 items-center justify-center rounded bg-muted text-[10px] font-medium uppercase",
+        className,
+      )}
+    >
+      {agent.name.slice(0, 1)}
+    </span>
+  );
 }
 
 /** A Project's tile: its color and icon, the same mark as in Tabs and the Home list. */
@@ -93,6 +109,8 @@ export function RunTargetPicker({
   disabled,
   onSelectionChange,
   onAgentChange,
+  scope,
+  onCreated,
 }: {
   trigger: ReactNode;
   /** Accessible name of the trigger, e.g. `Run on build-box with Radium`. */
@@ -109,10 +127,13 @@ export function RunTargetPicker({
   disabled?: boolean;
   onSelectionChange: (selection: ChatWorkerSelection | null) => void;
   onAgentChange: (agent: SessionAgent) => void;
+  scope?: "personal" | "workspace";
+  onCreated?: (chatId: Id<"aisdk_chats">) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [view, setView] = useState<View>("summary");
   const [isProjectDialogOpen, setIsProjectDialogOpen] = useState(false);
+  const [importAgent, setImportAgent] = useState<SessionAgent>();
   const selectProjectWhenListed = usePendingProjectSelection(projectChoice?.projects, (project) =>
     projectChoice?.onProjectChange(project),
   );
@@ -295,7 +316,46 @@ export function RunTargetPicker({
                   </CommandItem>
                 ))}
               </CommandGroup>
-              <p className="px-3 pb-3 text-xs text-muted-foreground">ACP agents are planned.</p>
+              {projectChoice?.workspaceId
+                ? agents.flatMap((candidate) =>
+                    candidate.protocol === "acp"
+                      ? [
+                          <div
+                            key={candidate.id}
+                            className="flex flex-col gap-2 border-t px-3 py-2"
+                          >
+                            {candidate.status === "needs_auth" ? (
+                              <>
+                                <span className="text-xs font-medium">{candidate.name}</span>
+                                <AcpAgentAuth
+                                  workspace={projectChoice.workspaceId!}
+                                  worker={candidate.workerId}
+                                  agentId={candidate.agentId}
+                                  name={candidate.name}
+                                  authMethods={candidate.authMethods}
+                                />
+                              </>
+                            ) : null}
+                            {candidate.capabilities.list &&
+                            candidate.status === "ready" &&
+                            onCreated ? (
+                              <Button
+                                variant="ghost"
+                                size="xs"
+                                className="justify-start"
+                                onClick={() => {
+                                  handleOpenChange(false);
+                                  setImportAgent(candidate);
+                                }}
+                              >
+                                Open existing · {candidate.name}
+                              </Button>
+                            ) : null}
+                          </div>,
+                        ]
+                      : [],
+                  )
+                : null}
             </DrillList>
           ) : null}
         </PopoverContent>
@@ -308,6 +368,16 @@ export function RunTargetPicker({
           workspaceId={projectChoice.workspaceId}
           isOwner
           onCreated={selectProjectWhenListed}
+        />
+      ) : null}
+      {importAgent?.protocol === "acp" && projectChoice?.workspaceId && onCreated ? (
+        <OpenAcpSessionDialog
+          workspace={projectChoice.workspaceId}
+          agent={importAgent}
+          project={project}
+          scope={scope}
+          onClose={() => setImportAgent(undefined)}
+          onCreated={onCreated}
         />
       ) : null}
     </>

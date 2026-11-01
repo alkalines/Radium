@@ -24,7 +24,7 @@ export function RunInterruptionCard({
   interruption: ChatInterruption;
   canRetry: boolean;
   shortcutsEnabled: boolean;
-  onRetry: () => void;
+  onRetry?: () => void;
   onSwitchModel: () => void;
 }) {
   const [isCopied, setIsCopied] = useState(false);
@@ -32,8 +32,9 @@ export function RunInterruptionCard({
   const Icon = isFailed ? CircleXIcon : CirclePauseIcon;
   const isStepLimit = interruption.kind === "step_limit";
   let title = "Interrupted";
-  let detail =
-    "The reply stopped before it finished. Retry continues from its last completed step.";
+  let detail = canRetry
+    ? "The reply stopped before it finished. Retry continues from its last completed step."
+    : "The reply stopped before it finished. Send a new prompt to continue.";
   if (isFailed) {
     title = "Request failed";
     detail = interruption.message ?? "The request ended with an error before the reply finished.";
@@ -51,13 +52,13 @@ export function RunInterruptionCard({
   }, [isCopied]);
 
   useEffect(() => {
-    if (!shortcutsEnabled || !canRetry) return;
+    if (!shortcutsEnabled || !canRetry || !onRetry) return;
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== "F5" || event.defaultPrevented || event.repeat) return;
       if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
-      onRetry();
+      onRetry?.();
     }
 
     window.addEventListener("keydown", handleKeyDown);
@@ -87,10 +88,12 @@ export function RunInterruptionCard({
           {detail}
         </p>
         <div className="-ml-2 flex flex-wrap items-center gap-1 pt-1.5">
-          <Button variant="outline" size="sm" disabled={!canRetry} onClick={onRetry}>
-            <RotateCwIcon data-icon="inline-start" />
-            {isStepLimit ? "Continue" : "Retry"} {shortcutsEnabled ? <Kbd>F5</Kbd> : null}
-          </Button>
+          {canRetry ? (
+            <Button variant="outline" size="sm" onClick={onRetry}>
+              <RotateCwIcon data-icon="inline-start" />
+              {isStepLimit ? "Continue" : "Retry"} {shortcutsEnabled ? <Kbd>F5</Kbd> : null}
+            </Button>
+          ) : null}
           {isFailed ? (
             <Button variant="ghost" size="sm" onClick={copyError}>
               {isCopied ? (

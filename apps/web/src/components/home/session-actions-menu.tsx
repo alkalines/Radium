@@ -1,5 +1,7 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { useMutation } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   FolderInputIcon,
   FolderMinusIcon,
@@ -63,6 +65,7 @@ export type SessionActionsTarget = {
   title?: string;
   pinnedAt?: number;
   project?: Id<"projects">;
+  agent: { agentId: string; name: string } | null;
 };
 
 /**
@@ -83,6 +86,10 @@ export function SessionActionsMenu({
 }) {
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deleteInAgentStep, setDeleteInAgentStep] = useState(false);
+  const { data: acpSession, error: acpSessionError } = useQuery(
+    convexQuery(api.acp.GetSession, isDeleteOpen && session.agent ? { chat: session.id } : "skip"),
+  );
   // The target outlives the open state so the dialog keeps its text while it animates closed.
   const [moveTarget, setMoveTarget] = useState<{ id: Id<"projects"> | null; name: string } | null>(
     null,
@@ -169,9 +176,13 @@ export function SessionActionsMenu({
     }
   }
 
-  async function confirmDelete() {
+  async function confirmDelete(deleteInAgent = false) {
+    if (session.agent && acpSession?.capabilities?.delete && !deleteInAgentStep) {
+      setDeleteInAgentStep(true);
+      return;
+    }
     // An open Tab for this session drops itself once the chat is gone (spec §4).
-    const succeeded = await run("delete", () => deleteChat({ chatId: session.id }));
+    const succeeded = await run("delete", () => deleteChat({ chatId: session.id, deleteInAgent }));
     if (succeeded) {
       toast.success("Session deleted.");
       setIsDeleteOpen(false);
@@ -201,10 +212,13 @@ export function SessionActionsMenu({
               <PencilIcon />
               Rename
             </DropdownMenuItem>
-            <DropdownMenuItem disabled={isBusy} onSelect={() => void regenerate()}>
-              <SparklesIcon />
-              Regenerate title
-            </DropdownMenuItem>
+            {/* ACP prompts are not stored in Radium, so there is no first message to title from. */}
+            {session.agent ? null : (
+              <DropdownMenuItem disabled={isBusy} onSelect={() => void regenerate()}>
+                <SparklesIcon />
+                Regenerate title
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSub>
               <DropdownMenuSubTrigger disabled={isBusy}>
                 <FolderInputIcon />
@@ -277,26 +291,54 @@ export function SessionActionsMenu({
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
+      <AlertDialog
+        open={isDeleteOpen}
+        onOpenChange={(open) => {
+          if (!isBusy) {
+            setIsDeleteOpen(open);
+            if (!open) setDeleteInAgentStep(false);
+          }
+        }}
+      >
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete session?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {deleteInAgentStep
+                ? `Also delete this session in ${acpSession?.agentName ?? "the agent"}?`
+                : "Delete session?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This removes “{displayTitle}” and its messages. This cannot be undone.
+              {deleteInAgentStep
+                ? "This conversation will disappear from the agent and other clients such as Zed. You can instead remove it from Radium only."
+                : `This removes “${displayTitle}” and its messages. This cannot be undone.`}
+              {acpSessionError ? (
+                <span className="mt-2 block text-destructive">
+                  Could not load the agent's deletion capabilities. Close this dialog and try again.
+                </span>
+              ) : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
+            {deleteInAgentStep ? (
+              <Button variant="outline" disabled={isBusy} onClick={() => void confirmDelete(false)}>
+                Radium only
+              </Button>
+            ) : null}
             <AlertDialogAction
               variant="destructive"
-              disabled={isBusy}
+              disabled={
+                isBusy ||
+                Boolean(acpSessionError) ||
+                Boolean(session.agent && acpSession === undefined)
+              }
               onClick={(event) => {
                 // Stay open until the mutation settles so a refusal is visible in context.
                 event.preventDefault();
-                void confirmDelete();
+                void confirmDelete(deleteInAgentStep);
               }}
             >
-              Delete
+              {deleteInAgentStep ? "Delete in both" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

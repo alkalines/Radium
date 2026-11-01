@@ -62,9 +62,16 @@ import {
   acpInteractionAnswerValidator,
   acpFrameKindValidator,
   acpAgentReportValidator,
+  acpAgentDefinitionValidator,
 } from "../src/acp/contract";
 
 export default defineSchema({
+  /** Owner-defined launch configuration, shared by every Worker in the workspace. */
+  acp_agents: defineTable({
+    workspace: v.id("workspaces"),
+    ...acpAgentDefinitionValidator.fields,
+    updatedAt: v.number(),
+  }).index("by_workspace_and_agentId", ["workspace", "agentId"]),
   /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
   acp_sessions: defineTable({
     chat: v.id("aisdk_chats"),

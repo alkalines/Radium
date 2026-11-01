@@ -376,9 +376,51 @@ import, duplicate-import rejection and chat deletion with `close`/`delete`.
 Not measured: the load profile, long Convex outages, agent crashes against the
 deployment (covered by unit tests only).
 
-Open: the Chatroom UI (`useAcpSession`, picker entries, Composer controls), Settings
-agent management and registry install, terminal-auth `agent login`, Gateway profiles,
-MCP pass-through, prompt attachments and the title-generator fallback.
+### ACP Chatroom Slice (2026-11-01)
+
+Implemented the [Chatroom side](../ACP/Interactions.md): agent picker entries with
+sign-in, ACP drafts (`acp.CreateSession` → draft config → `acp.Prompt` →
+`acp.GenerateTitle`), the ACP Session screen on the shared renderers, permission and
+form/URL elicitation prompts, config/mode controls, slash-command autocomplete, Stop,
+run state and interruption card, history pages, **Open existing** import, two-step
+delete (`deleteInAgent`), and Settings → Workers agent status with sign in/out.
+Backend additions: `acp.WorkerStatus`, `acp.GenerateTitle`, `GetSession.defaultConfig`,
+`ListChats.acp`, and the client frame fold `src/acp/fold.ts`. Content subscriptions
+run only while a Session is visible ([Loading And Visibility](../ACP/Interactions.md#loading-and-visibility)).
+
+Verification: backend suite 50 files / 379 tests (incl. `fold.test.ts`); web
+`bun test src/components/session` 22 tests; web typecheck unchanged at the 113
+pre-existing errors; `vite build` passes. Dev deployment with the enrolled Worker and
+the scripted agent: draft → session creation, streamed turn with thought/tool/text,
+permission and two-field elicitation round trips, slash list, second viewer streaming
+the same turn and stopping it, a Tab switched away or a browser tab hidden receiving
+no content frames (WebSocket inspection) and catching up on return, lifecycle
+notification, and delete-in-agent. Not exercised in the browser: history pages,
+import, fork, URL elicitation, Worker-offline state.
+
+### ACP Agents Tab And Shared Controls (2026-11-01)
+
+Agents moved from the Worker's `agents.json` to Chatroom → Agents: owner-managed
+`acp_agents` definitions (registry presets from the ACP registry or custom command lines,
+non-secret env), shared validation `acpAgentDefinitionError`, and the machine
+subscription `acp.agentDefinitions`. Every Worker resolves each command on its own `PATH`
+(or checks an explicit path) and reports `unavailable` without spawning when it is
+missing; present commands are probed as before. The `agents` CLI command and local file
+were removed. ACP drafts and Sessions now use the shared `ModelPicker`,
+`SessionWorkerControl`, `ContextUsage` and a disabled `ToolsDialog` trigger;
+`ListChats.acp` became `ListChats.agent {agentId, name}`, shown on Home rows. A warm
+Session whose agent no longer knows its ACP session (`-32002`) now ends with a reason
+instead of leaving viewers on a spinner.
+
+Verification: backend 50 files / 387 tests; Worker unit 16 files / 112 tests; web 37
+tests; web typecheck at the 113-error baseline; `vite build` passes. Dev deployment:
+registry OpenCode reported available (2.2.4) from the real binary, a missing command
+reported "not found on this Worker's PATH", a custom scripted agent ran a turn with the
+shared Model picker and Session corner, Home rows showed the agent name, and a lost
+session rendered as ended.
+
+Open: registry binary install, terminal-auth `agent login`, Gateway profiles, MCP
+pass-through and prompt attachments.
 
 ## Acceptance
 

@@ -6,8 +6,6 @@ import { WorkerProtocolError } from "../protocol.js";
 import { HELP, normalizeCommand, parseOptions, type Command } from "./options.js";
 import { isInteractive, readSetupCode, storageDescription, withProgress } from "./prompt.js";
 import { startWorker } from "./start.js";
-import { readAgentDefinitions } from "../acp/config.js";
-import { probeAgent } from "../acp/process.js";
 
 /** Run the Worker CLI without exposing setup or access credentials in output. */
 export async function runCli(args: string[]): Promise<void> {
@@ -29,7 +27,6 @@ export async function runCli(args: string[]): Promise<void> {
         { value: "setup", label: "Add setup code", hint: "enroll this machine" },
         { value: "start", label: "Start Worker" },
         { value: "status", label: "Show local status" },
-        { value: "agents", label: "Probe local ACP agents" },
         { value: "refresh", label: "Refresh authentication", hint: "verify backend access" },
         { value: "forget", label: "Forget local identity" },
       ],
@@ -50,23 +47,6 @@ export async function runCli(args: string[]): Promise<void> {
     if (storage) console.info(storageDescription(storage));
   } else if (command === "start") {
     await startWorker(options);
-  } else if (command === "agents") {
-    const definitions = await readAgentDefinitions(options.stateDirectory);
-    if (!definitions.length) console.info("No ACP agents configured in agents.json.");
-    for (const definition of definitions) {
-      const report = await probeAgent(definition);
-      console.info(`${report.agentId}: ${report.name} ${report.version} (${report.status})`);
-      if (report.error) console.info(`  ${report.error}`);
-      else {
-        const capabilities = Object.entries(report.capabilities)
-          .filter(([, enabled]) => enabled)
-          .map(([name]) => name);
-        console.info(`  Capabilities: ${capabilities.join(", ") || "none"}`);
-        console.info(
-          `  Auth: ${report.authMethods.map((method) => `${method.name} [${method.id}, ${method.type}]`).join(", ") || "none"}`,
-        );
-      }
-    }
   } else if (command === "forget") {
     if (!options.yes) {
       if (!isInteractive()) throw new WorkerProtocolError("Use --yes to forget local identity");

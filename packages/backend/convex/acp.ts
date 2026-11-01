@@ -27,6 +27,8 @@ export {
   Logout,
   GetCommand,
   GetSession,
+  WorkerStatus,
+  GenerateTitle,
   OpenInteractions,
   ListAgents,
 } from "../src/acp/browser";
@@ -37,3 +39,10 @@ export {
   prune,
   cleanupChat,
 } from "../src/acp/retention";
+export {
+  ListAgentDefinitions,
+  SaveAgentDefinition,
+  DeleteAgentDefinition,
+  RegistryAgents,
+  agentDefinitions,
+} from "../src/acp/agents";

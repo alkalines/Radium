@@ -24,6 +24,8 @@ type WorkerControlProps = {
   agent: SessionAgent;
   onSelectionChange: (selection: ChatWorkerSelection | null) => void;
   onAgentChange: (agent: SessionAgent) => void;
+  scope?: "personal" | "workspace";
+  onCreated?: (chatId: Id<"aisdk_chats">) => void;
 };
 
 /**
@@ -88,7 +90,9 @@ export function SessionContext({
         selection={workerProps.selection}
         defaultWorkerTools={workerProps.defaultWorkerTools}
         agent={workerProps.agent}
-        agents={agentsOnWorker(worker.selected)}
+        agents={agentsOnWorker(worker.selected, worker.agentRows)}
+        scope={workerProps.scope}
+        onCreated={workerProps.onCreated}
         isAgentFixed={false}
         disabled={isSaving}
         onSelectionChange={worker.changeSelection}
@@ -138,7 +142,22 @@ export function SessionContext({
  * whose process lives on its Worker) turns the control into a plain label, as do members, who
  * cannot configure Workers.
  */
-export function SessionWorkerControl({
+export function SessionWorkerControl(
+  props:
+    | (WorkerControlProps & { isFixed: boolean })
+    | { isFixed: true; workerName: string; agent: Pick<SessionAgent, "name" | "protocol"> },
+) {
+  if ("workerName" in props) {
+    return (
+      <span className={cn(plainLabelClassName, "text-xs")}>
+        <WorkerTargetLabel name={props.workerName} agent={props.agent} />
+      </span>
+    );
+  }
+  return <ConfigurableSessionWorkerControl {...props} />;
+}
+
+function ConfigurableSessionWorkerControl({
   isFixed,
   ...workerProps
 }: WorkerControlProps & { isFixed: boolean }) {
@@ -155,7 +174,7 @@ export function SessionWorkerControl({
         selection={workerProps.selection}
         defaultWorkerTools={workerProps.defaultWorkerTools}
         agent={workerProps.agent}
-        agents={agentsOnWorker(worker.selected)}
+        agents={agentsOnWorker(worker.selected, worker.agentRows)}
         isAgentFixed
         disabled={isSaving}
         onSelectionChange={worker.changeSelection}
@@ -212,13 +231,16 @@ function useSessionWorker({
   const { data: workers, error: workersError } = useQuery(
     convexQuery(api.workers.list, workspaceId && isOwner ? { workspace: workspaceId } : "skip"),
   );
+  const { data: agentRows } = useQuery(
+    convexQuery(api.acp.ListAgents, workspaceId && isOwner ? { workspace: workspaceId } : "skip"),
+  );
   const selected = workers?.find(
     (candidate) => candidate.workerId === selection?.workerId && candidate.status === "active",
   );
 
   function changeSelection(next: ChatWorkerSelection | null) {
     const nextWorker = workers?.find((candidate) => candidate.workerId === next?.workerId);
-    const nextAgents = agentsOnWorker(nextWorker);
+    const nextAgents = agentsOnWorker(nextWorker, agentRows);
     if (!nextAgents.some((candidate) => candidate.id === agent.id)) {
       onAgentChange(nextAgents[0]);
     }
@@ -239,7 +261,19 @@ function useSessionWorker({
     name = "Worker";
   }
 
-  const label = (
+  const label = <WorkerTargetLabel name={name} agent={agent} />;
+
+  return { workers, agentRows, workersError, selected, name, label, changeSelection };
+}
+
+function WorkerTargetLabel({
+  name,
+  agent,
+}: {
+  name: string;
+  agent: Pick<SessionAgent, "name" | "protocol">;
+}) {
+  return (
     <>
       <span className="truncate">{name}</span>
       {agent.protocol === "acp" ? (
@@ -247,6 +281,4 @@ function useSessionWorker({
       ) : null}
     </>
   );
-
-  return { workers, workersError, selected, name, label, changeSelection };
 }

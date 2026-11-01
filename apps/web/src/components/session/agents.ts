@@ -2,63 +2,65 @@ import type { FunctionReturnType } from "convex/server";
 
 import type { api } from "backend/convex/_generated/api";
 
-/** A Worker identity as listed by the owner-only `api.workers.list` query. */
+/** Owner-only Worker and agent catalogs, shared by the draft and Run target picker. */
 export type SessionWorker = FunctionReturnType<typeof api.workers.list>[number];
-
-/**
- * A Project of the Session's workspace as listed by `api.projects.list`. `folder` (the Worker and
- * directory new Sessions in it default to) is only returned to the workspace owner.
- */
+export type SessionAgentRow = FunctionReturnType<typeof api.acp.ListAgents>[number];
 export type SessionProject = FunctionReturnType<typeof api.projects.list>[number];
 
-/**
- * The harness that runs a Session (`docs/Interface_Design.md` §2, Agent).
- *
- * - `built-in`: the Radium agent. It runs in Convex (`POST /api/aisdk/chat`) and only reaches the
- *   Worker through the owner-selected Worker tools, so it works with or without a Worker.
- * - `acp`: an external harness spoken to over the Agent Client Protocol, installed on one Worker.
- *   The agent process lives on that Worker, so once a Session has a message its Worker, Directory,
- *   and Agent are fixed.
- *
- * `logo` is a models.dev provider slug for ACP agents; the built-in agent uses the Radium letter.
- */
-export type SessionAgent = {
-  id: string;
-  name: string;
-  logo?: string;
-  protocol: "built-in" | "acp";
-};
+type BuiltInAgent = { id: string; name: string; protocol: "built-in" };
+export type AcpSessionAgent = Pick<
+  SessionAgentRow,
+  "agentId" | "name" | "status" | "icon" | "capabilities" | "authMethods" | "defaults"
+> & { id: string; protocol: "acp"; workerId: string };
 
-/** The default agent of every Session; it is not shown in the Session context label. */
-export const builtInAgent: SessionAgent = {
-  id: "radium",
-  name: "Radium",
-  protocol: "built-in",
-};
+/** A Session keeps its harness, and ACP also keeps its Worker and directory, after creation. */
+export type SessionAgent = BuiltInAgent | AcpSessionAgent;
 
-/**
- * Agents the given Worker can run. Today that is only the built-in Radium agent, which does not
- * depend on the Worker at all.
- *
- * ACP integration (planned, not implemented):
- * 1. The Worker advertises the ACP harnesses installed on its host (for example through its
- *    `capabilities` metadata), and this function appends one `acp` agent per advertised harness.
- * 2. The backend persists the chosen agent on the chat (accepted by `api.aisdk.CreateChat` next to
- *    `worker`), and `GetChat` returns it so the Session context can show `Worker (Agent)`.
- * 3. The chat transport routes the turn of an `acp` Session to that Worker instead of the Convex
- *    model pipeline.
- * Changing the Worker falls back to `builtInAgent` when the chosen ACP agent is missing there;
- * callers already apply that rule through `agentsOnWorker`.
- */
-export function agentsOnWorker(_worker: SessionWorker | undefined): SessionAgent[] {
-  return [builtInAgent];
+export const builtInAgent: BuiltInAgent = { id: "radium", name: "Radium", protocol: "built-in" };
+
+function catalogAgent(row: SessionAgentRow): AcpSessionAgent {
+  return {
+    id: `acp:${row.worker}:${row.agentId}`,
+    protocol: "acp",
+    workerId: row.worker,
+    agentId: row.agentId,
+    name: row.name,
+    icon: row.icon,
+    status: row.status,
+    capabilities: row.capabilities,
+    authMethods: row.authMethods,
+    defaults: row.defaults,
+  };
 }
 
-/**
- * The agent a restored Tab chose, by id. Only the built-in agent exists today, so every id
- * resolves to it; once ACP agents ship, an id whose agent is not installed on the Session's Worker
- * must also fall back to the built-in agent.
- */
-export function sessionAgentById(_id: string): SessionAgent {
-  return builtInAgent;
+/** Built-in stays first; failed/unavailable installations remain visible only in Settings. */
+export function agentsOnWorker(
+  worker: SessionWorker | undefined,
+  agentRows: readonly SessionAgentRow[] | undefined,
+): SessionAgent[] {
+  return [
+    builtInAgent,
+    ...(worker
+      ? (agentRows ?? [])
+          .filter(
+            (row) =>
+              row.worker === worker.workerId &&
+              (row.status === "ready" || row.status === "needs_auth"),
+          )
+          .map(catalogAgent)
+      : []),
+  ];
+}
+
+/** Restoring a missing installation never silently selects a different external harness. */
+export function sessionAgentById(
+  id: string,
+  agentRows: readonly SessionAgentRow[] | undefined,
+): SessionAgent {
+  const row = agentRows?.find(
+    (candidate) =>
+      `acp:${candidate.worker}:${candidate.agentId}` === id &&
+      (candidate.status === "ready" || candidate.status === "needs_auth"),
+  );
+  return row ? catalogAgent(row) : builtInAgent;
 }

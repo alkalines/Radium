@@ -1,12 +1,12 @@
 # ACP In Chatroom
 
-Status: **proposed UI on an implemented backend.** Overview: [ACP Agents](../ACP.md). The data sources below exist (`acp.GetSession`, `acp.OpenInteractions`, `acp.Answer`, `chatroom.Watch`, `chatroom.LiveFrames`, timeline op types in `packages/backend/src/acp/contract.ts`) and lifecycle notifications are sent; `useAcpSession` and the components are not built yet.
+Status: **implemented.** Overview: [ACP Agents](../ACP.md). Code: `apps/web/src/components/session/acp/` — `useAcpSession` (subscriptions and actions), `view-model.ts` (items → messages, RunState), `acp-session-screen.tsx`, the permission/elicitation prompts, config controls and ACP tool renderers; frames are folded by `packages/backend/src/acp/fold.ts`. `SessionScreen` renders `AcpSessionScreen` for chats whose `GetChat.agent` is set.
 
-An ACP Session uses the same Session screen, Trace Steps, Approval prompt,
-Question prompt, Todo panel and Run state as the built-in agent. Only the data
-source differs: `useAcpSession(chat)` builds the view from frames,
-`acp_sessions` and `acp_interactions` instead of `useChat` over
-`POST /api/aisdk/chat`.
+An ACP Session uses the same Composer, `ModelPicker`, Tools trigger,
+`SessionWorkerControl`, `ContextUsage`, Trace Steps, Approval prompt, Question
+prompt, Todo panel and Run state as the built-in agent. Only the data source
+differs: `useAcpSession(chat)` builds the view from frames, `acp_sessions` and
+`acp_interactions` instead of `useChat` over `POST /api/aisdk/chat`.
 
 ```mermaid
 flowchart LR
@@ -49,6 +49,34 @@ flowchart LR
     U11 --> C11
 ```
 
+## Loading And Visibility
+
+A Session is **visible** when its Radium Tab is active and the browser tab is
+visible (`document.visibilityState`). Many Tabs and devices can view one Session;
+each pays only for what it shows.
+
+| Subscription                                                                     | Mounted, not visible                     | Visible                                       |
+| -------------------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------- |
+| `aisdk.GetChat`, `acp.GetSession` (quiet metadata: title, status, config, usage) | Yes, drives the Tab's title and RunState | Yes                                           |
+| `chatroom.Watch` heartbeat                                                       | No                                       | On becoming visible, then every 60 s          |
+| `chatroom.LiveFrames`                                                            | No                                       | Yes, from the folded timeline's next sequence |
+| `acp.OpenInteractions`, `acp.WorkerStatus`                                       | No                                       | Yes                                           |
+
+- Content subscriptions use Convex's own `useQueries`, so they end as soon as the
+  Session is hidden (TanStack Query would keep them alive until its cache GC).
+- The folded timeline stays in memory while hidden. Returning resubscribes from its
+  next sequence; frames stay warm for five minutes after the last heartbeat, so a
+  short absence costs only the missed frames.
+- A Session that went cold meanwhile is warmed again by the heartbeat and starts a
+  new epoch; the client replaces its content with the new snapshot. Older pages are
+  kept across an epoch switch only when the switch happened while the Tab was
+  following the stream live (a size rollover).
+- `LiveFrames.fromSeq` advances only when a page returns 64 frames, so the
+  subscription arguments stay stable while a turn streams.
+- `acp.WorkerStatus` (Worker name and last heartbeat) drives the `Worker offline`
+  badge and the "Content lives on <Worker>" state; it wakes on every Worker
+  heartbeat, which is why only visible Sessions subscribe.
+
 ## View Model
 
 `useAcpSession` turns timeline items into the message shapes
@@ -65,24 +93,24 @@ listed in [Sessions](Sessions.md#unsupported-chatroom-actions).
 
 ## Tool Steps
 
-| ACP kind | Trace line | Body |
-| --- | --- | --- |
-| `read` | Read + path from `locations` | `content` text, numbered when it is code |
-| `edit` | Edit + path, `+added −removed` | `diff` content as per-file diffs (`CodeBlock`) |
-| `delete`, `move` | Delete / Move + path(s) | Content, if any |
-| `search` | Search + title | Content |
-| `execute` | Run + command (from title or raw input) | Text content as `TerminalLog` |
-| `fetch` | Fetch + URL | Content |
-| `think` | Title | Rendered like a reasoning Step |
-| `switch_mode` | Title | Marker only |
-| `other` | Title | Content, else raw input/output as JSON |
+| ACP kind         | Trace line                              | Body                                           |
+| ---------------- | --------------------------------------- | ---------------------------------------------- |
+| `read`           | Read + path from `locations`            | `content` text, numbered when it is code       |
+| `edit`           | Edit + path, `+added −removed`          | `diff` content as per-file diffs (`CodeBlock`) |
+| `delete`, `move` | Delete / Move + path(s)                 | Content, if any                                |
+| `search`         | Search + title                          | Content                                        |
+| `execute`        | Run + command (from title or raw input) | Text content as `TerminalLog`                  |
+| `fetch`          | Fetch + URL                             | Content                                        |
+| `think`          | Title                                   | Rendered like a reasoning Step                 |
+| `switch_mode`    | Title                                   | Marker only                                    |
+| `other`          | Title                                   | Content, else raw input/output as JSON         |
 
-| ACP status | RunState |
-| --- | --- |
-| `pending` | `queued` |
-| `in_progress` | `executing` |
-| `completed` | `succeeded` |
-| `failed` | `failed` |
+| ACP status                       | RunState                                          |
+| -------------------------------- | ------------------------------------------------- |
+| `pending`                        | `queued`                                          |
+| `in_progress`                    | `executing`                                       |
+| `completed`                      | `succeeded`                                       |
+| `failed`                         | `failed`                                          |
 | open when the turn was cancelled | `cancelled` (ACP v1 has no cancelled tool status) |
 
 `locations` show as Machine text paths. `terminal` content only appears if Radium
@@ -94,12 +122,12 @@ advertises the terminal capability, which it does not initially.
 Composer's place with the tool call's title and content (diff or command), and
 buttons built from the agent's options:
 
-| Option kind | Button |
-| --- | --- |
-| `allow_once` | Approve (⌘/Ctrl+Enter) |
-| `allow_always` | Always allow |
-| `reject_once` | Reject (Esc) |
-| `reject_always` | Always reject |
+| Option kind     | Button                 |
+| --------------- | ---------------------- |
+| `allow_once`    | Approve (⌘/Ctrl+Enter) |
+| `allow_always`  | Always allow           |
+| `reject_once`   | Reject (Esc)           |
+| `reject_always` | Always reject          |
 
 Option `name`s from the agent are the button labels; kinds only choose
 placement and shortcuts. ACP has no rejection reason, so `Reject with reason` is
@@ -115,12 +143,12 @@ requesting agent, as ACP requires.
 **Form mode** renders the shadcn `Questionnaire` through `QuestionPrompt`, one
 schema property per question:
 
-| Schema property | Question |
-| --- | --- |
+| Schema property                | Question                                |
+| ------------------------------ | --------------------------------------- |
 | `string` with `enum` / `oneOf` | Single choice (option titles as labels) |
-| `array` of enum | Multiple choice |
-| `boolean` | Yes / No |
-| `string`, `number`, `integer` | `Type your own answer…` only, validated |
+| `array` of enum                | Multiple choice                         |
+| `boolean`                      | Yes / No                                |
+| `string`, `number`, `integer`  | `Type your own answer…` only, validated |
 
 `title` is the header, `description` (or the request `message` for the first
 question) the question. Defaults are pre-selected, required properties cannot be
@@ -146,9 +174,17 @@ shown. Each `plan` update replaces the list, like `todo_write`.
 ## Composer
 
 - **Model / Reasoning / Mode** come from the agent's config options
-  ([Sessions](Sessions.md#config-model-and-mode)); Gateway model lists and
-  service tiers are hidden, and the Tools menu becomes the
-  [MCP servers](Sessions.md#mcp-servers) menu.
+  ([Sessions](Sessions.md#config-model-and-mode)). The normal `ModelPicker`
+  displays the agent's models and thought-level labels in drafts and Sessions;
+  mode stays a chip beside it and extra options stay in overflow. Gateway
+  providers, service tiers, Pro/Normal presets and token budgets are hidden.
+- **Tools:** the normal `ToolsDialog` trigger remains visible but disabled,
+  explaining **The agent brings its own tools**. ACP does not substitute a
+  separate tool picker.
+- **Session corner:** the normal `SessionWorkerControl` displays the fixed
+  Worker and agent, with no target-change action. `ContextUsage` displays the
+  agent's used/size context snapshot and optional native-currency cost, not a
+  fabricated Gateway token breakdown or converted cost.
 - **Slash commands:** typing `/` lists `available_commands_update` entries with
   descriptions and input hints; the command is sent as ordinary prompt text.
 - **Attachments** follow `promptCapabilities`: images when `image`, audio when
@@ -164,16 +200,16 @@ shown. Each `plan` update replaces the list, like `todo_write`.
 
 Mapped once in `useAcpSession`:
 
-| Backend state | RunState |
-| --- | --- |
-| `starting`, prompt command not yet claimed | `queued` |
-| `running`, latest item is a streaming `thought` | `thinking` |
+| Backend state                                    | RunState    |
+| ------------------------------------------------ | ----------- |
+| `starting`, prompt command not yet claimed       | `queued`    |
+| `running`, latest item is a streaming `thought`  | `thinking`  |
 | `running`, latest item is streaming `agent` text | `streaming` |
-| `running`, a `tool` item is `in_progress` | `executing` |
-| `awaiting` | `awaiting` |
-| `idle` after `end_turn` | `succeeded` |
-| `idle` after `cancelled` | `cancelled` |
-| `failed` | `failed` |
+| `running`, a `tool` item is `in_progress`        | `executing` |
+| `awaiting`                                       | `awaiting`  |
+| `idle` after `end_turn`                          | `succeeded` |
+| `idle` after `cancelled`                         | `cancelled` |
+| `failed`                                         | `failed`    |
 
 A Worker that goes offline (presence older than 60 s) during a turn keeps the
 last state with a `Worker offline` label; the turn becomes `failed` only when
@@ -181,14 +217,14 @@ the Worker reports it lost or restarts.
 
 Stop reasons and failures surface on `RunInterruptionCard`:
 
-| Cause | Card |
-| --- | --- |
-| `max_tokens` | Request failed: output limit reached |
-| `max_turn_requests` | Request failed: the agent's turn limit was reached |
-| `refusal` | Request failed: the model refused |
-| `auth_required` | Sign in to the agent (action) |
-| Agent process exited / Worker restarted | Request failed with the reason |
-| `cancelled` | Interrupted |
+| Cause                                   | Card                                               |
+| --------------------------------------- | -------------------------------------------------- |
+| `max_tokens`                            | Request failed: output limit reached               |
+| `max_turn_requests`                     | Request failed: the agent's turn limit was reached |
+| `refusal`                               | Request failed: the model refused                  |
+| `auth_required`                         | Sign in to the agent (action)                      |
+| Agent process exited / Worker restarted | Request failed with the reason                     |
+| `cancelled`                             | Interrupted                                        |
 
 ## Notifications
 

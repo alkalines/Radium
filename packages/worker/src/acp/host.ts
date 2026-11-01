@@ -18,12 +18,14 @@ import {
   ACP_COMMAND_RESULT_BYTES,
   ACP_INTERACTION_REQUEST_BYTES,
   utf8Bytes,
+  acpAgentDefinitionError,
+  type AcpAgentDefinition,
   type AcpAgentReport,
   type AcpInteractionAnswer,
   type AcpInteractionRequest,
   type AcpSessionListPage,
 } from "backend/src/acp/contract";
-import type { AcpAgentDefinition } from "./config.js";
+import { resolveAgentCommand } from "./config.js";
 import { AcpAgentProcess, agentReport, probeAgent } from "./process.js";
 import { AcpLifecycle, acpDelay } from "./lifecycle.js";
 import { normalizeElicitation } from "./interactions.js";
@@ -47,12 +49,14 @@ interface LocalSession {
   setup?: Promise<LocalSession>;
   warming?: Promise<void>;
   running: boolean;
+  preparing: boolean;
   updates: Promise<void>;
 }
 interface AgentSlot {
   definition: AcpAgentDefinition;
   process?: AcpAgentProcess;
   starting?: Promise<AcpAgentProcess>;
+  stopping?: Promise<void>;
   failures: number;
   lastUsed: number;
   restartAt: number;
@@ -66,6 +70,7 @@ interface PendingInteraction {
 export class AcpHost {
   private readonly lifecycle = new AcpLifecycle();
   private readonly slots = new Map<string, AgentSlot>();
+  private readonly retired = new Set<AgentSlot>();
   private readonly sessions = new Map<string, LocalSession>();
   private readonly earlyUpdates = new WeakMap<AcpAgentProcess, SessionNotification[]>();
   private readonly interactions = new Map<string, PendingInteraction>();
@@ -86,18 +91,10 @@ export class AcpHost {
   private pumping = false;
   private commandDirty = false;
   private initializing?: Promise<void>;
+  private definitionsReady = false;
+  private definitionsRevision = 0;
 
-  constructor(
-    private readonly transport: AcpTransport,
-    definitions: AcpAgentDefinition[],
-  ) {
-    for (const definition of definitions)
-      this.slots.set(definition.id, {
-        definition,
-        failures: 0,
-        lastUsed: Date.now(),
-        restartAt: 0,
-      });
+  constructor(private readonly transport: AcpTransport) {
     this.retry = setInterval(() => {
       void this.connect();
       void this.pump();
@@ -110,9 +107,12 @@ export class AcpHost {
 
   /** Control availability gates recovery, claims, subscriptions and durable delivery. */
   setAvailable(value: boolean): void {
+    const reconnected = value && !this.available;
     this.available = value;
     this.lifecycle.setAvailable(value);
     if (value) {
+      if (reconnected && this.initialized)
+        void this.applyDefinitions([...this.slots.values()].map((slot) => slot.definition));
       void this.connect();
       void this.pump();
       void this.syncWarm();
@@ -129,12 +129,15 @@ export class AcpHost {
         this.recovered = true;
       }
       if (this.stopped) return;
-      this.reports = await Promise.all(
-        [...this.slots.values()].map((slot) => probeAgent(slot.definition, this.abort.signal)),
-      );
-      if (this.stopped) return;
-      await this.lifecycle.run("worker", () =>
-        this.transport.reportAgents({ agents: this.reports }),
+      this.unsubscribers.push(
+        this.transport.agentDefinitions(
+          (definitions) => {
+            void this.applyDefinitions(definitions);
+          },
+          () => {
+            this.definitionsReady = false;
+          },
+        ),
       );
       if (this.stopped) return;
       this.unsubscribers.push(
@@ -182,8 +185,69 @@ export class AcpHost {
     await this.initializing;
   }
 
+  private async applyDefinitions(definitions: AcpAgentDefinition[]): Promise<void> {
+    const revision = ++this.definitionsRevision;
+    this.definitionsReady = false;
+    const previous = new Map(this.slots);
+    this.slots.clear();
+    for (const definition of definitions) {
+      if (!definition.enabled) continue;
+      const existing = previous.get(definition.agentId);
+      if (existing && JSON.stringify(existing.definition) === JSON.stringify(definition)) {
+        this.slots.set(definition.agentId, existing);
+        previous.delete(definition.agentId);
+      } else {
+        this.slots.set(definition.agentId, {
+          definition,
+          failures: 0,
+          lastUsed: Date.now(),
+          restartAt: 0,
+        });
+      }
+    }
+    for (const slot of previous.values()) this.retired.add(slot);
+    void this.stopRetiredAgents();
+    try {
+      const reports = await Promise.all(
+        [...this.slots.values()].map((slot) => probeAgent(slot.definition, this.abort.signal)),
+      );
+      if (this.stopped || revision !== this.definitionsRevision) return;
+      this.reports = reports;
+      await this.lifecycle.run("worker", () => this.transport.reportAgents({ agents: reports }));
+      if (this.stopped || revision !== this.definitionsRevision) return;
+      this.definitionsReady = true;
+      void this.pump();
+      void this.syncWarm();
+    } catch {
+      // The Convex subscription delivers a fresh definition set after reconnect.
+    }
+  }
+
+  private async stopRetiredAgents(): Promise<void> {
+    for (const slot of this.retired) {
+      if (
+        slot.starting ||
+        [...this.sessions.values()].some(
+          (local) =>
+            (local.process === slot.process && local.running) ||
+            (local.binding.agentId === slot.definition.agentId && (local.setup || local.preparing)),
+        )
+      )
+        continue;
+      await this.stopAgent(slot);
+      this.retired.delete(slot);
+    }
+  }
+
   private async pump(): Promise<void> {
-    if (!this.initialized || !this.available || this.stopped || this.pumping) return;
+    if (
+      !this.initialized ||
+      !this.definitionsReady ||
+      !this.available ||
+      this.stopped ||
+      this.pumping
+    )
+      return;
     this.pumping = true;
     this.commandDirty = false;
     try {
@@ -225,6 +289,7 @@ export class AcpHost {
         timeline,
         relay: new AcpRelay(this.transport, chat, timeline),
         running: false,
+        preparing: false,
         updates: Promise.resolve(),
       };
       this.sessions.set(chat, local);
@@ -255,7 +320,7 @@ export class AcpHost {
 
   private async processFor(agentId: string): Promise<AcpAgentProcess> {
     const slot = this.slots.get(agentId);
-    if (!slot) throw new Error("Agent is not configured on this Worker");
+    if (!slot) throw new Error("Agent removed");
     slot.lastUsed = Date.now();
     if (slot.starting) return slot.starting;
     if (slot.process) return slot.process;
@@ -263,7 +328,13 @@ export class AcpHost {
       if (slot.restartAt > Date.now())
         await acpDelay(slot.restartAt - Date.now(), this.abort.signal);
       if (this.stopped) throw new Error("ACP host stopped");
-      const process = new AcpAgentProcess(slot.definition, {
+      const invalid = acpAgentDefinitionError(slot.definition);
+      if (invalid) throw new Error(invalid);
+      const command = await resolveAgentCommand(slot.definition.command);
+      if (!command)
+        throw new Error(`${slot.definition.command} was not found on this Worker's PATH`);
+      if (this.stopped) throw new Error("ACP host stopped");
+      const process = new AcpAgentProcess(slot.definition, command, {
         update: (notification) => this.onUpdate(process, notification),
         permission: (request) => this.permission(process, request),
         elicitation: (request) => this.elicitation(process, request),
@@ -275,10 +346,12 @@ export class AcpHost {
       try {
         const response = await process.ready;
         if (this.stopped) throw new Error("ACP host stopped");
-        const previous = this.reports.find((entry) => entry.agentId === agentId);
-        const report = agentReport(slot.definition, response);
-        if (previous?.defaults) report.defaults = previous.defaults;
-        this.reports = [...this.reports.filter((entry) => entry.agentId !== agentId), report];
+        if (this.slots.get(agentId) === slot) {
+          const previous = this.reports.find((entry) => entry.agentId === agentId);
+          const report = agentReport(slot.definition, response);
+          if (previous?.defaults) report.defaults = previous.defaults;
+          this.reports = [...this.reports.filter((entry) => entry.agentId !== agentId), report];
+        }
         return process;
       } catch (error) {
         if (slot.process === process) slot.process = undefined;
@@ -339,8 +412,15 @@ export class AcpHost {
   }
 
   private async ensureSession(local: LocalSession): Promise<LocalSession> {
+    const slot = this.slots.get(local.binding.agentId);
+    if (!slot) throw new Error("Agent removed");
     if (local.setup) return local.setup;
-    if (local.process && !local.timeline.needsReload) return local;
+    if (
+      local.process &&
+      (local.running || local.process === slot.process) &&
+      !local.timeline.needsReload
+    )
+      return local;
     local.setup = (async () => {
       const process = await this.processFor(local.binding.agentId);
       const report = this.reports.find((entry) => entry.agentId === local.binding.agentId)!;
@@ -450,11 +530,11 @@ export class AcpHost {
   }
 
   private async syncWarm(): Promise<void> {
-    if (!this.initialized || !this.available || this.stopped) return;
+    if (!this.initialized || !this.definitionsReady || !this.available || this.stopped) return;
     await Promise.all(
       [...this.warm.values()].map(async (entry) => {
         const local = this.local(entry.chat, { ...entry, warm: true, draft: null, config: null });
-        if (local.relay.active || local.warming) return;
+        if (local.relay.active || local.warming || local.binding.status === "ended") return;
         local.binding.warm = true;
         local.warming = (async () => {
           try {
@@ -462,8 +542,18 @@ export class AcpHost {
             if (!this.warm.has(entry.chat) || this.stopped) return;
             await local.relay.start(Math.max(entry.epoch, local.binding.epoch));
             local.binding.epoch = local.relay.epoch;
-          } catch {
+          } catch (error) {
             local.binding.warm = false;
+            // Viewers wait for a snapshot that never comes unless the failure is reported. An
+            // agent that no longer knows the session (-32002) cannot reopen it: the Session ends.
+            const message = error instanceof Error ? error.message.slice(0, 400) : String(error);
+            const gone = error instanceof RequestError && error.code === -32002;
+            await this.patch(
+              local,
+              gone
+                ? { status: "ended", error: `The agent no longer has this session: ${message}` }
+                : { error: `Could not open the session: ${message}` },
+            ).catch(() => {});
           }
         })().finally(() => {
           local.warming = undefined;
@@ -481,6 +571,7 @@ export class AcpHost {
       if (!this.available) throw new Error("Worker disconnected before execution");
       if (payload.kind === "prompt") {
         if (!local) throw new Error("Session deleted");
+        local.preparing = true;
         await this.ensureSession(local);
         if (local.warming) await local.warming;
         if (this.warm.has(local.chat) && !local.relay.active) {
@@ -628,6 +719,9 @@ export class AcpHost {
       if (local && payload.kind === "prompt" && local.binding.status !== "ended")
         await this.patch(local, { status: "failed", error: message });
       await this.finish(claim, "failed", message);
+    } finally {
+      if (local && payload.kind === "prompt") local.preparing = false;
+      await this.stopRetiredAgents();
     }
   }
 
@@ -677,6 +771,7 @@ export class AcpHost {
         slot.lastUsed = Date.now();
         if (local.process) slot.failures = 0;
       }
+      await this.stopRetiredAgents();
     }
   }
 
@@ -833,29 +928,36 @@ export class AcpHost {
     }
   }
 
-  private async stopAgent(slot: AgentSlot): Promise<void> {
+  private stopAgent(slot: AgentSlot): Promise<void> {
+    if (slot.stopping) return slot.stopping;
     const process = slot.process;
-    if (!process) return;
+    if (!process) return Promise.resolve();
     slot.process = undefined;
-    const closes = [...this.sessions.values()]
-      .filter((local) => local.process === process)
-      .map(async (local) => {
-        this.cancelInteractions(local.chat);
-        if (
-          this.reports.find((entry) => entry.agentId === slot.definition.id)?.capabilities.close &&
-          local.binding.sessionId
-        ) {
-          await process.connection.agent
-            .request(methods.agent.session.close, { sessionId: local.binding.sessionId })
-            .catch(() => undefined);
-        }
-        local.process = undefined;
-      });
-    const deadline = Promise.withResolvers<void>();
-    const timer = setTimeout(deadline.resolve, 1_000);
-    await Promise.race([Promise.allSettled(closes), deadline.promise]);
-    clearTimeout(timer);
-    await process.stop();
+    slot.stopping = (async () => {
+      const closes = [...this.sessions.values()]
+        .filter((local) => local.process === process)
+        .map(async (local) => {
+          local.process = undefined;
+          this.cancelInteractions(local.chat);
+          if (
+            this.reports.find((entry) => entry.agentId === slot.definition.agentId)?.capabilities
+              .close &&
+            local.binding.sessionId
+          ) {
+            await process.connection.agent
+              .request(methods.agent.session.close, { sessionId: local.binding.sessionId })
+              .catch(() => undefined);
+          }
+        });
+      const deadline = Promise.withResolvers<void>();
+      const timer = setTimeout(deadline.resolve, 1_000);
+      await Promise.race([Promise.allSettled(closes), deadline.promise]);
+      clearTimeout(timer);
+      await process.stop();
+    })().finally(() => {
+      slot.stopping = undefined;
+    });
+    return slot.stopping;
   }
 
   /** Stop claims, cancel agent requests, close sessions/processes and bound receipt flushing. */
@@ -867,9 +969,10 @@ export class AcpHost {
     this.abort.abort();
     for (const unsubscribe of this.unsubscribers) unsubscribe();
     for (const pending of this.interactions.values()) pending.resolve(null);
-    await Promise.all([...this.slots.values()].map((slot) => this.stopAgent(slot)));
+    const slots = [...this.slots.values(), ...this.retired];
+    await Promise.all(slots.map((slot) => this.stopAgent(slot)));
     await Promise.all(
-      [...this.slots.values()].map(async (slot) => {
+      slots.map(async (slot) => {
         await slot.starting?.catch(() => undefined);
         if (slot.process) await this.stopAgent(slot);
       }),

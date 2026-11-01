@@ -255,6 +255,79 @@ export const acpAgentReportValidator = v.object({
 export type AcpAgentReport = Infer<typeof acpAgentReportValidator>;
 
 // ---------------------------------------------------------------------------------------------
+// Agent definitions (`acp_agents`): owner-managed in Chatroom → Agents, probed by every Worker
+// ---------------------------------------------------------------------------------------------
+
+/** Bounds of one definition; the Worker re-checks them before it spawns anything. */
+export const ACP_AGENT_DEFINITIONS_MAX = 64;
+const ACP_AGENT_NAME_MAX = 80;
+const ACP_AGENT_COMMAND_MAX = 1024;
+const ACP_AGENT_ARGS_MAX = 64;
+const ACP_AGENT_ARG_MAX = 4096;
+const ACP_AGENT_ENV_MAX = 32;
+const ACP_AGENT_ENV_VALUE_MAX = 4096;
+
+/**
+ * How a Worker launches one agent. `command` is resolved on the Worker's `PATH` unless it is a
+ * path; a Worker that cannot find it reports the agent `unavailable`. `env` holds non-secret
+ * launch settings (agents keep their own credentials); `version` pins a registry release.
+ */
+export const acpAgentDefinitionValidator = v.object({
+  agentId: v.string(),
+  name: v.string(),
+  command: v.string(),
+  args: v.array(v.string()),
+  env: v.array(v.object({ name: v.string(), value: v.string() })),
+  enabled: v.boolean(),
+  source: v.union(v.literal("registry"), v.literal("custom")),
+  icon: v.optional(v.string()),
+  version: v.optional(v.string()),
+});
+export type AcpAgentDefinition = Infer<typeof acpAgentDefinitionValidator>;
+
+/**
+ * Launch environment keys an agent definition may not set: they redirect executable lookup,
+ * loaders, proxies or TLS trust, or reach Radium's own credentials.
+ */
+export function forbiddenAgentEnv(key: string): boolean {
+  return (
+    /^(PATH|LD_.*|DYLD_.*|NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|.*_PROXY|SSL_CERT_FILE|SSL_CERT_DIR|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|PYTHONPATH|PYTHONHOME|RUBYOPT|PERL5OPT|BUN_.*)$/i.test(
+      key,
+    ) || /^(RADIUM_|CONVEX_)/i.test(key)
+  );
+}
+
+/** Validate a definition for Convex and the Worker alike. Returns an error message, or `null`. */
+export function acpAgentDefinitionError(definition: AcpAgentDefinition): string | null {
+  const noNul = (value: string) => !value.includes("\0");
+  if (!validAcpAgentId(definition.agentId))
+    return "Agent IDs use lowercase letters, digits, '.', '_' and '-' (at most 64).";
+  const name = definition.name.trim();
+  if (!name || name.length > ACP_AGENT_NAME_MAX || !noNul(name))
+    return `Names need 1 to ${ACP_AGENT_NAME_MAX} characters.`;
+  const command = definition.command.trim();
+  if (!command || command.length > ACP_AGENT_COMMAND_MAX || !noNul(command))
+    return "The command is required.";
+  if (
+    definition.args.length > ACP_AGENT_ARGS_MAX ||
+    definition.args.some((arg) => arg.length > ACP_AGENT_ARG_MAX || !noNul(arg))
+  )
+    return `At most ${ACP_AGENT_ARGS_MAX} arguments, each under ${ACP_AGENT_ARG_MAX} characters.`;
+  if (definition.env.length > ACP_AGENT_ENV_MAX)
+    return `At most ${ACP_AGENT_ENV_MAX} environment variables.`;
+  const seen = new Set<string>();
+  for (const { name: key, value } of definition.env) {
+    if (!/^[a-z_][a-z0-9_]*$/i.test(key) || seen.has(key))
+      return `Invalid or repeated environment variable: ${key || "(empty)"}.`;
+    if (forbiddenAgentEnv(key)) return `${key} cannot be set for an agent.`;
+    if (value.length > ACP_AGENT_ENV_VALUE_MAX || !noNul(value))
+      return `The value of ${key} is too long.`;
+    seen.add(key);
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Commands (`acp_commands`): browser → Worker
 // ---------------------------------------------------------------------------------------------
 

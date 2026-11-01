@@ -1,4 +1,5 @@
 import type {
+  AcpAgentDefinition,
   AcpAgentReport,
   AcpCommandKind,
   AcpCommandPayload,
@@ -81,6 +82,7 @@ type Subscription<T> = (
 
 /** The entire authorized Convex boundary, replaceable by an in-memory transport in tests. */
 export interface AcpTransport {
+  agentDefinitions: Subscription<AcpAgentDefinition[]>;
   assignedCommands: Subscription<AcpAssignment[]>;
   warmSessions: Subscription<AcpWarmSession[]>;
   answeredInteractions: Subscription<AcpAnsweredInteraction[]>;

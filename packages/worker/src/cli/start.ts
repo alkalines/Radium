@@ -13,7 +13,6 @@ import { createBashExecutor } from "../bash/service.js";
 import { prepareTempDirectory, startPresenceReporter, type PresenceReporter } from "../presence.js";
 import type { CliOptions } from "./options.js";
 import { storageDescription } from "./prompt.js";
-import { readAgentDefinitions } from "../acp/config.js";
 import { convexAcpTransport } from "../acp/convex-transport.js";
 import { AcpHost } from "../acp/host.js";
 
@@ -88,8 +87,7 @@ export async function startWorker(options: CliOptions): Promise<void> {
       tasks.setAvailable(previousStatusKey === "connected");
       console.info("Worker edit and Bash task consumer enabled.");
     }
-    const agents = await readAgentDefinitions(options.stateDirectory);
-    acp = new AcpHost(convexAcpTransport(control.client), agents);
+    acp = new AcpHost(convexAcpTransport(control.client));
     acp.setAvailable(previousStatusKey === "connected");
     await waitForShutdown(close);
   } catch (error) {

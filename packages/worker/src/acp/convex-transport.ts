@@ -6,6 +6,8 @@ import type { AcpTransport } from "./transport.js";
 /** Bind the runtime-neutral host boundary to machine-authorized Convex functions. */
 export function convexAcpTransport(client: ConvexClient): AcpTransport {
   return {
+    agentDefinitions: (receive, failed) =>
+      client.onUpdate(api.acp.agentDefinitions, {}, receive, failed),
     assignedCommands: (receive, failed) =>
       client.onUpdate(api.acp.assignedCommands, {}, receive, failed),
     warmSessions: (receive, failed) => client.onUpdate(api.acp.warmSessions, {}, receive, failed),

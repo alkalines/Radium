@@ -1,110 +1,86 @@
 # ACP Agents On The Worker
 
-Status: **local agents implemented; registry install, Settings-defined agents, terminal login and Gateway mode open.** Overview: [ACP Agents](../ACP.md).
+Status: **workspace agent definitions, registry selection, Worker discovery and Chatroom authentication implemented.** Binary archive installation, terminal login and Gateway mode remain open. Overview: [ACP Agents](../ACP.md).
 
-Today an agent is defined in the Worker's local `<state-dir>/agents.json` (`id`, `name`, `command`, `args`, `env`; format and examples in [`packages/worker/README.md`](../../packages/worker/README.md#acp-agents)). On every connect the Worker probes each definition (spawn, `initialize`, stop) and replaces its `worker_agents` rows through `acp.reportAgents`; `bun src/cli.ts agents` runs the same probe locally without a network. Agents run as `source: "custom"` with the `native` profile; statuses are `ready`, `needs_auth`, `unavailable` (command not found) and `failed`. Process model, environment filtering, stderr handling and client capabilities below are implemented as described, with the idle window at 15 minutes.
+An ACP agent is a program on the Worker's machine. The workspace owner configures
+it in **Chatroom → Agents**, not the Workers tab or a local Worker file. Convex
+stores workspace-wide definitions in `acp_agents`; every enrolled Worker
+subscribes to enabled definitions through machine-authorized
+`acp.agentDefinitions`. A chat request selects an agent ID and Session directory,
+never an executable, arguments or environment.
 
-An ACP agent is a program on the Worker's machine. The Worker installs or finds
-it, launches it, speaks stdio ACP to it, and advertises it to Convex so the Run
-target picker can offer it. Agents are defined only in Settings → Workers (or the
-Worker's local config); a chat request never chooses an executable, arguments or
-environment, only the Session's directory.
+## Sources And Configuration
 
-## Sources
+| Source   | Where it comes from                                                                                                                          | Who adds it                          |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| Registry | [ACP Registry](https://agentclientprotocol.com/get-started/registry), `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` | Workspace owner in Chatroom → Agents |
+| Custom   | Any ACP program installed on the Worker, defined by a command and arguments                                                                  | Workspace owner in Chatroom → Agents |
 
-| Source | Where it comes from | Who adds it |
-| --- | --- | --- |
-| Registry | [ACP Registry](https://agentclientprotocol.com/get-started/registry) index, `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` (`{version, agents[]}`) | Owner from Settings → Workers, or the Worker CLI |
-| Custom | Any other ACP program on the machine: `command`, `args`, `env`; name and version from its `initialize` | Owner from Settings → Workers, or the Worker's local config file |
+The Agents tab lists each definition's name, source, command, Enabled switch and
+Edit/Delete actions. Add agent offers a searchable **From registry** list or
+**Custom** form. The command-line field supports quotes and backslashes and
+previews the parsed argument vector. Agent IDs are editable only when creating:
+Sessions retain that ID permanently. Environment rows are stored in Convex and
+visible to the owner; they are **not secret storage**. Agents keep their own login
+and credentials on each Worker's machine.
 
-A custom agent is any other ACP-speaking program on the Worker's machine: the
-owner's own harness, a fork, or an agent not (yet) in the registry. The owner
-adds it from Settings → Workers with the command that starts it in ACP mode;
-the Worker probes it, and its name, version and capabilities come from its
-`initialize` response (`agentInfo`). Definitions are stored per Worker in
-`worker_agent_configs` (proposed, owner-only). The Worker runs that command as
-its OS user, so the form shows the exact command line and refuses the same
-risky `env` entries as registry agents.
+Definitions contain `agentId`, `name`, `command`, `args`, `env: [{name, value}]`,
+`enabled`, `source: "registry" | "custom"` and optional `icon`/`version`.
+Convex and the Worker share the same launch validation and forbidden environment
+policy. At most 64 definitions can be configured per workspace.
 
-A registry entry has `id`, `name`, semver `version`, `description`,
-`distribution`, and optional `icon`, `repository`, `authors`, `license`.
-`distribution` is any of:
+The registry is fetched on demand by an owner-authorized Convex action (bounded
+to 1 MiB, 10 seconds and 200 valid entries). `npx` entries fill
+`npx -y <package> ...`; `uvx` entries fill `uvx <package> ...`, using the registry's
+versioned package names. Binary entries fill the command basename and arguments
+with an instruction to install the binary on each Worker's `PATH`. Radium does
+not download, extract or automatically upgrade binary archives.
 
-- `npx: { package, args?, env? }` (needs Node on the machine)
-- `uvx: { package, args?, env? }` (needs uv)
-- `binary: { <os>-<arch>: { archive, cmd, args?, env?, sha256? } }` for
-  darwin/linux/windows × aarch64/x86_64
+## Discovery And Availability
 
-Observed entries include `claude-acp` (`@agentclientprotocol/claude-agent-acp`),
-`codex-acp`, `gemini` (`@google/gemini-cli --acp`), `opencode` (binary
-`opencode acp`), `goose`, `cline`, Copilot, Cursor and others. Radium uses the
-registry `id` as `agentId` and its `icon` in the picker; `components/session/agents.ts`
-currently maps logos to models.dev slugs and moves to registry icons.
+On each definitions update and Worker reconnect, the Worker:
 
-Convex caches the registry index once a day in a single document so Settings
-can browse it without a Worker online. The Worker re-fetches the entry it
-installs and never trusts browser-supplied distribution data.
+1. Validates each enabled definition with the shared `acpAgentDefinitionError`.
+   Invalid definitions report `failed` with that validation error, without spawning.
+2. Resolves commands on **its own `PATH`** using `Bun.which`. A command containing
+   `/` instead must point to an existing executable file; relative paths resolve
+   from the Worker's working directory. Missing or non-executable commands report
+   `unavailable` with `<command> was not found on this Worker's PATH`, without spawning.
+3. Probes present commands by spawning, sending ACP `initialize`, reading
+   capabilities/authentication methods and stopping the probe.
+4. Replaces its full `worker_agents` catalog through `acp.reportAgents`.
 
-## Install And Discovery
+There is no discovery polling loop. The configured name, source and icon are
+used for display; the version comes from `agentInfo`, falling back to the
+definition's version and then `unknown`. Native is the only implemented profile.
 
-```mermaid
-flowchart TD
-    Reg["Registry index (cached in Convex)"] --> Pick["Owner picks agent + Worker<br/>Settings → Workers"]
-    Pick --> Task["worker_tasks: acp_install {agentId, version}"]
-    Custom["Custom agent<br/>Settings or local config"] --> Probe
-    Task --> Resolve{"Distribution for<br/>this OS/arch?"}
-    Resolve -- npx/uvx --> Runtime{"node / uv<br/>present?"}
-    Resolve -- binary --> Download["Download archive<br/>verify sha256<br/>extract to Worker data dir"]
-    Resolve -- none --> Unavailable["status: unavailable"]
-    Runtime -- yes --> Probe
-    Runtime -- no --> Unavailable
-    Download --> Probe["Probe: spawn, initialize,<br/>read agentInfo, capabilities, authMethods"]
-    Probe --> Adv["worker_agents row upserted"]
-    Adv --> Picker["Run target picker lists it<br/>for that Worker"]
-```
+Each definition shows one line per active Worker: **Available** with version,
+**Needs sign in** with agent authentication, **Not on PATH**, **Failed** with
+error, or **Waiting for Worker** when offline/not yet reported. Disabled
+definitions show **Disabled**. Sign out appears when the agent supports it.
+The Workers tab links to Agents rather than duplicating this management surface.
 
-Install reuses `worker_tasks` (owner-dispatched, machine-claimed, five-minute
-terminal cleanup); it is a discrete task, not part of a Session. Binaries live
-under the Worker's data directory per `agentId/version`; npx/uvx entries pin the
-registry version so an upstream release does not silently change a Session's
-harness. Upgrades are explicit and apply to new processes.
+`worker_agents` is one availability row per (Worker, agentId), written only by
+that machine. It contains identity (`name`, `source`, `icon`, `version`), status,
+capabilities (`loadSession`, list/resume/close/delete/fork/logout, prompt
+image/audio/embeddedContext, MCP HTTP/SSE), auth methods and probe time. Session
+creation can add last-seen defaults (config, modes, available commands) for draft
+Composer controls.
 
-### `worker_agents` (proposed)
+### Editing And Removing Definitions
 
-One row per (Worker, agentId), written only by that Worker through `workerMutation`:
+New commands use the latest definition. A process started from a superseded
+definition is stopped once it has no running turn; edits never interrupt a
+running turn or its approval/question wait. The next prompt starts the new
+definition and loads/resumes the agent's existing Session when supported.
 
-| Field | Meaning |
-| --- | --- |
-| `worker`, `workspace` | Owning Worker identity and its workspace |
-| `agentId`, `name`, `version`, `icon`, `source` | Identity shown in the picker; `source` is `registry` or `custom` |
-| `status` | Per profile (native, Gateway); see the state diagram below |
-| `capabilities` | Summary from `initialize`: `loadSession`, session `list`/`resume`/`close`/`delete`/`fork`, prompt `image`/`audio`/`embeddedContext`, MCP `http`/`sse` |
-| `authMethods` | `{id, name, type}` as advertised |
-| `defaults` | Last seen `configOptions`, `modes` and `availableCommands` from a `session/new` on this Worker, used to populate a draft's Composer before a session exists |
-| `checkedAt` | Last probe time |
+Removing or disabling a definition does not rebind or delete existing Sessions.
+Their active turns can finish; new prompts fail with **Agent removed**. Restoring
+the same agent ID makes it possible to use the existing binding again, subject
+to that agent's own Session storage and reopening capabilities.
 
-Rows are small and change only on install, probe, auth or upgrade, so the
-picker's subscription stays quiet. The worker-component `capabilities` array
-remains identity metadata and is not used for agents.
-
-```mermaid
-stateDiagram-v2
-    [*] --> installing: install task claimed
-    installing --> ready: probe ok
-    installing --> failed: download / verify / probe error
-    [*] --> ready: custom agent probe ok
-    ready --> needs_auth: auth_required on session/new
-    needs_auth --> ready: authenticate ok / CLI login
-    ready --> needs_key: Gateway profile, Worker key missing
-    needs_key --> ready: new Worker key issued
-    ready --> unavailable: binary missing / runtime missing
-    unavailable --> ready: re-probe ok
-    failed --> installing: retry
-    ready --> [*]: uninstall
-```
-
-The picker shows `ready` agents as selectable, `needs_auth` with a Sign in
-action, and hides the rest behind the Worker's settings row.
+For a real scripted ACP fixture configured through this same form, see the
+[Worker README](../../packages/worker/README.md#acp-agents).
 
 ## Process Model
 
@@ -113,7 +89,7 @@ action, and hides the rest behind the Worker's settings row.
   [Gateway profile](#gateway-mode) is a separate process because its environment
   differs. Each session gets its own absolute `cwd` in `session/new`.
 - **Lazy start, idle stop.** The process starts on the first command for that
-  agent. After every session is idle for the idle window (proposed 15 minutes),
+  agent. After every session is idle for the idle window (15 minutes),
   the Worker calls `session/close` where supported and stops the process. A
   session waiting on a permission or elicitation is never idle.
 - **Crash handling.** A crashed process fails its in-flight turns (`failed`,
@@ -121,8 +97,8 @@ action, and hides the rest behind the Worker's settings row.
   come back through `session/resume` or `session/load` when next used
   ([Sessions](Sessions.md#reopening-and-recovery)).
 - **Environment.** The agent gets the Worker user's environment minus Radium's
-  own variables: no machine key, JWT, Convex URL or Worker config paths. Registry
-  `env` is applied; entries that change program lookup, loaders, proxies or TLS
+  own variables (`RADIUM_*` and `CONVEX_*`): no machine key, JWT, Convex URL or
+  Worker config paths. Definition `env` is applied; entries that change program lookup, loaders, proxies or TLS
   trust (`PATH`, `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `HTTPS_PROXY`, …) are refused,
   following ACP's launch-safety guidance.
 - **Streams.** stdout carries ACP only. stderr goes to the Worker's bounded local
@@ -155,7 +131,7 @@ sequenceDiagram
         Note over A: May raise a URL elicitation<br/>(opened in the browser after consent)
         A-->>W: {}
     else method type "terminal"
-        Note over W: Owner runs radium-worker agent login (agent id)<br/>on the machine (local PTY)
+        Note over W: Owner uses the agent's own login command<br/>on the machine; Worker terminal login is not implemented
     end
     W->>A: re-initialize, session/new
     W->>CX: status = ready
@@ -165,22 +141,21 @@ sequenceDiagram
   agent that opens a browser on the Worker's machine only works when the owner
   is at that machine; agents that use URL-mode elicitation work remotely.
 - **Terminal-type methods** need an interactive terminal. The Worker has no
-  PTY transport to the browser, so Radium does not advertise
-  `clientCapabilities.auth.terminal`; the Worker CLI offers a local
-  `agent login <id>` command that reproduces the agent invocation with the
-  method's `args`/`env` in the operator's own terminal.
+  PTY transport to the browser and does not advertise
+  `clientCapabilities.auth.terminal`. Use the agent's own CLI login on the Worker
+  machine; a dedicated Worker terminal-login command is not implemented.
 - `logout` is offered when `agentCapabilities.auth.logout` is advertised.
 
 ## Client Capabilities Radium Advertises
 
-| Capability | Initial value | Reason |
-| --- | --- | --- |
-| `protocolVersion` | `1` | Stable surface only |
-| `fs.readTextFile`, `fs.writeTextFile` | off | The agent runs on the same machine and uses its own file tools; there are no unsaved editor buffers to serve |
-| `terminal` | off | Requires managed background processes and streamed output the Worker does not have yet ([Bash guide](../Worker/Bash_Tool.md#acp-terminal-bridge)) |
-| `auth.terminal` | off | No browser PTY |
-| `elicitation.form`, `elicitation.url` | on | Question prompt and consented URL opening |
-| Session notices / compaction / boolean config | on as stable | Rendered as markers and Composer switches |
+| Capability                                    | Initial value | Reason                                                                                                                                            |
+| --------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `protocolVersion`                             | `1`           | Stable surface only                                                                                                                               |
+| `fs.readTextFile`, `fs.writeTextFile`         | off           | The agent runs on the same machine and uses its own file tools; there are no unsaved editor buffers to serve                                      |
+| `terminal`                                    | off           | Requires managed background processes and streamed output the Worker does not have yet ([Bash guide](../Worker/Bash_Tool.md#acp-terminal-bridge)) |
+| `auth.terminal`                               | off           | No browser PTY                                                                                                                                    |
+| `elicitation.form`, `elicitation.url`         | on            | Question prompt and consented URL opening                                                                                                         |
+| Session notices / compaction / boolean config | on as stable  | Rendered as markers and Composer switches                                                                                                         |
 
 Turning on `fs`/`terminal` later lets the Worker apply its own confinement and
 show writes and commands it executes itself; that is a separate slice.
@@ -194,6 +169,8 @@ over `ndJsonStream(stdin, stdout)`. SDK 2.0 removed `ClientSideConnection` and
 imported only for `session/fork`; `/experimental/v2` waits for M5.
 
 ## Gateway Mode
+
+Gateway mode below is planned, not implemented.
 
 An agent always runs with its own models and credentials. Gateway mode is an
 additional **launch profile** of the same agent that sends its model calls
@@ -273,7 +250,7 @@ one of the reasons for Gateway mode, and it is the one place ACP conversation
 content may be stored by Radium, only when the owner records content.
 
 - **Per-key switch.** Every Gateway key gets a **Telemetry** setting:
-  *Workspace settings* (default) or *Off* (nothing captured for that key's
+  _Workspace settings_ (default) or _Off_ (nothing captured for that key's
   requests). It applies to ordinary API keys too.
 - **Worker keys follow the Worker.** The Worker's row has a **Gateway telemetry**
   switch that sets its key's setting automatically, and a reissued key inherits it.

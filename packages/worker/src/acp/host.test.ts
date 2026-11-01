@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type {
+  AcpAgentDefinition,
   AcpAgentReport,
   AcpCommandPayload,
   AcpFrameInput,
@@ -22,7 +24,6 @@ import type {
   AcpSessionPatch,
   AcpWarmSession,
 } from "./transport.js";
-import type { AcpAgentDefinition } from "./config.js";
 
 class FakeTransport implements AcpTransport {
   assignments: AcpAssignment[] = [];
@@ -30,6 +31,8 @@ class FakeTransport implements AcpTransport {
   receipts = new Map<string, { status: string; error?: string; result?: string }>();
   patches: AcpSessionPatch[] = [];
   reports: AcpAgentReport[] = [];
+  definitions: AcpAgentDefinition[] = [definition()];
+  reportCount = 0;
   frames: { epoch: number; frame: AcpFrameInput }[] = [];
   opened: { id: string; key: string; request: AcpInteractionRequest }[] = [];
   resolved: { interaction: string; status: string }[] = [];
@@ -46,9 +49,21 @@ class FakeTransport implements AcpTransport {
     config: null,
   };
   private commandListener?: (commands: AcpAssignment[]) => void;
+  private definitionListener?: (definitions: AcpAgentDefinition[]) => void;
   private warmListener?: (sessions: AcpWarmSession[]) => void;
   private answerListener?: (answers: AcpAnsweredInteraction[]) => void;
 
+  agentDefinitions = (receive: (rows: AcpAgentDefinition[]) => void) => {
+    this.definitionListener = receive;
+    queueMicrotask(() => receive(this.definitions));
+    return () => {
+      this.definitionListener = undefined;
+    };
+  };
+  publishDefinitions(definitions: AcpAgentDefinition[]) {
+    this.definitions = definitions;
+    this.definitionListener?.(definitions);
+  }
   assignedCommands = (receive: (rows: AcpAssignment[]) => void) => {
     this.commandListener = receive;
     queueMicrotask(() => receive(this.assignments));
@@ -142,6 +157,7 @@ class FakeTransport implements AcpTransport {
   }
   async reportAgents({ agents }: { agents: AcpAgentReport[] }) {
     this.reports = structuredClone(agents);
+    this.reportCount++;
   }
   async recoverWorker() {
     return { more: false };
@@ -180,15 +196,21 @@ async function until(check: () => boolean): Promise<void> {
 const hosts: AcpHost[] = [];
 const directories: string[] = [];
 const script = fileURLToPath(new URL("./test-agent.ts", import.meta.url));
+const bun = execFileSync("bun", ["-p", "process.execPath"], { encoding: "utf8" }).trim();
 function definition(args: string[] = []): AcpAgentDefinition {
   return {
-    id: "scripted",
-    command: process.versions.bun ? process.execPath : "bun",
+    agentId: "scripted",
+    name: "Scripted",
+    command: bun,
     args: [script, ...args],
+    env: [],
+    enabled: true,
+    source: "custom",
   };
 }
 async function start(transport: FakeTransport, args: string[] = []) {
-  const host = new AcpHost(transport, [definition(args)]);
+  transport.definitions = [definition(args)];
+  const host = new AcpHost(transport);
   hosts.push(host);
   host.setAvailable(true);
   await until(() => transport.reports.length > 0);
@@ -201,6 +223,73 @@ afterEach(async () => {
 });
 
 describe("ACP host with real stdio agent", () => {
+  it("keeps a running turn on its old definition and uses the replacement for the next prompt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "radium-acp-redefine-"));
+    directories.push(directory);
+    const transport = new FakeTransport();
+    const store = join(directory, "sessions.json");
+    await start(transport, ["--store", store]);
+    const running = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "permission" }],
+    });
+    await until(() => transport.opened.length === 1);
+    const reportCount = transport.reportCount;
+    transport.publishDefinitions([
+      {
+        ...definition(["--store", store, "--require-auth"]),
+        name: "Changed agent",
+      },
+    ]);
+    await until(() => transport.reportCount > reportCount);
+    expect(transport.receipts.has(running)).toBe(false);
+    transport.answer(0, { kind: "permission", optionId: "allow_once" });
+    await until(() => transport.receipts.has(running));
+    expect(transport.receipts.get(running)?.status).toBe("done");
+    const next = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "hello" }],
+    });
+    await until(() => transport.receipts.has(next));
+    expect(transport.receipts.get(next)).toMatchObject({
+      status: "failed",
+      error: "Sign in to Changed agent",
+    });
+  });
+
+  it("fails a new prompt with Agent removed after its definition is deleted", async () => {
+    const transport = new FakeTransport();
+    await start(transport);
+    const first = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "hello" }],
+    });
+    await until(() => transport.receipts.has(first));
+    const reportCount = transport.reportCount;
+    transport.publishDefinitions([]);
+    await until(() => transport.reportCount > reportCount);
+    expect(transport.reports).toEqual([]);
+    const next = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "hello again" }],
+    });
+    await until(() => transport.receipts.has(next));
+    expect(transport.receipts.get(next)).toMatchObject({
+      status: "failed",
+      error: "Agent removed",
+    });
+  });
+
+  it("re-probes definitions when the Worker reconnects", async () => {
+    const transport = new FakeTransport();
+    const host = await start(transport);
+    const count = transport.reportCount;
+    host.setAvailable(false);
+    host.setAvailable(true);
+    await until(() => transport.reportCount > count);
+    expect(transport.reports[0]?.status).toBe("ready");
+  });
+
   it("relays a prompt and durable lifecycle, applies drafts and agent title/config updates", async () => {
     const transport = new FakeTransport();
     transport.binding.draft = {
@@ -330,6 +419,17 @@ describe("ACP host with real stdio agent", () => {
     expect(transport.patches.some((patch) => patch.history === "full")).toBe(true);
     expect(JSON.stringify(transport.ops())).toContain("persistent hello");
     expect(transport.frames[0]?.frame.kind).toBe("snapshot");
+  });
+
+  it("ends a warm session the agent no longer knows instead of leaving viewers waiting", async () => {
+    const transport = new FakeTransport();
+    transport.binding.sessionId = "lost-session";
+    await start(transport);
+    await until(() => transport.patches.some((patch) => patch.status === "ended"));
+    expect(transport.patches.find((patch) => patch.status === "ended")?.error).toContain(
+      "no longer has this session",
+    );
+    expect(transport.frames).toEqual([]);
   });
 
   it("reports auth_required, authenticates, lists bounded sessions and handles refusal", async () => {

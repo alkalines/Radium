@@ -378,6 +378,14 @@ function SessionRow({
       >
         {formatRelativeTime(session.lastInteractionAt, now)}
       </time>
+      {session.agent ? (
+        <span
+          className="max-w-32 truncate text-xs text-muted-foreground"
+          title={session.agent.name}
+        >
+          {session.agent.name}
+        </span>
+      ) : null}
       {session.canManage ? (
         <SessionActionsMenu session={session} projects={projects} />
       ) : (

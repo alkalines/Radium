@@ -43,6 +43,7 @@ import {
 import { ownedWorkspaceMutation, workspaceQuery } from "./helpers";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
 import { chatWorkerToolValidator, type ChatWorkerTool } from "../src/worker/chat-config";
+import { accessibleSession } from "../src/acp/policy";
 
 /**
  * Workspace Chatroom configuration replaces the legacy per-user
@@ -459,6 +460,34 @@ export const titleGenerationInfo = internalQuery({
       model,
       title: chat.title,
     };
+  },
+});
+
+/**
+ * Authorize an ACP viewer and resolve the ordinary workspace title model without reading a
+ * transcript. The action receives the first prompt only in memory, never through this query.
+ */
+export const acpTitleGenerationInfo = internalQuery({
+  args: { chatId: v.id("aisdk_chats") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      workspace: v.id("workspaces"),
+      userId: v.string(),
+      model: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const { chat, session, workspace } = await accessibleSession(ctx, args.chatId);
+    if (chat.title || session.userTitled) return null;
+    const settings = await loadWorkspaceSettings(ctx, workspace);
+    const model = await firstAvailableModel(
+      ctx,
+      workspace,
+      settings?.titleModel ?? settings?.defaultModel,
+    );
+    if (!model) return null;
+    return { workspace: workspace._id, userId: chat.userId, model };
   },
 });
 

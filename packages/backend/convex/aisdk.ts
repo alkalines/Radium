@@ -525,22 +525,42 @@ export const ListChats = workspaceQuery({
 
     const chats = await chatCandidates(ctx, ctx.workspace, ctx.identity._id, args.project);
 
-    return chats
+    const listed = chats
       .sort((a, b) => {
         const pinnedDelta = (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0);
         if (pinnedDelta !== 0) return pinnedDelta;
         return (b.lastInteractionAt ?? b._creationTime) - (a.lastInteractionAt ?? a._creationTime);
       })
-      .slice(0, LIST_LIMIT)
-      .map((chat) => ({
-        id: chat._id,
-        title: chat.title,
-        emoji: chat.emoji,
-        pinnedAt: chat.pinnedAt,
-        lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
-        activeStream: chat.activeStream ?? false,
-        canManage: canManageChat(chat, ctx.workspace, ctx.identity._id),
-        project: chat.project,
-      }));
+      .slice(0, LIST_LIMIT);
+    const agentIds = new Set(listed.flatMap((chat) => (chat.agent ? [chat.agent.agentId] : [])));
+    const agentNames = new Map(
+      await Promise.all(
+        [...agentIds].map(async (agentId) => {
+          const definition = await ctx.db
+            .query("acp_agents")
+            .withIndex("by_workspace_and_agentId", (q) =>
+              q.eq("workspace", ctx.workspace._id).eq("agentId", agentId),
+            )
+            .unique();
+          return [agentId, definition?.name ?? agentId] as const;
+        }),
+      ),
+    );
+    return listed.map((chat) => ({
+      id: chat._id,
+      title: chat.title,
+      emoji: chat.emoji,
+      pinnedAt: chat.pinnedAt,
+      lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
+      activeStream: chat.activeStream ?? false,
+      agent: chat.agent
+        ? {
+            agentId: chat.agent.agentId,
+            name: agentNames.get(chat.agent.agentId) ?? chat.agent.agentId,
+          }
+        : null,
+      canManage: canManageChat(chat, ctx.workspace, ctx.identity._id),
+      project: chat.project,
+    }));
   },
 });

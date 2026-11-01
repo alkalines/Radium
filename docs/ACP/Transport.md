@@ -1,6 +1,6 @@
 # ACP Transport Through Convex
 
-Status: **implemented** (Convex: `packages/backend/src/acp/`, registered in `convex/acp.ts` and `chatroom.Watch`/`chatroom.LiveFrames`; Worker: `packages/worker/src/acp/`). Shared contract, bounds and op types: `packages/backend/src/acp/contract.ts`. Overview: [ACP Agents](../ACP.md). Builds on the selected
+Status: **implemented** (Convex: `packages/backend/src/acp/`, registered in `convex/acp.ts` and `chatroom.Watch`/`chatroom.LiveFrames`; Worker: `packages/worker/src/acp/`; Chatroom: `apps/web/src/components/session/acp/`, which folds frames with `packages/backend/src/acp/fold.ts`). Shared contract, bounds and op types: `packages/backend/src/acp/contract.ts`. Overview: [ACP Agents](../ACP.md). Builds on the selected
 [Worker Convex Client transport](../Worker/Convex_Transport.md); where that guide
 proposes saving final messages in Convex, ACP Sessions instead keep content in
 the agent and hold relayed content in Convex only while the Session is open
@@ -57,7 +57,9 @@ Per-epoch sequence numbers and byte counts live in `acp_streams`, not `acp_sessi
 The Worker's subscriptions are small and quiet: pending commands, answered
 interactions, and the list of its warm sessions. It never reads frames or
 heartbeats. A client viewing a Session subscribes to that chat's `acp_sessions`
-row, its open interactions, and its frames.
+row, its open interactions, its frames and its Worker's presence (`acp.WorkerStatus`);
+a Tab that is open but not visible keeps only the metadata subscription
+([Loading And Visibility](Interactions.md#loading-and-visibility)).
 
 ### Several clients at once
 

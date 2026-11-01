@@ -12,7 +12,6 @@
     "refresh": "bun src/cli.ts refresh",
     "forget": "bun src/cli.ts forget",
     "forget-token": "bun src/cli.ts forget-token",
-    "agents": "bun src/cli.ts agents",
     "test-agent": "bun src/acp/test-agent.ts",
     "test": "bun run test:unit && bun run test:edit && bun run test:bash",
     "test:unit": "vitest run",

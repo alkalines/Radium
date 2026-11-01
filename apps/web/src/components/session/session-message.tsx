@@ -21,6 +21,8 @@ import {
 import { variants } from "@/lib/motion";
 import { DeniedMarker } from "./approval-gate";
 import { MessageActions } from "./message-actions";
+import { AcpNotice } from "./acp/notice";
+import { isAcpNoticePart, isAcpToolPart, type AcpToolPart } from "./acp/parts";
 import {
   getMessageModel,
   getMessageText,
@@ -59,7 +61,7 @@ function groupMessageParts(parts: MessagePart[]) {
     // Metadata-only reasoning carries continuation state but has no visible trace.
     if (part.type === "reasoning" && !part.text.trim()) continue;
 
-    if (part.type === "reasoning" || isToolPart(part)) {
+    if (part.type === "reasoning" || isAcpToolPart(part) || isToolPart(part)) {
       const previous = blocks.at(-1);
       if (previous?.type === "steps") {
         previous.items.push({ index, part });
@@ -85,11 +87,13 @@ export type SessionMessageProps = {
   forkModels: ModelOption[] | undefined;
   /** Name of the agent that answers this Session's turns, shown in the assistant footer. */
   agentName: string;
-  canRevert: boolean;
+  modelLabel?: string;
+  forkWithoutModel?: boolean;
+  canRevert?: boolean;
   onCopy: (message: UIMessage) => void;
-  onRevert: (message: UIMessage) => void;
-  onRegenerate: (message: UIMessage) => void;
-  onFork: (message: UIMessage, modelSlug: string) => void;
+  onRevert?: (message: UIMessage) => void;
+  onRegenerate?: (message: UIMessage) => void;
+  onFork?: (message: UIMessage, modelSlug: string) => void;
 };
 
 /**
@@ -120,10 +124,13 @@ export const SessionMessage = memo(function SessionMessage(props: SessionMessage
             <MessageActions
               role="user"
               forkModels={props.forkModels}
+              forkWithoutModel={props.forkWithoutModel}
               disabled={props.actionsDisabled}
               onCopy={() => props.onCopy(message)}
-              onRevert={props.canRevert ? () => props.onRevert(message) : undefined}
-              onFork={(modelSlug) => props.onFork(message, modelSlug)}
+              onRevert={
+                props.canRevert && props.onRevert ? () => props.onRevert?.(message) : undefined
+              }
+              onFork={props.onFork ? (modelSlug) => props.onFork?.(message, modelSlug) : undefined}
             />
           ) : null}
         </MessageContent>
@@ -140,12 +147,14 @@ export const SessionMessage = memo(function SessionMessage(props: SessionMessage
             role="assistant"
             forkModels={props.forkModels}
             disabled={props.actionsDisabled}
+            forkWithoutModel={props.forkWithoutModel}
             agentName={props.agentName}
             model={getMessageModel(message)}
+            modelLabel={props.modelLabel}
             performance={getPerformanceMetadata(message.metadata)}
             onCopy={() => props.onCopy(message)}
-            onRegenerate={() => props.onRegenerate(message)}
-            onFork={(modelSlug) => props.onFork(message, modelSlug)}
+            onRegenerate={props.onRegenerate ? () => props.onRegenerate?.(message) : undefined}
+            onFork={props.onFork ? (modelSlug) => props.onFork?.(message, modelSlug) : undefined}
           />
         ) : null}
       </MessageContent>
@@ -163,6 +172,13 @@ function AssistantParts({ message, isLive, showChainOfThought }: SessionMessageP
   return blocks.map((block, blockIndex) => {
     if (block.type === "content") {
       const { index, part } = block.item;
+      if (isAcpNoticePart(part)) {
+        return (
+          <Reveal key={`${message.id}-${index}`} isNew={index >= mountedPartCount}>
+            <AcpNotice notice={part.data} />
+          </Reveal>
+        );
+      }
       if (part.type !== "text") return null;
 
       return (
@@ -188,7 +204,9 @@ function AssistantParts({ message, isLive, showChainOfThought }: SessionMessageP
         />
       </Reveal>
     ));
-    const tools = block.items.flatMap(({ part }) => (isToolPart(part) ? [part] : []));
+    const tools = block.items.flatMap(({ part }) =>
+      isAcpToolPart(part) || isToolPart(part) ? [part] : [],
+    );
 
     return (
       <div key={`${message.id}-steps-${firstIndex}`} className="flex min-w-0 flex-col gap-3">
@@ -217,8 +235,8 @@ function AssistantParts({ message, isLive, showChainOfThought }: SessionMessageP
  * component, because `AnimatePresence` must see the keyed motion elements (or their absence) as
  * its direct children to run exits and measure for `popLayout`.
  */
-function deniedSlot(part: ToolUIPart) {
-  if (!isDeniedTool(part)) return null;
+function deniedSlot(part: ToolUIPart | AcpToolPart) {
+  if (isAcpToolPart(part) || !isDeniedTool(part)) return null;
 
   return (
     <m.div
@@ -279,7 +297,7 @@ function MessageStep({
     );
   }
 
-  if (isToolPart(part)) {
+  if (isAcpToolPart(part) || isToolPart(part)) {
     return <ToolStep part={part} isLive={isLive} hasLaterContent={hasLaterContent} />;
   }
 
@@ -343,7 +361,9 @@ function ChainOfThought({
   children: ReactNode;
 }) {
   const [userOpen, setUserOpen] = useState<boolean>();
-  const tools = items.flatMap(({ part }) => (isToolPart(part) ? [part] : []));
+  const tools = items.flatMap(({ part }) =>
+    isAcpToolPart(part) || isToolPart(part) ? [part] : [],
+  );
   const isAwaiting = tools.some((part) => getToolRunState(part, isLive) === "awaiting");
   const failedCount = tools.filter((part) => getToolRunState(part, isLive) === "failed").length;
 

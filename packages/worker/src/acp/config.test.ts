@@ -1,38 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { agentEnvironment, forbiddenAgentEnv, readAgentDefinitions } from "./config.js";
+import { forbiddenAgentEnv, type AcpAgentDefinition } from "backend/src/acp/contract";
+import { agentEnvironment } from "./config.js";
 
-const directories: string[] = [];
-afterEach(async () => {
-  vi.unstubAllEnvs();
-  for (const directory of directories.splice(0))
-    await rm(directory, { recursive: true, force: true });
-});
-async function state(value?: unknown) {
-  const directory = await mkdtemp(join(tmpdir(), "radium-acp-config-"));
-  directories.push(directory);
-  if (value !== undefined) await writeFile(join(directory, "agents.json"), JSON.stringify(value));
-  return directory;
-}
+const definition: AcpAgentDefinition = {
+  agentId: "test",
+  name: "Test",
+  command: "agent",
+  args: [],
+  env: [],
+  enabled: true,
+  source: "custom",
+};
+afterEach(() => vi.unstubAllEnvs());
 
-describe("local agent launch policy", () => {
-  it("accepts missing config and validates unique local executable definitions", async () => {
-    expect(await readAgentDefinitions(await state())).toEqual([]);
-    const agents = [
-      { id: "test.agent", command: "bun", args: ["agent.ts"], env: { API_KEY: "agent-secret" } },
-    ];
-    expect(await readAgentDefinitions(await state({ agents }))).toEqual(agents);
-    await expect(
-      readAgentDefinitions(await state({ agents: [...agents, ...agents] })),
-    ).rejects.toThrow("unique");
-    await expect(
-      readAgentDefinitions(await state({ agents: [{ id: "../bad", command: "bun" }] })),
-    ).rejects.toThrow("valid");
-  });
-  it("refuses loader, lookup, proxy and trust overrides case-insensitively", async () => {
-    for (const key of [
+describe("agent launch environment", () => {
+  it("refuses loader, lookup, proxy and trust overrides case-insensitively", () => {
+    for (const name of [
       "Path",
       "LD_PRELOAD",
       "dyld_insert_libraries",
@@ -52,12 +35,10 @@ describe("local agent launch policy", () => {
       "RADIUM_PRIVATE_KEY",
       "CONVEX_URL",
     ]) {
-      expect(forbiddenAgentEnv(key)).toBe(true);
-      await expect(
-        readAgentDefinitions(
-          await state({ agents: [{ id: "test", command: "bun", env: { [key]: "unsafe" } }] }),
-        ),
-      ).rejects.toThrow("Unsafe environment key");
+      expect(forbiddenAgentEnv(name)).toBe(true);
+      expect(() => agentEnvironment({ ...definition, env: [{ name, value: "unsafe" }] })).toThrow(
+        "Unsafe environment key",
+      );
     }
   });
   it("does not inherit machine configuration or tokens but retains agent credentials", () => {
@@ -65,9 +46,8 @@ describe("local agent launch policy", () => {
     vi.stubEnv("CONVEX_URL", "machine-url");
     vi.stubEnv("ANTHROPIC_API_KEY", "agent-key");
     const environment = agentEnvironment({
-      id: "test",
-      command: "agent",
-      env: { AGENT_COLOR: "blue" },
+      ...definition,
+      env: [{ name: "AGENT_COLOR", value: "blue" }],
     });
     expect(environment.RADIUM_WORKER_TOKEN).toBeUndefined();
     expect(environment.CONVEX_URL).toBeUndefined();

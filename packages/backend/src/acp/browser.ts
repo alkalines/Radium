@@ -1,10 +1,17 @@
 import { v } from "convex/values";
-import { mutation, query } from "../../convex/_generated/server";
+import { action, mutation, query } from "../../convex/_generated/server";
+import { components, internal } from "../../convex/_generated/api";
+import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { authComponent } from "../../convex/auth";
 import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../../convex/helpers";
 import { requireWorkspaceProject } from "../projects/projects";
 import { requireActiveWorkspaceWorker, validChatWorkerDirectory } from "../worker/chat-config";
-import { deriveChatWorkerDirectory, workspaceWorkerMetadata } from "../worker/chat-selection";
+import {
+  deriveChatWorkerDirectory,
+  findWorkerPresence,
+  workspaceWorkerMetadata,
+} from "../worker/chat-selection";
+import { generateChatTitle } from "../chatroom/titles";
 import {
   ACP_BUSY_STATUSES,
   ACP_HISTORY_PAGE_ITEMS,
@@ -481,7 +488,80 @@ export const GetCommand = query({
   },
 });
 
-/** Quiet session metadata subscription; deliberately excludes Worker presence and viewer rows. */
+/**
+ * Subscribe only while a Session is visible; this query wakes on each Worker heartbeat by design.
+ * Identity metadata is workspace-scoped even when the viewer is a member rather than the owner.
+ */
+export const WorkerStatus = query({
+  args: { chat: v.id("aisdk_chats") },
+  returns: v.object({
+    name: v.union(v.string(), v.null()),
+    lastSeenAt: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const { session } = await accessibleSession(ctx, args.chat);
+    const [worker, presence] = await Promise.all([
+      ctx
+        .runQuery(components.workerIdentity.identities.getWorkerMetadata, {
+          workspaceId: session.workspace,
+          workerId: session.worker,
+        })
+        // The component reports unknown and foreign-workspace identities as errors.
+        .catch(() => null),
+      findWorkerPresence(ctx, session.workspace, session.worker),
+    ]);
+    return {
+      name: worker?.status === "active" ? worker.name : null,
+      lastSeenAt: presence?.lastSeenAt ?? null,
+    };
+  },
+});
+
+/** Generate a fallback title from the first prompt without storing or logging conversation text. */
+export const GenerateTitle = action({
+  args: { chat: v.id("aisdk_chats"), text: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const chat = await ctx.runQuery(internal.chatroom.acpTitleGenerationInfo, {
+      chatId: args.chat,
+    });
+    const text = args.text.trim().slice(0, 4000);
+    if (!chat || !text) return null;
+
+    try {
+      const provider = createInternalGatewayProvider(
+        ctx,
+        chat.workspace,
+        {},
+        undefined,
+        undefined,
+        {
+          userId: chat.userId,
+          chatId: args.chat,
+        },
+      );
+      const title = await generateChatTitle({
+        model: provider(chat.model),
+        initialUserMessage: text,
+      });
+      // Non-forced saving preserves an agent title or user rename that arrived during generation.
+      await ctx.runMutation(internal.chatroom.saveGeneratedTitle, {
+        chatId: args.chat,
+        ...title,
+      });
+    } catch {
+      // Provider errors can contain request/response bodies, so never log the error itself.
+      console.error("Failed to generate ACP chat title.");
+    }
+    return null;
+  },
+});
+
+/**
+ * Quiet session metadata subscription; deliberately excludes Worker presence and viewer rows.
+ * Before the ACP session exists, `defaultConfig` and `commands` come from the agent's last
+ * advertised defaults, so draft choices can be shown and changed.
+ */
 export const GetSession = query({
   args: { chat: v.id("aisdk_chats") },
   handler: async (ctx, args) => {
@@ -496,7 +576,10 @@ export const GetSession = query({
       stopReason: session.stopReason,
       error: session.error,
       config: session.config,
-      commands: session.commands,
+      ...(!session.sessionId && report?.defaults?.config
+        ? { defaultConfig: report.defaults.config }
+        : {}),
+      commands: session.commands ?? (session.sessionId ? undefined : report?.defaults?.commands),
       usage: session.usage,
       history: session.history,
       draft: session.draft,
