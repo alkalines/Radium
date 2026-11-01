@@ -49,6 +49,12 @@ import { logger } from "../logging/server";
 import { sessionNotificationKind } from "../notifications/session";
 import { inlineStoredFiles } from "../chatroom/files";
 
+/**
+ * Model calls one chat request may make before it stops. A request still calling tools at the cap
+ * ends with a `step_limit` interruption, which the Session offers to continue.
+ */
+const MAX_CHAT_STEPS = 50;
+
 type AISDKChatRequestBody = {
   messages: UIMessage[];
   model: string;
@@ -233,6 +239,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
   });
 
   let inferenceError: GatewayErrorPayload | undefined;
+  let stepCount = 0;
+  let stepLimitReached = false;
   const result = streamText({
     model: provider(body.model),
     instructions,
@@ -240,9 +248,14 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     tools,
     toolApproval,
     experimental_toolApprovalSecret: approvalSecret,
-    // Allow follow-up turns so the model can act on executable tool results
-    // (Exa web search, MCP tools) instead of stopping at the first tool call.
-    stopWhen: isStepCount(5),
+    // Allow follow-up turns so the model can act on executable tool results (Worker, Code Mode,
+    // web search, MCP) instead of stopping at the first tool call. The cap bounds a runaway loop;
+    // reaching it while the model still calls tools is recorded so the user can continue.
+    stopWhen: isStepCount(MAX_CHAT_STEPS),
+    onStepEnd({ finishReason }) {
+      stepCount++;
+      stepLimitReached = stepCount >= MAX_CHAT_STEPS && finishReason === "tool-calls";
+    },
     onError({ error }) {
       inferenceError = gatewayErrorPayload(
         upstreamFailureFromError(error, false),
@@ -319,7 +332,7 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         failed: streamFailure !== undefined,
         responseMessage,
       };
-      const interruption = chatInterruption(end, streamFailure);
+      const interruption = chatInterruption(end, streamFailure, stepLimitReached);
       await ctx.runMutation(internal.aisdk.EditChat, {
         chatId,
         messages: messagesWithDuration,

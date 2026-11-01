@@ -1366,7 +1366,9 @@ function sessionRunState(
   if (activeStream) return "streaming";
   if (isStarting) return "queued";
   if (interruption?.kind === "failed") return "failed";
-  if (interruption?.kind === "interrupted") return "cancelled";
+  if (interruption?.kind === "interrupted" || interruption?.kind === "step_limit") {
+    return "cancelled";
+  }
   return "idle";
 }
 

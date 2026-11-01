@@ -177,10 +177,8 @@ function toolSubject(part: ToolUIPart, kind: ToolKind): string | undefined {
   const input = getToolInput(part);
 
   switch (kind) {
-    case "code": {
-      const calls = getCodeModeOutput(part)?.calls ?? [];
-      return `${calls.length} tool ${calls.length === 1 ? "call" : "calls"}`;
-    }
+    case "code":
+      return undefined;
     case "bash":
       return getInputString(input, "command");
     case "read":
@@ -280,11 +278,9 @@ export function ToolStep({
 }) {
   const kind = getToolKind(part);
   const state = getToolRunState(part, isLive);
+  // A program folds away once it starts running; the calls it makes show on their own rail.
   const isRunningInput =
-    (part.state === "input-streaming" ||
-      part.state === "input-available" ||
-      (kind === "code" && part.state === "output-available" && part.preliminary)) &&
-    state !== "awaiting";
+    (part.state === "input-streaming" || part.state === "input-available") && state !== "awaiting";
   const shouldAutoClose = !isRunningInput || hasLaterContent;
   const [isOpen, setIsOpen] = useState(!shouldAutoClose);
 
@@ -334,13 +330,36 @@ export function ToolStep({
     return line;
   }
 
-  return (
+  const step = (
     <TraceCollapsible open={isOpen} onOpenChange={setIsOpen}>
       <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
       <TraceCollapsibleContent className="flex flex-col gap-2">
-        <ToolBody part={part} kind={kind} state={state} isLive={isLive} />
+        <ToolBody part={part} kind={kind} state={state} />
       </TraceCollapsibleContent>
     </TraceCollapsible>
+  );
+  if (kind !== "code") return step;
+
+  // The program and its result fold away under "Ran code"; the calls it made stay visible on a
+  // rail beneath it, each as the same step a direct call of that tool gets.
+  const calls = getCodeModeOutput(part)?.calls ?? [];
+  const isProgramRunning = isLive && part.state === "output-available" && part.preliminary === true;
+  return (
+    <div className="flex w-full min-w-0 flex-col gap-2">
+      {step}
+      {calls.length > 0 ? (
+        <Trace className="ml-[calc(--spacing(2)-1px)] w-auto border-l pl-4">
+          {calls.map((call) => (
+            <ToolStep
+              key={call.id}
+              part={codeModeCallPart(call)}
+              isLive={isProgramRunning}
+              hasLaterContent={false}
+            />
+          ))}
+        </Trace>
+      ) : null}
+    </div>
   );
 }
 
@@ -361,38 +380,16 @@ function hasToolBody(part: ToolUIPart, kind: ToolKind) {
   }
 }
 
-function ToolBody({
-  part,
-  kind,
-  state,
-  isLive,
-}: {
-  part: ToolUIPart;
-  kind: ToolKind;
-  state: RunState;
-  isLive: boolean;
-}) {
+function ToolBody({ part, kind, state }: { part: ToolUIPart; kind: ToolKind; state: RunState }) {
   if (kind === "code") {
     const snapshot = getCodeModeOutput(part);
     return (
       <>
         <ToolInputBlock part={part} />
-        {snapshot?.calls.length ? (
-          <Trace>
-            {snapshot.calls.map((call) => (
-              <ToolStep
-                key={call.id}
-                part={codeModeCallPart(call)}
-                isLive={isLive && part.state === "output-available" && part.preliminary === true}
-                hasLaterContent={false}
-              />
-            ))}
-          </Trace>
-        ) : null}
         {snapshot?.output ? (
           <ToolCodeBlock
             code={snapshot.output}
-            title="output"
+            title="result"
             variant={snapshot.error ? "destructive" : "default"}
           />
         ) : null}

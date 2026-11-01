@@ -135,6 +135,11 @@ describe("session outcomes", () => {
       kind: "failed",
       message: "Quota reached",
     });
+    // Hitting the step cap mid-work is continuable, but a stop or failure still wins.
+    expect(chatInterruption(end({}), undefined, true)).toEqual({ kind: "step_limit" });
+    expect(chatInterruption(end({ isAborted: true }), undefined, true)).toEqual({
+      kind: "interrupted",
+    });
   });
 
   test("map the end of a request to the notification the user needs", () => {

@@ -30,10 +30,17 @@ export function RunInterruptionCard({
   const [isCopied, setIsCopied] = useState(false);
   const isFailed = interruption.kind === "failed";
   const Icon = isFailed ? CircleXIcon : CirclePauseIcon;
+  const isStepLimit = interruption.kind === "step_limit";
+  let title = "Interrupted";
   let detail =
     "The reply stopped before it finished. Retry continues from its last completed step.";
   if (isFailed) {
+    title = "Request failed";
     detail = interruption.message ?? "The request ended with an error before the reply finished.";
+  } else if (isStepLimit) {
+    title = "Paused at the step limit";
+    detail =
+      "The model was still working when this request reached its step limit. Continue picks up from its last completed step.";
   }
 
   useEffect(() => {
@@ -75,16 +82,14 @@ export function RunInterruptionCard({
         )}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <p className={cn("text-sm font-medium", isFailed && "text-destructive")}>
-          {isFailed ? "Request failed" : "Interrupted"}
-        </p>
+        <p className={cn("text-sm font-medium", isFailed && "text-destructive")}>{title}</p>
         <p className="max-h-24 overflow-y-auto text-[13px] break-words text-muted-foreground">
           {detail}
         </p>
         <div className="-ml-2 flex flex-wrap items-center gap-1 pt-1.5">
           <Button variant="outline" size="sm" disabled={!canRetry} onClick={onRetry}>
             <RotateCwIcon data-icon="inline-start" />
-            Retry {shortcutsEnabled ? <Kbd>F5</Kbd> : null}
+            {isStepLimit ? "Continue" : "Retry"} {shortcutsEnabled ? <Kbd>F5</Kbd> : null}
           </Button>
           {isFailed ? (
             <Button variant="ghost" size="sm" onClick={copyError}>
