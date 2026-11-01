@@ -290,6 +290,36 @@ describe("ACP shared model picker adapter", () => {
     );
   });
 
+  test("an alias ID joins the versioned model with the same lab and name", () => {
+    const select = (currentValue: string, choices: { value: string; name: string }[]) =>
+      acpModelConfig({
+        options: [
+          { id: "model", category: "model", name: "Model", type: "select", currentValue, choices },
+        ],
+      });
+    // OpenCode's Claude Agent names `claude-agent/haiku` "Haiku 5.5", without version or brand.
+    const adapter = select("claude-agent/haiku", [
+      { value: "claude-agent/haiku", name: "claude-agent/Haiku 5.5" },
+      { value: "github-copilot/claude-haiku-5.5", name: "github-copilot/Claude Haiku 5.5" },
+      { value: "openrouter/anthropic/claude-haiku-5.5", name: "openrouter/Claude Haiku 5.5" },
+      { value: "claude-agent/claude-haiku-4-5", name: "claude-agent/Haiku 4.5" },
+    ]);
+    expect(adapter.models.map(({ slug, name }) => [slug, name])).toEqual([
+      ["claude-haiku-5-5", "Claude Haiku 5.5"],
+      ["claude-haiku-4-5", "Haiku 4.5"],
+    ]);
+    expect(adapter.selectedModel).toBe("claude-haiku-5-5");
+    expect(adapter.selectedProvider).toBe("claude-agent");
+    expect(adapter.valueFor("claude-haiku-5-5", "claude-agent")).toBe("claude-agent/haiku");
+    // The same name through one provider stays two models: the agent offers both.
+    expect(
+      select("claude-agent/haiku", [
+        { value: "claude-agent/haiku", name: "claude-agent/Haiku 5.5" },
+        { value: "claude-agent/claude-haiku-5-5", name: "claude-agent/Haiku 5.5" },
+      ]).models,
+    ).toHaveLength(2);
+  });
+
   test("missing and non-select primary options stay safe and visible in overflow", () => {
     expect(acpModelConfig(undefined).models).toEqual([]);
     expect(acpModelConfig(undefined).extra).toEqual([]);

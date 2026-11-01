@@ -182,8 +182,12 @@ shown. Each `plan` update replaces the list, like `todo_write`.
   each model once: choices whose last ID segment matches (ignoring case, `.`
   versus `-` and a `-YYYYMMDD` date) become one row with those providers'
   logos, and the footer's **Provider** selector picks which choice is sent, like
-  the Gateway picker. Provider IDs show as names (`components/models/provider-names.ts`,
-  models.dev names; unknown IDs title-cased). Models list alphabetically by
+  the Gateway picker. Alias IDs join that row when the lab and display name match
+  and no provider repeats (OpenCode's Claude Agent sends `claude-agent/haiku` as
+  `Haiku 5.5`, the same model as `claude-haiku-5.5`); a `(latest)` note is dropped
+  from the shown name. Provider IDs show as names (`components/models/provider-names.ts`,
+  models.dev names; unknown IDs title-cased), and `claude-agent` uses the ACP
+  registry's Claude Agent mark. Models list alphabetically by
   `Lab: Model` and pin like Gateway models: pins are the user's model
   preferences stored as `acp:<agentId>:<model>`, so they are per agent and never
   collide with Gateway slugs (no hidden list or `Manage models`). The footer

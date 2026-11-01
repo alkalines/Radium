@@ -68,11 +68,78 @@ function modelKey(value: string) {
     .replaceAll(".", "-");
 }
 
-/** The name most providers use, preferring the more descriptive one on a tie. */
+/**
+ * The name most providers use, then the more descriptive one. A `(latest)` note (OpenRouter marks
+ * the current version that way) is dropped: the row already is that version.
+ */
 function commonName(names: string[]) {
   const counts = new Map<string, number>();
-  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+  for (const raw of names) {
+    const name = raw.replace(/\s*\(latest\)$/i, "");
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
   return [...counts].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)[0]![0];
+}
+
+/**
+ * A model's display name as a comparable key: `Claude Haiku 5.5` and `Haiku 5.5` both read
+ * `haiku-5-5`, since aliases such as OpenCode's Claude Agent (`claude-agent/haiku`) drop the
+ * Claude brand from the name and carry no version in the ID.
+ */
+function nameKey(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/^claude\s+/, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+type ModelGroup = { variants: ModelVariant[]; names: string[]; choices: SelectOption["choices"] };
+
+/**
+ * Join rows whose IDs differ but whose lab and display name match (an alias ID beside the
+ * versioned one), unless they share a provider: one provider's two choices are always two models.
+ * The merged row keeps the key of the side with more providers (then the longer key), so it stays
+ * the versioned ID that pins refer to.
+ */
+function mergeAliases(groups: Map<string, ModelGroup>, keyByValue: Map<string, string>) {
+  const byName = new Map<string, string>();
+  for (const key of [...groups.keys()]) {
+    const group = groups.get(key)!;
+    const author = group.choices
+      .map((choice) => inferModelAuthor(choice.value, choice.name))
+      .find((candidate) => candidate !== null);
+    if (!author) continue;
+    const names = [...new Set(group.names.map((name) => `${author.slug}:${nameKey(name)}`))];
+    const targetKey = names.map((name) => byName.get(name)).find((found) => found !== undefined);
+    const target = targetKey === undefined ? undefined : groups.get(targetKey);
+    const disjoint =
+      target &&
+      !group.variants.some((variant) =>
+        target.variants.some((other) => other.providerId === variant.providerId),
+      );
+    if (!target || targetKey === undefined || !disjoint) {
+      for (const name of names) if (!byName.has(name)) byName.set(name, key);
+      continue;
+    }
+    const keep =
+      group.variants.length > target.variants.length ||
+      (group.variants.length === target.variants.length && key.length > targetKey.length)
+        ? key
+        : targetKey;
+    const merged: ModelGroup = {
+      variants: [...target.variants, ...group.variants],
+      names: [...target.names, ...group.names],
+      choices: [...target.choices, ...group.choices],
+    };
+    groups.delete(key);
+    groups.delete(targetKey);
+    groups.set(keep, merged);
+    for (const variant of merged.variants) keyByValue.set(variant.value, keep);
+    for (const [name, owner] of byName)
+      if (owner === key || owner === targetKey) byName.set(name, keep);
+    for (const name of names) if (!byName.has(name)) byName.set(name, keep);
+  }
 }
 
 /**
@@ -94,10 +161,7 @@ export function acpModelConfig(config: AcpConfig | undefined) {
   );
   const primary = new Set([model?.id, reasoning?.id, mode?.id]);
 
-  const groups = new Map<
-    string,
-    { variants: ModelVariant[]; names: string[]; choices: SelectOption["choices"] }
-  >();
+  const groups = new Map<string, ModelGroup>();
   const keyByValue = new Map<string, string>();
   for (const choice of model?.choices ?? []) {
     const slash = choice.value.indexOf("/");
@@ -116,6 +180,7 @@ export function acpModelConfig(config: AcpConfig | undefined) {
     groups.set(key, group);
     keyByValue.set(choice.value, key);
   }
+  mergeAliases(groups, keyByValue);
 
   const models = [...groups]
     .map(([key, group]): ModelOption => {
