@@ -354,6 +354,32 @@ retention before introducing output tables. Real execution capabilities depend
 on the isolation contract; packaging depends on task 09. No dependency adoption
 or remote deployment is authorized by this plan.
 
+### ACP Transport Slice (2026-11-01)
+
+Implemented the [ACP transport](../ACP/Transport.md): Convex tables `acp_sessions`,
+`acp_streams`, `acp_commands`, `acp_interactions`, `chat_frames`, `chat_viewers`,
+`worker_agents` and `aisdk_chats.agent`; machine and browser functions in
+`packages/backend/src/acp/`; the Worker host (`packages/worker/src/acp/`) with
+`@agentclientprotocol/sdk` 2.2.0, local `agents.json`, a scripted SDK test agent and
+the `agents` CLI probe. Text batching uses 300 ms rather than the 500 ms candidate.
+
+Verification: backend suite 49 files / 368 tests; Worker unit suite 15 files / 105
+tests (44 ACP, including the real test-agent subprocess); Worker typecheck clean
+except the pre-existing `src/limits/capture.ts` `fetch.preconnect` errors under Bun
+types. Deployment-backed: with `bun dev` pushing to the dev deployment, the real
+enrolled Worker and the test agent exercised agent report, session creation, warm
+snapshot, a full turn with frames and lifecycle mirroring, permission and form
+elicitation round trips (invalid and second answers rejected), busy rejection,
+Stop of a running turn, history page, config change, Worker restart with
+`session/load` into a new epoch, cron cooling (frames deleted), `session/list`
+import, duplicate-import rejection and chat deletion with `close`/`delete`.
+Not measured: the load profile, long Convex outages, agent crashes against the
+deployment (covered by unit tests only).
+
+Open: the Chatroom UI (`useAcpSession`, picker entries, Composer controls), Settings
+agent management and registry install, terminal-auth `agent login`, Gateway profiles,
+MCP pass-through, prompt attachments and the title-generator fallback.
+
 ## Acceptance
 
 - The design covers offline workers, duplicate dispatch, crash/restart, cancellation, unauthorized jobs, and output backpressure.

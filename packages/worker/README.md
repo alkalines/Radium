@@ -1,9 +1,6 @@
 # Radium Worker
 
-The Worker package implements local machine identity setup, a narrowly scoped
-authenticated Convex subscription, and an edit-task consumer that lazily loads its
-native file-editing service for valid requests. It does not expose an agent protocol
-or receive deployment/admin credentials.
+The Worker package implements local machine identity setup, authenticated outbound Convex subscriptions, local file/Bash execution, and an ACP stdio agent host. It opens no inbound listener and never receives deployment/admin credentials.
 
 ## Setup and run
 
@@ -35,8 +32,9 @@ Run `bun run --cwd packages/worker cli` for an interactive command menu, or
 | Command                   | Purpose                                                                                                         |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `setup` / `add-token`     | Enroll with a one-time setup code; refuses to overwrite an identity.                                            |
-| `start`                   | Run the authenticated outbound Convex control subscription and consume assigned file/Bash tasks.                |
+| `start`                   | Run authenticated Convex control, consume file/Bash tasks, and host configured ACP agents.                     |
 | `status`                  | Inspect local enrollment state and identifiers; no network access.                                              |
+| `agents`                  | Probe local `agents.json` definitions and print capabilities/auth methods; no enrollment or network required.  |
 | `refresh`                 | Recover pending identity if needed, then verify a fresh backend token exchange. Prints expiry, never the token. |
 | `forget` / `forget-token` | Remove local identity and credentials. Does not revoke the backend record.                                      |
 
@@ -110,6 +108,34 @@ The setup code's `backendUrl` and `convexUrl` are treated as explicit origins an
 are never rewritten. HTTP redirects are rejected, request timeouts are bounded,
 and response bodies are size-limited. Setup codes, proofs, machine JWTs, private
 keys, and response bodies are not logged.
+
+## ACP agents
+
+Configure local executables in `<state-dir>/agents.json`. Missing configuration means no ACP agents. Chat commands select only a configured ID and directory; they cannot choose executables, arguments or environment.
+
+```json
+{
+  "agents": [
+    {
+      "id": "scripted",
+      "name": "Scripted ACP agent",
+      "command": "bun",
+      "args": ["/absolute/path/to/packages/worker/src/acp/test-agent.ts", "--store", "/absolute/path/to/sessions.json"],
+      "env": {}
+    }
+  ]
+}
+```
+
+Run `bun src/cli.ts agents --state-dir /path/to/state` from this package to probe definitions locally. Each probe initializes the actual executable, prints its name/version, capabilities and advertised authentication methods, then stops it. `start` reports that catalog through machine-authorized Convex mutations and launches one process per agent lazily when needed. Processes stop after 15 idle minutes; active turns and approval/question waits prevent idle stop.
+
+Agents run with the Worker's OS permissions: their session directory is not a sandbox. Child environment inherits the local user's agent credentials but excludes `RADIUM_*` and `CONVEX_*`. Configuration rejects executable lookup, loader, proxy and TLS-trust overrides (`PATH`, `LD_*`, `DYLD_*`, Node/Bun options, proxy variables, and related runtime variables). Agent stdout belongs exclusively to ACP JSON-RPC; stderr stays in a bounded 64 KiB local diagnostic ring and is never sent to Convex.
+
+Convex owns authorization, commands, durable interaction answers and session metadata. The Worker claims commands before execution, retries lifecycle delivery without repeating agent work, normalizes agent notifications, and relays bounded frames only while a session is warm. Cold turns retain content locally; opening a session loads/replays or resumes the agent's own history. A Worker restart fails previously claimed work rather than resending prompts. Agent crashes fail active turns with `Agent process exited`; the next command starts the agent lazily with backoff.
+
+Stable ACP v1 session/config/mode/list/load/resume/close/delete, permission and form/URL elicitation are supported; fork uses the SDK unstable method only when advertised. Filesystem/terminal client capabilities are disabled, MCP servers are empty, and prompts carry text/resource links only. Registry installation, Gateway profiles, browser UI and attachments are outside this transport slice.
+
+The real SDK fixture is available as `bun run test-agent --store /tmp/acp-sessions.json` (or `bun src/acp/test-agent.ts`). Prompt keywords exercise `permission`, `question`, `link`, `slow`, `refuse`, `crash`, and `auth`; the default script emits messages, thoughts, a tool, a plan, usage and a title. Add `--require-auth` to require the `scripted` authentication method before `session/new`. The optional store persists sessions and authentication for replay after process/host restart.
 
 ## Edit Tasks
 

@@ -1,6 +1,6 @@
 # ACP In Chatroom
 
-Status: **proposed.** Overview: [ACP Agents](../ACP.md).
+Status: **proposed UI on an implemented backend.** Overview: [ACP Agents](../ACP.md). The data sources below exist (`acp.GetSession`, `acp.OpenInteractions`, `acp.Answer`, `chatroom.Watch`, `chatroom.LiveFrames`, timeline op types in `packages/backend/src/acp/contract.ts`) and lifecycle notifications are sent; `useAcpSession` and the components are not built yet.
 
 An ACP Session uses the same Session screen, Trace Steps, Approval prompt,
 Question prompt, Todo panel and Run state as the built-in agent. Only the data

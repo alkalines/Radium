@@ -84,8 +84,11 @@ commands, approvals, batched output and results through Convex. Worker and Chatr
 connect outbound to Convex; Worker adapts a local stdio ACP agent. Local batching,
 bounded output chunks, separate control/output subscriptions and retention limit
 database load. Machine JWT authentication and identity-management wrappers are now
-implemented; file and foreground Bash request/result paths are implemented locally. ACP,
-streaming/batched output and approval transport remain planned.
+implemented; file and foreground Bash request/result paths are implemented locally.
+The ACP host and relay are implemented: the Worker launches agents from its local
+`agents.json`, speaks stdio ACP through `@agentclientprotocol/sdk`, and relays
+commands, permission/elicitation decisions, lifecycle and viewer-gated frames
+through Convex (`packages/worker/src/acp/`, `packages/backend/src/acp/`).
 
 The [ACP agents design](ACP.md) details the Worker as ACP client: agent
 install and launch, viewer-gated frames, commands and durable permission

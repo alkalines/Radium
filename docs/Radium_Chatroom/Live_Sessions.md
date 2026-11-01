@@ -156,7 +156,9 @@ frames.
 
 ## Shared Live Layer
 
-Built-in and ACP Sessions use the same two tables and functions:
+Built-in and ACP Sessions use the same two tables and functions. The ACP side is
+implemented (`chat_frames.format` is `"acp"` only and `chatroom.Watch` ignores
+built-in chats until this design adds the `"ui"` producer):
 
 | Piece | Built-in agent | ACP agent |
 | --- | --- | --- |

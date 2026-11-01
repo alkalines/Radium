@@ -1,6 +1,8 @@
 # ACP Agents On The Worker
 
-Status: **proposed.** Overview: [ACP Agents](../ACP.md).
+Status: **local agents implemented; registry install, Settings-defined agents, terminal login and Gateway mode open.** Overview: [ACP Agents](../ACP.md).
+
+Today an agent is defined in the Worker's local `<state-dir>/agents.json` (`id`, `name`, `command`, `args`, `env`; format and examples in [`packages/worker/README.md`](../../packages/worker/README.md#acp-agents)). On every connect the Worker probes each definition (spawn, `initialize`, stop) and replaces its `worker_agents` rows through `acp.reportAgents`; `bun src/cli.ts agents` runs the same probe locally without a network. Agents run as `source: "custom"` with the `native` profile; statuses are `ready`, `needs_auth`, `unavailable` (command not found) and `failed`. Process model, environment filtering, stderr handling and client capabilities below are implemented as described, with the idle window at 15 minutes.
 
 An ACP agent is a program on the Worker's machine. The Worker installs or finds
 it, launches it, speaks stdio ACP to it, and advertises it to Convex so the Run

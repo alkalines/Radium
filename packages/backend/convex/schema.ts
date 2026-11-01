@@ -45,8 +45,127 @@ import {
   sessionNotificationKindValidator,
 } from "../src/notifications/contract";
 import { chatInterruptionValidator } from "../src/chatroom/interruption";
+import {
+  acpChatAgentValidator,
+  acpSessionStatusValidator,
+  acpStopReasonValidator,
+  acpConfigValidator,
+  acpCommandInfoValidator,
+  acpUsageValidator,
+  acpHistoryValidator,
+  acpDraftConfigValidator,
+  acpCommandPayloadValidator,
+  acpCommandKindValidator,
+  acpCommandStatusValidator,
+  acpInteractionRequestValidator,
+  acpInteractionStatusValidator,
+  acpInteractionAnswerValidator,
+  acpFrameKindValidator,
+  acpAgentReportValidator,
+} from "../src/acp/contract";
 
 export default defineSchema({
+  /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
+  acp_sessions: defineTable({
+    chat: v.id("aisdk_chats"),
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    agentId: v.string(),
+    cwd: v.string(),
+    sessionId: v.optional(v.string()),
+    status: acpSessionStatusValidator,
+    epoch: v.number(),
+    warm: v.boolean(),
+    warmSince: v.optional(v.number()),
+    stopReason: v.optional(acpStopReasonValidator),
+    error: v.optional(v.string()),
+    config: v.optional(acpConfigValidator),
+    commands: v.optional(v.array(acpCommandInfoValidator)),
+    usage: v.optional(acpUsageValidator),
+    history: v.optional(acpHistoryValidator),
+    draft: v.optional(acpDraftConfigValidator),
+    turnBy: v.optional(v.string()),
+    userTitled: v.optional(v.boolean()),
+    updatedAt: v.number(),
+  })
+    .index("by_chat", ["chat"])
+    .index("by_worker_and_warm", ["workspace", "worker", "warm"])
+    .index("by_worker_and_status", ["workspace", "worker", "status"])
+    .index("by_warm", ["warm"])
+    .index("by_worker_and_sessionId", ["workspace", "worker", "sessionId"]),
+  /** Append counters are separate so streaming never invalidates lifecycle subscriptions. */
+  acp_streams: defineTable({
+    chat: v.id("aisdk_chats"),
+    epoch: v.number(),
+    nextSeq: v.number(),
+    bytes: v.number(),
+  }).index("by_chat_and_epoch", ["chat", "epoch"]),
+  /** Command payloads exist only until the assigned Worker claims them. */
+  acp_commands: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    chat: v.optional(v.id("aisdk_chats")),
+    kind: acpCommandKindValidator,
+    payload: v.optional(acpCommandPayloadValidator),
+    clientId: v.string(),
+    by: v.string(),
+    status: acpCommandStatusValidator,
+    error: v.optional(v.string()),
+    result: v.optional(v.string()),
+    claimedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
+  })
+    .index("by_worker_and_status", ["workspace", "worker", "status"])
+    .index("by_worker_and_clientId", ["workspace", "worker", "clientId"])
+    .index("by_chat_and_status", ["chat", "status"])
+    .index("by_status_and_finishedAt", ["status", "finishedAt"])
+    .index("by_status", ["status"]),
+  /** Durable decisions are relayed once, then retained briefly for retries. */
+  acp_interactions: defineTable({
+    chat: v.id("aisdk_chats"),
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    requestKey: v.string(),
+    kind: v.union(v.literal("permission"), v.literal("elicitation")),
+    request: acpInteractionRequestValidator,
+    status: acpInteractionStatusValidator,
+    answer: v.optional(acpInteractionAnswerValidator),
+    answeredBy: v.optional(v.string()),
+    answeredAt: v.optional(v.number()),
+    resolvedAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_chat_and_status", ["chat", "status"])
+    .index("by_chat_and_requestKey", ["chat", "requestKey"])
+    .index("by_worker_and_status", ["workspace", "worker", "status"])
+    .index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
+  /** Viewer-gated normalized output; no ACP content is saved in chat_messages. */
+  chat_frames: defineTable({
+    chat: v.id("aisdk_chats"),
+    stream: v.string(),
+    seqFrom: v.number(),
+    seqTo: v.number(),
+    format: v.literal("acp"),
+    kind: acpFrameKindValidator,
+    payload: v.string(),
+  })
+    .index("by_chat_and_stream_and_seqFrom", ["chat", "stream", "seqFrom"])
+    .index("by_chat", ["chat"]),
+  chat_viewers: defineTable({
+    chat: v.id("aisdk_chats"),
+    tab: v.string(),
+    user: v.string(),
+    lastSeenAt: v.number(),
+  })
+    .index("by_chat_and_tab", ["chat", "tab"])
+    .index("by_chat_and_lastSeenAt", ["chat", "lastSeenAt"]),
+  /** Worker-owned agent availability; presence is deliberately not part of session reads. */
+  worker_agents: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    ...acpAgentReportValidator.fields,
+    checkedAt: v.number(),
+  }).index("by_worker_and_agentId", ["workspace", "worker", "agentId"]),
   /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
   worker_tasks: defineTable(workerTaskFields)
     .index("by_worker_request", ["workspace", "workerId", "requestId"])
@@ -622,6 +741,7 @@ export default defineSchema({
     balance: v.optional(v.id("balances")),
     workspace: v.optional(v.id("workspaces")),
     scope: v.optional(v.union(v.literal("personal"), v.literal("workspace"))),
+    agent: v.optional(acpChatAgentValidator),
     /**
      * Deprecated embedded history. Messages live in `chat_messages`; `migrations.chatMessagesToTable`
      * moves legacy histories out and every save clears this field. Narrow once that backfill is

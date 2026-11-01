@@ -1,6 +1,6 @@
 # ACP Sessions
 
-Status: **proposed.** Overview: [ACP Agents](../ACP.md).
+Status: **backend and Worker implemented; Chatroom UI open.** Overview: [ACP Agents](../ACP.md). Sessions are created with `acp.CreateSession` (owner only); the binding validator is `acpChatAgentValidator` in `packages/backend/src/acp/contract.ts`.
 
 A Radium Session (`aisdk_chats` row) with an ACP agent is bound to exactly one
 ACP session on one Worker. Radium keeps the binding and a small status record;
@@ -8,14 +8,14 @@ the conversation lives in the agent.
 
 ## Binding
 
-`aisdk_chats.agent` (proposed, optional; absent means the built-in agent):
+`aisdk_chats.agent` (optional; absent means the built-in agent):
 
 ```ts
 type ChatAgent = {
   kind: "acp";
   worker: string;        // Worker identity ID, same workspace as the chat
   agentId: string;       // registry id or custom id, e.g. "claude-acp"
-  profile: "native" | "gateway"; // launch profile (Agents.md#gateway-mode)
+  profile: "native";     // launch profile; "gateway" arrives with Gateway mode (Agents.md#gateway-mode)
   agentVersion: string;  // version that created the session
   cwd: string;           // absolute directory on the Worker (Project folder or explicit)
   sessionId?: string;    // ACP session ID, set by the Worker after session/new
@@ -24,18 +24,21 @@ type ChatAgent = {
 
 Invariants, enforced server-side:
 
-- `agent` is set only by `CreateChat` (or import) and no mutation changes
-  `kind`, `worker`, `agentId`, `profile` or `cwd` afterwards. `sessionId` is
-  written once, by the bound Worker.
+- `agent` is set only by `acp.CreateSession` (including import) or `acp.Fork`, and
+  no mutation changes `kind`, `worker`, `agentId`, `profile` or `cwd` afterwards.
+  `sessionId` is written once, by the bound Worker (`ACP_SESSION_BOUND` otherwise),
+  unless an import set it at creation.
 - `SetChatWorker` rejects ACP chats; Worker tool selections (`aisdk_chats.worker`,
   `tools`) do not apply to them. The built-in agent's Worker tools stay editable
   as today.
 - Forking an ACP chat produces an ACP chat with the same `worker`, `agentId` and
   `cwd`. A built-in chat cannot fork into an ACP chat and vice versa.
-- `POST /api/aisdk/chat` rejects ACP chats; ACP turns go only through
+- `POST /api/aisdk/chat` rejects ACP chats with 409; ACP turns go only through
   `acp_commands` ([Transport](Transport.md)).
+- Rename, pin and delete follow ACP visibility: anyone who can see the chat may
+  act ([Who Can Use It](../ACP.md#who-can-use-it)).
 
-### `acp_sessions` (proposed)
+### `acp_sessions`
 
 One row per ACP chat, kept apart from `aisdk_chats` so frequent changes (config,
 usage, pending interactions) do not invalidate the Home `ListChats`
@@ -44,7 +47,7 @@ subscription. Only turn boundaries touch `aisdk_chats` (`activeStream`,
 
 | Field | Meaning |
 | --- | --- |
-| `chat`, `worker` | Owning chat and its bound Worker (indexed for the Worker's subscription) |
+| `chat`, `worker`, `agentId`, `cwd`, `sessionId` | Owning chat, its bound Worker (indexed for the Worker's subscriptions) and a copy of the binding fields the Worker needs |
 | `status` | `starting`, `idle`, `running`, `awaiting`, `failed`, `ended` |
 | `epoch` | Stream epoch; bumped on each snapshot so stale frames are ignored |
 | `stopReason` | Last `session/prompt` stop reason |
@@ -53,8 +56,11 @@ subscription. Only turn boundaries touch `aisdk_chats` (`activeStream`,
 | `usage` | Latest `usage_update`: context `used`/`size`, optional cumulative `cost` |
 | `warm` | Whether content is currently held in Convex ([Transport](Transport.md#warm-and-cold-sessions)); flips only on transitions |
 | `history` | `full` (load), `resumed` (resume, no replay) or `none` |
+| `draft` | Config and mode chosen before the ACP session exists, applied after `session/new` |
+| `turnBy`, `userTitled` | Who sent the running prompt (notifications); whether a user renamed the chat |
 
-None of these fields contain conversation content.
+None of these fields contain conversation content. `acp.GetSession` returns them
+with the agent's name and capabilities.
 
 ## Creating A Session
 
@@ -92,9 +98,11 @@ sequenceDiagram
     W->>CX: status=idle, stopReason, activeStream=false,<br/>notify session finished
 ```
 
-Only one prompt is in flight per session. While `running` or `awaiting`, the
-Composer offers Stop; queued sends are not supported because agents differ in
-how they handle a second `session/prompt`.
+Only one prompt is in flight per session. `acp.Prompt` is accepted only while
+the session is `idle` or `failed`; it sets `starting` until the Worker sends the
+prompt, so `starting` means "admitted, not yet running" for every prompt. While
+`starting`, `running` or `awaiting`, the Composer offers Stop; queued sends are
+not supported because agents differ in how they handle a second `session/prompt`.
 
 ## Status
 
@@ -173,11 +181,14 @@ flowchart TD
 ## Title
 
 The agent's `session_info_update.title` wins whenever present, including later
-updates. Until then Radium uses its existing title generator over the first
-prompt text; the prompt passes through the title model once and is not stored.
-A user rename sets the Radium title and stops agent titles from overwriting it.
+updates (`updateSession` writes it to `aisdk_chats.title`). A user rename sets the
+Radium title and stops agent titles from overwriting it (`acp_sessions.userTitled`).
+Radium's own title generator over the first prompt is not wired for ACP Sessions
+yet: it needs the prompt text without storing it, which the Chatroom slice adds.
 
 ## MCP Servers
+
+Status: **not implemented**; the Worker passes `mcpServers: []`.
 
 ACP sets a session's MCP servers in `session/new`, `session/load` and
 `session/resume` (`mcpServers`). Radium passes the workspace's HTTP MCP servers
@@ -208,13 +219,15 @@ Sessions created outside Radium (Zed, the agent's own CLI) are not listed
 automatically. New session → Run target → **Open existing** runs `session/list`
 on demand:
 
-1. The owner picks Worker, agent and directory; the browser sends a `list`
-   command with `cwd` set to that directory.
+1. The owner picks Worker, agent and directory; the browser calls
+   `acp.ListAgentSessions` (a `list` command with `cwd` set to that directory).
 2. The Worker calls `session/list` and returns one page (`sessionId`, `title`,
-   `updatedAt`) as a transient reply. The opaque `nextCursor` stays inside that
-   reply and browser memory only; ACP forbids persisting cursors.
-3. Choosing one creates a chat with `agent.sessionId` set and no `session/new`;
-   the reopen flow above loads it.
+   `updatedAt`) in the command's transient `result`, read through
+   `acp.GetCommand` by the owner only and pruned five minutes later. The opaque
+   `nextCursor` stays inside that result and browser memory only; ACP forbids
+   persisting cursors.
+3. Choosing one calls `acp.CreateSession` with that `sessionId` (no
+   `session/new`); the reopen flow above loads it.
 
 Requires `sessionCapabilities.list`. Without it the action is hidden.
 
@@ -227,17 +240,14 @@ Forking from an older turn is not offered: ACP has no "fork at message".
 
 ## Delete
 
-Deleting an ACP chat is two steps:
-
-1. The normal delete confirmation removes the Radium rows (`aisdk_chats`,
-   `acp_sessions`, pending commands, frames, interactions) and queues a `close`
-   command for the Worker carrying the binding (`worker`, `agentId`, `profile`,
-   `sessionId`).
-2. When the agent advertises `sessionCapabilities.delete`, a second
-   confirmation follows: **Also delete this session in Claude Agent?** (the agent's name). It explains
-   that the conversation disappears from the agent and from other clients such as
-   Zed. Confirming queues a `delete` command; dismissing leaves the session in
-   the agent.
+The Chatroom asks both questions before deleting: the normal delete
+confirmation, then, when the agent advertises `sessionCapabilities.delete`,
+**Also delete this session in Claude Agent?** (the agent's name), explaining that
+the conversation disappears from the agent and from other clients such as Zed.
+`DeleteChat({chatId, deleteInAgent})` then removes the Radium rows
+(`aisdk_chats`, and through `acp.cleanupChat` `acp_sessions`, pending commands,
+frames, viewers, interactions) and queues a `delete` command when confirmed, a
+`close` command otherwise, carrying the binding (`agentId`, `cwd`, `sessionId`).
 
 Both commands outlive the chat and expire after seven days if the Worker never
 comes back.

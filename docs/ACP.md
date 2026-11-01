@@ -1,6 +1,6 @@
 # ACP Agents
 
-Status: **proposed design, not implemented.** Snapshot of the protocol: 2026-10-31.
+Status: **transport implemented, Chatroom UI not yet.** Snapshot of the protocol: 2026-10-31. The Worker hosts ACP agents with `@agentclientprotocol/sdk` and relays them through Convex (M0, M1 and the interaction transport of M3 below); the Session screen, Run target picker entries and Settings → Workers agent management are still to build. Code: `packages/backend/src/acp/` (contract, Convex functions) and `packages/worker/src/acp/` (Worker host).
 
 ACP ([Agent Client Protocol](https://agentclientprotocol.com)) lets an editor or
 other client drive an independent agent harness (Claude Agent, Codex, Gemini CLI,
@@ -176,14 +176,14 @@ owner-only.
 
 ## Rollout
 
-| Milestone | Scope |
-| --- | --- |
-| M0 Worker host | ACP client in Worker with `@agentclientprotocol/sdk`, a scripted test agent, manual agent config, `worker_agents` advertisement |
-| M1 Relay | `acp_sessions`, `acp_commands`, `chat_frames` and `chat_viewers` (shared with [Live Sessions](Radium_Chatroom/Live_Sessions.md)), warm/cold cron, snapshots, history pages |
-| M2 Chatroom | Agent picker in the Run target picker, `aisdk_chats.agent`, ACP Session screen on shared renderers, Stop, run state, notifications |
-| M3 Interactions | Permissions, elicitation, plan → Todo panel, config options and modes in the Composer, slash commands, attachments |
-| M4 Agents | Registry and custom agents from Settings, auth states, Gateway mode, MCP pass-through, import from `session/list`, fork (unstable) |
-| M5 Protocol | ACP v2 adapter behind a per-agent flag once agents ship it |
+| Milestone | Scope | State |
+| --- | --- | --- |
+| M0 Worker host | ACP client in Worker with `@agentclientprotocol/sdk`, a scripted test agent, manual agent config, `worker_agents` advertisement | Implemented (`agents.json` in the Worker state directory) |
+| M1 Relay | `acp_sessions`, `acp_commands`, `chat_frames` and `chat_viewers` (shared with [Live Sessions](Radium_Chatroom/Live_Sessions.md)), warm/cold cron, snapshots, history pages | Implemented, verified against the dev deployment |
+| M2 Chatroom | Agent picker in the Run target picker, `aisdk_chats.agent`, ACP Session screen on shared renderers, Stop, run state, notifications | Backend done (`acp.CreateSession`, `aisdk_chats.agent`, Stop, lifecycle notifications); UI open |
+| M3 Interactions | Permissions, elicitation, plan → Todo panel, config options and modes in the Composer, slash commands, attachments | Transport done (permissions, form/URL elicitation, config, modes, commands); UI and attachments open |
+| M4 Agents | Registry and custom agents from Settings, auth states, Gateway mode, MCP pass-through, import from `session/list`, fork (unstable) | Transport done for auth, `list`, fork, close/delete; registry install, Settings agents, Gateway mode, MCP pass-through and terminal login open |
+| M5 Protocol | ACP v2 adapter behind a per-agent flag once agents ship it | Open |
 
 ## Decisions
 
@@ -198,7 +198,7 @@ Settled on 2026-10-31:
 | Gateway | One Gateway key per Worker, saved locally by the Worker; per-agent Gateway profiles; the agent's own models always available; owner can disable it; deleted keys fail closed and can be reissued ([Agents](ACP/Agents.md#gateway-mode)) |
 | Gateway telemetry | ACP model calls through the Gateway are captured like any other request; each Gateway key gets a telemetry switch, set automatically from the Worker's settings for Worker keys ([Agents](ACP/Agents.md#telemetry)) |
 | Workspace MCP servers | Passed to ACP agents by default, with a per-server switch and a per-Session menu ([Sessions](ACP/Sessions.md#mcp-servers)) |
-| Deleting a chat | Deletes the Radium chat, then asks separately whether to delete the session in the agent too ([Sessions](ACP/Sessions.md#delete)) |
+| Deleting a chat | Deletes the Radium chat; the Chatroom asks beforehand whether to delete the session in the agent too, and `DeleteChat({deleteInAgent})` queues `delete` or `close` ([Sessions](ACP/Sessions.md#delete)) |
 | Title | The agent's title when it sends one, else Radium's title generator |
 
 No design decisions are open.

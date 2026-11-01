@@ -1,9 +1,10 @@
 # Worker Transport Through Convex
 
-Decision date: **2026-10-02**. Status: **selected design; machine authentication and
-identity subscription and edit-only request/result transport implemented locally**;
-ACP, approvals and streaming output transport remain planned. Deployed transport
-verification remains open.
+Decision date: **2026-10-02**. Status: **selected design; machine authentication,
+identity subscription, edit/Bash request/result transport and the ACP relay
+([ACP transport](../ACP/Transport.md)) implemented**. The ACP relay was exercised
+against the dev deployment with the real Worker and the scripted test agent;
+approvals for built-in Worker tools remain as described in [Tasks](Tasks.md).
 This supersedes the Worker-hosted WSS/Tailscale transport recommendation in
 [connectivity research](Connectivity.md). Worker and Chatroom both connect
 outbound through Convex clients; commands, approvals, output and results pass
@@ -50,7 +51,9 @@ The owner-authorized, backend-only dispatch caller supplies the absolute
 `request.directory` on the target Worker; the Worker canonicalizes it and lazily
 loads the native editor for a valid request. No directory CLI option or local
 allowlist selects the execution folder. This path does not adapt an ACP agent.
-Batched output, ACP execution and interactive Chatroom integration remain planned. App-owned
+ACP execution, batched ACP output and its Convex functions are described in
+[ACP transport](../ACP/Transport.md); its runtime-neutral contract lives in
+`packages/backend/src/acp/contract.ts`. App-owned
 queries/mutations authorize callers before accessing the component; clients do
 not call component functions directly. Runtime-neutral wire contracts belong in
 `packages/backend/src/worker/` when introduced. Current Chatroom entry points

@@ -1,3 +1,4 @@
+export { Watch, LiveFrames } from "../src/acp/live";
 import { v } from "convex/values";
 import { WEB_SEARCH_TOOL_ID } from "@/chatroom/tools";
 import {

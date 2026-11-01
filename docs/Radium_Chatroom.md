@@ -183,9 +183,10 @@ require prepaid credits and do not debit a Radium balance.
   admission against overlapping turns, and reload resume are proposed in
   [Live sessions](Radium_Chatroom/Live_Sessions.md). Today only the sending
   Tab sees a reply stream; others see it when the turn is saved.
-- ACP agents as a Session's Agent are proposed in [ACP agents](ACP.md): the
+- ACP agents as a Session's Agent are described in [ACP agents](ACP.md): the
   harness runs on a Worker, owns the conversation, and Radium stores only
-  metadata and relays content transiently.
+  metadata and relays content transiently. The Worker host and Convex transport
+  are implemented; the Session screen, picker entries and controls are not.
 - Worker identity, enrollment/recovery, machine authentication, task coordination,
   owner-dispatched file tasks, composer configuration, model file tools, signed
   write approvals, and durable stage receipts are implemented locally. Deployed

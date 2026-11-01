@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   internalMutation,
   internalQuery,
@@ -30,6 +30,8 @@ import {
 import { requireWorkspaceProject } from "../src/projects/projects";
 import { storedSelection, toolSelectionValidator } from "../src/chatroom/tool-selection";
 import { chatInterruptionValidator } from "../src/chatroom/interruption";
+import { findSession, requireChatActor } from "../src/acp/policy";
+import { queueChatDeletion } from "../src/acp/retention";
 
 const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
 const LIST_LIMIT = 30;
@@ -205,6 +207,7 @@ export const GetChat = query({
       interruption: chat.interruption ?? null,
       messages_queue: chat.messages_queue,
       worker: chat.worker,
+      agent: chat.agent,
       project: chat.project ?? null,
     };
   },
@@ -239,6 +242,7 @@ export const SetChatWorker = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const { chat, workspace, userId } = await requireChatManager(ctx, args.chatId);
+    if (chat.agent) throw new ConvexError({ code: "ACP_IMMUTABLE_BINDING" });
 
     if (!args.selection) {
       if (workspace.ownerId !== userId) {
@@ -322,7 +326,7 @@ export const RenameChat = mutation({
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
-    await requireChatManager(ctx, args.chatId);
+    await requireChatActor(ctx, args.chatId);
 
     const title = args.title
       .replace(/[\r\n]+/g, " ")
@@ -332,6 +336,8 @@ export const RenameChat = mutation({
     if (!title) return "Title is required.";
 
     await ctx.db.patch("aisdk_chats", args.chatId, { title });
+    const session = await findSession(ctx, args.chatId);
+    if (session) await ctx.db.patch(session._id, { userTitled: true });
     return null;
   },
 });
@@ -345,7 +351,7 @@ export const SetChatPinned = mutation({
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
-    await requireChatManager(ctx, args.chatId);
+    await requireChatActor(ctx, args.chatId);
 
     await ctx.db.patch("aisdk_chats", args.chatId, {
       pinnedAt: args.pinned ? Date.now() : undefined,
@@ -378,12 +384,13 @@ export const RegenerateChatTitle = mutation({
 });
 
 export const DeleteChat = mutation({
-  args: { chatId: v.id("aisdk_chats") },
+  args: { chatId: v.id("aisdk_chats"), deleteInAgent: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
-    await requireChatManager(ctx, args.chatId);
+    const access = await requireChatActor(ctx, args.chatId);
+    await queueChatDeletion(ctx, access.chat, identity._id, args.deleteInAgent);
 
     await ctx.db.delete("aisdk_chats", args.chatId);
     await ctx.scheduler.runAfter(0, internal.worker_tasks.cleanupChatCalls, {

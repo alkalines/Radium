@@ -2,7 +2,7 @@ import { defaultStateDirectory } from "../auth/state.js";
 import { WorkerProtocolError } from "../protocol.js";
 
 /** Commands supported by the Worker command-line interface. */
-export type Command = "setup" | "start" | "status" | "refresh" | "forget";
+export type Command = "setup" | "start" | "status" | "refresh" | "forget" | "agents";
 
 /** Parsed command options; setup credentials are deliberately absent. */
 export interface CliOptions {
@@ -17,6 +17,7 @@ export const HELP = `Radium Worker
   add-token    Alias for setup (the one-time code is never saved)
   start        Run the authenticated outbound Convex control subscription
   status       Show local enrollment metadata, without making network requests
+  agents       Probe configured ACP agents locally, without network access
   refresh      Recover pending enrollment and verify a fresh access-token exchange
   forget       Delete this machine's saved identity (does not revoke it remotely)
   forget-token Alias for forget
@@ -36,7 +37,7 @@ Run without a command in a terminal to open the interactive menu.`;
 export function normalizeCommand(command: string): Command {
   if (command === "add-token") return "setup";
   if (command === "forget-token") return "forget";
-  if (["setup", "start", "status", "refresh", "forget"].includes(command)) {
+  if (["setup", "start", "status", "refresh", "forget", "agents"].includes(command)) {
     return command as Command;
   }
 
