@@ -591,7 +591,8 @@ export default defineSchema({
    * A user prompt a running Code Mode program waits on: an approval for an inner Worker call or an
    * inner `question`. The chat action inserts it, the requesting user answers it through
    * `api.code_mode.answerInteraction`, and the action deletes it once it reads the answer or stops
-   * waiting. Rows are short-lived and hold no tool input.
+   * waiting. Rows an action left behind (it crashed or was killed) are pruned by cron after
+   * `expiresAt`. Rows are short-lived and hold no tool input.
    */
   codemode_interactions: defineTable({
     chatId: v.id("aisdk_chats"),
@@ -599,7 +600,9 @@ export default defineSchema({
     userId: v.string(),
     kind: v.union(v.literal("approval"), v.literal("question")),
     response: v.optional(codeModeInteractionResponseValidator),
-  }),
+    /** Answer deadline plus a grace period; past it the row is only garbage. */
+    expiresAt: v.number(),
+  }).index("by_expiresAt", ["expiresAt"]),
   /**
    * Legacy per-user Chatroom defaults retained for migration and fallback reads.
    * New configuration writes belong to workspace_settings.

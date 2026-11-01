@@ -4,4 +4,5 @@ export {
   closeInteraction,
   interactionResponse,
   openInteraction,
+  pruneExpiredInteractions,
 } from "../src/chatroom/code-mode-interactions";

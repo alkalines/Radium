@@ -23,7 +23,8 @@ const ZOOM_STEPS = [0.5, 0.67, 0.8, 1, 1.25, 1.5, 2];
 /**
  * A Mermaid diagram rendered with Streamdown's Mermaid plugin (strict security level). Unlike a
  * Markdown fence it keeps the diagram's natural size inside a scrollable frame, with zoom,
- * fullscreen, copy-source, and SVG download controls. The theme follows light/dark mode.
+ * fullscreen, copy-source, and SVG download controls. The theme follows light/dark mode. Source
+ * that fails to render shows as text with the error and the copy-source control.
  *
  * `onNodeClick` receives the flowchart node ID of a clicked node; clicks are read from the
  * rendered SVG, so Mermaid never needs script or callback directives.
@@ -97,10 +98,32 @@ export function MermaidDiagram({
     }
   };
 
+  const copySourceButton = (
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      aria-label="Copy Mermaid source"
+      onClick={() =>
+        void navigator.clipboard.writeText(chart).then(
+          () => toast.success("Diagram source copied"),
+          () => toast.error("Could not copy the diagram source"),
+        )
+      }
+    >
+      <CopyIcon />
+    </Button>
+  );
+
+  // Invalid syntax keeps the source readable and copyable, so the diagram can still be fixed.
   if (rendered.error) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border p-3 text-sm text-muted-foreground">
-        <TriangleAlertIcon className="size-4" /> The diagram could not be drawn: {rendered.error}
+      <div className="overflow-hidden rounded-lg border bg-background">
+        <div className="flex items-center gap-2 border-b py-1 pr-2 pl-3 text-sm text-muted-foreground">
+          <TriangleAlertIcon className="size-4 shrink-0" />
+          <span className="min-w-0 flex-1">The diagram could not be drawn: {rendered.error}</span>
+          {copySourceButton}
+        </div>
+        <pre className="max-h-[min(70vh,36rem)] overflow-auto p-3 font-mono text-xs">{chart}</pre>
       </div>
     );
   }
@@ -146,19 +169,7 @@ export function MermaidDiagram({
           <PlusIcon />
         </Button>
         <span className="ml-auto" />
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label="Copy Mermaid source"
-          onClick={() =>
-            void navigator.clipboard.writeText(chart).then(
-              () => toast.success("Diagram source copied"),
-              () => toast.error("Could not copy the diagram source"),
-            )
-          }
-        >
-          <CopyIcon />
-        </Button>
+        {copySourceButton}
         <Button
           variant="ghost"
           size="icon-xs"

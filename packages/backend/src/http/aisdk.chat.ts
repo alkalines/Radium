@@ -452,7 +452,8 @@ function aggregatePerformance(
  * callable inside it under the same name and approvals, plus the Code Mode MCP
  * namespaces. Its catalog is returned as `codeModeInstructions` for the system
  * prompt, or folded into the tool description when the request sends no system
- * prompt (`options.systemPrompt` false).
+ * prompt (`options.systemPrompt` false). If Code Mode cannot be built, its MCP
+ * servers contribute direct tools instead.
  *
  * @todo OAuth / OAuth 2.1 servers: supply an `OAuthClientProvider` via the
  *   transport's `authProvider` instead of a static bearer header.
@@ -493,6 +494,13 @@ async function buildChatTools(
   const directMcpTools = new Set<string>();
   const codeModeServers: Array<{ prefix: string; name: string; tools: Record<string, unknown> }> =
     [];
+  const addDirectMcpTools = (prefix: string, serverTools: Record<string, unknown>) => {
+    for (const [name, definition] of Object.entries(serverTools)) {
+      const toolName = uniqueToolName(tools, `${prefix}_${name}`);
+      tools[toolName] = definition as ToolSet[string];
+      directMcpTools.add(toolName);
+    }
+  };
   let toolApproval: ToolApprovalConfiguration<ToolSet, unknown> | undefined;
   let approvalSecret: Uint8Array | undefined;
   // Shared-chat membership never grants machine execution. Identity and directory
@@ -555,11 +563,7 @@ async function buildChatTools(
         codeModeServers.push({ prefix, name: server.name, tools: serverTools });
         continue;
       }
-      for (const [name, definition] of Object.entries(serverTools)) {
-        const toolName = uniqueToolName(tools, `${prefix}_${name}`);
-        tools[toolName] = definition as ToolSet[string];
-        directMcpTools.add(toolName);
-      }
+      addDirectMcpTools(prefix, serverTools);
     } catch {
       console.error("Failed to connect MCP server", { serverId: server._id, name: server.name });
     }
@@ -629,8 +633,9 @@ async function buildChatTools(
       }
     } catch {
       // Like a failing MCP server, a tool whose schema Code Mode cannot render must not fail the
-      // request; the direct tools still work.
+      // request: the direct tools still work, and Code Mode servers fall back to direct tools.
       logger.error("chat.code_mode_unavailable");
+      for (const server of codeModeServers) addDirectMcpTools(server.prefix, server.tools);
     }
   }
 

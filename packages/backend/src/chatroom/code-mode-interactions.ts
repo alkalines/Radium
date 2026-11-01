@@ -2,7 +2,10 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery, mutation } from "../../convex/_generated/server";
 import { authComponent } from "../../convex/auth";
 import { requireAccessibleChat } from "../../convex/workspaces";
-import { codeModeInteractionResponseValidator } from "./code-mode";
+import {
+  CODE_MODE_INTERACTION_TIMEOUT_MS,
+  codeModeInteractionResponseValidator,
+} from "./code-mode";
 
 /**
  * Prompts a running Code Mode program waits on (`codemode_interactions`). The chat action opens
@@ -12,6 +15,9 @@ import { codeModeInteractionResponseValidator } from "./code-mode";
  */
 
 const interactionKind = v.union(v.literal("approval"), v.literal("question"));
+
+/** Kept past the answer deadline so the waiting action, not the cron, normally deletes the row. */
+const INTERACTION_EXPIRY_GRACE_MS = 60_000;
 
 /**
  * Answer an open interaction. Only the user whose request runs the program can answer, and only
@@ -47,7 +53,10 @@ export const openInteraction = internalMutation({
   args: { chatId: v.id("aisdk_chats"), userId: v.string(), kind: interactionKind },
   returns: v.id("codemode_interactions"),
   handler: async (ctx, args) => {
-    return await ctx.db.insert("codemode_interactions", args);
+    return await ctx.db.insert("codemode_interactions", {
+      ...args,
+      expiresAt: Date.now() + CODE_MODE_INTERACTION_TIMEOUT_MS + INTERACTION_EXPIRY_GRACE_MS,
+    });
   },
 });
 
@@ -69,5 +78,21 @@ export const closeInteraction = internalMutation({
     const interaction = await ctx.db.get("codemode_interactions", args.interaction);
     if (interaction) await ctx.db.delete("codemode_interactions", args.interaction);
     return null;
+  },
+});
+
+/** Remove a bounded batch of expired prompts whose action never closed them. */
+export const pruneExpiredInteractions = internalMutation({
+  args: {},
+  returns: v.number(),
+  handler: async (ctx) => {
+    const records = await ctx.db
+      .query("codemode_interactions")
+      .withIndex("by_expiresAt", (q) => q.lte("expiresAt", Date.now()))
+      .take(200);
+    for (const record of records) {
+      await ctx.db.delete("codemode_interactions", record._id);
+    }
+    return records.length;
   },
 });

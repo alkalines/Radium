@@ -73,12 +73,13 @@ export function chatSystemPrompt(options: {
   // The catalog changes with the enabled tools; the `execute` tool description stays invariant.
   if (codeMode) sections.push(codeMode);
   if (model) {
+    // The slug comes from the request; JSON strings keep newlines and `#` inside each value.
     sections.push(
       [
         "# Model",
-        `- Name: ${model.name ?? model.slug}`,
-        ...(model.author ? [`- Author: ${model.author}`] : []),
-        `- Slug: ${model.slug}`,
+        `- Name: ${JSON.stringify(model.name ?? model.slug)}`,
+        ...(model.author ? [`- Author: ${JSON.stringify(model.author)}`] : []),
+        `- Slug: ${JSON.stringify(model.slug)}`,
       ].join("\n"),
     );
   }

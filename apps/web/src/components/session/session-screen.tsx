@@ -98,8 +98,9 @@ export type SessionTabHint = {
  *   `POST /api/aisdk/chat` on the Convex site. Either query failing or losing access shows an inline
  *   notice and calls `onUnavailable` once.
  * - A pending tool approval, then a pending `question` call, takes the Composer's place
- *   (`ApprovalPrompt`, `QuestionPrompt`) until it is answered. The latest `todo_write` list docks
- *   above that slot while it has open items or the run is working.
+ *   (`ApprovalPrompt`, `QuestionPrompt`) until it is answered. Code Mode approvals and questions
+ *   each run a server deadline, so every live one shows at once instead of in turn. The latest
+ *   `todo_write` list docks above that slot while it has open items or the run is working.
  * - Reverting to a user turn drops it and everything after it, puts its text and files back in
  *   the Composer, and offers a Restore card until the next send makes the revert durable.
  * - A turn that stopped short (Stop, a reload mid-reply, a request error) shows
@@ -991,21 +992,30 @@ export const SessionScreen = memo(function SessionScreen({
   const isRunTargetFixed = messages.length > 0 && agent.protocol === "acp";
   const isWorkerBusy = isWorkerSaving || (chatId !== undefined && status !== "ready");
   // Code Mode prompts wait inside this Tab's live request; a stopped or saved run cannot answer.
-  const visibleApprovals = pendingApprovals.filter(
-    (part) =>
-      !part.codeModeInteraction ||
-      (isRunning && !hiddenInteractions.has(part.codeModeInteraction.id)),
+  // Each runs its own server deadline, so all of them show together; none waits hidden in a queue.
+  const codeModeApprovals = pendingApprovals.flatMap((part) =>
+    part.codeModeInteraction && isRunning && !hiddenInteractions.has(part.codeModeInteraction.id)
+      ? [{ part, interaction: part.codeModeInteraction }]
+      : [],
   );
-  const currentApproval = visibleApprovals[0];
-  // Native questions wait for the step to finish; Code Mode waits for its answer in-stream.
-  const currentQuestion = currentApproval
-    ? undefined
-    : pendingQuestions.find((part) =>
-        part.codeModeInteraction
-          ? isRunning && !hiddenInteractions.has(part.codeModeInteraction.id)
-          : !isRunning,
-      );
-  const isComposerReplaced = currentApproval !== undefined || currentQuestion !== undefined;
+  const codeModeQuestions = pendingQuestions.flatMap((part) =>
+    part.codeModeInteraction && isRunning && !hiddenInteractions.has(part.codeModeInteraction.id)
+      ? [{ part, interaction: part.codeModeInteraction }]
+      : [],
+  );
+  // Native approvals and questions have no deadline and are answered one at a time; native
+  // questions wait for the step to finish.
+  const nativeApprovals = pendingApprovals.filter((part) => !part.codeModeInteraction);
+  const currentApproval = nativeApprovals[0];
+  const currentQuestion =
+    currentApproval || isRunning
+      ? undefined
+      : pendingQuestions.find((part) => !part.codeModeInteraction);
+  const isComposerReplaced =
+    currentApproval !== undefined ||
+    currentQuestion !== undefined ||
+    codeModeApprovals.length > 0 ||
+    codeModeQuestions.length > 0;
   const revertedCount = pendingRevert ? pendingRevert.messages.length - messages.length : 0;
   // A revert or a pending answer comes first; Retry would resend the reverted or unanswered turn.
   const visibleInterruption =
@@ -1158,8 +1168,56 @@ export const SessionScreen = memo(function SessionScreen({
           <AnimatePresence initial={false} onExitComplete={() => setIsTrayAttached(false)}>
             {trayTodos ? <TodoPanel key="todos" items={trayTodos} isRunning={isRunning} /> : null}
           </AnimatePresence>
-          <div className="flex flex-col">
+          <div className="flex flex-col gap-2">
             <AnimatePresence initial={false}>
+              {/* Shortcuts go to the first prompt only, so one key never answers several. */}
+              {codeModeApprovals.map(({ part, interaction }, index) => (
+                <m.div
+                  key={`codemode-${interaction.id}`}
+                  variants={variants.swap}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                >
+                  <ApprovalPrompt
+                    part={part}
+                    total={1}
+                    shortcutsEnabled={isActive && index === 0}
+                    expiresAt={interaction.expiresAt}
+                    onApprovalResponse={(response) => {
+                      void respondToCodeMode(interaction.id, {
+                        kind: "approval",
+                        approved: response.approved,
+                        ...(response.reason ? { reason: response.reason } : {}),
+                      });
+                    }}
+                  />
+                </m.div>
+              ))}
+              {codeModeQuestions.map(({ part, interaction }, index) => (
+                <m.div
+                  key={`codemode-${interaction.id}`}
+                  variants={variants.swap}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                >
+                  <QuestionPrompt
+                    part={part}
+                    shortcutsEnabled={isActive && codeModeApprovals.length === 0 && index === 0}
+                    expiresAt={interaction.expiresAt}
+                    onAnswer={(output) => {
+                      void respondToCodeMode(interaction.id, {
+                        kind: "question",
+                        answers: output.answers,
+                      });
+                    }}
+                    onDismiss={() => {
+                      void respondToCodeMode(interaction.id, { kind: "question", dismissed: true });
+                    }}
+                  />
+                </m.div>
+              ))}
               {currentApproval ? (
                 <m.div
                   key="approval"
@@ -1170,21 +1228,9 @@ export const SessionScreen = memo(function SessionScreen({
                 >
                   <ApprovalPrompt
                     part={currentApproval}
-                    total={visibleApprovals.length}
+                    total={nativeApprovals.length}
                     shortcutsEnabled={isActive}
-                    expiresAt={currentApproval.codeModeInteraction?.expiresAt}
-                    onApprovalResponse={(response) => {
-                      const interaction = currentApproval.codeModeInteraction;
-                      if (interaction) {
-                        void respondToCodeMode(interaction.id, {
-                          kind: "approval",
-                          approved: response.approved,
-                          ...(response.reason ? { reason: response.reason } : {}),
-                        });
-                      } else {
-                        void addToolApprovalResponse(response);
-                      }
-                    }}
+                    onApprovalResponse={(response) => void addToolApprovalResponse(response)}
                   />
                 </m.div>
               ) : null}
@@ -1199,37 +1245,20 @@ export const SessionScreen = memo(function SessionScreen({
                   <QuestionPrompt
                     part={currentQuestion}
                     shortcutsEnabled={isActive}
-                    expiresAt={currentQuestion.codeModeInteraction?.expiresAt}
                     onAnswer={(output) => {
-                      const interaction = currentQuestion.codeModeInteraction;
-                      if (interaction) {
-                        void respondToCodeMode(interaction.id, {
-                          kind: "question",
-                          answers: output.answers,
-                        });
-                      } else {
-                        void addToolOutput({
-                          tool: "question",
-                          toolCallId: currentQuestion.toolCallId,
-                          output,
-                        });
-                      }
+                      void addToolOutput({
+                        tool: "question",
+                        toolCallId: currentQuestion.toolCallId,
+                        output,
+                      });
                     }}
                     onDismiss={() => {
-                      const interaction = currentQuestion.codeModeInteraction;
-                      if (interaction) {
-                        void respondToCodeMode(interaction.id, {
-                          kind: "question",
-                          dismissed: true,
-                        });
-                      } else {
-                        void addToolOutput({
-                          tool: "question",
-                          toolCallId: currentQuestion.toolCallId,
-                          state: "output-error",
-                          errorText: QUESTION_DISMISSED_MESSAGE,
-                        });
-                      }
+                      void addToolOutput({
+                        tool: "question",
+                        toolCallId: currentQuestion.toolCallId,
+                        state: "output-error",
+                        errorText: QUESTION_DISMISSED_MESSAGE,
+                      });
                     }}
                   />
                 </m.div>
