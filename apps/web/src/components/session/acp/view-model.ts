@@ -20,7 +20,8 @@ export function createAcpViewModel() {
   const cancelledTurns = new Set<string>();
   let epoch: number | undefined;
 
-  return (timeline: AcpTimeline, status: AcpSessionStatus | undefined) => {
+  /** `shownFrom` leaves out items older than that order (history still arriving). */
+  return (timeline: AcpTimeline, status: AcpSessionStatus | undefined, shownFrom?: number) => {
     if (epoch !== timeline.epoch && timeline.items.size === 0) cancelledTurns.clear();
     epoch = timeline.epoch;
     if (timeline.turn?.ended && timeline.turn.stopReason === "cancelled") {
@@ -33,6 +34,7 @@ export function createAcpViewModel() {
         plan = item;
         continue;
       }
+      if (shownFrom !== undefined && item.order < shownFrom) continue;
       const previous = groups.at(-1);
       if (item.kind === "user" || !previous || previous[0]?.kind === "user") groups.push([item]);
       else previous.push(item);
@@ -73,6 +75,8 @@ export function createAcpViewModel() {
                 type: "reasoning",
                 text: item.text,
                 state: live && item === items.at(-1) ? "streaming" : "done",
+                // Same extra field built-in turns persist on their reasoning parts.
+                ...(item.duration !== undefined ? { duration: item.duration } : {}),
               },
             ];
           case "tool":

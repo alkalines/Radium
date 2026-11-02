@@ -1463,6 +1463,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                     <AcpConfigControls
                       agentId={agent.protocol === "acp" ? agent.agentId : undefined}
                       config={acpDraftConfig}
+                      defaults={acpDefaults}
                       disabled={isCreating}
                       isOpen={isModelPickerOpen}
                       onOpenChange={setIsModelPickerOpen}

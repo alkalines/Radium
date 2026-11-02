@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import {
   ArrowRightLeftIcon,
   BrainIcon,
@@ -26,7 +26,14 @@ import { countDiffLines } from "../tool-diff";
 import { getToolRunState } from "../tool-parts";
 import { traceStatusFor } from "../tool-step";
 import { acpToolKind, type AcpToolPart } from "./parts";
-import { acpCommand, acpDiffFile, acpRawValue, acpToolSubject } from "./tool-content";
+import { AcpSessionFolder } from "./session-folder";
+import {
+  acpCommand,
+  acpDiffFile,
+  acpDisplayPath,
+  acpRawValue,
+  acpToolSubject,
+} from "./tool-content";
 import { AcpToolContentBlock } from "./tool-content-block";
 
 const visuals = {
@@ -54,6 +61,20 @@ const visuals = {
   other: { icon: WrenchIcon, verbs: ["", "", "", ""] },
 } as const;
 
+/** Word stems that show an agent's title already names the kind's action. */
+const actionStems: Record<keyof typeof visuals, readonly string[]> = {
+  read: ["read"],
+  edit: ["edit"],
+  delete: ["delet"],
+  move: ["mov"],
+  search: ["search"],
+  execute: ["run", "ran"],
+  fetch: ["fetch"],
+  think: [],
+  switch_mode: [],
+  other: [],
+};
+
 /** ACP uses its reported status, not the browser stream's liveness or built-in receipts. */
 export function AcpToolStep({
   part,
@@ -63,6 +84,7 @@ export function AcpToolStep({
   hasLaterContent: boolean;
 }) {
   const { item } = part.acp;
+  const cwd = use(AcpSessionFolder);
   const kind = acpToolKind(item);
   const state = getToolRunState(part, false);
   const active = state === "queued" || state === "executing";
@@ -81,10 +103,19 @@ export function AcpToolStep({
     [item.content],
   );
   const { icon: Icon, verbs } = visuals[kind];
-  const verb =
-    verbs[state === "succeeded" ? 1 : state === "failed" ? 2 : state === "cancelled" ? 3 : 0];
-  const subject = acpToolSubject(item);
-  const machine = ["read", "edit", "delete", "move", "execute", "fetch"].includes(kind);
+  const subject = acpToolSubject(item, cwd);
+  // A title that already names this kind's action ("Reading config", "read: a.ts") would read twice.
+  const titleWord = subject.isTitle ? (/^[a-z]+/i.exec(subject.text)?.[0] ?? "").toLowerCase() : "";
+  const repeatsVerb =
+    titleWord !== "" && actionStems[kind].some((stem) => titleWord.startsWith(stem));
+  const verb = repeatsVerb
+    ? ""
+    : verbs[state === "succeeded" ? 1 : state === "failed" ? 2 : state === "cancelled" ? 3 : 0];
+  const machine =
+    !subject.isTitle && ["read", "edit", "delete", "move", "execute", "fetch"].includes(kind);
+  // Paths of file kinds are the step's subject; other kinds list theirs in the body.
+  const fileKind = kind === "read" || kind === "edit" || kind === "delete" || kind === "move";
+  const firstPath = item.locations?.[0]?.path;
   if (kind === "switch_mode")
     return (
       <Marker className="text-xs">
@@ -100,13 +131,16 @@ export function AcpToolStep({
       </Marker>
     );
   const line = (
-    <TraceLine status={traceStatusFor(state)} title={verb ? `${verb} ${subject}` : subject}>
+    <TraceLine
+      status={traceStatusFor(state)}
+      title={verb ? `${verb} ${subject.text}` : subject.text}
+    >
       <TraceIcon>
         <Icon />
       </TraceIcon>
       <TraceTitle>
         {verb ? `${verb} ` : ""}
-        <span className={machine ? "font-mono text-xs" : undefined}>{subject}</span>
+        <span className={machine ? "font-mono text-xs" : undefined}>{subject.text}</span>
       </TraceTitle>
       {kind === "edit" && (counts.added || counts.removed) ? (
         <TraceDescription>
@@ -116,11 +150,12 @@ export function AcpToolStep({
       {state !== "succeeded" ? <AgentStatus state={state} hideLabel /> : null}
     </TraceLine>
   );
+  const listsLocations = Boolean(item.locations?.length) && (!fileKind || subject.isTitle);
   const hasBody = Boolean(
     item.content?.length ||
     item.rawInput !== undefined ||
     item.rawOutput !== undefined ||
-    item.locations?.length ||
+    listsLocations ||
     item.truncated ||
     kind === "execute",
   );
@@ -129,11 +164,11 @@ export function AcpToolStep({
     <TraceCollapsible open={open} onOpenChange={setOpen}>
       <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
       <TraceCollapsibleContent className="flex flex-col gap-2">
-        {item.locations?.length ? (
+        {listsLocations ? (
           <div className="flex flex-col gap-1">
-            {item.locations.map((location, index) => (
+            {item.locations!.map((location, index) => (
               <p key={index} className="break-all font-mono text-xs text-muted-foreground">
-                {location.path}
+                {acpDisplayPath(location.path, cwd)}
                 {location.line !== undefined ? `:${location.line}` : ""}
               </p>
             ))}
@@ -141,7 +176,10 @@ export function AcpToolStep({
         ) : null}
         <AcpToolContentBlock
           content={item.content ?? []}
-          path={item.locations?.[0]?.path}
+          // A read's text is that file; an edit's text is one only when the agent numbered it (a
+          // preview of the changed lines). Any other text is the tool's own output.
+          path={kind === "read" && firstPath ? acpDisplayPath(firstPath, cwd) : undefined}
+          excerptPath={kind === "edit" && firstPath ? acpDisplayPath(firstPath, cwd) : undefined}
           startLine={item.locations?.[0]?.line}
           terminal={kind === "execute"}
           command={kind === "execute" ? acpCommand(item) : undefined}

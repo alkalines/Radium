@@ -43,14 +43,14 @@ flowchart LR
     T1 & T2 & T3 -- "heartbeat while open" --> Seen
 ```
 
-| Channel | Direction | Table | Write pattern | Lifetime |
-| --- | --- | --- | --- | --- |
-| Commands | Client → Worker | `acp_commands` | One insert per user action | Payload removed on claim; row pruned 5 min after done |
-| Frames | Worker → Clients | `chat_frames` (+ `acp_streams` sequence counters) | Batched, only while the session is warm | Until the session goes cold |
-| Interactions | Worker ↔ Clients | `acp_interactions` | Immediate, durable decision | Until answered + grace |
-| Lifecycle | Worker → Clients, notifications | `acp_sessions`, `aisdk_chats` | Turn boundaries and state changes | Durable metadata |
-| Viewer heartbeats | Clients → cron | `chat_viewers` | Once a minute per open Tab | Until the session goes cold |
-| Agent catalog | Worker → Clients | `worker_agents` | Probe, auth and `session/new` defaults | Durable metadata |
+| Channel           | Direction                       | Table                                             | Write pattern                           | Lifetime                                              |
+| ----------------- | ------------------------------- | ------------------------------------------------- | --------------------------------------- | ----------------------------------------------------- |
+| Commands          | Client → Worker                 | `acp_commands`                                    | One insert per user action              | Payload removed on claim; row pruned 5 min after done |
+| Frames            | Worker → Clients                | `chat_frames` (+ `acp_streams` sequence counters) | Batched, only while the session is warm | Until the session goes cold                           |
+| Interactions      | Worker ↔ Clients                | `acp_interactions`                                | Immediate, durable decision             | Until answered + grace                                |
+| Lifecycle         | Worker → Clients, notifications | `acp_sessions`, `aisdk_chats`                     | Turn boundaries and state changes       | Durable metadata                                      |
+| Viewer heartbeats | Clients → cron                  | `chat_viewers`                                    | Once a minute per open Tab              | Until the session goes cold                           |
+| Agent catalog     | Worker → Clients                | `worker_agents`                                   | Probe, auth and `session/new` defaults  | Durable metadata                                      |
 
 Per-epoch sequence numbers and byte counts live in `acp_streams`, not `acp_sessions`, so a frame append never wakes the Worker's warm-sessions subscription or a client's `acp.GetSession`.
 
@@ -79,23 +79,23 @@ The Worker folds `session/update` notifications into a per-session timeline of
 semantics (ID-addressed upserts; omitted = unchanged, `null` = clear, value =
 replace; text chunks append), which makes the later v2 adapter a local change.
 
-| Item kind | From ACP v1 |
-| --- | --- |
-| `user` | The prompt the Worker sent; `user_message_chunk` during load |
-| `agent` | `agent_message_chunk` |
-| `thought` | `agent_thought_chunk` |
-| `tool` | `tool_call`, `tool_call_update` (title, kind, status, locations, content, raw input/output) |
-| `plan` | `plan` (whole list replaced each time) |
-| `notice` | `notice`, `compaction_update`, `compaction_summary_chunk`, errors |
+| Item kind | From ACP v1                                                                                                                            |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `user`    | The prompt the Worker sent; `user_message_chunk` during load                                                                           |
+| `agent`   | `agent_message_chunk`                                                                                                                  |
+| `thought` | `agent_thought_chunk`; a live thought gets `duration` (whole seconds) when the agent next says or does something else or the turn ends |
+| `tool`    | `tool_call`, `tool_call_update` (title, kind, status, locations, content, raw input/output)                                            |
+| `plan`    | `plan` (whole list replaced each time)                                                                                                 |
+| `notice`  | `notice`, `compaction_update`, `compaction_summary_chunk`, errors                                                                      |
 
-| Op | Effect |
-| --- | --- |
-| `item.upsert {item: {id, kind, order, ...fields}}` | Create an item or patch its fields (`order` sorts items and addresses history pages) |
-| `text.append {id, text}` | Append streamed text to an `agent`/`thought`/`user` item |
-| `turn.start {turnId}` / `turn.end {turnId, stopReason?, error?}` | Turn boundaries |
-| `session.patch {config?, commands?, usage?, info?}` | Also mirrored to `acp_sessions` (config, commands and title at once, usage at turn end) |
-| `window {start, before?, hasMore}` | Opens a snapshot (items from `start` follow) or a history page (`start <= order < before`) |
-| `fragment {id, index, total, data}` | One piece of a single op too large for a frame (a 256 KiB tool output); clients concatenate `data` and apply the op once every piece arrived |
+| Op                                                               | Effect                                                                                                                                       |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `item.upsert {item: {id, kind, order, ...fields}}`               | Create an item or patch its fields (`order` sorts items and addresses history pages)                                                         |
+| `text.append {id, text}`                                         | Append streamed text to an `agent`/`thought`/`user` item                                                                                     |
+| `turn.start {turnId}` / `turn.end {turnId, stopReason?, error?}` | Turn boundaries                                                                                                                              |
+| `session.patch {config?, commands?, usage?, info?}`              | Also mirrored to `acp_sessions` (config, commands and title at once, usage at turn end)                                                      |
+| `window {start, before?, hasMore}`                               | Opens a snapshot (items from `start` follow) or a history page (`start <= order < before`)                                                   |
+| `fragment {id, index, total, data}`                              | One piece of a single op too large for a frame (a 256 KiB tool output); clients concatenate `data` and apply the op once every piece arrived |
 
 ACP v1 message IDs are optional. Without them the Worker starts a new `agent`
 or `thought` item when the chunk kind changes or after a tool call, which
@@ -172,18 +172,25 @@ payload}`, read by `(chat, stream, seqFrom)`; `payload` is the JSON of the ops.
   acknowledgment; the Worker holds unacknowledged ops in memory and retries the
   same frames with jittered backoff (0.5–10 s).
 - Client subscription: `chatroom.LiveFrames({chat, stream, fromSeq})` returns up
-  to 64 frames; advance `fromSeq` in pages, not per frame, so the subscription
-  arguments stay stable.
+  to 64 frames. The client moves `fromSeq` past every batch it applied: a cursor
+  left on a partial page would make every later append re-read that whole page
+  (up to 64 frames of 32 KiB) for each viewer.
+  Re-subscribing costs only the authorization reads.
 
 ## History Pages
 
-Scrolling above the snapshot sends `acp.RequestHistory({chat, epoch, before, limit})`
-(at most 50 items). If a warm `history` frame already covers that range, the
-client reads it directly; repeated requests for the same page share one command.
-Otherwise the Worker answers from its timeline with a `history` frame in the
-current epoch. If the Worker evicted the timeline, it reloads the session first
-([reopening](Sessions.md#reopening-and-recovery)). Pages go away with the rest of
-the warm content.
+Right after the snapshot the client sends one
+`acp.RequestHistory({chat, epoch, before, limit})` for every older item (`limit`
+up to 10,000). The Worker answers from its timeline with consecutive `history`
+frames in the current epoch, each page at most 200 items and 256 KiB of items (a
+larger single item goes alone), waiting for each page to be written before the
+next so the relay's 1 MiB outage buffer never drops one and restarts the epoch.
+Repeated requests for the same starting point share one command. If pages stop
+for 15 s with more left, the client continues from where they stopped; a request
+that brought nothing shows a retry. If the Worker evicted the timeline, it
+reloads the session first ([reopening](Sessions.md#reopening-and-recovery)).
+Pages go away with the rest of the warm content, and count toward the epoch's
+1 MiB rollover budget.
 
 ## Commands
 
@@ -191,16 +198,16 @@ the warm content.
 error?, result?}`; the Worker subscribes through `acp.assignedCommands` (its
 `pending` rows, oldest first) and claims each with `acp.claimCommand`.
 
-| `kind` | ACP call | Notes |
-| --- | --- | --- |
-| `prompt` | `session/new` (first), `session/prompt` | Payload: text and `resource_link` blocks (attachments are a later slice) |
-| `cancel` | `session/cancel` | Also answers open permissions/elicitations as cancelled. An unclaimed prompt is cancelled in Convex without a command |
-| `set_config`, `set_mode` | `session/set_config_option`, `session/set_mode` | Response config replaces `acp_sessions.config`; before the ACP session exists the choice is stored in `acp_sessions.draft` and applied after `session/new` |
-| `history` | — | Worker-local timeline read |
-| `sync_sessions` | `session/list` (all pages, no `cwd`) | Refreshes the [agent session index](Sessions.md#agent-session-index) with diff writes through `acp.knownAgentSessions` / `acp.syncAgentSessions`; also run by the Worker after each definitions probe |
-| `authenticate`, `logout` | `authenticate`, `logout` | Agent-level, not session-level; the Worker re-initializes and reports the agent again |
-| `fork` | `session/fork` (unstable) | Binds the new chat created by `acp.Fork` |
-| `close`, `delete` | `session/close`, `session/delete` | Survive chat deletion; expire after 7 days |
+| `kind`                   | ACP call                                        | Notes                                                                                                                                                                                                 |
+| ------------------------ | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt`                 | `session/new` (first), `session/prompt`         | Payload: text and `resource_link` blocks (attachments are a later slice)                                                                                                                              |
+| `cancel`                 | `session/cancel`                                | Also answers open permissions/elicitations as cancelled. An unclaimed prompt is cancelled in Convex without a command                                                                                 |
+| `set_config`, `set_mode` | `session/set_config_option`, `session/set_mode` | Response config replaces `acp_sessions.config`; before the ACP session exists the choice is stored in `acp_sessions.draft` and applied after `session/new`                                            |
+| `history`                | —                                               | Worker-local timeline read                                                                                                                                                                            |
+| `sync_sessions`          | `session/list` (all pages, no `cwd`)            | Refreshes the [agent session index](Sessions.md#agent-session-index) with diff writes through `acp.knownAgentSessions` / `acp.syncAgentSessions`; also run by the Worker after each definitions probe |
+| `authenticate`, `logout` | `authenticate`, `logout`                        | Agent-level, not session-level; the Worker re-initializes and reports the agent again                                                                                                                 |
+| `fork`                   | `session/fork` (unstable)                       | Binds the new chat created by `acp.Fork`                                                                                                                                                              |
+| `close`, `delete`        | `session/close`, `session/delete`               | Survive chat deletion; expire after 7 days                                                                                                                                                            |
 
 Only a user who can act on the chat inserts commands: the creator of a personal
 Session, any member of a workspace Session ([Who Can Use It](../ACP.md#who-can-use-it));
@@ -263,14 +270,14 @@ answer?, answeredBy?}`, with `pending` → `answered` (durable decision) →
 
 ## Retention
 
-| Data | Deleted |
-| --- | --- |
-| Command payload | On claim |
-| Command row (and its `result`) | 5 minutes after `done`/`failed`; unclaimed commands after 7 days |
+| Data                             | Deleted                                                                                                   |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Command payload                  | On claim                                                                                                  |
+| Command row (and its `result`)   | 5 minutes after `done`/`failed`; unclaimed commands after 7 days                                          |
 | Frames (snapshot, live, history) | When the session goes cold (5 minutes without a heartbeat); superseded epochs one minute after the switch |
-| Interactions | 10 minutes after resolution |
-| Viewer heartbeats | With the frames, when the session goes cold |
-| Everything of a deleted chat | `acp.cleanupChat`, scheduled by `DeleteChat` (queued `close`/`delete` commands survive) |
+| Interactions                     | 10 minutes after resolution                                                                               |
+| Viewer heartbeats                | With the frames, when the session goes cold                                                               |
+| Everything of a deleted chat     | `acp.cleanupChat`, scheduled by `DeleteChat` (queued `close`/`delete` commands survive)                   |
 
 The per-minute `cold ACP sessions` cron handles cooling; the five-minute
 `expired ACP intent` cron handles commands and interactions, both in bounded
@@ -281,15 +288,15 @@ operational logs and Gateway telemetry.
 
 Rough expectations to verify in M1 measurements, not guarantees:
 
-| Situation | Convex writes |
-| --- | --- |
-| Cold Session, nobody watching | 0 |
-| Unattended turn | ~3–6 (start, awaiting/answers, end, notification) |
-| Warm Session, turn streaming | 2–4 frame inserts per second, independent of viewer count |
-| Opening a cold Session | 1 heartbeat + 1 flag flip + snapshot frames (≤ 64 KiB) |
-| Opening a warm Session (reload, second device) | 1 heartbeat; reads only |
-| Each open Tab | 1 heartbeat per minute |
-| Going cold | 1 flag flip + bounded frame deletions |
+| Situation                                      | Convex writes                                             |
+| ---------------------------------------------- | --------------------------------------------------------- |
+| Cold Session, nobody watching                  | 0                                                         |
+| Unattended turn                                | ~3–6 (start, awaiting/answers, end, notification)         |
+| Warm Session, turn streaming                   | 2–4 frame inserts per second, independent of viewer count |
+| Opening a cold Session                         | 1 heartbeat + 1 flag flip + snapshot frames (≤ 64 KiB)    |
+| Opening a warm Session (reload, second device) | 1 heartbeat; reads only                                   |
+| Each open Tab                                  | 1 heartbeat per minute                                    |
+| Going cold                                     | 1 flag flip + bounded frame deletions                     |
 
 ## Recovery
 

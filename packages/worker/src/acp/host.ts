@@ -31,7 +31,12 @@ import { resolveAgentCommand } from "./config.js";
 import { AcpAgentProcess, agentReport, probeAgent } from "./process.js";
 import { AcpLifecycle, acpDelay } from "./lifecycle.js";
 import { normalizeElicitation } from "./interactions.js";
-import { AcpTimeline, normalizeConfig, normalizeToolContent } from "./timeline.js";
+import {
+  AcpTimeline,
+  normalizeConfig,
+  normalizeToolContent,
+  normalizeTurnUsage,
+} from "./timeline.js";
 import { AcpRelay } from "./relay.js";
 import { prepareTempDirectory } from "../presence.js";
 import { validChatWorkerDirectory } from "backend/src/worker/chat-config";
@@ -660,6 +665,10 @@ export class AcpHost {
           ) {
             await this.setMode(local, local.binding.draft.modeId);
           }
+        }
+        // Last known config: every new session updates it; a reopened one fills it only when the
+        // agent has none yet (imported sessions of an agent that never had `session/new` here).
+        if (!previousId || !report.defaults?.config) {
           report.defaults = {
             config: local.binding.config ?? config,
             commands: local.timeline.sessionPatch.commands ?? [],
@@ -777,8 +786,20 @@ export class AcpHost {
       } else if (payload.kind === "history") {
         if (local && payload.epoch === local.relay.epoch) {
           await this.ensureSession(local);
-          if (payload.epoch === local.relay.epoch)
-            local.relay.push(local.timeline.history(payload.before, payload.limit), "history");
+          // One request streams consecutive older pages up to its item limit; each page drains
+          // before the next, so the relay's outage buffer never overflows and drops them.
+          let before = payload.before;
+          let remaining = payload.limit;
+          while (remaining > 0 && payload.epoch === local.relay.epoch && local.relay.active) {
+            const page = local.timeline.history(before, remaining);
+            local.relay.push(page, "history");
+            await local.relay.flush();
+            const window = page[0];
+            const count = page.length - 1;
+            if (window?.op !== "window" || !window.hasMore || count === 0) break;
+            remaining -= count;
+            before = window.start;
+          }
         }
       } else if (payload.kind === "sync_sessions") {
         await this.syncAgentSessions(payload.agentId);
@@ -882,6 +903,8 @@ export class AcpHost {
       await local.updates;
       this.cancelInteractions(local.chat);
       local.relay.push(local.timeline.endTurn(response.stopReason));
+      // `usage` is an unstable PromptResponse field that the stable SDK type does not declare.
+      const turnUsage = normalizeTurnUsage((response as { usage?: unknown }).usage);
       await this.patch(local, {
         status:
           response.stopReason === "end_turn" || response.stopReason === "cancelled"
@@ -889,6 +912,7 @@ export class AcpHost {
             : "failed",
         stopReason: response.stopReason,
         ...(local.timeline.sessionPatch.usage ? { usage: local.timeline.sessionPatch.usage } : {}),
+        ...(turnUsage ? { turnUsage } : {}),
       });
       await this.finish(claim, "done");
     } catch (error) {

@@ -3,12 +3,17 @@ import type { AcpToolContent } from "backend/src/acp/contract";
 import { TerminalLog } from "@/components/agentic/terminal-log";
 import { Markdown } from "@/components/markdown";
 import { DiffCodeBlock, ToolCodeBlock, languageForPath } from "../tool-code";
-import { acpDiffFile } from "./tool-content";
+import { acpDiffFile, acpNumberedText } from "./tool-content";
 
-/** Normalized agent content, shared by tool steps and permission prompts. Never fetches resources. */
+/**
+ * Normalized agent content, shared by tool steps and permission prompts. Never fetches resources.
+ * Text is file content with a `path` (a read), an excerpt of `excerptPath` when the agent numbered
+ * its lines (an edit's preview), and otherwise the tool's plain output.
+ */
 export function AcpToolContentBlock({
   content,
   path,
+  excerptPath,
   startLine = 1,
   terminal,
   command,
@@ -16,31 +21,30 @@ export function AcpToolContentBlock({
 }: {
   content: AcpToolContent[];
   path?: string;
+  excerptPath?: string;
   startLine?: number;
   terminal?: boolean;
   command?: string;
   reasoning?: boolean;
 }) {
-  const terminalLines = useMemo(
-    () =>
-      terminal
-        ? [
-            ...(command ? [{ id: "command", stream: "stdin" as const, text: command }] : []),
-            ...content.flatMap((entry, index) =>
-              entry.type === "text"
-                ? entry.text
-                    .split("\n")
-                    .map((text, line) => ({
-                      id: `${index}-${line}`,
-                      stream: "stdout" as const,
-                      text,
-                    }))
-                : [],
-            ),
-          ]
+  const terminalLines = useMemo(() => {
+    if (!terminal) return [];
+    const output = content.flatMap((entry, index) =>
+      entry.type === "text"
+        ? entry.text.split("\n").map((text, line) => ({
+            id: `${index}-${line}`,
+            stream: "stdout" as const,
+            text,
+          }))
         : [],
-    [command, content, terminal],
-  );
+    );
+    // Agents that echo the command as their first output line would show it twice.
+    if (command && output[0]?.text.trim() === `$ ${command.trim()}`) output.shift();
+    return [
+      ...(command ? [{ id: "command", stream: "stdin" as const, text: command }] : []),
+      ...output,
+    ];
+  }, [command, content, terminal]);
   return (
     <>
       {terminal ? (
@@ -58,16 +62,17 @@ export function AcpToolContentBlock({
                 <Markdown>{entry.text}</Markdown>
               </div>
             );
-          const language = path ? languageForPath(path) : "text";
-          return (
-            <ToolCodeBlock
-              key={index}
-              code={entry.text}
-              language={language}
-              title={path}
-              startLine={language !== "text" ? startLine : undefined}
-            />
-          );
+          if (path || excerptPath)
+            return (
+              <AcpFileText
+                key={index}
+                text={entry.text}
+                path={(path ?? excerptPath)!}
+                start={startLine}
+                excerpt={!path}
+              />
+            );
+          return <ToolCodeBlock key={index} code={entry.text} />;
         }
         if (entry.type === "resource")
           return (
@@ -83,8 +88,8 @@ export function AcpToolContentBlock({
             </p>
           );
         return (
-          <p key={index} className="font-mono text-xs text-muted-foreground">
-            Terminal {entry.terminalId}
+          <p key={index} className="text-xs text-muted-foreground">
+            Terminal output stays in the agent.
           </p>
         );
       })}
@@ -95,4 +100,41 @@ export function AcpToolContentBlock({
 function AcpDiffBlock({ content }: { content: Extract<AcpToolContent, { type: "diff" }> }) {
   const file = useMemo(() => acpDiffFile(content), [content]);
   return <DiffCodeBlock file={file} />;
+}
+
+/**
+ * File text highlighted for its path and numbered by the agent's own numbers when it gave them.
+ * An `excerpt` is file text only when numbered; unnumbered it is the tool's plain output.
+ */
+function AcpFileText({
+  text,
+  path,
+  start,
+  excerpt,
+}: {
+  text: string;
+  path: string;
+  start: number;
+  excerpt: boolean;
+}) {
+  const numbered = useMemo(() => acpNumberedText(text), [text]);
+  const language = languageForPath(path);
+  if (numbered)
+    return (
+      <ToolCodeBlock
+        code={numbered.code}
+        language={language}
+        title={path}
+        numbers={numbered.numbers}
+      />
+    );
+  if (excerpt) return <ToolCodeBlock code={text} />;
+  return (
+    <ToolCodeBlock
+      code={text}
+      language={language}
+      title={path}
+      startLine={language !== "text" ? start : undefined}
+    />
+  );
 }

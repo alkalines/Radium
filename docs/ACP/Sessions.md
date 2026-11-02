@@ -45,19 +45,20 @@ usage, pending interactions) do not invalidate the Home `ListChats`
 subscription. Only turn boundaries touch `aisdk_chats` (`activeStream`,
 `lastInteractionAt`, `interruption`, `title`).
 
-| Field                                           | Meaning                                                                                                                   |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `chat`, `worker`, `agentId`, `cwd`, `sessionId` | Owning chat, its bound Worker (indexed for the Worker's subscriptions) and a copy of the binding fields the Worker needs  |
-| `status`                                        | `starting`, `idle`, `running`, `awaiting`, `failed`, `ended`                                                              |
-| `epoch`                                         | Stream epoch; bumped on each snapshot so stale frames are ignored                                                         |
-| `stopReason`                                    | Last `session/prompt` stop reason                                                                                         |
-| `config`                                        | Current `configOptions` (ids, categories, choices, selected values), `modes`, `currentModeId`                             |
-| `commands`                                      | Latest `available_commands_update` (names, descriptions, input hints)                                                     |
-| `usage`                                         | Latest `usage_update`: context `used`/`size`, optional cumulative `cost`                                                  |
-| `warm`                                          | Whether content is currently held in Convex ([Transport](Transport.md#warm-and-cold-sessions)); flips only on transitions |
-| `history`                                       | `full` (load), `resumed` (resume, no replay) or `none`                                                                    |
-| `draft`                                         | Config and mode chosen before the ACP session exists, applied after `session/new`                                         |
-| `turnBy`, `userTitled`                          | Who sent the running prompt (notifications); whether a user renamed the chat                                              |
+| Field                                           | Meaning                                                                                                                    |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `chat`, `worker`, `agentId`, `cwd`, `sessionId` | Owning chat, its bound Worker (indexed for the Worker's subscriptions) and a copy of the binding fields the Worker needs   |
+| `status`                                        | `starting`, `idle`, `running`, `awaiting`, `failed`, `ended`                                                               |
+| `epoch`                                         | Stream epoch; bumped on each snapshot so stale frames are ignored                                                          |
+| `stopReason`                                    | Last `session/prompt` stop reason                                                                                          |
+| `config`                                        | Current `configOptions` (ids, categories, choices, selected values), `modes`, `currentModeId`                              |
+| `commands`                                      | Latest `available_commands_update` (names, descriptions, input hints)                                                      |
+| `usage`                                         | Latest `usage_update`: context `used`/`size`, optional cumulative `cost`                                                   |
+| `turnUsage`                                     | Token breakdown of the latest `session/prompt` response (unstable `PromptResponse.usage`), shown as reported, never summed |
+| `warm`                                          | Whether content is currently held in Convex ([Transport](Transport.md#warm-and-cold-sessions)); flips only on transitions  |
+| `history`                                       | `full` (load), `resumed` (resume, no replay) or `none`                                                                     |
+| `draft`                                         | Config and mode chosen before the ACP session exists, applied after `session/new`                                          |
+| `turnBy`, `userTitled`                          | Who sent the running prompt (notifications); whether a user renamed the chat                                               |
 
 None of these fields contain conversation content. `acp.GetSession` returns them
 with the agent's name and capabilities.
@@ -136,12 +137,12 @@ data boundary ([mapping](Interactions.md#run-state)).
 
 The agent, not Radium, defines which models and modes exist:
 
-| ACP                                                           | Composer control                                                                 |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| ACP                                                           | Composer control                                                                                                                                                              |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | config option, category `model`                               | Shared `ModelPicker` lists the agent's choices (lab inferred from the ID; one row per model across the agent's providers, with a Provider selector) instead of Gateway models |
-| config option, category `thought_level`                       | **Reasoning** in the picker footer, using the agent's values and labels          |
-| `modes` / `current_mode_update` (or a `mode` category option) | **Mode** in the picker footer; its name also shows on the trigger                |
-| Other config options (select, boolean, `model_config`)        | **Options** in the picker footer                                                 |
+| config option, category `thought_level`                       | **Reasoning** in the picker footer, using the agent's values and labels                                                                                                       |
+| `modes` / `current_mode_update` (or a `mode` category option) | **Mode** in the picker footer; its name also shows on the trigger                                                                                                             |
+| Other config options (select, boolean, `model_config`)        | **Options** in the picker footer                                                                                                                                              |
 
 Changing a value sends a `set_config` command; the Worker calls
 `session/set_config_option` (or `session/set_mode`), and the response's complete
@@ -171,7 +172,7 @@ flowchart TD
     Resume -- yes --> DoResume["session/resume<br/>history = resumed"] --> Notice["Notice: earlier history<br/>not available from this agent"]
     Resume -- no --> Ended["status = ended<br/>read-only metadata"]
     Snap --> Read
-    Read --> Older["Scroll up → shared history pages"]
+    Read --> Older["Older history pages, streamed<br/>right after the snapshot"]
 ```
 
 - A reload, a second Tab or another device within five minutes of the last
@@ -180,7 +181,10 @@ flowchart TD
   notifications before it returns. The Worker consumes that replay to rebuild its
   in-memory timeline and sends only the requested window to Convex, so reopening
   a long session costs one bounded snapshot, not the full transcript.
-- Older content is fetched page by page on scroll ([history pages](Transport.md#history-pages)).
+- The whole conversation loads on open: right after the snapshot the client asks
+  for every older item in one request, which the Worker streams as consecutive
+  bounded [history pages](Transport.md#history-pages). The thread shows the
+  snapshot at once and adds the older turns in one step when the last page is in.
 - A Worker or agent restart during a turn loses that turn: ACP v1 cannot
   re-attach to an in-flight `session/prompt`. The Worker marks it `failed`
   (`Worker restarted` / `Agent process exited`) when it next starts, and the next

@@ -85,6 +85,7 @@ export function ModelPicker({
   onOpenChange,
   variant = "gateway",
   reasoningOptions,
+  defaultReasoningEffort = variant === "gateway" ? "medium" : undefined,
   agentMode,
   agentOptions,
   pinScope,
@@ -110,10 +111,14 @@ export function ModelPicker({
   /** Agent choices share the picker without Gateway presets, hidden models or `Manage models`. */
   variant?: "gateway" | "agent";
   reasoningOptions?: readonly ReasoningOption[];
+  /** Effort the trigger leaves unnamed; Gateway turns default to `medium`, agents to their own. */
+  defaultReasoningEffort?: string;
   agentMode?: {
     value: string;
     choices: readonly ReasoningOption[];
     onChange: (value: string) => void;
+    /** Mode the trigger leaves unnamed: the agent's starting mode. */
+    defaultValue?: string;
   };
   agentOptions?: ReactNode;
   /** Prefix that keeps agent model pins apart from Gateway slugs; agents without it cannot pin. */
@@ -190,13 +195,13 @@ export function ModelPicker({
           className="max-w-60 min-w-0 shrink gap-1.5 text-muted-foreground hover:text-foreground"
         >
           <span className="truncate">{modelName}</span>
-          {reasoningEffort ? (
+          {reasoningEffort && reasoningEffort !== defaultReasoningEffort ? (
             <span className="shrink-0 text-subtle-foreground">
               {reasoningOptions?.find((option) => option.value === reasoningEffort)?.name ??
                 effortLabel(reasoningEffort)}
             </span>
           ) : null}
-          {agentMode ? (
+          {agentMode && agentMode.value !== agentMode.defaultValue ? (
             <span className="shrink-0 text-subtle-foreground">
               {agentMode.choices.find((option) => option.value === agentMode.value)?.name ??
                 agentMode.value}

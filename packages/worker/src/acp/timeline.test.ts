@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import {
+  ACP_HISTORY_PAGE_BYTES,
   ACP_HISTORY_PAGE_ITEMS,
   ACP_ITEM_CONTENT_BYTES,
   ACP_SNAPSHOT_BYTES,
@@ -8,7 +9,7 @@ import {
   type AcpItemPatch,
   type AcpOp,
 } from "backend/src/acp/contract";
-import { AcpTimeline, normalizeConfig, normalizeToolContent } from "./timeline";
+import { AcpTimeline, normalizeConfig, normalizeToolContent, normalizeTurnUsage } from "./timeline";
 
 function items(ops: AcpOp[]): AcpItemPatch[] {
   return ops.flatMap((op) => (op.op === "item.upsert" ? [op.item] : []));
@@ -36,7 +37,8 @@ describe("AcpTimeline", () => {
         content: { type: "text", text: "Thinking" },
       }),
     )[0]!;
-    const second = items(timeline.update(chunk("Again")))[0]!;
+    // The thought's duration patch precedes the new message.
+    const second = items(timeline.update(chunk("Again"))).at(-1)!;
     timeline.update({ sessionUpdate: "tool_call", toolCallId: "read", title: "Read file" });
     const third = items(timeline.update(chunk("After tool")))[0]!;
     expect(new Set([first.id, thought.id, second.id, third.id]).size).toBe(4);
@@ -352,9 +354,19 @@ describe("AcpTimeline", () => {
     if (window.op !== "window") throw new Error("Missing window");
     expect(window.hasMore).toBe(true);
     const page = timeline.history(window.start, 10_000);
-    expect(items(page)).toHaveLength(ACP_HISTORY_PAGE_ITEMS);
-    expect(items(page).every((item) => item.order! < window.start)).toBe(true);
-    expect(page[0]).toMatchObject({ op: "window", before: window.start, hasMore: true });
+    const pageItems = items(page);
+    // ~4 KB items: the byte budget, not the 200-item cap, ends this page.
+    expect(pageItems.length).toBeGreaterThan(1);
+    expect(pageItems.length).toBeLessThan(ACP_HISTORY_PAGE_ITEMS);
+    expect(utf8Bytes(JSON.stringify(pageItems))).toBeLessThanOrEqual(ACP_HISTORY_PAGE_BYTES);
+    expect(pageItems.every((item) => item.order! < window.start)).toBe(true);
+    expect(page[0]).toMatchObject({
+      op: "window",
+      start: pageItems[0]!.order,
+      before: window.start,
+      hasMore: true,
+    });
+    expect(items(timeline.history(window.start, 3))).toHaveLength(3);
     expect(timeline.history(0, 10)).toEqual([
       { op: "window", start: 0, before: 0, hasMore: false },
     ]);
@@ -377,6 +389,46 @@ describe("AcpTimeline", () => {
     expect(timeline.needsReload).toBe(true);
     expect(timeline.history(1, 1)).toEqual([{ op: "window", start: 1, before: 1, hasMore: true }]);
     expect(items(timeline.history(10, 50)).at(-1)).toMatchObject({ id: "msg:9", order: 9 });
+  });
+
+  it("times live thoughts until the agent moves on, but not replayed history", () => {
+    const thought = (text: string, messageId: string): SessionUpdate => ({
+      sessionUpdate: "agent_thought_chunk",
+      messageId,
+      content: { type: "text", text },
+    });
+    const timeline = new AcpTimeline();
+    timeline.update(thought("replayed", "old"));
+    timeline.update(chunk("answer", "old-answer"));
+    expect(items(timeline.snapshot()).find((item) => item.id === "msg:old")).not.toHaveProperty(
+      "duration",
+    );
+
+    timeline.startTurn("turn");
+    timeline.update(thought("a", "t1"));
+    // Metadata does not end a thought; a second chunk continues it.
+    expect(timeline.update({ sessionUpdate: "usage_update", used: 1, size: 10 })).toHaveLength(1);
+    timeline.update(thought("b", "t1"));
+    const ops = timeline.update(chunk("reply", "r1"));
+    expect(ops[0]).toEqual({ op: "item.upsert", item: { id: "msg:t1", duration: 1 } });
+
+    timeline.update(thought("c", "t2"));
+    const ended = timeline.endTurn("end_turn");
+    expect(ended[0]).toEqual({ op: "item.upsert", item: { id: "msg:t2", duration: 1 } });
+  });
+
+  it("keeps reported turn usage counters and leaves unreported ones absent", () => {
+    expect(
+      normalizeTurnUsage({
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 40,
+        cachedReadTokens: 25,
+        thoughtTokens: null,
+      }),
+    ).toEqual({ inputTokens: 10, outputTokens: 5, totalTokens: 40, cachedReadTokens: 25 });
+    expect(normalizeTurnUsage({ inputTokens: 10, totalTokens: 10 })).toBeUndefined();
+    expect(normalizeTurnUsage(null)).toBeUndefined();
   });
 
   it("sanitizes permission content with the same binary-free normalization", () => {

@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import {
-  ACP_HISTORY_PAGE_ITEMS,
+  ACP_HISTORY_REQUEST_ITEMS,
   ACP_VIEWER_HEARTBEAT_MS,
   type AcpInteractionAnswer,
 } from "backend/src/acp/contract";
@@ -25,6 +25,8 @@ import { acpChatStatus, acpRunState, createAcpViewModel } from "./view-model";
 type Interactions = FunctionReturnType<typeof api.acp.OpenInteractions>;
 type WorkerStatus = FunctionReturnType<typeof api.acp.WorkerStatus>;
 const noInteractions: Interactions = [];
+/** Quiet time after which a history request counts as finished (or failed, if nothing came). */
+const HISTORY_STALL_MS = 15_000;
 
 /** Read structured Convex errors instead of showing their serialized server envelope. */
 export function acpActionError(error: unknown): string | undefined {
@@ -88,6 +90,8 @@ export function useAcpSession({
   const caughtUp = useRef(false);
   const previousVisible = useRef(false);
   const [loadingBefore, setLoadingBefore] = useState<number>();
+  /** Window start whose history request failed; automatic loading stops there until a retry. */
+  const [failedBefore, setFailedBefore] = useState<number>();
   const requestedHistory = useRef(new Set<string>());
   const [now, setNow] = useState(() => Date.now());
   const lastWorker = useRef<WorkerStatus | undefined>(undefined);
@@ -147,6 +151,7 @@ export function useAcpSession({
     setTimeline(next);
     setFromSeq(0);
     setLoadingBefore(undefined);
+    setFailedBefore(undefined);
     caughtUp.current = false;
     followed.current = false;
   }, [epoch, isVisible]);
@@ -161,12 +166,25 @@ export function useAcpSession({
     const last = frames.at(-1);
     const consumed = !last || next.nextSeq > last.seqTo;
     caughtUp.current = frames.length < 64 && consumed && next.hasSnapshot;
-    if (frames.length === 64 && consumed && last) setFromSeq(last.seqTo + 1);
+    // Subscribe past every applied frame: a cursor left on a partial page would make each later
+    // append re-read the whole page (up to 64 frames of 32 KiB) for every viewer.
+    if (consumed && last) setFromSeq(last.seqTo + 1);
   }, [epoch, frames, streamEnabled]);
 
+  // One request streams every older page. While pages keep arriving it stays in flight; when they
+  // stop with more left (item limit, Worker restart), the next request continues from there, and
+  // a request that brought nothing at all counts as failed so the reader can retry.
   useEffect(() => {
-    if (loadingBefore !== undefined && timeline.windowStart !== loadingBefore)
+    if (loadingBefore === undefined) return;
+    const timer = window.setTimeout(() => {
+      const state = timelineRef.current;
+      if (state.windowStart === loadingBefore) {
+        requestedHistory.current.delete(`${state.epoch}:${loadingBefore}`);
+        setFailedBefore(loadingBefore);
+      }
       setLoadingBefore(undefined);
+    }, HISTORY_STALL_MS);
+    return () => window.clearTimeout(timer);
   }, [loadingBefore, timeline.windowStart]);
 
   useEffect(() => {
@@ -196,19 +214,55 @@ export function useAcpSession({
     const key = `${state.epoch}:${state.windowStart}`;
     if (requestedHistory.current.has(key)) return;
     requestedHistory.current.add(key);
-    setLoadingBefore(state.windowStart);
+    const before = state.windowStart;
+    setFailedBefore(undefined);
+    setLoadingBefore(before);
     try {
       await historyMutation({
         chat: chatId,
         epoch: state.epoch,
-        before: state.windowStart,
-        limit: ACP_HISTORY_PAGE_ITEMS,
+        before,
+        limit: ACP_HISTORY_REQUEST_ITEMS,
       });
     } catch (error) {
+      requestedHistory.current.delete(key);
       setLoadingBefore(undefined);
+      setFailedBefore(before);
       showActionError(error);
     }
   }, [chatId, historyMutation, isVisible]);
+
+  // Hidden Tabs drop the WorkerStatus subscription, so presence is unknown rather than offline.
+  const workerKnown = isVisible && worker !== undefined && !(worker instanceof Error);
+  const workerOnline = workerKnown && isWorkerOnline(worker.lastSeenAt ?? undefined, now);
+  const historyFailed = failedBefore !== undefined && failedBefore === timeline.windowStart;
+  const loadingHistory = timeline.hasSnapshot && timeline.hasMore && workerOnline && !historyFailed;
+  // Where the epoch's snapshot began. While older pages stream in, they stay out of the thread and
+  // join it in one step at the end, instead of each page shifting the reader's view.
+  const [opened, setOpened] = useState<{ epoch: number; start: number }>();
+  if (
+    timeline.hasSnapshot &&
+    timeline.epoch !== undefined &&
+    timeline.windowStart !== undefined &&
+    opened?.epoch !== timeline.epoch
+  )
+    setOpened({ epoch: timeline.epoch, start: timeline.windowStart });
+  const shownFrom =
+    loadingHistory && opened && opened.epoch === timeline.epoch ? opened.start : undefined;
+  // The whole conversation shows: older pages are requested until the agent's first item.
+  useEffect(() => {
+    if (!workerOnline || !timeline.hasSnapshot || !timeline.hasMore) return;
+    if (loadingBefore !== undefined || historyFailed) return;
+    void loadOlder();
+  }, [
+    historyFailed,
+    loadOlder,
+    loadingBefore,
+    timeline.hasMore,
+    timeline.hasSnapshot,
+    timeline.windowStart,
+    workerOnline,
+  ]);
 
   const prompt = useCallback(
     async (text: string) => {
@@ -275,9 +329,18 @@ export function useAcpSession({
   }, [chatId, forkMutation]);
   const [buildView] = useState(createAcpViewModel);
   const view = useMemo(
-    () => buildView(timeline, session?.status),
-    [buildView, timeline, session?.status],
+    () => buildView(timeline, session?.status, shownFrom),
+    [buildView, timeline, session?.status, shownFrom],
   );
+  // A snapshot can hold no turn (one oversized item); then the first page that brings one shows.
+  if (
+    opened &&
+    shownFrom !== undefined &&
+    view.messages.length === 0 &&
+    timeline.windowStart !== undefined &&
+    timeline.windowStart < shownFrom
+  )
+    setOpened({ ...opened, start: timeline.windowStart });
 
   return {
     session,
@@ -286,19 +349,15 @@ export function useAcpSession({
     ...view,
     runState: acpRunState(session?.status, session?.stopReason, timeline),
     chatStatus: acpChatStatus(session?.status),
-    // Hidden Tabs drop the WorkerStatus subscription, so presence is unknown rather than offline.
-    workerOnline:
-      isVisible &&
-      worker !== undefined &&
-      !(worker instanceof Error) &&
-      isWorkerOnline(worker.lastSeenAt ?? undefined, now),
-    workerKnown: isVisible && worker !== undefined && !(worker instanceof Error),
+    workerOnline,
+    workerKnown,
     workerLastSeenAt: lastWorker.current?.lastSeenAt,
     workerName: lastWorker.current?.name,
     interactions: interactions && !(interactions instanceof Error) ? interactions : noInteractions,
     contentError: frames instanceof Error ? frames : undefined,
     loadOlder,
-    isLoadingOlder: loadingBefore !== undefined,
+    historyFailed,
+    loadingHistory,
     prompt,
     cancel,
     setConfig,

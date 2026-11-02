@@ -12,6 +12,7 @@ import type {
   AcpSessionStatus,
   AcpStopReason,
   AcpCommandInfo,
+  AcpTurnUsage,
   AcpUsage,
 } from "backend/src/acp/contract";
 
@@ -71,6 +72,7 @@ export interface AcpSessionPatch {
   config?: AcpConfig;
   commands?: AcpCommandInfo[];
   usage?: AcpUsage;
+  turnUsage?: AcpTurnUsage;
   history?: "full" | "resumed" | "none";
   sessionId?: string;
   title?: string;

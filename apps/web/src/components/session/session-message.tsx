@@ -199,7 +199,6 @@ function AssistantParts({ message, isLive, showChainOfThought }: SessionMessageP
         <MessageStep
           part={part}
           isLive={isLive}
-          isGrouped={showChainOfThought}
           hasLaterContent={message.parts.slice(index + 1).some(hasRenderableAssistantContent)}
         />
       </Reveal>
@@ -251,48 +250,34 @@ function deniedSlot(part: ToolUIPart | AcpToolPart) {
   );
 }
 
-/** One reasoning or tool step; inside a chain of thought, reasoning is plain text under the summary. */
+/** One reasoning or tool step; a chain of thought nests the same steps under its summary. */
 function MessageStep({
   part,
   isLive,
-  isGrouped,
   hasLaterContent,
 }: {
   part: MessagePart;
   isLive: boolean;
-  isGrouped: boolean;
   hasLaterContent: boolean;
 }) {
   if (part.type === "reasoning") {
-    const isStreaming = isLive && part.state === "streaming";
     const metadata = part.providerMetadata;
     const isSummary =
       metadata?.radium?.reasoningType === "summary" || metadata?.openai !== undefined;
     const heading = isSummary
       ? /^(?:#{1,6}\s+([^\n]+)|\*\*([^*\n]+)\*\*)/.exec(part.text.trim())
       : null;
-    const title = heading?.[1] ?? heading?.[2];
 
-    if (isGrouped) {
-      return (
-        <div className="flex flex-col gap-1">
-          <span className="text-xs text-muted-foreground">
-            {isSummary ? "Reasoning summary" : "Visible reasoning"}
-            {title ? `: ${title}` : ""}
-          </span>
-          <Markdown isAnimating={isStreaming} className="text-[13px]">
-            {part.text}
-          </Markdown>
-        </div>
-      );
-    }
+    // Whole seconds the model reasoned, recorded by the Chatroom stream and the ACP Worker.
+    const duration = "duration" in part && typeof part.duration === "number" ? part.duration : 0;
 
     return (
       <ReasoningStep
         text={part.text}
-        isStreaming={isStreaming}
+        isStreaming={isLive && part.state === "streaming"}
         isSummary={isSummary}
-        title={title}
+        title={heading?.[1] ?? heading?.[2]}
+        duration={duration}
       />
     );
   }
@@ -310,14 +295,19 @@ function ReasoningStep({
   isStreaming,
   isSummary,
   title,
+  duration,
 }: {
   text: string;
   isStreaming: boolean;
   isSummary: boolean;
   title?: string;
+  duration: number;
 }) {
   const [userOpen, setUserOpen] = useState<boolean>();
   const state: RunState = isStreaming ? "thinking" : "succeeded";
+  let label = duration > 0 ? `Reasoned for ${formatDuration(duration)}` : "Reasoning";
+  if (isSummary) label = "Reasoning summary";
+  if (isStreaming) label = "Thinking";
 
   return (
     <TraceCollapsible open={userOpen ?? isStreaming} onOpenChange={setUserOpen}>
@@ -327,7 +317,7 @@ function ReasoningStep({
             <BrainIcon />
           </TraceIcon>
           <TraceTitle>
-            {isSummary ? "Reasoning summary" : isStreaming ? "Thinking" : "Visible reasoning"}
+            {label}
             {title ? `: ${title}` : ""}
           </TraceTitle>
         </TraceLine>
@@ -339,6 +329,13 @@ function ReasoningStep({
       </TraceCollapsibleContent>
     </TraceCollapsible>
   );
+}
+
+function formatDuration(seconds: number) {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
 }
 
 /**

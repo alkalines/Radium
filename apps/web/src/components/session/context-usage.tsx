@@ -40,6 +40,7 @@ export function ContextUsage({
   executions,
   cost,
   costLabel = "Gateway cost",
+  breakdownLabel,
 }: {
   usage: Partial<LanguageModelUsage>;
   maxTokens: number;
@@ -47,6 +48,8 @@ export function ContextUsage({
   /** Native cost reported by an external agent, without Gateway conversion. */
   cost?: { amount: number; currency: string };
   costLabel?: string;
+  /** Names the token rows' scope when it differs from the context total (an agent's last turn). */
+  breakdownLabel?: string;
 }) {
   const usedTokens = usage.totalTokens ?? 0;
   const usedShare = maxTokens > 0 ? Math.min(usedTokens / maxTokens, 1) : 0;
@@ -114,14 +117,19 @@ export function ContextUsage({
             track would be invisible; `bg-accent` stays distinct on popovers in both themes. */}
         <Progress value={usedShare * 100} aria-label="Context used" className="bg-accent" />
         {rows.length > 0 ? (
-          <dl className="flex flex-col gap-1">
-            {rows.map((row) => (
-              <div key={row.label} className="flex justify-between gap-3">
-                <dt className="text-muted-foreground">{row.label}</dt>
-                <dd className="tabular-nums">{compactNumber.format(row.tokens)}</dd>
-              </div>
-            ))}
-          </dl>
+          <div className="flex flex-col gap-1">
+            {breakdownLabel ? (
+              <p className="text-xs text-muted-foreground">{breakdownLabel}</p>
+            ) : null}
+            <dl className="flex flex-col gap-1">
+              {rows.map((row) => (
+                <div key={row.label} className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">{row.label}</dt>
+                  <dd className="tabular-nums">{compactNumber.format(row.tokens)}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
         ) : null}
         <div className="flex flex-col gap-1 border-t pt-3">
           <div className="flex justify-between gap-3">

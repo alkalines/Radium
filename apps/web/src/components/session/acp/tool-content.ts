@@ -88,17 +88,47 @@ export function acpCommand(item: AcpToolItem): string {
   return command ?? item.title;
 }
 
-/** Paths and commands are Machine text; unknown kinds retain the agent's own title. */
-export function acpToolSubject(item: AcpToolItem): string {
+/** A path as the reader knows it: relative to the Session's folder when it is inside it. */
+export function acpDisplayPath(path: string, cwd: string | undefined): string {
+  if (!cwd) return path;
+  const root = cwd.replace(/[\\/]+$/, "");
+  if (path === root) return ".";
+  const separator = path.charAt(root.length);
+  return path.startsWith(root) && (separator === "/" || separator === "\\")
+    ? path.slice(root.length + 1)
+    : path;
+}
+
+/**
+ * What a step is about: paths, the command or the URL as Machine text, else the agent's own title
+ * (`isTitle`), which may already name the action.
+ */
+export function acpToolSubject(
+  item: AcpToolItem,
+  cwd?: string,
+): { text: string; isTitle: boolean } {
   const kind = acpToolKind(item);
-  if (kind === "execute") return acpCommand(item);
+  if (kind === "execute") {
+    const command = acpCommand(item);
+    return { text: command, isTitle: false };
+  }
   if (kind === "read" || kind === "edit" || kind === "delete" || kind === "move") {
-    const paths = item.locations?.map((location) => location.path) ?? [];
-    if (!paths.length)
-      paths.push(
-        ...(item.content?.flatMap((entry) => (entry.type === "diff" ? [entry.path] : [])) ?? []),
-      );
-    if (paths.length) return paths.join(kind === "move" ? " → " : ", ");
+    const locations = item.locations?.length
+      ? item.locations
+      : (item.content?.flatMap((entry) => (entry.type === "diff" ? [{ path: entry.path }] : [])) ??
+        []);
+    if (locations.length)
+      return {
+        text: locations
+          .map((location) => {
+            const path = acpDisplayPath(location.path, cwd);
+            return "line" in location && location.line !== undefined
+              ? `${path}:${location.line}`
+              : path;
+          })
+          .join(kind === "move" ? " → " : ", "),
+        isTitle: false,
+      };
   }
   if (kind === "fetch") {
     const input = acpRawValue(item.rawInput);
@@ -108,9 +138,37 @@ export function acpToolSubject(item: AcpToolItem): string {
       "url" in input &&
       typeof input.url === "string"
     )
-      return input.url;
+      return { text: input.url, isTitle: false };
     const resource = item.content?.find((entry) => entry.type === "resource");
-    if (resource?.type === "resource") return resource.uri;
+    if (resource?.type === "resource") return { text: resource.uri, isTitle: false };
   }
-  return item.title;
+  return { text: item.title, isTitle: true };
+}
+
+const numberedLine = /^\s*(\d+)(?:[:→|]|\t)(.*)$/;
+
+/**
+ * File text an agent already numbered (`12:code`, `12→code`, `cat -n`), split into code and its
+ * own line numbers so they show in the gutter instead of twice. Gaps (elided ranges) keep no
+ * number. A leading `[path]` header line, which some agents print, is the step's own subject.
+ */
+export function acpNumberedText(
+  text: string,
+): { code: string; numbers: (number | undefined)[] } | undefined {
+  const lines = text.replace(/\n$/, "").split("\n");
+  if (lines.length > 1 && /^\[[^\]\n]+\]$/.test(lines[0]!)) lines.shift();
+  const parsed = lines.map((line) => {
+    const match = numberedLine.exec(line);
+    return match ? { number: Number(match[1]), text: match[2]! } : { text: line };
+  });
+  const numbered = parsed.filter((line) => line.number !== undefined).length;
+  // Elision markers and blank lines between numbered ranges do not count against the file shape.
+  const other = parsed.filter(
+    (line) => line.number === undefined && !/^\s*(?:…|\.\.\.)?\s*$/.test(line.text),
+  ).length;
+  if (numbered === 0 || other > numbered / 4) return undefined;
+  return {
+    code: parsed.map((line) => line.text).join("\n"),
+    numbers: parsed.map((line) => line.number),
+  };
 }

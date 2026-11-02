@@ -75,6 +75,11 @@ export function SessionThread({
     setLoadedMessageIds(new Set(messages.map((message) => message.id)));
   }
 
+  // Turns that join above the opening ones are older history, not new arrivals: only turns after
+  // the last opening turn reveal.
+  const lastLoadedIndex = loadedMessageIds
+    ? messages.findLastIndex((message) => loadedMessageIds.has(message.id))
+    : -1;
   const isBusy = status === "submitted" || status === "streaming";
   const lastMessage = messages.at(-1);
   const latestAssistantId = messages.findLast((message) => message.role === "assistant")?.id;
@@ -130,7 +135,13 @@ export function SessionThread({
                   messageId={message.id}
                   scrollAnchor={message.role === "user"}
                 >
-                  <Reveal isNew={loadedMessageIds !== null && !loadedMessageIds.has(message.id)}>
+                  <Reveal
+                    isNew={
+                      loadedMessageIds !== null &&
+                      !loadedMessageIds.has(message.id) &&
+                      index > lastLoadedIndex
+                    }
+                  >
                     <SessionMessage
                       message={message}
                       isLive={isBusy && isLast && message.role === "assistant"}

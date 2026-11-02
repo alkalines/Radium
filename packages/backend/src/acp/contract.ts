@@ -33,7 +33,14 @@ export const ACP_INTERACTION_REQUEST_BYTES = 32 * 1024;
 /** Largest serialized transient command result (UTF-8 bytes). */
 export const ACP_COMMAND_RESULT_BYTES = 64 * 1024;
 /** Most items one history page may return. */
-export const ACP_HISTORY_PAGE_ITEMS = 50;
+export const ACP_HISTORY_PAGE_ITEMS = 200;
+/** Most items one history request streams, as consecutive pages (the Worker caches 8 MiB). */
+export const ACP_HISTORY_REQUEST_ITEMS = 10_000;
+/**
+ * Item bytes one history page may carry (one larger item still goes alone). Must stay well under
+ * the relay's 1 MiB outage buffer, which would otherwise drop the page and restart the epoch.
+ */
+export const ACP_HISTORY_PAGE_BYTES = 256 * 1024;
 /** Maximum agent sessions indexed by one sync; writes are sent in bounded chunks. */
 export const ACP_AGENT_SESSIONS_MAX = 2000;
 export const ACP_AGENT_SESSIONS_SYNC_CHUNK = 200;
@@ -188,6 +195,21 @@ export const acpUsageValidator = v.object({
   cost: v.optional(v.object({ amount: v.number(), currency: v.string() })),
 });
 export type AcpUsage = Infer<typeof acpUsageValidator>;
+
+/**
+ * Token breakdown of the latest `session/prompt` response (unstable ACP `PromptResponse.usage`).
+ * Agents disagree on whether it covers the turn or the whole session, so it is shown as reported
+ * and never summed across turns.
+ */
+export const acpTurnUsageValidator = v.object({
+  inputTokens: v.number(),
+  outputTokens: v.number(),
+  totalTokens: v.number(),
+  thoughtTokens: v.optional(v.number()),
+  cachedReadTokens: v.optional(v.number()),
+  cachedWriteTokens: v.optional(v.number()),
+});
+export type AcpTurnUsage = Infer<typeof acpTurnUsageValidator>;
 
 /** Choices made before the ACP session exists, applied by the Worker right after `session/new`. */
 export const acpDraftConfigValidator = v.object({
@@ -689,6 +711,8 @@ export type AcpItem =
       text: string;
       parts?: AcpMessagePart[];
       messageId?: string;
+      /** Whole seconds a live `thought` took; replayed history has none. */
+      duration?: number;
     })
   | (AcpItemBase & {
       kind: "tool";

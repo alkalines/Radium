@@ -137,7 +137,7 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
     if (settledHref && (screen === "home" || isSessionScreen)) setLastAppHref(settledHref);
   }, [settledHref, isSessionScreen, screen]);
 
-  const activeTitle = activeTab ? tabTitle(activeTab) : pageTitle;
+  const activeTitle = plainTitle(activeTab ? tabTitle(activeTab) : pageTitle);
   useEffect(() => {
     document.title = activeTitle ? `${activeTitle} · Radium` : "Radium";
   }, [activeTitle]);
@@ -407,6 +407,17 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
 function tabTitle(tab: SessionTab) {
   if (tab.title) return tab.title;
   return tab.chatId ? "Untitled session" : "New session";
+}
+
+/**
+ * Emoji (with their joiners, variation selectors, and flag tags) and private-use icon glyphs, such
+ * as the Nerd Font icons some agents put in titles, which the browser Tab strip shows as `?`.
+ */
+const titleSymbols =
+  /[\p{Co}\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\u200d\ufe0f\u20e3\u{e0020}-\u{e007f}]/gu;
+
+function plainTitle(title: string | undefined) {
+  return title?.replace(titleSymbols, "").replace(/\s+/g, " ").trim();
 }
 
 /**

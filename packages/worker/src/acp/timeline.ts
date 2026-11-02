@@ -6,6 +6,7 @@ import type {
   ToolCallContent,
 } from "@agentclientprotocol/sdk";
 import {
+  ACP_HISTORY_PAGE_BYTES,
   ACP_HISTORY_PAGE_ITEMS,
   ACP_ITEM_CONTENT_BYTES,
   ACP_SNAPSHOT_BYTES,
@@ -19,6 +20,7 @@ import {
   type AcpPromptBlock,
   type AcpStopReason,
   type AcpToolContent,
+  type AcpTurnUsage,
 } from "backend/src/acp/contract";
 
 type MessageItem = Extract<AcpItem, { text: string }>;
@@ -61,6 +63,47 @@ function messagePart(content: ContentBlock): AcpMessagePart | undefined {
         ...(content.resource.mimeType ? { mimeType: content.resource.mimeType } : {}),
       };
   }
+}
+
+/** Session updates that end an open thought: anything the agent says or does, not metadata. */
+function endsThought(update: SessionUpdate): boolean {
+  switch (update.sessionUpdate) {
+    case "agent_thought_chunk":
+    case "available_commands_update":
+    case "config_option_update":
+    case "current_mode_update":
+    case "usage_update":
+    case "session_info_update":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * The unstable `PromptResponse.usage`, kept only when its required counters are numbers; absent or
+ * null optional counters stay absent rather than becoming zero.
+ */
+export function normalizeTurnUsage(value: unknown): AcpTurnUsage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const usage = value as Record<string, unknown>;
+  const count = (key: string) => {
+    const number = usage[key];
+    return typeof number === "number" && Number.isFinite(number) && number >= 0
+      ? number
+      : undefined;
+  };
+  const inputTokens = count("inputTokens");
+  const outputTokens = count("outputTokens");
+  const totalTokens = count("totalTokens");
+  if (inputTokens === undefined || outputTokens === undefined || totalTokens === undefined)
+    return undefined;
+  const result: AcpTurnUsage = { inputTokens, outputTokens, totalTokens };
+  for (const key of ["thoughtTokens", "cachedReadTokens", "cachedWriteTokens"] as const) {
+    const number = count(key);
+    if (number !== undefined) result[key] = number;
+  }
+  return result;
 }
 
 function toolContent(content: ToolCallContent): AcpToolContent | undefined {
@@ -230,6 +273,8 @@ export class AcpTimeline {
   private serial = 0;
   private turnId: string | undefined;
   private message: { id: string; kind: MessageItem["kind"] } | undefined;
+  /** The live turn's open thought; it ends when the agent says or does anything else. */
+  private thought: { id: string; startedAt: number } | undefined;
 
   /** Begin a locally admitted turn and reset implicit message grouping. */
   public startTurn(turnId: string): AcpOp[] {
@@ -241,7 +286,7 @@ export class AcpTimeline {
   /** Finish the current turn; errors also remain visible as timeline notices. */
   public endTurn(stopReason?: AcpStopReason, error?: string): AcpOp[] {
     if (!this.turnId) return [];
-    const ops: AcpOp[] = [];
+    const ops: AcpOp[] = this.finishThought();
     if (error)
       ops.push(
         ...this.store({
@@ -281,6 +326,12 @@ export class AcpTimeline {
 
   /** Normalize all stable SDK session updates, preserving patch/null and chunk semantics. */
   public update(update: SessionUpdate): AcpOp[] {
+    const ended = endsThought(update) ? this.finishThought() : [];
+    const ops = this.apply(update);
+    return ended.length ? [...ended, ...ops] : ops;
+  }
+
+  private apply(update: SessionUpdate): AcpOp[] {
     switch (update.sessionUpdate) {
       case "user_message_chunk":
       case "agent_message_chunk":
@@ -300,6 +351,10 @@ export class AcpTimeline {
         this.message = { id, kind };
         const existing = this.items.get(id);
         const previous = existing && "text" in existing ? existing : undefined;
+        // A thought chunk with a new id is a new thought; the open one is finished.
+        const ended = kind === "thought" && this.thought?.id !== id ? this.finishThought() : [];
+        if (kind === "thought" && !previous && this.turnId)
+          this.thought = { id, startedAt: Date.now() };
         const part = messagePart(update.content);
         const item: MessageItem = {
           ...(previous ?? this.base(id)),
@@ -310,10 +365,10 @@ export class AcpTimeline {
           ...(part ? { parts: [...(previous?.parts ?? []), part] } : {}),
         };
         this.store(item);
-        if (!previous) return [{ op: "item.upsert", item }];
+        if (!previous) return [...ended, { op: "item.upsert", item }];
         if (update.content.type === "text")
-          return [{ op: "text.append", id, text: update.content.text }];
-        return [{ op: "item.upsert", item: { id, parts: item.parts } }];
+          return [...ended, { op: "text.append", id, text: update.content.text }];
+        return [...ended, { op: "item.upsert", item: { id, parts: item.parts } }];
       }
       case "tool_call":
       case "tool_call_update": {
@@ -525,16 +580,34 @@ export class AcpTimeline {
     ];
   }
 
-  /** Return at most one bounded item-count page strictly older than `before`. */
-  public history(before: number, limit: number): AcpOp[] {
+  /** Return one page strictly older than `before`, bounded by item count and item bytes. */
+  public history(before: number, limit: number, maxBytes = ACP_HISTORY_PAGE_BYTES): AcpOp[] {
     const count = Math.max(1, Math.min(ACP_HISTORY_PAGE_ITEMS, Math.floor(limit) || 1));
     const eligible = [...this.items.values()].filter((item) => item.order < before);
-    const items = eligible.slice(-count);
+    let first = eligible.length;
+    let bytes = 0;
+    while (first > 0 && eligible.length - first < count) {
+      const size = this.sizes.get(eligible[first - 1]!.id) ?? 0;
+      if (first < eligible.length && bytes + size > maxBytes) break;
+      bytes += size;
+      first--;
+    }
+    const items = eligible.slice(first);
     const start = items[0]?.order ?? before;
     return [
-      { op: "window", start, before, hasMore: eligible.length > items.length || this.needsReload },
+      { op: "window", start, before, hasMore: first > 0 || this.needsReload },
       ...items.map((item): AcpOp => ({ op: "item.upsert", item })),
     ];
+  }
+
+  private finishThought(): AcpOp[] {
+    const thought = this.thought;
+    this.thought = undefined;
+    const item = thought && this.items.get(thought.id);
+    if (item?.kind !== "thought") return [];
+    const duration = Math.max(1, Math.round((Date.now() - thought!.startedAt) / 1000));
+    this.store({ ...item, duration });
+    return [{ op: "item.upsert", item: { id: item.id, duration } }];
   }
 
   private patch(patch: Omit<Extract<AcpOp, { op: "session.patch" }>, "op">): AcpOp[] {

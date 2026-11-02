@@ -50,6 +50,7 @@ import { AcpConfigControls, acpModelConfig, applyAcpDraft } from "./config-contr
 import { AcpElicitationPrompt } from "./elicitation-prompt";
 import { AcpPermissionPrompt } from "./permission-prompt";
 import { useAcpSession } from "./use-acp-session";
+import { AcpSessionFolder } from "./session-folder";
 
 function subscribeVisibility(onChange: () => void) {
   document.addEventListener("visibilitychange", onChange);
@@ -91,6 +92,13 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   const unavailable = Boolean(chatError || acp.sessionError) || typeof chatResult === "string";
   const { data: projects } = useQuery(
     convexQuery(api.projects.list, chat ? { workspace: chat.workspace } : "skip"),
+  );
+  // Same workspace preference as built-in Sessions, so both threads render steps alike.
+  const { data: chainOfThoughtEnabled = true } = useQuery(
+    convexQuery(
+      api.chatroom.getChainOfThoughtEnabled,
+      chat ? { workspace: chat.workspace } : "skip",
+    ),
   );
   const setChatScope = useMutation(api.aisdk.SetChatScope);
   const [scopeSaving, setScopeSaving] = useState(false);
@@ -221,214 +229,244 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     );
 
   const hasContent = messages.length > 0 || visiblePendingPrompt !== undefined;
-  const waitingForSnapshot = hasOpened && !timeline.hasSnapshot && !hasContent && !ended;
+  // A snapshot can hold no message (one oversized item); its history is then the first content.
+  const waitingForSnapshot =
+    hasOpened && (!timeline.hasSnapshot || acp.loadingHistory) && !hasContent && !ended;
   const offline = acp.workerKnown && !acp.workerOnline;
   const lastSeen = acp.workerLastSeenAt
     ? `Last seen ${formatLastSeen(acp.workerLastSeenAt)}.`
     : undefined;
+  // Frames carry each `usage_update` as it happens; the session row only updates at turn end.
+  const contextUsage = timeline.session.usage ?? session?.usage;
+  const turnUsage = session?.turnUsage;
   return (
-    <div className="relative flex h-full flex-col">
-      <div className="relative flex h-11 shrink-0 items-center justify-end gap-1 px-3">
-        {session?.usage ? (
-          <div className="shrink-0 max-sm:hidden">
-            <ContextUsage
-              usage={{ totalTokens: session.usage.used }}
-              maxTokens={session.usage.size}
-              cost={session.usage.cost}
-              costLabel="Agent cost"
-            />
-          </div>
-        ) : null}
-        <SessionWorkerControl
-          isFixed
-          workerName={workerName}
-          agent={{ protocol: "acp", name: agentName }}
-        />
-      </div>
-      {offline && !hasContent && isVisible ? (
-        <Empty className="min-h-0 flex-1">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <ServerOffIcon />
-            </EmptyMedia>
-            <EmptyTitle>{workerName} is offline</EmptyTitle>
-            <EmptyDescription>
-              The conversation lives on {workerName} and shows here when it is online. {lastSeen}
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      ) : waitingForSnapshot && isVisible ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center px-6">
-          {session?.error && !running ? (
-            <p className="max-w-sm text-center text-sm text-muted-foreground">{session.error}</p>
-          ) : (
-            <Spinner className="text-muted-foreground" />
-          )}
-        </div>
-      ) : ended && !hasContent ? (
-        <Empty className="min-h-0 flex-1">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <ArchiveXIcon />
-            </EmptyMedia>
-            <EmptyTitle>{agentName} no longer has this session</EmptyTitle>
-            <EmptyDescription>
-              The conversation lives in the agent on {workerName}, and the agent can no longer open
-              it, so it cannot continue here.
-            </EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
-            <Button size="sm" onClick={() => void navigate({ to: "/chat" })}>
-              Start a new session
-            </Button>
-          </EmptyContent>
-        </Empty>
-      ) : !hasOpened && !hasContent ? (
-        <div className="min-h-0 flex-1" />
-      ) : (
-        <SessionThread
-          messages={messages}
-          status={acp.chatStatus}
-          pendingPrompt={visiblePendingPrompt}
-          showChainOfThought
-          agentName={agentName}
-          modelLabel={modelName}
-          onCopy={copyMessage}
-          forkLatestOnly
-          onFork={canFork ? handleFork : undefined}
-          historyControl={
-            timeline.hasMore ? (
-              <div className="flex justify-center">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={acp.isLoadingOlder || !acp.workerOnline}
-                  onClick={() => void acp.loadOlder()}
-                >
-                  {acp.isLoadingOlder ? <Spinner /> : null}Load earlier messages
-                </Button>
-              </div>
-            ) : undefined
-          }
-        />
-      )}
-      <div className="relative mx-auto flex w-full max-w-190 flex-col gap-2 px-4 pb-4">
-        {offline ? (
-          <Alert>
-            <ServerOffIcon />
-            <AlertTitle>{workerName} is offline</AlertTitle>
-            <AlertDescription>
-              {running
-                ? "The turn continues if the Worker reconnects, but fails if it restarted."
-                : "This Session continues when the Worker is back."}{" "}
-              {lastSeen}
-            </AlertDescription>
-          </Alert>
-        ) : null}
-        {session?.history === "resumed" ? (
-          <p className="text-center text-xs text-muted-foreground">
-            Earlier history is not available from this agent
-          </p>
-        ) : null}
-        {ended && hasContent ? (
-          <Alert>
-            <ArchiveXIcon />
-            <AlertTitle>{agentName} can no longer continue this session</AlertTitle>
-            <AlertDescription>
-              <p>Start a new session to keep working.</p>
-              <Button size="sm" className="mt-2" onClick={() => void navigate({ to: "/chat" })}>
-                Start a new session
-              </Button>
-            </AlertDescription>
-          </Alert>
-        ) : null}
-        {acp.contentError ? (
-          <Alert variant="destructive">
-            <AlertTitle>Unable to load agent content</AlertTitle>
-            <AlertDescription>{acp.contentError.message}</AlertDescription>
-          </Alert>
-        ) : null}
-        {chat?.interruption && !running && !currentInteraction ? (
-          <RunInterruptionCard
-            interruption={chat.interruption}
-            canRetry={false}
-            shortcutsEnabled={isActive}
-            onSwitchModel={() => setModelOpen(true)}
-          />
-        ) : null}
-        <div
-          data-tray={trayAttached ? "attached" : undefined}
-          className="group/prompt-slot flex flex-col"
-        >
-          <AnimatePresence initial={false} onExitComplete={() => setTrayAttached(false)}>
-            {trayTodos ? <TodoPanel key="todos" items={trayTodos} isRunning={running} /> : null}
-          </AnimatePresence>
-          {currentInteraction ? (
-            <div key={currentInteraction._id} className="flex flex-col gap-1">
-              {currentInteraction.request.kind === "permission" ? (
-                <AcpPermissionPrompt
-                  request={currentInteraction.request}
-                  index={0}
-                  total={pendingInteractions.length}
-                  shortcutsEnabled={isActive}
-                  onAnswer={(optionId) =>
-                    void answer(currentInteraction._id, { kind: "permission", optionId })
-                  }
-                />
-              ) : (
-                <>
-                  {pendingInteractions.length > 1 ? (
-                    <p className="px-3 text-xs text-muted-foreground">
-                      1 of {pendingInteractions.length}
-                    </p>
-                  ) : null}
-                  <AcpElicitationPrompt
-                    request={currentInteraction.request}
-                    agentName={agentName}
-                    shortcutsEnabled={isActive}
-                    onAnswer={(response) => void answer(currentInteraction._id, response)}
-                  />
-                </>
-              )}
+    <AcpSessionFolder value={session?.agent.cwd}>
+      <div className="relative flex h-full flex-col">
+        <div className="relative flex h-11 shrink-0 items-center justify-end gap-1 px-3">
+          {contextUsage ? (
+            <div className="shrink-0 max-sm:hidden">
+              <ContextUsage
+                usage={{
+                  totalTokens: contextUsage.used,
+                  ...(turnUsage
+                    ? {
+                        inputTokens: turnUsage.inputTokens,
+                        outputTokens: turnUsage.outputTokens,
+                        inputTokenDetails: {
+                          noCacheTokens: undefined,
+                          cacheReadTokens: turnUsage.cachedReadTokens,
+                          cacheWriteTokens: turnUsage.cachedWriteTokens,
+                        },
+                        outputTokenDetails: {
+                          textTokens: undefined,
+                          reasoningTokens: turnUsage.thoughtTokens,
+                        },
+                      }
+                    : {}),
+                }}
+                breakdownLabel="Last turn"
+                maxTokens={contextUsage.size}
+                cost={contextUsage.cost}
+                costLabel="Session cost"
+              />
             </div>
           ) : null}
-          <div hidden={currentInteraction !== undefined || ended}>
-            <Composer
-              layoutId={`composer-${tabId}`}
-              workspace={chat?.workspace}
-              autoFocus={isVisible}
-              canSend={canSend}
-              isRunning={running}
-              onSubmit={({ text }) => acp.prompt(text)}
-              onStop={() => void acp.cancel()}
-              modelControl={
-                <AcpConfigControls
-                  agentId={session?.agent.agentId}
-                  config={config}
-                  disabled={ended || !acp.workerOnline}
-                  isOpen={modelOpen}
-                  onOpenChange={setModelOpen}
-                  onConfigChange={(id, value) => void acp.setConfig(id, value)}
-                  onModeChange={(id) => void acp.setMode(id)}
-                />
-              }
-              toolbarControls={<ToolsDialog disabledReason="The agent brings its own tools" />}
-              commands={session?.commands}
-              attachmentsDisabledReason="Attachments for agent Sessions are not supported yet."
-              menuItems={
-                <ConversationVisibilityMenu
-                  scope={chat?.scope ?? "personal"}
-                  isDraft={false}
-                  canChange={chat?.canManageScope === true && !scopeSaving}
-                  onChange={(scope) => void changeScope(scope)}
-                />
-              }
-              textStore={textStore}
+          <SessionWorkerControl
+            isFixed
+            workerName={workerName}
+            agent={{ protocol: "acp", name: agentName }}
+          />
+        </div>
+        {offline && !hasContent && isVisible ? (
+          <Empty className="min-h-0 flex-1">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <ServerOffIcon />
+              </EmptyMedia>
+              <EmptyTitle>{workerName} is offline</EmptyTitle>
+              <EmptyDescription>
+                The conversation lives on {workerName} and shows here when it is online. {lastSeen}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : waitingForSnapshot && isVisible ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center px-6">
+            {session?.error && !running ? (
+              <p className="max-w-sm text-center text-sm text-muted-foreground">{session.error}</p>
+            ) : (
+              <Spinner className="text-muted-foreground" />
+            )}
+          </div>
+        ) : ended && !hasContent ? (
+          <Empty className="min-h-0 flex-1">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <ArchiveXIcon />
+              </EmptyMedia>
+              <EmptyTitle>{agentName} no longer has this session</EmptyTitle>
+              <EmptyDescription>
+                The conversation lives in the agent on {workerName}, and the agent can no longer
+                open it, so it cannot continue here.
+              </EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button size="sm" onClick={() => void navigate({ to: "/chat" })}>
+                Start a new session
+              </Button>
+            </EmptyContent>
+          </Empty>
+        ) : !hasOpened && !hasContent ? (
+          <div className="min-h-0 flex-1" />
+        ) : (
+          <SessionThread
+            messages={messages}
+            status={acp.chatStatus}
+            pendingPrompt={visiblePendingPrompt}
+            showChainOfThought={chainOfThoughtEnabled}
+            agentName={agentName}
+            modelLabel={modelName}
+            onCopy={copyMessage}
+            forkLatestOnly
+            onFork={canFork ? handleFork : undefined}
+            historyControl={
+              acp.loadingHistory ? (
+                <div className="flex justify-center py-1">
+                  <Spinner className="text-muted-foreground" />
+                </div>
+              ) : timeline.hasMore && acp.historyFailed ? (
+                <div className="flex justify-center">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={!acp.workerOnline}
+                    onClick={() => void acp.loadOlder()}
+                  >
+                    Retry loading earlier messages
+                  </Button>
+                </div>
+              ) : undefined
+            }
+          />
+        )}
+        <div className="relative mx-auto flex w-full max-w-190 flex-col gap-2 px-4 pb-4">
+          {offline ? (
+            <Alert>
+              <ServerOffIcon />
+              <AlertTitle>{workerName} is offline</AlertTitle>
+              <AlertDescription>
+                {running
+                  ? "The turn continues if the Worker reconnects, but fails if it restarted."
+                  : "This Session continues when the Worker is back."}{" "}
+                {lastSeen}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {session?.history === "resumed" ? (
+            <p className="text-center text-xs text-muted-foreground">
+              Earlier history is not available from this agent
+            </p>
+          ) : null}
+          {ended && hasContent ? (
+            <Alert>
+              <ArchiveXIcon />
+              <AlertTitle>{agentName} can no longer continue this session</AlertTitle>
+              <AlertDescription>
+                <p>Start a new session to keep working.</p>
+                <Button size="sm" className="mt-2" onClick={() => void navigate({ to: "/chat" })}>
+                  Start a new session
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {acp.contentError ? (
+            <Alert variant="destructive">
+              <AlertTitle>Unable to load agent content</AlertTitle>
+              <AlertDescription>{acp.contentError.message}</AlertDescription>
+            </Alert>
+          ) : null}
+          {chat?.interruption && !running && !currentInteraction ? (
+            <RunInterruptionCard
+              interruption={chat.interruption}
+              canRetry={false}
+              shortcutsEnabled={isActive}
+              onSwitchModel={() => setModelOpen(true)}
             />
+          ) : null}
+          <div
+            data-tray={trayAttached ? "attached" : undefined}
+            className="group/prompt-slot flex flex-col"
+          >
+            <AnimatePresence initial={false} onExitComplete={() => setTrayAttached(false)}>
+              {trayTodos ? <TodoPanel key="todos" items={trayTodos} isRunning={running} /> : null}
+            </AnimatePresence>
+            {currentInteraction ? (
+              <div key={currentInteraction._id} className="flex flex-col gap-1">
+                {currentInteraction.request.kind === "permission" ? (
+                  <AcpPermissionPrompt
+                    request={currentInteraction.request}
+                    index={0}
+                    total={pendingInteractions.length}
+                    shortcutsEnabled={isActive}
+                    onAnswer={(optionId) =>
+                      void answer(currentInteraction._id, { kind: "permission", optionId })
+                    }
+                  />
+                ) : (
+                  <>
+                    {pendingInteractions.length > 1 ? (
+                      <p className="px-3 text-xs text-muted-foreground">
+                        1 of {pendingInteractions.length}
+                      </p>
+                    ) : null}
+                    <AcpElicitationPrompt
+                      request={currentInteraction.request}
+                      agentName={agentName}
+                      shortcutsEnabled={isActive}
+                      onAnswer={(response) => void answer(currentInteraction._id, response)}
+                    />
+                  </>
+                )}
+              </div>
+            ) : null}
+            <div hidden={currentInteraction !== undefined || ended}>
+              <Composer
+                layoutId={`composer-${tabId}`}
+                workspace={chat?.workspace}
+                autoFocus={isVisible}
+                canSend={canSend}
+                isRunning={running}
+                onSubmit={({ text }) => acp.prompt(text)}
+                onStop={() => void acp.cancel()}
+                modelControl={
+                  <AcpConfigControls
+                    agentId={session?.agent.agentId}
+                    config={config}
+                    defaults={session?.defaultConfig}
+                    disabled={ended || !acp.workerOnline}
+                    isOpen={modelOpen}
+                    onOpenChange={setModelOpen}
+                    onConfigChange={(id, value) => void acp.setConfig(id, value)}
+                    onModeChange={(id) => void acp.setMode(id)}
+                  />
+                }
+                toolbarControls={<ToolsDialog disabledReason="The agent brings its own tools" />}
+                commands={session?.commands}
+                attachmentsDisabledReason="Attachments for agent Sessions are not supported yet."
+                menuItems={
+                  <ConversationVisibilityMenu
+                    scope={chat?.scope ?? "personal"}
+                    isDraft={false}
+                    canChange={chat?.canManageScope === true && !scopeSaving}
+                    onChange={(scope) => void changeScope(scope)}
+                  />
+                }
+                textStore={textStore}
+              />
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </AcpSessionFolder>
   );
 });
 

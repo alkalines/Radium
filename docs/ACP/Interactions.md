@@ -71,8 +71,8 @@ each pays only for what it shows.
   new epoch; the client replaces its content with the new snapshot. Older pages are
   kept across an epoch switch only when the switch happened while the Tab was
   following the stream live (a size rollover).
-- `LiveFrames.fromSeq` advances only when a page returns 64 frames, so the
-  subscription arguments stay stable while a turn streams.
+- `LiveFrames.fromSeq` moves past every applied batch, so each re-run reads only
+  new frames ([Transport](Transport.md#frames)).
 - `acp.WorkerStatus` (Worker name and last heartbeat) drives the `Worker offline`
   badge and the "Content lives on <Worker>" state; it wakes on every Worker
   heartbeat, which is why only visible Sessions subscribe.
@@ -266,13 +266,13 @@ The stable selection is `acp:<agentId>`, independent of the selected Worker;
 availability comes from that Worker's `ListAgents` report and current presence.
 The Worker list always includes every active identity, never revoked ones.
 
-| Worker | Agent report | Agent row | Worker row with ACP selected |
-| --- | --- | --- | --- |
-| None selected | Any | Choose a Worker | — |
-| Offline (heartbeat older than 60 s or absent) | Any | Worker offline | Offline |
-| Online | Ready | No status label | Online |
-| Online | Needs authentication | Inline Sign in | Unavailable |
-| Online | Failed, unavailable, or missing | Unavailable | Unavailable |
+| Worker                                        | Agent report                    | Agent row       | Worker row with ACP selected |
+| --------------------------------------------- | ------------------------------- | --------------- | ---------------------------- |
+| None selected                                 | Any                             | Choose a Worker | —                            |
+| Offline (heartbeat older than 60 s or absent) | Any                             | Worker offline  | Offline                      |
+| Online                                        | Ready                           | No status label | Online                       |
+| Online                                        | Needs authentication            | Inline Sign in  | Unavailable                  |
+| Online                                        | Failed, unavailable, or missing | Unavailable     | Unavailable                  |
 
 Choosing an agent without a Worker selects the first online Worker reporting
 that agent ready, if one exists. Changing Workers never changes the chosen

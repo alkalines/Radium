@@ -487,7 +487,18 @@ export async function runScriptedAgent(options: ScriptedAgentOptions = {}): Prom
         title: session.title,
         updatedAt: new Date().toISOString(),
       });
-      return { stopReason: signal.aborted ? "cancelled" : "end_turn" };
+      if (signal.aborted) return { stopReason: "cancelled" };
+      // Unstable `PromptResponse.usage`, so the Chatroom's turn breakdown has a scripted source.
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 1200,
+          outputTokens: 80,
+          thoughtTokens: 30,
+          cachedReadTokens: 900,
+          totalTokens: 2180,
+        },
+      };
     } catch (error) {
       if (signal.aborted) return { stopReason: "cancelled" };
       throw error;

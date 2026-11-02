@@ -21,7 +21,7 @@ import { generateChatTitle } from "../chatroom/titles";
 import {
   ACP_AGENT_DEFINITIONS_MAX,
   ACP_BUSY_STATUSES,
-  ACP_HISTORY_PAGE_ITEMS,
+  ACP_HISTORY_REQUEST_ITEMS,
   ACP_PROMPT_BYTES,
   acpAnswerError,
   acpInteractionAnswerValidator,
@@ -389,7 +389,7 @@ export const RequestHistory = mutation({
           kind: "history",
           epoch: args.epoch,
           before: args.before,
-          limit: Math.min(ACP_HISTORY_PAGE_ITEMS, Math.max(1, Math.floor(args.limit))),
+          limit: Math.min(ACP_HISTORY_REQUEST_ITEMS, Math.max(1, Math.floor(args.limit))),
         },
         args.chat,
         clientId,
@@ -833,11 +833,12 @@ export const GetSession = query({
       stopReason: session.stopReason,
       error: session.error,
       config: session.config,
-      ...(!session.sessionId && report?.defaults?.config
-        ? { defaultConfig: report.defaults.config }
-        : {}),
+      // Before `session/new` these are the draft's starting values; afterwards they tell the
+      // Composer which choices are still the agent's defaults.
+      ...(report?.defaults?.config ? { defaultConfig: report.defaults.config } : {}),
       commands: session.commands ?? (session.sessionId ? undefined : report?.defaults?.commands),
       usage: session.usage,
+      turnUsage: session.turnUsage,
       history: session.history,
       draft: session.draft,
     };

@@ -15,6 +15,8 @@ import { ACP_TOOL_KINDS, acpToolPart, type AcpToolItem } from "./parts";
 import {
   acpCommand,
   acpDiffFile,
+  acpDisplayPath,
+  acpNumberedText,
   acpPermissionContent,
   acpRawValue,
   acpToolSubject,
@@ -63,21 +65,48 @@ describe("ACP tool mapping", () => {
         ...tool,
         toolKind: "move",
         locations: [{ path: "a.ts" }, { path: "b.ts" }],
-      }),
+      }).text,
     ).toBe("a.ts → b.ts");
     expect(
       acpToolSubject({
         ...tool,
         toolKind: "edit",
         content: [{ type: "diff", path: "x.ts", newText: "" }],
-      }),
+      }).text,
     ).toBe("x.ts");
     expect(acpCommand({ ...tool, rawInput: '{"command":"pwd"}' })).toBe("pwd");
     expect(acpCommand(tool)).toBe(tool.title);
     expect(
-      acpToolSubject({ ...tool, toolKind: "fetch", rawInput: '{"url":"https://example.test"}' }),
+      acpToolSubject({ ...tool, toolKind: "fetch", rawInput: '{"url":"https://example.test"}' })
+        .text,
     ).toBe("https://example.test");
+    expect(acpToolSubject({ ...tool, toolKind: "read" })).toEqual({
+      text: tool.title,
+      isTitle: true,
+    });
     expect(acpRawValue("not JSON")).toBe("not JSON");
+  });
+  test("paths inside the Session folder are relative; siblings and outside paths stay whole", () => {
+    const read = (path: string, line?: number) =>
+      acpToolSubject(
+        { ...tool, toolKind: "read", locations: [{ path, ...(line ? { line } : {}) }] },
+        "/repo/app/",
+      ).text;
+    expect(read("/repo/app/src/a.ts", 12)).toBe("src/a.ts:12");
+    expect(read("/repo/application/a.ts")).toBe("/repo/application/a.ts");
+    expect(read("/etc/hosts")).toBe("/etc/hosts");
+    expect(acpDisplayPath("C:\\repo\\a.ts", "C:\\repo")).toBe("a.ts");
+  });
+  test("agent-numbered file text moves its numbers to the gutter, keeping gaps unnumbered", () => {
+    expect(acpNumberedText("[src/a.ts#1A2B]\n1:import a\n…\n74:export b\n")).toEqual({
+      code: "import a\n…\nexport b",
+      numbers: [1, undefined, 74],
+    });
+    expect(acpNumberedText("     7→const x = 1;\n     8→")).toEqual({
+      code: "const x = 1;\n",
+      numbers: [7, 8],
+    });
+    expect(acpNumberedText("plain output\n12:30 is not a file line")).toBeUndefined();
   });
 });
 

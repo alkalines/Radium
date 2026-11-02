@@ -239,6 +239,7 @@ export function acpModelConfig(config: AcpConfig | undefined) {
 export function AcpConfigControls({
   agentId,
   config,
+  defaults,
   disabled,
   isOpen,
   onOpenChange,
@@ -247,6 +248,8 @@ export function AcpConfigControls({
 }: {
   agentId: string | undefined;
   config: AcpConfig | undefined;
+  /** The agent's starting config; values equal to it are left out of the Composer trigger. */
+  defaults?: AcpConfig;
   disabled?: boolean;
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -256,6 +259,9 @@ export function AcpConfigControls({
   const [localOpen, setLocalOpen] = useState(false);
   const { model, reasoning, mode, models, selectedModel, selectedProvider, valueFor, extra } =
     useMemo(() => acpModelConfig(config), [config]);
+  const starting = useMemo(() => acpModelConfig(defaults), [defaults]);
+  // Without reported defaults, a mode literally called `default` is still the agent's default.
+  const defaultMode = defaults?.modes?.currentModeId ?? starting.mode?.currentValue ?? "default";
   function selectValue(value: string | undefined) {
     if (model && value && value !== model.currentValue) onConfigChange(model.id, value);
   }
@@ -269,6 +275,7 @@ export function AcpConfigControls({
       selectedProvider={selectedProvider}
       reasoningEffort={reasoning?.currentValue}
       reasoningOptions={reasoning?.choices ?? []}
+      defaultReasoningEffort={starting.reasoning?.currentValue}
       disabled={disabled}
       agentMode={
         config?.modes
@@ -276,12 +283,14 @@ export function AcpConfigControls({
               value: config.modes.currentModeId,
               choices: config.modes.available.map((entry) => ({ ...entry, value: entry.id })),
               onChange: onModeChange,
+              defaultValue: defaultMode,
             }
           : mode
             ? {
                 value: mode.currentValue,
                 choices: mode.choices,
                 onChange: (value) => onConfigChange(mode.id, value),
+                defaultValue: defaultMode,
               }
             : undefined
       }

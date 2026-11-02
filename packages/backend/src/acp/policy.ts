@@ -164,6 +164,7 @@ export type SessionPatch = {
   config?: Doc<"acp_sessions">["config"];
   commands?: Doc<"acp_sessions">["commands"];
   usage?: Doc<"acp_sessions">["usage"];
+  turnUsage?: Doc<"acp_sessions">["turnUsage"];
   history?: Doc<"acp_sessions">["history"];
   sessionId?: string;
   title?: string;
