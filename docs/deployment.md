@@ -122,6 +122,34 @@ they do not set `SITE_URL`, `SECRET_STORE_KEYS`, or other Convex runtime values.
 The backend example file documents those runtime values, while the frontend
 example contains only the public `VITE_*` values.
 
+### Local Convex Deployment
+
+A local deployment runs the Convex backend binary on this machine (client
+`http://127.0.0.1:3210`, HTTP actions `http://127.0.0.1:3211`) and does not
+consume Convex Cloud usage. Its data and environment values live in the ignored
+`packages/backend/.convex/local/default/`; the backend runs only while `convex dev` runs.
+
+To move an existing cloud dev deployment to a local one, from `packages/backend`:
+
+```bash
+bunx convex export --include-file-storage --path ~/cloud-dev-snapshot.zip
+bunx convex env list --include-values   # record the values
+bunx convex deployment create local --select
+bunx convex dev                         # keep running; first push fails until env is set
+bunx convex env set <NAME> -- '<value>' # repeat for each recorded value
+bunx convex import --replace-all -y ~/cloud-dev-snapshot.zip
+```
+
+Then set `VITE_CONVEX_URL=http://127.0.0.1:3210` and
+`VITE_CONVEX_SITE_URL=http://127.0.0.1:3211` in `apps/web/.env.local`. Keeping
+`BETTER_AUTH_SECRET` and the Worker issuer keys identical preserves imported
+sign-in sessions and Worker identities. An enrolled Worker stores its origins in
+`setup.backendUrl`/`setup.convexUrl` of `~/.radium-worker/worker-state.json`;
+change them to `http://127.0.0.1:3211`/`http://127.0.0.1:3210`, then confirm with
+`bun run --cwd packages/worker cli refresh`. No re-enrollment is needed because
+the backend checks proofs against its own `CONVEX_SITE_URL`.
+`bunx convex deployment select dev` switches back to the cloud deployment.
+
 ### Initial Workspace Provisioning
 
 After the first user signs up, the application provisions a personal workspace
