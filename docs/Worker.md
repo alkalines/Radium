@@ -21,7 +21,8 @@ implements owner-dispatched, machine-claimed edit tasks and short-lived results.
 backend dispatch supplies an absolute directory on the target Worker, and native
 editing is loaded lazily for a valid request. See [Worker tasks](Worker/Tasks.md)
 for directory selection, result subscriptions and crash behavior. Root `bun run dev`
-starts the enrolled Worker with a source watcher; `bun run dev:worker` runs the
+starts the enrolled Worker with a source watcher after Convex's first successful
+push; `bun run dev:worker` runs the
 Worker watcher independently. The [Worker CLI guide](../packages/worker/README.md) covers
 masked interactive setup, local status, authentication refresh and forgetting credentials.
 

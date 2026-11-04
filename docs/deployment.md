@@ -201,7 +201,9 @@ does not deploy the generated functions. Review the generated diff before commit
 For a fresh checkout without deployment access, `bun run build:components` builds
 the local workspace package from checked-in bindings. `bun run dev` builds it
 first and runs a TypeScript build watcher alongside Vite, Convex, and the Worker
-source watcher (`bun --watch src/cli.ts start` in `packages/worker`). Enroll the
+source watcher; the Worker waits until Convex's first successful push marks it ready
+via `scripts/convex-ready.ts`, then runs
+`bun --watch src/cli.ts start` in `packages/worker`. Enroll the
 local Worker before starting it; see the [Worker setup guide](../packages/worker/README.md).
 Without enrollment the Worker reports a startup error while the other processes
 continue. Imported Worker file changes restart its process and discard in-memory

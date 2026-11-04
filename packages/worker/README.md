@@ -20,9 +20,11 @@ bun run --cwd packages/worker start
 ```
 
 For development, root `bun run dev` also starts the Worker using Bun's `--watch`
-mode. Imported file changes restart the process. Use `bun run dev:worker` to run
-only this watcher after enrollment. Without local enrollment the Worker reports
-a startup error; the root command's Vite, Convex, and component watchers continue.
+mode in its own `worker-dev` pane, after `convex dev` finishes its first
+successful push. Imported file changes restart the process. Use
+`bun run dev:worker` to run only this watcher after enrollment. Without local
+enrollment the Worker reports a startup error; the root command's Vite, Convex,
+and component watchers continue.
 Restarts discard in-memory edit snapshots and previews, and claimed tasks with
 unknown outcomes are not automatically rerun.
 
@@ -299,7 +301,8 @@ bun run --cwd packages/worker typecheck
 ```
 
 `dev:worker` delegates to `bun run --cwd packages/worker dev` (`bun --watch`).
-Enroll first. Root `bun run dev` already includes this watcher; use `dev:worker`
+Enroll first. Root `bun run dev` already includes this watcher (gated on Convex's
+first successful push); use `dev:worker`
 when starting the frontend/backend separately. Enrollment state lives
 outside the watched source tree and survives process restarts. `--state-dir`
 can be passed to the package's `dev` script just as with `start`.
