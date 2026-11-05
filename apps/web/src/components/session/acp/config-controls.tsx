@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import type { AcpConfig, AcpConfigOption, AcpDraftConfig } from "backend/src/acp/contract";
+import { inferModelAuthor, modelKey, nameKey } from "backend/src/acp/models";
 import { ChevronDownIcon, SlidersHorizontalIcon } from "lucide-react";
 
 import { footerTriggerClassName, ModelPicker } from "../model-picker";
-import { inferModelAuthor } from "./model-author";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -55,20 +55,6 @@ export function applyAcpDraft(
 type ModelVariant = { providerId: string | undefined; value: string };
 
 /**
- * The same model offered by several providers shares one row: the last ID segment, lowercased,
- * without a `~` alias marker or `-YYYYMMDD` date, with `.` read as `-` (`claude-sonnet-4.6` and
- * `claude-sonnet-4-6` match).
- */
-function modelKey(value: string) {
-  const id = value.split("/").pop() ?? value;
-  return id
-    .toLowerCase()
-    .replace(/^~/, "")
-    .replace(/[-_]\d{8}$/, "")
-    .replaceAll(".", "-");
-}
-
-/**
  * The name most providers use, then the more descriptive one. A `(latest)` note (OpenRouter marks
  * the current version that way) is dropped: the row already is that version.
  */
@@ -79,19 +65,6 @@ function commonName(names: string[]) {
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
   return [...counts].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)[0]![0];
-}
-
-/**
- * A model's display name as a comparable key: `Claude Haiku 5.5` and `Haiku 5.5` both read
- * `haiku-5-5`, since aliases such as OpenCode's Claude Agent (`claude-agent/haiku`) drop the
- * Claude brand from the name and carry no version in the ID.
- */
-function nameKey(name: string) {
-  return name
-    .toLowerCase()
-    .replace(/^claude\s+/, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
 }
 
 type ModelGroup = { variants: ModelVariant[]; names: string[]; choices: SelectOption["choices"] };

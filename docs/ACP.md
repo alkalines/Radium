@@ -1,6 +1,6 @@
 # ACP Agents
 
-Status: **transport and Chatroom implemented.** Snapshot of the protocol: 2026-10-31. The Worker hosts ACP agents with `@agentclientprotocol/sdk` and relays them through Convex; Chatroom creates, opens and drives ACP Sessions on the same controls as the built-in agent (agent picker, Session screen, approvals, questions, Model menu, Stop, delete), and Home browses each agent's synced session index to reopen old sessions. Agents are configured in Settings → ACP (`/chatroom/acp`: registry presets or custom commands, stored in Convex); every Worker checks each command on its own `PATH` and reports it available or not, and the New session picker lists every agent and Worker with that availability. Still open: attachments, registry binary install, Gateway mode, MCP pass-through, terminal login. Code: `packages/backend/src/acp/` (contract, Convex functions, client frame fold), `packages/worker/src/acp/` (Worker host), `apps/web/src/components/session/acp/` (Session), `apps/web/src/components/home/` (agent session browser) and `apps/web/src/components/chatroom/acp-panel.tsx` (settings).
+Status: **transport and Chatroom implemented.** Snapshot of the protocol: 2026-10-31. The Worker hosts ACP agents with `@agentclientprotocol/sdk` and relays them through Convex; Chatroom creates, opens and drives ACP Sessions on the same controls as the built-in agent (agent picker, Session screen, approvals, questions, Model menu, Stop, delete), and Home browses each agent's synced session index to reopen old sessions. Agents are configured in Settings → ACP (`/chatroom/acp`: registry presets or custom commands, stored in Convex); every Worker checks each command on its own `PATH` and reports it available or not, and the New session picker lists every agent and Worker with that availability. Each finished turn's model, tokens and cost share are recorded and priced by Convex (workspace rates, else models.dev) for Activity, Project usage and the Session's estimated cost ([Agent usage](observability.md#agent-usage)). Still open: attachments, registry binary install, Gateway mode, MCP pass-through, terminal login. Code: `packages/backend/src/acp/` (contract, Convex functions, client frame fold), `packages/backend/src/usage/acp.ts` (turn usage and pricing), `packages/worker/src/acp/` (Worker host), `apps/web/src/components/session/acp/` (Session), `apps/web/src/components/home/` (agent session browser) and `apps/web/src/components/chatroom/acp-panel.tsx` (settings).
 
 ACP ([Agent Client Protocol](https://agentclientprotocol.com)) lets an editor or
 other client drive an independent agent harness (Claude Agent, Codex, Gemini CLI,
@@ -114,6 +114,7 @@ flowchart TB
         D3["Session status: idle / running / awaiting / failed, last stopReason"]
         D4["Selected config values (model, mode, thought level)"]
         D5["Latest usage snapshot: context used/size, cost"]
+        D6["One usage row per turn: model, tokens, cost share, price"]
     end
     subgraph Transient["In Convex only while warm"]
         T1["Prompt payload until the Worker claims it"]
@@ -133,8 +134,10 @@ Consequences to accept:
   through the Worker, like any other viewer.
 - Revert, edit-and-resend, regenerate and arbitrary-point fork do not exist in
   ACP v1 and are hidden for ACP Sessions ([Sessions](ACP/Sessions.md#unsupported-chatroom-actions)).
-- Telemetry, usage limits and Gateway routing do not see ACP model calls unless
-  the agent runs in [Gateway mode](ACP/Agents.md#gateway-mode).
+- Usage limits and Gateway routing do not see ACP model calls, and telemetry
+  captures no ACP content, unless the agent runs in [Gateway mode](ACP/Agents.md#gateway-mode).
+  Cost is still tracked: the Worker reports each turn's model and tokens, and
+  Convex estimates the price ([Agent usage](observability.md#agent-usage)).
 - "Not saved" means not kept once nobody is looking. Convex has no ephemeral
   message bus, so warm content is real documents while a Session is open; the
   cleanup rules are in [Transport](ACP/Transport.md#warm-and-cold-sessions).

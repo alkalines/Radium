@@ -1359,3 +1359,229 @@ test("registry actions reject responses exceeding one MiB while streaming", asyn
   );
   expect(cancel).toHaveBeenCalledOnce();
 });
+
+test("turn usage is recorded once per prompt, priced from models.dev, and shown in Activity", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  const fetch = vi.fn().mockImplementation(
+    async () =>
+      new Response(
+        JSON.stringify({
+          anthropic: {
+            id: "anthropic",
+            name: "Anthropic",
+            models: {
+              "claude-sonnet-4-5": {
+                id: "claude-sonnet-4-5",
+                name: "Claude Sonnet 4.5",
+                cost: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 },
+              },
+            },
+          },
+        }),
+      ),
+  );
+  vi.stubGlobal("fetch", fetch);
+
+  async function turn(clientId: string) {
+    const command = await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId });
+    await f.first.machine.mutation(api.acp.claimCommand, { command });
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { status: "running" },
+    });
+    const patch = {
+      status: "idle" as const,
+      stopReason: "end_turn" as const,
+      turnUsage: { inputTokens: 1_000_000, outputTokens: 100_000, totalTokens: 1_100_000 },
+      turn: {
+        command,
+        startedAt: Date.now(),
+        model: { id: "default", name: "Default", description: "Currently Claude Sonnet 4.5" },
+        // A subscription agent reports nothing spent; owners still see the list-price estimate.
+        cost: { amount: 0, currency: "USD" },
+      },
+    };
+    await f.first.machine.mutation(api.acp.updateSession, { chat: f.chat, patch });
+    // A retried patch whose receipt was lost must not count the turn twice.
+    await f.first.machine.mutation(api.acp.updateSession, { chat: f.chat, patch });
+    await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  }
+  await turn("one");
+  await turn("two");
+
+  // One catalogue lookup serves every later turn of the same model.
+  expect(fetch).toHaveBeenCalledOnce();
+  const rows = await f.t.run((ctx) => ctx.db.query("acp_usage").collect());
+  expect(rows).toHaveLength(2);
+  for (const row of rows) {
+    expect(row.pricing).toMatchObject({ status: "priced", source: "models.dev", reportedCost: 0 });
+    expect(row.pricing.cost).toBeCloseTo(3 + 1.5);
+  }
+  const sessionCost = await f.owner.query(api.agent_usage.GetChatCost, { chat: f.chat });
+  expect(sessionCost).toMatchObject({ steps: 2, unknown: 0, pending: 0 });
+  expect(sessionCost?.cost).toBeCloseTo(9);
+
+  const all = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  expect(all.summary).toMatchObject({ agentTurns: 2, requests: 0 });
+  expect(all.summary.agentCost).toBeCloseTo(9);
+  expect(all.harnesses).toMatchObject([{ id: "acp:test-agent", kind: "agent", turns: 2 }]);
+  expect(all.projects).toMatchObject([{ id: "none", turns: 2 }]);
+  expect(all.models).toMatchObject([{ name: "Claude Sonnet 4.5", turns: 2 }]);
+
+  const gatewayOnly = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+    sources: "gateway",
+  });
+  expect(gatewayOnly.summary).toMatchObject({ agentTurns: 0, spend: 0 });
+
+  // Another user's personal ACP chat stays out of the owner's Activity.
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { userId: "member" }));
+  const hidden = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  expect(hidden.summary.agentTurns).toBe(0);
+});
+
+test("local ccusage rows replace the turns they cover, per session, and place terminal sessions", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            anthropic: {
+              id: "anthropic",
+              name: "Anthropic",
+              models: {
+                "claude-sonnet-4-5": {
+                  id: "claude-sonnet-4-5",
+                  name: "Claude Sonnet 4.5",
+                  cost: { input: 3, output: 15 },
+                },
+              },
+            },
+          }),
+        ),
+    ),
+  );
+  const worker = f.first.identity.workerId;
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "ses-chat" },
+  });
+  async function turn(clientId: string) {
+    const command = await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId });
+    await f.first.machine.mutation(api.acp.claimCommand, { command });
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { status: "running" },
+    });
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: {
+        status: "idle",
+        stopReason: "end_turn",
+        turnUsage: { inputTokens: 1_000_000, outputTokens: 100_000, totalTokens: 1_100_000 },
+        turn: {
+          command,
+          startedAt: Date.now(),
+          model: { id: "default", name: "Default", description: "Currently Claude Sonnet 4.5" },
+        },
+      },
+    });
+    await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  }
+  const local = (sessionId: string, cost?: number) => ({
+    agent: "opencode",
+    sessionId,
+    lastActivity: Date.now(),
+    totalTokens: 1000,
+    models: [
+      {
+        model: "claude-sonnet-4-5",
+        inputTokens: 1000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        ...(cost === undefined ? {} : { cost }),
+      },
+    ],
+  });
+
+  // A terminal session the agent indexed in a Project folder, and one Radium knows nothing about.
+  const project = await f.t.run(async (ctx) => {
+    const id = await ctx.db.insert("projects", {
+      workspace: f.workspace,
+      userId: "owner",
+      name: "Repo",
+      folders: [{ workerId: worker, directory: "/repo" }],
+    });
+    // An ACP agent definition that runs the OpenCode CLI ccusage reads.
+    await ctx.db.insert("acp_agents", {
+      workspace: f.workspace,
+      agentId: "opencode",
+      name: "OpenCode",
+      command: "opencode",
+      args: ["acp"],
+      env: [],
+      enabled: true,
+      source: "registry",
+      updatedAt: Date.now(),
+    });
+    await ctx.db.insert("acp_agent_sessions", {
+      workspace: f.workspace,
+      worker,
+      agentId: "test-agent",
+      sessionId: "ses-terminal",
+      cwd: "/repo",
+      title: "Terminal work",
+      updatedAt: Date.now(),
+    });
+    return id;
+  });
+
+  await turn("before-sync");
+  // Functions run on the real clock: ccusage reads the logs just after the first turn ended.
+  const first = (await f.t.run((ctx) => ctx.db.query("acp_usage").first()))!;
+  await f.first.machine.mutation(api.agent_usage.reportLocalUsage, {
+    day: new Date(first.endedAt).toISOString().slice(0, 10),
+    syncedAt: first.endedAt + 1,
+    rows: [local("ses-chat", 0.5), local("ses-terminal", 2), local("ses-unknown")],
+  });
+  await turn("after-sync");
+
+  const activity = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  // The first turn is inside ccusage's row; the second ended after that read and still counts.
+  // ccusage's own costs stay as reported; the model it could not price gets Radium's models.dev
+  // rate ($3 per million input tokens × 1,000 tokens). Agent usage is one figure wherever it ran.
+  expect(activity.summary).toMatchObject({ agentTurns: 1, localSessions: 3, unknownCostTurns: 0 });
+  expect(activity.summary.agentCost).toBeCloseTo(0.5 + 4.5 + 2 + 0.003);
+  // The indexed terminal session joins its agent's row; an unindexed one joins the agent whose
+  // definition runs that CLI.
+  expect(activity.harnesses).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: "acp:test-agent", turns: 1, sessions: 2 }),
+      expect.objectContaining({ id: "acp:opencode", name: "OpenCode", sessions: 1 }),
+    ]),
+  );
+  expect(activity.projects).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: project, sessions: 1 }),
+      expect.objectContaining({ id: "none", name: "No project", turns: 1, sessions: 2 }),
+    ]),
+  );
+
+  const sessionCost = await f.owner.query(api.agent_usage.GetChatCost, { chat: f.chat });
+  expect(sessionCost?.cost).toBeCloseTo(0.5 + 4.5);
+});

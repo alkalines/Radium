@@ -15,6 +15,11 @@ import type { CliOptions } from "./options.js";
 import { storageDescription } from "./prompt.js";
 import { convexAcpTransport } from "../acp/convex-transport.js";
 import { AcpHost } from "../acp/host.js";
+import {
+  convexLocalUsageTransport,
+  startLocalUsageSync,
+  type LocalUsageSync,
+} from "../usage/local-usage.js";
 
 const DISCONNECT_GUIDANCE: Record<WorkerControlDisconnectReason, string> = {
   connecting: "Opening the Convex connection.",
@@ -44,9 +49,11 @@ export async function startWorker(options: CliOptions): Promise<void> {
   let diagnosticsTimer: ReturnType<typeof setInterval> | undefined;
   let presence: PresenceReporter | undefined;
   let acp: AcpHost | undefined;
+  let localUsage: LocalUsageSync | undefined;
   const close = async () => {
     clearInterval(diagnosticsTimer);
     presence?.close();
+    localUsage?.close();
     try {
       await acp?.close();
       if (tasks) await tasks.close();
@@ -67,6 +74,7 @@ export async function startWorker(options: CliOptions): Promise<void> {
       tasks?.setAvailable(status.status === "connected");
       presence?.setAvailable(status.status === "connected");
       acp?.setAvailable(status.status === "connected");
+      localUsage?.setAvailable(status.status === "connected");
       const statusKey =
         status.status === "connected" ? "connected" : `disconnected:${status.reason}`;
       if (previousStatusKey === statusKey) return;
@@ -89,6 +97,8 @@ export async function startWorker(options: CliOptions): Promise<void> {
     }
     acp = new AcpHost(convexAcpTransport(control.client));
     acp.setAvailable(previousStatusKey === "connected");
+    localUsage = startLocalUsageSync(convexLocalUsageTransport(control.client));
+    localUsage.setAvailable(previousStatusKey === "connected");
     await waitForShutdown(close);
   } catch (error) {
     await close().catch(() => undefined);

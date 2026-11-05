@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
-import { inferModelAuthor } from "./model-author";
+import { inferModelAuthor } from "./models";
 
 describe("inferModelAuthor", () => {
   test("uses the model id rather than an OpenCode routing prefix", () => {

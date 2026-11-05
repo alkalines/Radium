@@ -4,7 +4,15 @@ import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
 import { internal } from "../../convex/_generated/api";
 import { requireAccessibleChat } from "../../convex/workspaces";
 import type { WorkerMutationCtx, WorkerQueryCtx } from "../worker/machine";
-import type { AcpCommandPayload, AcpConfig, AcpSessionStatus, AcpStopReason } from "./contract";
+import { logger } from "../logging/server";
+import { recordAcpTurn } from "../usage/acp";
+import type {
+  AcpCommandPayload,
+  AcpConfig,
+  AcpSessionStatus,
+  AcpStopReason,
+  AcpTurnReport,
+} from "./contract";
 import { validAcpToken } from "./contract";
 
 type ReadCtx = QueryCtx | MutationCtx;
@@ -168,6 +176,8 @@ export type SessionPatch = {
   history?: Doc<"acp_sessions">["history"];
   sessionId?: string;
   title?: string;
+  /** Usage facts of the turn this patch ends; recorded once per prompt command. */
+  turn?: AcpTurnReport;
 };
 
 /** Interruption text for stop reasons that end a turn as failed. */
@@ -186,7 +196,7 @@ export async function applySessionPatch(
   const chat = await ctx.db.get(session.chat);
   if (!chat?.agent) acpError("ACP_DENIED");
   const now = Date.now();
-  const { title, sessionId, error, ...fields } = patch;
+  const { title, sessionId, error, turn, ...fields } = patch;
   const updates: Partial<Doc<"acp_sessions">> = { ...fields, updatedAt: now };
   if (error !== undefined) updates.error = error === null ? undefined : error.slice(0, 500);
   const chatPatch: Partial<Doc<"aisdk_chats">> = {};
@@ -277,6 +287,15 @@ export async function applySessionPatch(
   } else if (patch.status === "ended") chatPatch.activeStream = false;
   await ctx.db.patch(session._id, updates);
   if (Object.keys(chatPatch).length) await ctx.db.patch(chat._id, chatPatch);
+  if (turn && (patch.status === "idle" || patch.status === "failed")) {
+    // Usage is an operational estimate and must not reject the turn's state transition either;
+    // the Worker would otherwise retry the whole patch.
+    try {
+      await recordAcpTurn(ctx, session, turn, patch.turnUsage, patch.stopReason);
+    } catch {
+      logger.warn("usage.acp_turn_record_failed");
+    }
+  }
   if (notification && session.turnBy) {
     // Notifications are a side channel and must not reject a successful state transition.
     try {

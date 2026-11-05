@@ -402,6 +402,25 @@ describe("ACP host with real stdio agent", () => {
     expect(transport.frames.some(({ frame }) => frame.kind === "snapshot")).toBe(true);
   });
 
+  it("reports each turn's model and its share of the cumulative agent cost", async () => {
+    const transport = new FakeTransport();
+    transport.binding.draft = { config: [{ configId: "model", value: "scripted-large" }] };
+    await start(transport);
+    const first = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "one" }] });
+    await until(() => transport.receipts.has(first));
+    const second = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "two" }] });
+    await until(() => transport.receipts.has(second));
+
+    const turns = transport.patches.flatMap((patch) => (patch.turn ? [patch.turn] : []));
+    expect(turns.map((turn) => turn.command)).toEqual([first, second]);
+    expect(turns.map((turn) => turn.model?.id)).toEqual(["scripted-large", "scripted-large"]);
+    // The agent reports 0.001 then 0.002 cumulatively; each turn is charged only its share.
+    for (const turn of turns) {
+      expect(turn.cost?.currency).toBe("USD");
+      expect(turn.cost?.amount).toBeCloseTo(0.001);
+    }
+  });
+
   it("round trips permission and form decisions through durable interactions", async () => {
     const transport = new FakeTransport();
     await start(transport);

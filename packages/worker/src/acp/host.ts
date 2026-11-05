@@ -26,7 +26,9 @@ import {
   type AcpAgentReport,
   type AcpInteractionAnswer,
   type AcpInteractionRequest,
+  type AcpTurnReport,
 } from "backend/src/acp/contract";
+import { selectedAcpModel } from "backend/src/acp/models";
 import { resolveAgentCommand } from "./config.js";
 import { AcpAgentProcess, agentReport, probeAgent } from "./process.js";
 import { AcpLifecycle, acpDelay } from "./lifecycle.js";
@@ -60,6 +62,8 @@ interface LocalSession {
   running: boolean;
   preparing: boolean;
   updates: Promise<void>;
+  /** Set by `session/new`: the agent's cumulative cost starts at zero in this process. */
+  costFromZero?: boolean;
 }
 interface AgentSlot {
   definition: AcpAgentDefinition;
@@ -595,6 +599,8 @@ export class AcpHost {
           local.timeline = new AcpTimeline();
           local.relay.stop();
           local.relay = new AcpRelay(this.transport, local.chat, local.timeline);
+          // A reopened session's cumulative cost is known only if the agent reports it again.
+          local.costFromZero = false;
           if (report.capabilities.loadSession) {
             response = await process.connection.agent.request(methods.agent.session.load, {
               sessionId: previousId,
@@ -624,6 +630,7 @@ export class AcpHost {
             mcpServers: [],
           });
           local.binding.sessionId = created.sessionId;
+          local.costFromZero = true;
           response = created;
           const pending = this.earlyUpdates.get(process) ?? [];
           this.earlyUpdates.set(
@@ -895,6 +902,12 @@ export class AcpHost {
 
   private async prompt(local: LocalSession, claim: AcpClaim): Promise<void> {
     if (claim.payload.kind !== "prompt") return;
+    // Usage facts are captured here so Convex never asks the agent again: the model the turn
+    // starts with, and the cumulative cost baseline (zero for a session created in this process).
+    const startedAt = Date.now();
+    const model = selectedAcpModel(local.binding.config);
+    const costBefore = local.timeline.sessionPatch.usage?.cost;
+    const costFromZero = local.costFromZero === true && !costBefore;
     try {
       const response = await local.process!.connection.agent.request<PromptResponse, PromptRequest>(
         methods.agent.session.prompt,
@@ -905,6 +918,17 @@ export class AcpHost {
       local.relay.push(local.timeline.endTurn(response.stopReason));
       // `usage` is an unstable PromptResponse field that the stable SDK type does not declare.
       const turnUsage = normalizeTurnUsage((response as { usage?: unknown }).usage);
+
+      // `usage_update.cost` is cumulative for the session: the turn's share is the difference,
+      // and only when both ends are known in one currency and the counter did not reset.
+      const costAfter = local.timeline.sessionPatch.usage?.cost;
+      let turnCost: AcpTurnReport["cost"];
+      if (costAfter && (costFromZero || costBefore?.currency === costAfter.currency)) {
+        const before = costBefore?.amount ?? 0;
+        if (costAfter.amount >= before)
+          turnCost = { amount: costAfter.amount - before, currency: costAfter.currency };
+      }
+
       await this.patch(local, {
         status:
           response.stopReason === "end_turn" || response.stopReason === "cancelled"
@@ -913,6 +937,12 @@ export class AcpHost {
         stopReason: response.stopReason,
         ...(local.timeline.sessionPatch.usage ? { usage: local.timeline.sessionPatch.usage } : {}),
         ...(turnUsage ? { turnUsage } : {}),
+        turn: {
+          command: claim.command,
+          startedAt,
+          ...(model ? { model } : {}),
+          ...(turnCost ? { cost: turnCost } : {}),
+        },
       });
       await this.finish(claim, "done");
     } catch (error) {

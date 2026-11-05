@@ -101,7 +101,7 @@ function bareDirectory(directory: string) {
  * Matches an agent session's `cwd` to a Project folder on the same Worker. Agents report a
  * directory without its trailing separator while a Project folder may keep one, so neither counts.
  */
-function folderKey(worker: string, directory: string) {
+export function folderKey(worker: string, directory: string) {
   return `${worker}\0${bareDirectory(directory)}`;
 }
 
@@ -117,7 +117,7 @@ function directorySpellings(directory: string) {
  * Project of each `folderKey`; a folder in several Projects belongs to the first. The catalog is
  * bounded by the workspace's 200-Project limit, read once per page.
  */
-async function projectFolders(ctx: QueryCtx | MutationCtx, workspace: Id<"workspaces">) {
+export async function projectFolders(ctx: QueryCtx | MutationCtx, workspace: Id<"workspaces">) {
   const projects = await ctx.db
     .query("projects")
     .withIndex("by_workspace", (q) => q.eq("workspace", workspace))

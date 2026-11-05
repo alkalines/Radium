@@ -93,6 +93,10 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   const { data: projects } = useQuery(
     convexQuery(api.projects.list, chat ? { workspace: chat.workspace } : "skip"),
   );
+  // Radium's estimate of the recorded turns; subscribed only while the Session is on screen.
+  const { data: estimate } = useQuery(
+    convexQuery(api.agent_usage.GetChatCost, isVisible ? { chat: chatId } : "skip"),
+  );
   // Same workspace preference as built-in Sessions, so both threads render steps alike.
   const { data: chainOfThoughtEnabled = true } = useQuery(
     convexQuery(
@@ -266,8 +270,10 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
                 }}
                 breakdownLabel="Last turn"
                 maxTokens={contextUsage.size}
+                // Radium's list-price estimate always shows; the agent's own figure sits beside it
+                // (subscriptions report 0 or a discount).
+                sessionCost={estimate ?? undefined}
                 cost={contextUsage.cost}
-                costLabel="Session cost"
               />
             </div>
           ) : null}

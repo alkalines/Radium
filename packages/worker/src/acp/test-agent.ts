@@ -32,6 +32,8 @@ interface StoredSession {
   transcript: SessionUpdate[];
   configOptions: SessionConfigOption[];
   modes: SessionModeState;
+  /** Cumulative session cost, reported like real agents do in `usage_update`. */
+  cost?: number;
 }
 
 interface StoredState {
@@ -475,11 +477,13 @@ export async function runScriptedAgent(options: ScriptedAgentOptions = {}): Prom
           { content: "Report the result", priority: "medium", status: "completed" },
         ],
       });
+      // `usage_update.cost` is cumulative for the session, so it grows by each turn's share.
+      session.cost = (session.cost ?? 0) + 0.001;
       await emit(client, session, {
         sessionUpdate: "usage_update",
         used: session.transcript.length * 10,
         size: 32000,
-        cost: { amount: 0.001, currency: "USD" },
+        cost: { amount: session.cost, currency: "USD" },
       });
       session.title = `Scripted: ${text.replace(/\s+/g, " ").trim().slice(0, 60) || "Resource prompt"}`;
       await emit(client, session, {

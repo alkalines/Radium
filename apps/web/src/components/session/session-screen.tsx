@@ -217,6 +217,10 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     error: chatContentError,
     isPending: isChatContentPending,
   } = useQuery(convexQuery(api.aisdk.GetChatMessages, isContentEnabled ? { chatId } : "skip"));
+  // The Session's estimated total; subscribed only while its Tab is active.
+  const { data: sessionCost } = useQuery(
+    convexQuery(api.agent_usage.GetChatCost, chatId && isActive ? { chat: chatId } : "skip"),
+  );
   const isChatUnavailable =
     Boolean(chatError) || Boolean(chatContentError) || typeof chatResult === "string";
 
@@ -1218,6 +1222,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                 usage={latestUsage.usage}
                 maxTokens={maxTokens}
                 executions={latestUsage.executions}
+                sessionCost={sessionCost ?? undefined}
               />
             </div>
           ) : null}

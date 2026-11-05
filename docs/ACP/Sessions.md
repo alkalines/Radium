@@ -54,7 +54,7 @@ subscription. Only turn boundaries touch `aisdk_chats` (`activeStream`,
 | `config`                                        | Current `configOptions` (ids, categories, choices, selected values), `modes`, `currentModeId`                              |
 | `commands`                                      | Latest `available_commands_update` (names, descriptions, input hints)                                                      |
 | `usage`                                         | Latest `usage_update`: context `used`/`size`, optional cumulative `cost`                                                   |
-| `turnUsage`                                     | Token breakdown of the latest `session/prompt` response (unstable `PromptResponse.usage`), shown as reported, never summed |
+| `turnUsage`                                     | Token breakdown of the latest `session/prompt` response (unstable `PromptResponse.usage`), shown as the last turn's breakdown |
 | `warm`                                          | Whether content is currently held in Convex ([Transport](Transport.md#warm-and-cold-sessions)); flips only on transitions  |
 | `history`                                       | `full` (load), `resumed` (resume, no replay) or `none`                                                                     |
 | `draft`                                         | Config and mode chosen before the ACP session exists, applied after `session/new`                                          |
@@ -62,6 +62,11 @@ subscription. Only turn boundaries touch `aisdk_chats` (`activeStream`,
 
 None of these fields contain conversation content. `acp.GetSession` returns them
 with the agent's name and capabilities.
+
+The same turn-end patch carries a `turn` report (prompt command, model at turn
+start, share of the agent's cumulative cost) that becomes one `acp_usage` row,
+priced in a separate transaction so it never delays or fails the lifecycle
+update ([Agent usage](../observability.md#agent-usage)).
 
 Home's session list shows the configured agent name next to the row's actions
 for ACP Sessions; built-in Radium Sessions have no extra label. `ListChats.agent`

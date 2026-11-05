@@ -198,8 +198,9 @@ export type AcpUsage = Infer<typeof acpUsageValidator>;
 
 /**
  * Token breakdown of the latest `session/prompt` response (unstable ACP `PromptResponse.usage`).
- * Agents disagree on whether it covers the turn or the whole session, so it is shown as reported
- * and never summed across turns.
+ * Agents disagree on whether it covers the turn or the whole session (agent-client-protocol#1860).
+ * Usage records read it as the turn's usage, which is what `PromptResponse` documents and the Claude
+ * and Codex bridges send; the session row keeps only the latest value for the context meter.
  */
 export const acpTurnUsageValidator = v.object({
   inputTokens: v.number(),
@@ -210,6 +211,27 @@ export const acpTurnUsageValidator = v.object({
   cachedWriteTokens: v.optional(v.number()),
 });
 export type AcpTurnUsage = Infer<typeof acpTurnUsageValidator>;
+
+/** The agent's model choice for one turn, as advertised (`selectedAcpModel`). */
+export const acpTurnModelValidator = v.object({
+  id: v.string(),
+  name: v.string(),
+  description: v.optional(v.string()),
+});
+
+/**
+ * Usage facts of one finished prompt turn, sent once with the turn-end patch. The Worker owns
+ * every field: `command` is the claimed prompt (idempotency key across retried patches), `model`
+ * the choice at turn start, and `cost` the turn's share of the agent's cumulative `usage_update`
+ * cost, present only when both ends of the turn are known in one currency. Convex only prices it.
+ */
+export const acpTurnReportValidator = v.object({
+  command: v.string(),
+  startedAt: v.number(),
+  model: v.optional(acpTurnModelValidator),
+  cost: v.optional(v.object({ amount: v.number(), currency: v.string() })),
+});
+export type AcpTurnReport = Infer<typeof acpTurnReportValidator>;
 
 /** Choices made before the ACP session exists, applied by the Worker right after `session/new`. */
 export const acpDraftConfigValidator = v.object({

@@ -553,23 +553,17 @@ function visibilityKey(workspaceId: Id<"workspaces">, chatId: Id<"aisdk_chats">)
 }
 
 /**
- * Resolve chat visibility through the same policy as Chatroom. Any missing,
- * deleted, cross-workspace, or malformed chat is intentionally invisible.
+ * The chat when it is visible to the caller inside `workspaceId`, through the same policy as
+ * Chatroom; otherwise null. Any missing, deleted, cross-workspace, or malformed chat is
+ * intentionally invisible.
  */
-export async function isChatVisibleToWorkspace(
+export async function visibleWorkspaceChat(
   ctx: DatabaseCtx,
   workspaceId: Id<"workspaces">,
   chatId: Id<"aisdk_chats">,
-  cache: VisibilityCache = new Map(),
-): Promise<boolean> {
-  const key = visibilityKey(workspaceId, chatId);
-  const cached = cache.get(key);
-  if (cached !== undefined) return cached;
-
-  let visible = false;
+): Promise<Doc<"aisdk_chats"> | null> {
   try {
-    const result = await requireAccessibleChat(ctx, chatId);
-    const { chat, workspace } = result;
+    const { chat, workspace } = await requireAccessibleChat(ctx, chatId);
 
     // Match both ownership keys during the legacy migration; a legacy balance
     // alone identifies a chat only when it has no workspace id yet.
@@ -582,11 +576,25 @@ export async function isChatVisibleToWorkspace(
       belongsToWorkspace = chat.balance !== undefined && chat.balance === workspace.legacyBalance;
     }
 
-    visible = workspace._id === workspaceId && belongsToWorkspace;
+    return workspace._id === workspaceId && belongsToWorkspace ? chat : null;
   } catch {
     // A deleted or inaccessible chat must not turn into an observable row.
+    return null;
   }
+}
 
+/** `visibleWorkspaceChat` as a cached yes/no for filters. */
+export async function isChatVisibleToWorkspace(
+  ctx: DatabaseCtx,
+  workspaceId: Id<"workspaces">,
+  chatId: Id<"aisdk_chats">,
+  cache: VisibilityCache = new Map(),
+): Promise<boolean> {
+  const key = visibilityKey(workspaceId, chatId);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+
+  const visible = (await visibleWorkspaceChat(ctx, workspaceId, chatId)) !== null;
   cache.set(key, visible);
   return visible;
 }

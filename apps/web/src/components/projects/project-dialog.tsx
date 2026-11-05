@@ -260,9 +260,7 @@ function ProjectForm({
           />
         ) : null}
 
-        <p className="text-xs text-muted-foreground">
-          Favicon icons and project usage totals are planned.
-        </p>
+        <p className="text-xs text-muted-foreground">Favicon icons are planned.</p>
       </FieldGroup>
 
       <DialogFooter>

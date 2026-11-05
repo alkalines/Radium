@@ -25,6 +25,7 @@
     "@napi-rs/keyring": "^2.1.0",
     "@oh-my-pi/pi-natives": "18.8.3",
     "backend": "workspace:*",
+    "ccusage": "20.0.48",
     "convex": "^1.46.0",
     "jose": "^6.1.3"
   },

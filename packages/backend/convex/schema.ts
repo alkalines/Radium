@@ -65,7 +65,10 @@ import {
   acpAgentReportValidator,
   acpAgentDefinitionValidator,
   acpAgentSessionEntryValidator,
+  acpTurnModelValidator,
 } from "../src/acp/contract";
+import { agentTurnPricingValidator, modelsDevMatchValidator } from "../src/usage/agent_usage";
+import { storedLocalUsageModelValidator } from "../src/usage/local_contract";
 
 export default defineSchema({
   /** Owner-defined launch configuration, shared by every Worker in the workspace. */
@@ -94,6 +97,8 @@ export default defineSchema({
       "updatedAt",
     ])
     .index("by_chat", ["chat"])
+    // Local usage (ccusage) rows carry only Worker and session id; this finds their folder.
+    .index("by_worker_and_sessionId", ["workspace", "worker", "sessionId"])
     .searchIndex("search_title", { searchField: "title", filterFields: ["workspace", "agentId"] }),
   /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
   acp_sessions: defineTable({
@@ -124,6 +129,77 @@ export default defineSchema({
     .index("by_worker_and_status", ["workspace", "worker", "status"])
     .index("by_warm", ["warm"])
     .index("by_worker_and_sessionId", ["workspace", "worker", "sessionId"]),
+  /**
+   * Coding-CLI usage read from a Worker machine's own logs by ccusage: one row per session per
+   * UTC day, token counts and costs only (`src/usage/local_contract.ts`). Models ccusage could
+   * not price get Radium's estimate; `priceKey` is set while one waits for a models.dev lookup.
+   */
+  local_usage: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    agent: v.string(),
+    sessionId: v.string(),
+    day: v.string(),
+    syncedAt: v.number(),
+    lastActivity: v.number(),
+    totalTokens: v.number(),
+    models: v.array(storedLocalUsageModelValidator),
+    priceKey: v.optional(v.string()),
+  })
+    .index("by_workspace_and_day", ["workspace", "day"])
+    .index("by_worker_and_sessionId_and_day", ["workspace", "worker", "sessionId", "day"])
+    .index("by_priceKey", ["priceKey"]),
+  /** Each Worker's local usage cursor and last sync result. */
+  local_usage_syncs: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    syncedThrough: v.optional(v.string()),
+    lastSyncAt: v.number(),
+    error: v.optional(v.string()),
+  }).index("by_worker", ["workspace", "worker"]),
+  /**
+   * One finished ACP prompt turn's usage: metadata only, never content. Reported by the bound
+   * Worker with the turn-end patch; Convex prices it (`src/usage/acp.ts`). Project and visibility
+   * follow the chat at read time.
+   */
+  acp_usage: defineTable({
+    workspace: v.id("workspaces"),
+    chat: v.id("aisdk_chats"),
+    worker: v.string(),
+    agentId: v.string(),
+    /** Claimed prompt command; one row per command even when the Worker retries the patch. */
+    command: v.string(),
+    userId: v.optional(v.string()),
+    startedAt: v.number(),
+    endedAt: v.number(),
+    stopReason: v.optional(acpStopReasonValidator),
+    model: v.optional(acpTurnModelValidator),
+    tokens: v.optional(acpTurnUsageValidator),
+    /** The turn's share of the agent's cumulative cost, in the agent's currency. */
+    agentCost: v.optional(v.object({ amount: v.number(), currency: v.string() })),
+    pricing: agentTurnPricingValidator,
+    /** Set only while the turn waits for a models.dev match (`acp_model_prices` key). */
+    priceKey: v.optional(v.string()),
+  })
+    .index("by_workspace", ["workspace"])
+    .index("by_chat_and_command", ["chat", "command"])
+    .index("by_priceKey", ["priceKey"]),
+  /**
+   * models.dev matches of a workspace's agent model choices, so a model Radium does not define is
+   * fetched once and refreshed weekly rather than on every turn. `queued` rows await the resolver.
+   */
+  acp_model_prices: defineTable({
+    workspace: v.id("workspaces"),
+    agentId: v.string(),
+    model: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    queued: v.boolean(),
+    checkedAt: v.optional(v.number()),
+    match: v.optional(modelsDevMatchValidator),
+  })
+    .index("by_workspace_and_agentId_and_model", ["workspace", "agentId", "model"])
+    .index("by_queued", ["queued"]),
   /** Append counters are separate so streaming never invalidates lifecycle subscriptions. */
   acp_streams: defineTable({
     chat: v.id("aisdk_chats"),
@@ -507,7 +583,9 @@ export default defineSchema({
   })
     .index("by_balance", ["bill.balance"])
     .index("by_workspace", ["bill.workspace"])
-    .index("by_credential", ["request.credential"]),
+    .index("by_credential", ["request.credential"])
+    // Session cost totals (`agent_usage.GetChatCost`) read one chat's completions.
+    .index("by_chatId", ["chatId"]),
   models: defineTable({
     name: v.string(),
     launch_date: v.number(), // UNIX in ms

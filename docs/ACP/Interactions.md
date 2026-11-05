@@ -201,8 +201,11 @@ shown. Each `plan` update replaces the list, like `todo_write`.
   separate tool picker.
 - **Session corner:** the normal `SessionWorkerControl` displays the fixed
   Worker and agent, with no target-change action. `ContextUsage` displays the
-  agent's used/size context snapshot and optional native-currency cost, not a
-  fabricated Gateway token breakdown or converted cost.
+  agent's used/size context snapshot, Radium's _Session estimate_ of the recorded
+  turns at list prices (`agent_usage.GetChatCost`, subscribed only while the
+  Session is on screen; Unknown while any turn is unpriced) and, beside it, the
+  cost the agent reports in its own currency, never converted. Subscription
+  agents report 0, which is why the estimate always shows.
 - **Slash commands:** typing `/` lists `available_commands_update` entries with
   descriptions and input hints; the command is sent as ordinary prompt text.
 - **Attachments** follow `promptCapabilities`: images when `image`, audio when

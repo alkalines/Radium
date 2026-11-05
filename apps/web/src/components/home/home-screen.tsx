@@ -22,6 +22,7 @@ import { isWorkerOnline } from "backend/src/worker/presence";
 import { AgentStatus } from "@/components/agentic/agent-status";
 import { ProjectActionsMenu } from "@/components/projects/project-actions-menu";
 import { ProjectDialog } from "@/components/projects/project-dialog";
+import { ProjectUsageButton } from "@/components/projects/project-usage";
 import { AcpAgentIcon } from "@/components/session/acp/agent-icon";
 import { acpActionError } from "@/components/session/acp/use-acp-session";
 import type { SessionAgentDefinition, SessionWorker } from "@/components/session/agents";
@@ -398,6 +399,9 @@ export function HomeScreen() {
           >
             {selectedProject.name}
           </h1>
+          {isOwner ? (
+            <ProjectUsageButton workspaceId={workspaceId} project={selectedProject._id} />
+          ) : null}
           <Button variant="ghost" size="sm" onClick={() => openNewSession(selectedProject._id)}>
             <SquarePenIcon data-icon="inline-start" />
             New session
@@ -415,6 +419,9 @@ export function HomeScreen() {
         <header className="flex h-10 items-center gap-2.5 pr-1.5 pl-3">
           <FolderMinusIcon className="size-4 shrink-0 text-muted-foreground" />
           <h1 className="min-w-0 flex-1 truncate text-base font-medium">No project</h1>
+          {isOwner && workspaceId ? (
+            <ProjectUsageButton workspaceId={workspaceId} project="none" />
+          ) : null}
           <Button variant="ghost" size="sm" onClick={() => openNewSession()}>
             <SquarePenIcon data-icon="inline-start" />
             New session

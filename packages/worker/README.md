@@ -96,6 +96,8 @@ Convex-hosted authentication endpoints.
 
 While connected, `start` also reports presence through the machine-authorized `workers:reportPresence` mutation on connect and every 20 seconds (`WORKER_HEARTBEAT_INTERVAL_MS` in `backend/src/worker/presence.ts`). The report carries only the Worker's temp directory, `radium` under the OS temp folder (`/tmp` on Linux, `$TMPDIR` on macOS, `%TEMP%` on Windows), which `start` creates if missing. The website shows a Worker as online for 60 seconds after its last report, and chats without a Project folder for this Worker run in that temp directory. Presence is advisory and never authorizes tasks; failed reports are ignored and retried on the next heartbeat. A Worker started before this change reports nothing until it is restarted.
 
+`start` also uploads this machine's coding-CLI usage (Claude Code, Codex, OpenCode, pi-agent, Copilot CLI, Gemini CLI and the other CLIs [ccusage](https://ccusage.com) reads) on connect and every 15 minutes. It runs the bundled `ccusage` dependency read-only against the CLIs' local logs and sends per-session, per-day token counts and costs, never content; a new Worker backfills 90 days. A failed run (for example no supported CLI data) is shown per Worker on the Activity page and retried on the next interval. See [Local CLI usage](../../docs/observability.md#local-cli-usage-ccusage).
+
 `status` is a local, network-free inspection. For a completed identity, `refresh`
 performs a fresh backend challenge/token exchange without changing the saved key,
 identity, or remote Worker registration; it prints only the token expiry. A pending
@@ -257,23 +259,24 @@ or copy-on-write storage. It does not revoke the remote identity.
 
 ### Source organization
 
-| Path                                                                        | Responsibility                                                              |
-| --------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `src/cli.ts`                                                                | Executable entry point and sanitized command-error output.                  |
-| `src/cli/run.ts`                                                            | Lifecycle command dispatch and interactive menu.                            |
-| `src/cli/options.ts`                                                        | Command aliases, option validation and help text.                           |
-| `src/cli/input.ts`, `src/cli/prompt.ts`                                     | Protected setup input and terminal presentation.                            |
-| `src/cli/start.ts`                                                          | Startup, status reporting and signal-driven shutdown.                       |
-| `src/auth/enrollment.ts`                                                    | Initial enrollment and restart recovery using persisted keys.               |
-| `src/auth/proof.ts`                                                         | Challenge validation and Worker-key proof signing.                          |
-| `src/auth/token.ts`                                                         | Access-token exchange, cache and concurrent-refresh deduplication.          |
-| `src/auth/state.ts`, `src/auth/credentials.ts`, `src/auth/private-files.ts` | Recovery metadata, credential adapters and protected local file operations. |
-| `src/control.ts`                                                            | Typed Convex subscription, auth retry and connection cleanup.               |
-| `src/tasks.ts`                                                              | Serialized file/Bash claims, local execution and completion receipts.       |
-| `src/presence.ts`                                                           | Temp directory setup and connected-only presence heartbeats.                |
-| `src/bash/`                                                                 | Native foreground shell sessions, deadlines and bounded output.             |
-| `src/edit/`                                                                 | Directory routing, native snapshot/preview sessions and local path policy.  |
-| `src/protocol.ts`                                                           | Setup/HTTP boundary validation and shared wire types.                       |
+| Path                                                                        | Responsibility                                                               |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `src/cli.ts`                                                                | Executable entry point and sanitized command-error output.                   |
+| `src/cli/run.ts`                                                            | Lifecycle command dispatch and interactive menu.                             |
+| `src/cli/options.ts`                                                        | Command aliases, option validation and help text.                            |
+| `src/cli/input.ts`, `src/cli/prompt.ts`                                     | Protected setup input and terminal presentation.                             |
+| `src/cli/start.ts`                                                          | Startup, status reporting and signal-driven shutdown.                        |
+| `src/auth/enrollment.ts`                                                    | Initial enrollment and restart recovery using persisted keys.                |
+| `src/auth/proof.ts`                                                         | Challenge validation and Worker-key proof signing.                           |
+| `src/auth/token.ts`                                                         | Access-token exchange, cache and concurrent-refresh deduplication.           |
+| `src/auth/state.ts`, `src/auth/credentials.ts`, `src/auth/private-files.ts` | Recovery metadata, credential adapters and protected local file operations.  |
+| `src/control.ts`                                                            | Typed Convex subscription, auth retry and connection cleanup.                |
+| `src/tasks.ts`                                                              | Serialized file/Bash claims, local execution and completion receipts.        |
+| `src/presence.ts`                                                           | Temp directory setup and connected-only presence heartbeats.                 |
+| `src/usage/`                                                                | Local CLI usage: ccusage reports, per-day session rows and incremental sync. |
+| `src/bash/`                                                                 | Native foreground shell sessions, deadlines and bounded output.              |
+| `src/edit/`                                                                 | Directory routing, native snapshot/preview sessions and local path policy.   |
+| `src/protocol.ts`                                                           | Setup/HTTP boundary validation and shared wire types.                        |
 
 `src/auth.ts` and `src/state.ts` retain small export facades for existing callers.
 Future tool implementations should have their own domain modules and use the

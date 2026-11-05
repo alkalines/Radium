@@ -73,6 +73,8 @@ The [native tools guide](Worker/Native_Tools.md) describes Oh-My-Pi's own
 `@oh-my-pi/pi-natives` package and the edit adapter's read/preview/apply lifecycle,
 as well as foreground shell execution and planned background-job/PTY primitives.
 
+While connected, the Worker also uploads this machine's coding-CLI usage read by ccusage (every 15 minutes, totals only, never content) for Activity and Session cost estimates; see [Local CLI usage](observability.md#local-cli-usage-ccusage).
+
 ## Proposed
 
 The [Bash tool reference](Worker/Bash_Tool.md) details shell execution,

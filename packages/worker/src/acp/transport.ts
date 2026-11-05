@@ -12,6 +12,7 @@ import type {
   AcpSessionStatus,
   AcpStopReason,
   AcpCommandInfo,
+  AcpTurnReport,
   AcpTurnUsage,
   AcpUsage,
 } from "backend/src/acp/contract";
@@ -76,6 +77,8 @@ export interface AcpSessionPatch {
   history?: "full" | "resumed" | "none";
   sessionId?: string;
   title?: string;
+  /** Usage facts of the turn this patch ends (model, cost delta, prompt command). */
+  turn?: AcpTurnReport;
 }
 
 type Subscription<T> = (
