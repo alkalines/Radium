@@ -30,6 +30,11 @@ credentials. New requests do not require prepaid credits or a Radium charge.
 Legacy balance keys remain usable through the bounded compatibility path while
 their workspace mapping and credential backfill are pending.
 
+Worker keys (tagged `Worker` in Gateway → API keys) are minted by a Worker for
+its ACP agents' [Gateway profiles](ACP/Agents.md#worker-gateway-key). A deleted
+Worker key is answered with `401` and a message naming the Worker, so an agent
+shows a readable error; other invalid keys get `The Authorization is invalid!`.
+
 ## List Models
 
 `GET /api/openai/v1/models`

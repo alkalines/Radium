@@ -1,4 +1,5 @@
 import { api, internal } from "../../convex/_generated/api";
+import { gatewayAuthorizationMessage } from "./key-error";
 import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
@@ -96,16 +97,19 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
         { status: 401 },
       );
     // Treat lookup failures like an invalid key rather than exposing backend errors.
+    let authorizationMessage = "The Authorization is invalid!";
     const keyInfo = await ctx
       .runQuery(api.keys.getKeyInfo, {
         key: bearerToken,
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        authorizationMessage = gatewayAuthorizationMessage(error);
+      });
     if (!keyInfo)
       return Response.json(
         {
           error: {
-            message: "The Authorization is invalid!",
+            message: authorizationMessage,
             code: 401,
           },
         },
@@ -143,15 +147,16 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
       legacyKeyId: legacyKey,
       byok: true,
       abortSignal: req.signal,
-      telemetry: telemetrySettings.enabled
-        ? {
-            workspace: workspaceId,
-            apiKey,
-            userId: keyInfo.userId,
-            requestId: crypto.randomUUID(),
-            settings: telemetrySettings,
-          }
-        : undefined,
+      telemetry:
+        telemetrySettings.enabled && keyInfo.telemetry !== "off"
+          ? {
+              workspace: workspaceId,
+              apiKey,
+              userId: keyInfo.userId,
+              requestId: crypto.randomUUID(),
+              settings: telemetrySettings,
+            }
+          : undefined,
     });
   } catch (e: any) {
     if (e instanceof z.ZodError) {

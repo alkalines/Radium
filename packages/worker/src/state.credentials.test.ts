@@ -9,6 +9,7 @@ import {
   type KeyringEntryFactory,
   type WorkerCredentialStore,
 } from "./auth/credentials.js";
+import { createGatewayKeyStore } from "./auth/gateway.js";
 import {
   WorkerProtocolError,
   type PrivateP256Jwk,
@@ -274,6 +275,10 @@ describe("Worker credential persistence", () => {
     const state = await createPendingState(directory, makeSetup(), { credentialStoreMode: "file" });
     const statePath = join(directory, "worker-state.json");
     const credentialPath = join(directory, `.worker-credential-${state.requestId}.json`);
+    const gateway = createGatewayKeyStore(directory);
+    await gateway.set({ keyId: "gateway-id", key: "gateway-secret" });
+    const gatewayPath = join(directory, ".worker-gateway-key.json");
+    expect((await lstat(gatewayPath)).mode & 0o777).toBe(0o600);
     expect((await lstat(credentialPath)).mode & 0o777).toBe(0o600);
     await chmod(statePath, 0o644);
     await chmod(credentialPath, 0o644);
@@ -282,6 +287,7 @@ describe("Worker credential persistence", () => {
 
     await expect(readFile(statePath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(credentialPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(gatewayPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readWorkerState(directory)).resolves.toBeNull();
   });
 

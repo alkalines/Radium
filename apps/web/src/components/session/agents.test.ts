@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Id } from "backend/convex/_generated/dataModel";
 import {
   agentAvailability,
+  agentListed,
   builtInAgent,
   firstReadyWorker,
   restoreAgentId,
@@ -25,7 +26,11 @@ const definition: SessionAgentDefinition = {
   updatedAt: 0,
 };
 const now = 100_000;
-function worker(workerId: string, lastSeenAt: number | undefined = now): SessionWorker {
+function worker(
+  workerId: string,
+  lastSeenAt: number | undefined = now,
+  access: SessionWorker["gateway"]["access"] = "off",
+): SessionWorker {
   return {
     workerId,
     name: workerId,
@@ -34,8 +39,14 @@ function worker(workerId: string, lastSeenAt: number | undefined = now): Session
     capabilities: [],
     identityEpoch: 0,
     lastSeenAt,
+    gateway: { access, telemetry: "workspace" },
   };
 }
+const gatewayEnv = [{ name: "OPENAI_BASE_URL", value: "{{gateway.url}}" }];
+const gatewayDefinition: SessionAgentDefinition = {
+  ...definition,
+  gateway: { enabled: true, env: gatewayEnv },
+};
 function report(worker: string, status: SessionAgentRow["status"] = "ready"): SessionAgentRow {
   return {
     _id: `${worker}-agent` as Id<"worker_agents">,
@@ -185,5 +196,92 @@ describe("workspace ACP agent selection", () => {
       if (original) Object.defineProperty(globalThis, "window", original);
       else Reflect.deleteProperty(globalThis, "window");
     }
+  });
+
+  test("a Gateway profile adds its own entry, round-tripped by id", () => {
+    expect(
+      workspaceAgents(
+        [
+          { ...gatewayDefinition, gateway: { enabled: false, env: gatewayEnv } },
+          { ...gatewayDefinition, agentId: "empty", gateway: { enabled: true, env: [] } },
+          { ...gatewayDefinition, agentId: "disabled", enabled: false },
+        ],
+        undefined,
+        [],
+      ).map((agent) => agent.id),
+    ).toEqual(["radium", "acp:codex", "acp:empty"]);
+
+    const agents = workspaceAgents([gatewayDefinition], "one", [report("one")]);
+    expect(agents.map((agent) => agent.id)).toEqual(["radium", "acp:codex", "acp-gateway:codex"]);
+    expect(restoreAgentId("acp-gateway:codex")).toEqual({ id: "acp-gateway:codex" });
+    expect(restoreAgentId("acp-gateway:")).toEqual({ id: "radium" });
+    expect(restoreAgentId("acp-gateway:one:codex")).toEqual({ id: "radium" });
+    expect(sessionAgentById("acp-gateway:codex", agents)).toMatchObject({
+      protocol: "acp",
+      agentId: "codex",
+      profile: "gateway",
+      name: "Codex · Gateway",
+      installation: { worker: "one" },
+    });
+    expect(sessionAgentById("acp:codex", agents)).toMatchObject({ profile: "native" });
+    // The legacy Worker-qualified id still means the native profile.
+    expect(sessionAgentById("acp:one:codex", agents)).toMatchObject({ profile: "native" });
+    expect(sessionAgentById("acp-gateway:codex", workspaceAgents([definition], "one", []))).toBe(
+      builtInAgent,
+    );
+  });
+
+  test("Gateway entries are hidden where Gateway access is off", () => {
+    const gateway = sessionAgentById(
+      "acp-gateway:codex",
+      workspaceAgents([gatewayDefinition], undefined, []),
+    );
+    const native = sessionAgentById(
+      "acp:codex",
+      workspaceAgents([gatewayDefinition], undefined, []),
+    );
+    expect(agentListed(native, worker("one"), [worker("one")])).toBe(true);
+    expect(agentListed(builtInAgent, undefined, [])).toBe(true);
+    expect(agentListed(gateway, worker("one"), [worker("one")])).toBe(false);
+    expect(agentListed(gateway, worker("one", now, "pending"), [])).toBe(true);
+    expect(agentListed(gateway, undefined, [worker("one"), worker("two")])).toBe(false);
+    expect(agentListed(gateway, undefined, [worker("one"), worker("two", now, "missing")])).toBe(
+      true,
+    );
+    expect(
+      agentListed(gateway, undefined, [
+        { ...worker("revoked", now, "active"), status: "revoked" as const },
+      ]),
+    ).toBe(false);
+    expect(agentAvailability(gateway, worker("one"), now, [report("one")])).toBe("gateway_off");
+  });
+
+  test("Gateway availability follows access, then the native report without sign-in", () => {
+    const gateway = sessionAgentById(
+      "acp-gateway:codex",
+      workspaceAgents([gatewayDefinition], undefined, []),
+    );
+    expect(agentAvailability(gateway, undefined, now, [])).toBe("no_worker");
+    expect(agentAvailability(gateway, worker("one", now, "pending"), now, [report("one")])).toBe(
+      "gateway_pending",
+    );
+    expect(agentAvailability(gateway, worker("one", now, "missing"), now, [report("one")])).toBe(
+      "gateway_missing",
+    );
+    for (const status of ["ready", "needs_auth", "unavailable", "failed"] as const) {
+      expect(
+        agentAvailability(gateway, worker("one", now, "active"), now, [report("one", status)]),
+      ).toBe(status === "ready" || status === "needs_auth" ? "ready" : "unavailable");
+    }
+    expect(
+      agentAvailability(gateway, worker("one", 0, "active"), now, [report("one", "ready")]),
+    ).toBe("offline");
+    const workers = [
+      worker("off", now, "off"),
+      worker("pending", now, "pending"),
+      worker("auth", now, "active"),
+    ];
+    const rows = [report("off"), report("pending"), report("auth", "needs_auth")];
+    expect(firstReadyWorker(gateway, workers, rows, now)?.workerId).toBe("auth");
   });
 });

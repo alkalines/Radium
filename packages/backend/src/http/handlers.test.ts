@@ -4,6 +4,7 @@ import { convexTest } from "convex-test";
 import { APICallError } from "ai";
 import { getFunctionName, type FunctionReference } from "convex/server";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { ConvexError } from "convex/values";
 import { api, internal } from "../../convex/_generated/api";
 import type { ActionCtx } from "../../convex/_generated/server";
 import { DEFAULT_ROUTING_SETTINGS } from "../routing/settings";
@@ -132,6 +133,54 @@ describe("moved HTTP handlers", () => {
     },
   );
 
+  test.each([handleOpenAIModels, handleChatCompletion])(
+    "%s returns an actionable 401 for a deleted Worker Gateway key",
+    async (handler) => {
+      const message =
+        "The Gateway key of Worker first was deleted. The workspace owner can issue a new key in Settings → Workers.";
+      runQuery.mockRejectedValueOnce(new ConvexError({ code: "GATEWAY_KEY_DELETED", message }));
+      const response = await handler(
+        ctx,
+        new Request("https://gateway.example.test/", {
+          method: "POST",
+          headers: { Authorization: "Bearer deleted-key" },
+          body: JSON.stringify(completionBody),
+        }),
+      );
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: { code: 401, message } });
+      expect(runMutation).not.toHaveBeenCalled();
+    },
+  );
+
+  test("per-key telemetry off skips capture even when workspace capture is enabled", async () => {
+    runQuery
+      .mockResolvedValueOnce({
+        apiKey: "api-key-id",
+        workspace: "key-workspace",
+        userId: "owner",
+        telemetry: "off",
+      })
+      .mockResolvedValueOnce({ enabled: true, recordInputs: true, recordOutputs: true });
+    routeTo("provider");
+    gateway.streamCompletion.mockResolvedValueOnce(
+      new ReadableStream<string>({
+        start(controller) {
+          controller.enqueue(streamChunk("served"));
+          controller.enqueue("[DONE]");
+          controller.close();
+        },
+      }),
+    );
+    const response = await handleChatCompletion(ctx, streamingRequest());
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(
+      runMutation.mock.calls
+        .map(([fn]) => getFunctionName(fn))
+        .every((name) => !name.includes("telemetry")),
+    ).toBe(true);
+  });
   test("model listing derives workspace from the validated API key", async () => {
     const models = { object: "list", data: [{ id: "workspace-model" }] };
     runQuery.mockResolvedValueOnce({ workspace: "key-workspace" }).mockResolvedValueOnce(models);

@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { acpAgentDefinitionError, type AcpAgentDefinition } from "backend/src/acp/contract";
+import { ACP_GATEWAY_PLACEHOLDERS, ACP_GATEWAY_TEMPLATES } from "backend/src/acp/gateway";
 import { isWorkerOnline } from "backend/src/worker/presence";
 import { AgentStatus, type RunState } from "@/components/agentic/agent-status";
 import { GroupList, Row, RowBlock, Tag } from "@/components/harness/group-list";
@@ -83,8 +84,16 @@ function errorMessage(error: unknown): string {
 }
 
 function definitionFields(agent: AcpAgentDefinition): AcpAgentDefinition {
-  const { agentId, name, command, args, env, enabled, source, icon, version } = agent;
-  return { agentId, name, command, args, env, enabled, source, icon, version };
+  const { agentId, name, command, args, env, gateway, enabled, source, icon, version } = agent;
+  return { agentId, name, command, args, env, gateway, enabled, source, icon, version };
+}
+
+type AgentEnv = AcpAgentDefinition["env"];
+
+/** A registry agent with a verified Gateway template starts with its Gateway profile on. */
+function gatewayTemplate(agentId: string): AcpAgentDefinition["gateway"] {
+  const template = ACP_GATEWAY_TEMPLATES[agentId];
+  return template ? { enabled: true, env: template.map((entry) => ({ ...entry })) } : undefined;
 }
 
 /** Workspace definitions are independent of each Worker's installation and login. */
@@ -161,6 +170,7 @@ export function AcpPanel() {
           agentId: entry.id,
           name: entry.name,
           ...entry.launch,
+          gateway: gatewayTemplate(entry.id),
           enabled: true,
           source: "registry",
           icon: entry.icon,
@@ -244,6 +254,13 @@ export function AcpPanel() {
               <Row
                 key={agent._id}
                 leading={<AcpAgentIcon name={agent.name} icon={agent.icon} className="size-6" />}
+                tag={
+                  agent.gateway?.enabled ? (
+                    <span title="Also offered as a Gateway profile, with model calls through the Radium Gateway">
+                      Gateway
+                    </span>
+                  ) : undefined
+                }
                 title={
                   <>
                     {agent.name}
@@ -622,7 +639,9 @@ function AgentDefinitionDialog({
   const [agentId, setAgentId] = useState("");
   const [idEdited, setIdEdited] = useState(false);
   const [commandLine, setCommandLine] = useState("");
-  const [env, setEnv] = useState<AcpAgentDefinition["env"]>([]);
+  const [env, setEnv] = useState<AgentEnv>([]);
+  const [gatewayEnabled, setGatewayEnabled] = useState(false);
+  const [gatewayEnv, setGatewayEnv] = useState<AgentEnv>([]);
   const [enabled, setEnabled] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -630,11 +649,14 @@ function AgentDefinitionDialog({
   useEffect(() => {
     if (!open) return;
     const launch = target ?? setup?.pathCommand;
+    const gateway = target ? target.gateway : setup ? gatewayTemplate(setup.id) : undefined;
     setName(target?.name ?? setup?.name ?? "");
     setAgentId(target?.agentId ?? setup?.id ?? "");
     setIdEdited(target !== null || setup !== null);
     setCommandLine(launch ? formatAgentCommandLine([launch.command, ...launch.args]) : "");
     setEnv(target?.env.map((entry) => ({ ...entry })) ?? []);
+    setGatewayEnabled(gateway?.enabled ?? false);
+    setGatewayEnv(gateway?.env.map((entry) => ({ ...entry })) ?? []);
     setEnabled(target?.enabled ?? true);
     setSaveError(null);
   }, [open, target, setup]);
@@ -652,12 +674,18 @@ function AgentDefinitionDialog({
     command: argv[0] ?? "",
     args: argv.slice(1),
     env,
+    // Rows of a switched-off Gateway profile are kept, so turning it back on restores them.
+    gateway:
+      gatewayEnabled || gatewayEnv.length > 0
+        ? { enabled: gatewayEnabled, env: gatewayEnv }
+        : undefined,
     enabled,
     source: target?.source ?? (setup ? "registry" : "custom"),
     icon: target?.icon ?? setup?.icon,
     version: target?.version ?? setup?.version,
   };
   const validationError = parseError ?? acpAgentDefinitionError(definition);
+  const template = ACP_GATEWAY_TEMPLATES[agentId];
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -753,69 +781,63 @@ function AgentDefinitionDialog({
                 Stored in Convex and visible to the workspace owner. Not for secrets: agents keep
                 their own login on each machine.
               </FieldDescription>
-              <FieldGroup>
-                {env.map((entry, index) => (
-                  <Field key={index} orientation="horizontal">
-                    <FieldLabel className="sr-only" htmlFor={`agent-env-name-${index}`}>
-                      Variable {index + 1} name
-                    </FieldLabel>
-                    <Input
-                      id={`agent-env-name-${index}`}
-                      placeholder="NAME"
-                      value={entry.name}
-                      className="min-w-0 flex-1 font-mono"
-                      disabled={submitting}
-                      onChange={(event) =>
-                        setEnv((current) =>
-                          current.map((item, itemIndex) =>
-                            itemIndex === index ? { ...item, name: event.target.value } : item,
-                          ),
-                        )
-                      }
-                    />
-                    <FieldLabel className="sr-only" htmlFor={`agent-env-value-${index}`}>
-                      Variable {index + 1} value
-                    </FieldLabel>
-                    <Input
-                      id={`agent-env-value-${index}`}
-                      placeholder="Value"
-                      value={entry.value}
-                      className="min-w-0 flex-1 font-mono"
-                      disabled={submitting}
-                      onChange={(event) =>
-                        setEnv((current) =>
-                          current.map((item, itemIndex) =>
-                            itemIndex === index ? { ...item, value: event.target.value } : item,
-                          ),
-                        )
-                      }
-                    />
+              <AgentEnvEditor
+                idPrefix="agent-env"
+                rows={env}
+                disabled={submitting}
+                onChange={setEnv}
+              />
+            </FieldSet>
+            <FieldSet>
+              <FieldLegend>Gateway</FieldLegend>
+              <FieldDescription>
+                Also offers this agent as <q>{name.trim() || "Agent"} · Gateway</q>: its model calls
+                go through the Radium Gateway with a key each Worker creates for itself, and it
+                lists the workspace's Gateway models. The Gateway serves the OpenAI Chat Completions
+                API, so the agent must support an OpenAI-compatible provider.
+              </FieldDescription>
+              <Field orientation="horizontal">
+                <Switch
+                  id="agent-gateway"
+                  checked={gatewayEnabled}
+                  disabled={submitting}
+                  onCheckedChange={setGatewayEnabled}
+                />
+                <FieldLabel htmlFor="agent-gateway">Offer a Gateway profile</FieldLabel>
+              </Field>
+              {gatewayEnabled ? (
+                <>
+                  <FieldDescription>
+                    Added to the variables above only in the Gateway profile. The Worker fills in{" "}
+                    {ACP_GATEWAY_PLACEHOLDERS.map((placeholder, index) => (
+                      <span key={placeholder}>
+                        {index > 0 ? ", " : null}
+                        <code className="font-mono text-xs">{`{{${placeholder}}}`}</code>
+                      </span>
+                    ))}{" "}
+                    (Gateway URL, Worker key, models as JSON, first model) when it starts the agent;
+                    the key never leaves the Worker.
+                  </FieldDescription>
+                  <AgentEnvEditor
+                    idPrefix="agent-gateway-env"
+                    rows={gatewayEnv}
+                    disabled={submitting}
+                    onChange={setGatewayEnv}
+                  />
+                  {template ? (
                     <Button
                       type="button"
                       variant="ghost"
-                      size="icon-xs"
-                      aria-label={`Remove variable ${index + 1}`}
+                      size="sm"
+                      className="self-start"
                       disabled={submitting}
-                      onClick={() =>
-                        setEnv((current) => current.filter((_, itemIndex) => itemIndex !== index))
-                      }
+                      onClick={() => setGatewayEnv(template.map((entry) => ({ ...entry })))}
                     >
-                      <Trash2Icon />
+                      Use OpenCode template
                     </Button>
-                  </Field>
-                ))}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="self-start"
-                  disabled={submitting || env.length >= 32}
-                  onClick={() => setEnv((current) => [...current, { name: "", value: "" }])}
-                >
-                  <PlusIcon data-icon="inline-start" />
-                  Add variable
-                </Button>
-              </FieldGroup>
+                  ) : null}
+                </>
+              ) : null}
             </FieldSet>
             <Field orientation="horizontal">
               <Switch
@@ -849,5 +871,84 @@ function AgentDefinitionDialog({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Name/value rows of an agent environment; values may be long, so both columns share width. */
+function AgentEnvEditor({
+  idPrefix,
+  rows,
+  disabled,
+  onChange,
+}: {
+  idPrefix: string;
+  rows: AgentEnv;
+  disabled: boolean;
+  onChange: (update: (current: AgentEnv) => AgentEnv) => void;
+}) {
+  return (
+    <FieldGroup>
+      {rows.map((entry, index) => (
+        <Field key={index} orientation="horizontal">
+          <FieldLabel className="sr-only" htmlFor={`${idPrefix}-name-${index}`}>
+            Variable {index + 1} name
+          </FieldLabel>
+          <Input
+            id={`${idPrefix}-name-${index}`}
+            placeholder="NAME"
+            value={entry.name}
+            className="min-w-0 flex-1 font-mono"
+            disabled={disabled}
+            onChange={(event) =>
+              onChange((current) =>
+                current.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, name: event.target.value } : item,
+                ),
+              )
+            }
+          />
+          <FieldLabel className="sr-only" htmlFor={`${idPrefix}-value-${index}`}>
+            Variable {index + 1} value
+          </FieldLabel>
+          <Input
+            id={`${idPrefix}-value-${index}`}
+            placeholder="Value"
+            value={entry.value}
+            className="min-w-0 flex-1 font-mono"
+            disabled={disabled}
+            onChange={(event) =>
+              onChange((current) =>
+                current.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, value: event.target.value } : item,
+                ),
+              )
+            }
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label={`Remove variable ${index + 1}`}
+            disabled={disabled}
+            onClick={() =>
+              onChange((current) => current.filter((_, itemIndex) => itemIndex !== index))
+            }
+          >
+            <Trash2Icon />
+          </Button>
+        </Field>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="self-start"
+        disabled={disabled || rows.length >= 32}
+        onClick={() => onChange((current) => [...current, { name: "", value: "" }])}
+      >
+        <PlusIcon data-icon="inline-start" />
+        Add variable
+      </Button>
+    </FieldGroup>
   );
 }

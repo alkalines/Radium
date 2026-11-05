@@ -85,15 +85,17 @@ export function utf8Bytes(value: string): number {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * `aisdk_chats.agent`: which ACP agent on which Worker owns the conversation. Set once at
- * creation; only `sessionId` is written later, once, by the bound Worker. `profile` is `native`
- * until Gateway-mode launch profiles exist.
+ * `aisdk_chats.agent`: which ACP agent and launch profile on which Worker owns the conversation.
+ * Set once at creation; only `sessionId` is written later, once, by the bound Worker.
  */
+export const acpProfileValidator = v.union(v.literal("native"), v.literal("gateway"));
+export type AcpProfile = Infer<typeof acpProfileValidator>;
+
 export const acpChatAgentValidator = v.object({
   kind: v.literal("acp"),
   worker: v.string(),
   agentId: v.string(),
-  profile: v.literal("native"),
+  profile: acpProfileValidator,
   agentVersion: v.string(),
   cwd: v.string(),
   sessionId: v.optional(v.string()),
@@ -325,6 +327,12 @@ export const acpAgentDefinitionValidator = v.object({
   command: v.string(),
   args: v.array(v.string()),
   env: v.array(v.object({ name: v.string(), value: v.string() })),
+  gateway: v.optional(
+    v.object({
+      enabled: v.boolean(),
+      env: v.array(v.object({ name: v.string(), value: v.string() })),
+    }),
+  ),
   enabled: v.boolean(),
   source: v.union(v.literal("registry"), v.literal("custom")),
   icon: v.optional(v.string()),
@@ -360,17 +368,32 @@ export function acpAgentDefinitionError(definition: AcpAgentDefinition): string 
     definition.args.some((arg) => arg.length > ACP_AGENT_ARG_MAX || !noNul(arg))
   )
     return `At most ${ACP_AGENT_ARGS_MAX} arguments, each under ${ACP_AGENT_ARG_MAX} characters.`;
-  if (definition.env.length > ACP_AGENT_ENV_MAX)
-    return `At most ${ACP_AGENT_ENV_MAX} environment variables.`;
-  const seen = new Set<string>();
-  for (const { name: key, value } of definition.env) {
-    if (!/^[a-z_][a-z0-9_]*$/i.test(key) || seen.has(key))
-      return `Invalid or repeated environment variable: ${key || "(empty)"}.`;
-    if (forbiddenAgentEnv(key)) return `${key} cannot be set for an agent.`;
-    if (value.length > ACP_AGENT_ENV_VALUE_MAX || !noNul(value))
-      return `The value of ${key} is too long.`;
-    seen.add(key);
+  for (const [env, gateway] of [
+    [definition.env, false],
+    [definition.gateway?.env ?? [], true],
+  ] as const) {
+    if (env.length > ACP_AGENT_ENV_MAX)
+      return `At most ${ACP_AGENT_ENV_MAX} environment variables.`;
+    const seen = new Set<string>();
+    for (const { name: key, value } of env) {
+      if (!/^[a-z_][a-z0-9_]*$/i.test(key) || seen.has(key))
+        return `Invalid or repeated environment variable: ${key || "(empty)"}.`;
+      if (forbiddenAgentEnv(key)) return `${key} cannot be set for an agent.`;
+      if (value.length > ACP_AGENT_ENV_VALUE_MAX || !noNul(value))
+        return `The value of ${key} is too long.`;
+      if (gateway) {
+        for (const match of value.matchAll(/\{\{([^{}]*)\}\}/g)) {
+          if (
+            !["gateway.url", "gateway.key", "gateway.models", "gateway.model"].includes(match[1]!)
+          )
+            return `Unknown placeholder ${match[0]} in ${key}.`;
+        }
+      }
+      seen.add(key);
+    }
   }
+  if (definition.gateway?.enabled && !definition.gateway.env.length)
+    return "Add at least one Gateway environment variable.";
   return null;
 }
 
@@ -420,12 +443,14 @@ export const acpCommandPayloadValidator = v.union(
   v.object({
     kind: v.literal("close"),
     agentId: v.string(),
+    profile: acpProfileValidator,
     sessionId: v.string(),
     cwd: v.string(),
   }),
   v.object({
     kind: v.literal("delete"),
     agentId: v.string(),
+    profile: acpProfileValidator,
     sessionId: v.string(),
     cwd: v.string(),
   }),

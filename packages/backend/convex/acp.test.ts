@@ -200,6 +200,7 @@ test("chat listings use agent definition names, fall back to IDs and mark built-
     agentId: agent.agentId,
     name: agent.agentId,
     worker: f.first.identity.workerId,
+    profile: "native",
   });
   expect(chats.find((chat) => chat.id === builtin)?.agent).toBeNull();
   const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
@@ -211,6 +212,7 @@ test("chat listings use agent definition names, fall back to IDs and mark built-
     agentId: agent.agentId,
     name: "Workspace agent name",
     worker: f.first.identity.workerId,
+    profile: "native",
   });
   await f.owner.mutation(api.acp.DeleteAgentDefinition, { workspace: f.workspace, id });
   const removed = await list();
@@ -1729,4 +1731,184 @@ test("an agent's Gateway calls join its session and replace its local rows and t
   const sessionCost = await f.owner.query(api.agent_usage.GetChatCost, { chat: f.chat });
   expect(sessionCost).toMatchObject({ steps: 1, unknown: 0, pending: 0 });
   expect(sessionCost?.cost).toBeCloseTo(0.25);
+});
+
+test("Worker Gateway access lifecycle mints secrets only in the response and cascades revocation", async () => {
+  const f = await fixture();
+  const target = { workspace: f.workspace, workerId: f.first.identity.workerId };
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "off" });
+  await expect(f.first.machine.mutation(api.acp.mintGatewayKey, {})).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  await expect(f.owner.mutation(api.workers.issueGatewayKey, target)).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  await expect(
+    f.member.mutation(api.workers.setGatewayAccess, { ...target, enabled: true }),
+  ).rejects.toThrow();
+  await f.owner.mutation(api.workers.setGatewayTelemetry, { ...target, telemetry: "off" });
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "off" });
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: true });
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "pending" });
+  const first = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  expect(first.key).toMatch(/^rad-sk-/);
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({
+    access: "active",
+    keyId: first.keyId,
+  });
+  expect(await f.t.query(api.keys.getKeyInfo, { key: first.key })).toMatchObject({
+    apiKey: first.keyId,
+    telemetry: "off",
+  });
+  const stored = await f.t.run(async (ctx) => ({
+    key: await ctx.db.get(first.keyId),
+    state: await ctx.db.query("worker_gateway").first(),
+    commands: await ctx.db.query("acp_commands").collect(),
+  }));
+  expect(JSON.stringify(stored)).not.toContain(first.key);
+  expect(stored.key).toMatchObject({ worker: target.workerId, name: "first", telemetry: "off" });
+  expect(
+    (await f.owner.query(api.workers.list, { workspace: f.workspace })).find(
+      (worker) => worker.workerId === target.workerId,
+    )?.gateway,
+  ).toEqual({ access: "active", telemetry: "off" });
+  expect((await f.owner.query(api.keys.listKeys, { workspace: f.workspace }))[0]).toMatchObject({
+    worker: { id: target.workerId, name: "first" },
+    telemetry: "off",
+  });
+  await expect(
+    f.owner.mutation(api.keys.setKeyTelemetry, { key: first.keyId, telemetry: "workspace" }),
+  ).rejects.toThrow("Set Gateway telemetry for this key on its Worker");
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: true });
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({
+    access: "active",
+    keyId: first.keyId,
+  });
+  const second = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  expect(second.keyId).not.toBe(first.keyId);
+  expect((await f.t.run((ctx) => ctx.db.get(first.keyId)))?.revokedAt).toBeDefined();
+  await f.owner.mutation(api.keys.deleteKey, { key: second.keyId });
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "missing" });
+  await expect(f.first.machine.mutation(api.acp.mintGatewayKey, {})).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  await expect(f.t.query(api.keys.getKeyInfo, { key: second.key })).rejects.toThrow(
+    "The Gateway key of Worker first was deleted.",
+  );
+  await f.owner.mutation(api.workers.issueGatewayKey, target);
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "pending" });
+  const third = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  await f.owner.mutation(api.workers.setGatewayTelemetry, { ...target, telemetry: "workspace" });
+  expect(await f.t.query(api.keys.getKeyInfo, { key: third.key })).toMatchObject({
+    telemetry: "workspace",
+  });
+  await f.owner.mutation(api.workers.issueGatewayKey, target);
+  expect((await f.t.run((ctx) => ctx.db.get(third.keyId)))?.revokedAt).toBeDefined();
+  const fourth = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: false });
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "off" });
+  expect((await f.t.run((ctx) => ctx.db.get(fourth.keyId)))?.revokedAt).toBeDefined();
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: true });
+  const fifth = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  await f.owner.mutation(api.workers.revoke, target);
+  expect((await f.t.run((ctx) => ctx.db.get(fifth.keyId)))?.revokedAt).toBeDefined();
+  expect(await f.t.run((ctx) => ctx.db.query("worker_gateway").collect())).toEqual([]);
+});
+
+test("Gateway session admission, binding, prompt gate, fork and usage honor its profile", async () => {
+  const f = await fixture();
+  const target = { workspace: f.workspace, workerId: f.first.identity.workerId };
+  const create = {
+    workspace: f.workspace,
+    worker: target.workerId,
+    agentId: agent.agentId,
+    cwd: "/work",
+    profile: "gateway" as const,
+  };
+  await expect(f.owner.mutation(api.acp.CreateSession, create)).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  const definition = {
+    agentId: agent.agentId,
+    name: agent.name,
+    command: "test-agent",
+    args: [],
+    env: [],
+    enabled: true,
+    source: "custom" as const,
+  };
+  const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition,
+  });
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: true });
+  await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  await expect(f.owner.mutation(api.acp.CreateSession, create)).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    id,
+    definition: {
+      ...definition,
+      gateway: { enabled: true, env: [{ name: "KEY", value: "{{gateway.key}}" }] },
+    },
+  });
+  await f.owner.mutation(api.workers.issueGatewayKey, target);
+  await expect(f.owner.mutation(api.acp.CreateSession, create)).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  const key = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  const chat = await f.owner.mutation(api.acp.CreateSession, create);
+  expect(await f.owner.query(api.acp.GetSession, { chat })).toMatchObject({
+    profile: "gateway",
+    gateway: { access: "active" },
+    agent: { profile: "gateway" },
+  });
+  expect((await f.owner.query(api.acp.GetSession, { chat })).defaultConfig).toBeUndefined();
+  expect((await f.owner.query(api.acp.GetSession, { chat: f.chat })).defaultConfig).toEqual(
+    agent.defaults!.config,
+  );
+  const command = await f.owner.mutation(api.acp.Prompt, {
+    chat,
+    prompt,
+    clientId: "gateway-turn",
+  });
+  expect(
+    (await f.first.machine.mutation(api.acp.claimCommand, { command }))?.session?.profile,
+  ).toBe("gateway");
+  expect(
+    (await f.first.machine.query(api.acp.warmSessions, {})).find((session) => session.chat === chat)
+      ?.profile,
+  ).toBe("gateway");
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat,
+    patch: { status: "running", sessionId: "gateway-session" },
+  });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat,
+    patch: {
+      status: "idle",
+      stopReason: "end_turn",
+      turnUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      turn: { command, startedAt: Date.now(), cost: { amount: 5, currency: "USD" } },
+    },
+  });
+  expect(await f.t.run((ctx) => ctx.db.query("acp_usage").collect())).toEqual([]);
+  const fork = await f.owner.mutation(api.acp.Fork, { chat, clientId: "gateway-fork" });
+  expect(await f.owner.query(api.acp.GetSession, { chat: fork })).toMatchObject({
+    profile: "gateway",
+    agent: { profile: "gateway" },
+  });
+  await f.owner.mutation(api.keys.deleteKey, { key: key.keyId });
+  expect(await f.owner.query(api.acp.GetSession, { chat })).toMatchObject({
+    gateway: { access: "missing" },
+  });
+  await expect(
+    f.owner.mutation(api.acp.Prompt, { chat, prompt, clientId: "missing" }),
+  ).rejects.toThrow("This Worker's Gateway key was deleted.");
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: false });
+  await expect(f.owner.mutation(api.acp.Prompt, { chat, prompt, clientId: "off" })).rejects.toThrow(
+    "Gateway access is off on this Worker.",
+  );
 });

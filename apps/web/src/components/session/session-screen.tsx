@@ -330,7 +330,11 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const agents = workspaceAgents(agentDefinitions, draftWorker?.workerId, agentRows);
   const agent = chatId ? builtInAgent : sessionAgentById(agentId, agents);
   const isAcpDraft = chatId === undefined && agent.protocol === "acp";
-  const acpDefaults = agent.protocol === "acp" ? agent.installation?.defaults?.config : undefined;
+  // The Worker reports only the native profile; a Gateway session lists the Gateway models instead.
+  const acpDefaults =
+    agent.protocol === "acp" && agent.profile === "native"
+      ? agent.installation?.defaults?.config
+      : undefined;
   // Stable while nothing changes, so the agent's (possibly hundreds of) models are not re-mapped.
   const acpDraftConfig = useMemo(
     () => applyAcpDraft(acpDefaults, acpDraft),
@@ -350,7 +354,13 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           ? "This Worker is offline. Choose an online Worker or wait for it to reconnect."
           : acpAvailability === "needs_auth"
             ? "Sign in to this agent from the Agent picker before sending."
-            : "This agent is unavailable on the selected Worker. Choose another Worker or agent.";
+            : acpAvailability === "gateway_off"
+              ? "Gateway access is off on this Worker. Turn it on in Settings → Workers."
+              : acpAvailability === "gateway_pending"
+                ? "Waiting for the Worker to create its Gateway key."
+                : acpAvailability === "gateway_missing"
+                  ? "This Worker's Gateway key was deleted. Issue a new key in Settings → Workers."
+                  : "This agent is unavailable on the selected Worker. Choose another Worker or agent.";
   const setAgent = useCallback((next: SessionAgent) => {
     setAgentId(next.id);
     setAcpDraft({ config: [] });
@@ -872,6 +882,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           project: selectedProject?._id,
           worker: draftWorker.workerId,
           agentId: agent.agentId,
+          profile: agent.profile,
         });
         for (const option of acpDraft.config) await setAcpConfig({ chat: created, ...option });
         if (acpDraft.modeId) await setAcpMode({ chat: created, modeId: acpDraft.modeId });

@@ -1,6 +1,6 @@
 # ACP Agents On The Worker
 
-Status: **workspace agent definitions, registry selection, Worker discovery and Chatroom authentication implemented.** Binary archive installation, terminal login and Gateway mode remain open. Overview: [ACP Agents](../ACP.md).
+Status: **workspace agent definitions, registry selection, Worker discovery, Chatroom authentication and Gateway mode implemented.** Binary archive installation and terminal login remain open. Overview: [ACP Agents](../ACP.md).
 
 An ACP agent is a program on the Worker's machine. The workspace owner configures
 it in **Settings → ACP**, in the Workspace group immediately after Workers, not
@@ -12,8 +12,8 @@ never an executable, arguments or environment.
 
 ## Sources And Configuration
 
-| Source   | Where it comes from                                                                                                                          | Who adds it                          |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| Source   | Where it comes from                                                                                                                          | Who adds it                       |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
 | Registry | [ACP Registry](https://agentclientprotocol.com/get-started/registry), `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` | Workspace owner in Settings → ACP |
 | Custom   | Any ACP program installed on the Worker, defined by a command and arguments                                                                  | Workspace owner in Settings → ACP |
 
@@ -38,7 +38,8 @@ they are **not secret storage**. Agents keep their own login and credentials on
 each Worker's machine.
 
 Definitions contain `agentId`, `name`, `command`, `args`, `env: [{name, value}]`,
-`enabled`, `source: "registry" | "custom"` and optional `icon`/`version`.
+`enabled`, `source: "registry" | "custom"` and optional `icon`/`version` and
+`gateway: {enabled, env}` ([Gateway environment](#gateway-environment)).
 Convex and the Worker share the same launch validation and forbidden environment
 policy. At most 64 definitions can be configured per workspace.
 
@@ -65,7 +66,8 @@ On each definitions update and Worker reconnect, the Worker:
 
 There is no discovery polling loop. The configured name, source and icon are
 used for display; the version comes from `agentInfo`, falling back to the
-definition's version and then `unknown`. Native is the only implemented profile.
+definition's version and then `unknown`. Only the native profile is probed; a
+[Gateway profile](#gateway-mode) shares its availability.
 
 Each definition shows a compact pill for every active Worker. Its tooltip reports
 **Available** (with version), **Needs sign in**, **Not on PATH**, **Failed** (with
@@ -120,7 +122,9 @@ For a real scripted ACP fixture configured through this same form, see the
   own variables (`RADIUM_*` and `CONVEX_*`): no machine key, JWT, Convex URL or
   Worker config paths. Definition `env` is applied; entries that change program lookup, loaders, proxies or TLS
   trust (`PATH`, `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `HTTPS_PROXY`, …) are refused,
-  following ACP's launch-safety guidance.
+  following ACP's launch-safety guidance. A Gateway-profile process also gets
+  the expanded [Gateway environment](#gateway-environment), the only place the
+  Worker's Gateway key enters an agent.
 - **Streams.** stdout carries ACP only. stderr goes to the Worker's bounded local
   diagnostics, never into a Session or Convex.
 
@@ -190,80 +194,172 @@ imported only for `session/fork`; `/experimental/v2` waits for M5.
 
 ## Gateway Mode
 
-Gateway mode below is planned, not implemented.
-
 An agent always runs with its own models and credentials. Gateway mode is an
 additional **launch profile** of the same agent that sends its model calls
 through the Radium Gateway, gaining usage limits, multi-account routing, cost
-tracking and telemetry.
+tracking and telemetry. Code: `packages/backend/src/acp/gateway.ts` (placeholders,
+templates, expansion), `packages/backend/src/worker/gateway.ts` (Worker key
+state), `packages/worker/src/acp/` (key store, profile processes).
 
-- **A separate entry, never a toggle.** The picker lists `Codex` and
-  `Codex · Gateway` as two agents on that Worker (one process each, since the
-  environment differs per process). A Session picks one at creation and keeps it,
-  like any Agent, so the native models are always available.
-- **Recipes per adapter.** Radium ships a small table of adapters it knows how
-  to point at the Gateway (base-URL and API-key environment variables, or a
-  config file the agent reads). Agents without a recipe have no Gateway profile.
-  Recipes are verified against each adapter before they ship.
-- **Not offered where it would break provider terms.** `claude-acp` wraps the
-  Claude Agent SDK; its Gateway profile is not offered, and subscription
-  (OAuth) credentials are never routed through the Gateway for any agent.
-- **Models.** The agent still advertises its own model choices; in Gateway mode
-  those IDs must resolve to models the workspace has providers for. Unresolvable
-  IDs fail at the Gateway with its normal error, shown on the interruption card.
-- **Session id on every call.** A recipe must make the agent send its ACP
-  session id as `X-Session-ID` (OpenCode already does). Activity uses it to join
-  the Gateway calls to the Session and to stop counting the agent's own usage
-  records for it ([Agents on the Gateway](../observability.md#local-cli-usage-ccusage)).
+- **A separate entry, never a toggle.** The picker lists `OpenCode` and
+  `OpenCode · Gateway` as two agents on that Worker (one process each, since the
+  environment differs). A Session picks one at creation and keeps it
+  (`aisdk_chats.agent.profile`), like any Agent, so the native models are always
+  available.
+- **Chat Completions only.** The Gateway serves OpenAI Chat Completions, so only
+  agents that can point an OpenAI-compatible provider at a base URL can use it.
+  Codex (Responses API only), Gemini CLI (Gemini API) and Claude Agent (Anthropic
+  Messages, and excluded by provider terms) cannot. Subscription (OAuth)
+  credentials are never routed through the Gateway for any agent.
+- **Session id on every call.** Activity joins Gateway calls to the Session by the
+  client session id (`X-Session-ID`, [Agents on the Gateway](../observability.md#local-cli-usage-ccusage)).
+  A Gateway-profile turn's own usage report is never counted, so an agent that
+  sends no session id is not counted twice: its calls stay under the Worker's
+  key in Activity, without a Session.
+
+### Gateway Environment
+
+Gateway mode is general: any agent definition may carry a **Gateway
+environment** (`gateway: {enabled, env}` on `acp_agents`), environment rows
+applied only to the Gateway profile on top of the definition's own `env`. Values
+may contain placeholders the Worker fills in locally when it starts the process:
+
+| Placeholder          | Value                                                                                                                                        |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{{gateway.url}}`    | `<Convex site>/api/openai/v1`, from the Worker's setup                                                                                       |
+| `{{gateway.key}}`    | The Worker's Gateway key; substituted on the Worker, never stored in Convex                                                                  |
+| `{{gateway.models}}` | JSON object of the workspace's Gateway models: `{"<slug>":{"name":"…","limit":{"context":N,"output":M}}}` (`limit` only when both are known) |
+| `{{gateway.model}}`  | The first Gateway model's slug, for agents that take one default model                                                                       |
+
+The rows follow the definition `env` rules (at most 32, refused names such as
+`PATH`, `LD_*` or proxies); an unknown `{{…}}` placeholder is rejected on save,
+and an enabled Gateway profile needs at least one row. The models are read when
+the Gateway process starts, so a model added to the workspace appears after the
+process restarts (idle stop or definition edit). A workspace with no Gateway
+models fails the turn with **The workspace has no Gateway models.**
+
+**Templates.** Registry agents with a verified template get it prefilled on
+**Add**/**Set up**, and Edit offers it again. Only OpenCode (`opencode` and
+`opencode-v2`) has one, verified with OpenCode 2.2.4 over ACP: the session's model
+option lists only the Gateway models, and every call carries the key and
+`X-Session-Id: <ACP session id>`.
+
+```text
+OPENCODE_CONFIG_CONTENT={"enabled_providers":["radium"],"provider":{"radium":{"name":"Radium Gateway","npm":"@ai-sdk/openai-compatible","options":{"baseURL":"{{gateway.url}}","apiKey":"{{gateway.key}}"},"models":{{gateway.models}}}}}
+```
+
+Other agents can be configured by hand. Qwen Code, for example, works with
+`OPENAI_BASE_URL={{gateway.url}}`, `OPENAI_API_KEY={{gateway.key}}` and
+`OPENAI_MODEL={{gateway.model}}`, but offers that single model and sends no
+session id, so it has no template.
+
+### Native Provider Configuration (Planned)
+
+ACP's draft [Configurable LLM Providers](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/rfds/custom-llm-endpoint.mdx)
+RFD lets a client redirect an agent's model calls without env vars or config
+files. Radium does not use it yet. The agent advertises
+`agentCapabilities.providers: {}` in `initialize`, and the client then calls:
+
+- `providers/list` → `{providerId, supported: [apiType…], required, current: {apiType, baseUrl} | null}`;
+  headers are never returned.
+- `providers/set {providerId, apiType, baseUrl, headers}`: replaces that
+  provider's whole configuration (`apiType`: `openai`, `anthropic`, `azure`,
+  `vertex`, `bedrock` or an extension).
+- `providers/disable {providerId}` for providers that are not `required`.
+
+Calls belong after `initialize` and before `session/new`/`session/load`. The
+configuration lasts for the process and is not persisted, which matches one
+Gateway-profile process per (Worker, agent). `@agentclientprotocol/sdk` 2.2.0
+ships the methods in its `/unstable` entry.
+
+Probed on 2026-11-05 (`initialize`, then `providers/set` against a logging mock):
+
+| Agent                                                                           | `providers` | `supported`                      | Behaviour after `providers/set`                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------- | ----------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex ACP 2.5.0                                                                 | yes         | `openai`                         | `GET <base>/models`, then `POST <base>/responses`, both with the supplied `Authorization`. Its model list therefore comes from the base URL. No `session_id`/`x-session-id` header was seen (other headers not checked) |
+| Claude Agent ACP 0.101.0                                                        | yes         | `anthropic`, `bedrock`, `vertex` | `GET <base>/v1/models` with the supplied header, `POST <base>/v1/messages` with `Authorization: Bearer acp-proxy` instead; how it forwards credentials needs checking                                                   |
+| OpenCode 2.2.4, Qwen Code 0.26.8, Gemini CLI 0.67.0, pi-acp 0.0.34, omp 18.16.0 | no          | —                                | Use the [Gateway environment](#gateway-environment)                                                                                                                                                                     |
+
+The agents that support it speak the APIs the Gateway lacks: Codex needs the
+Responses API, Claude Agent needs Anthropic Messages
+([Gateway protocols](../tasks/10_Gateway_Protocols.md)). Claude Agent also stays
+excluded from Gateway mode by provider terms unless that decision is revisited.
+
+Planned Worker behaviour, once the Gateway serves an `apiType` the agent lists:
+
+1. A definition may offer a Gateway profile without Gateway env rows when its
+   Worker probe reports `providers` with a supported `apiType`; the probe
+   result needs a field on `worker_agents` so Convex and the picker know it.
+2. On a Gateway-profile process, the Worker calls `providers/list`, then
+   `providers/set` for the matching provider with `baseUrl` = the Gateway URL
+   of that protocol and `headers.Authorization = Bearer <Worker key>`, and
+   `providers/disable` for the other non-required providers, all before the
+   first `session/new`/`session/load`. Gateway env rows are then not applied.
+3. The key travels over the ACP connection only, never in the agent's
+   environment, so commands the agent runs cannot read it (an improvement on
+   env templates, see [Security](#security)).
+4. Key rotation needs a process restart (or a fresh `providers/set` before the
+   next session), the same as today.
+
+Still to verify then: how each agent sends its session id (Activity's join),
+Claude Agent's credential forwarding, and whether the RFD's method names change
+before it stabilizes.
 
 ### Worker Gateway Key
 
 Each Worker has at most one Gateway key, used by all of its Gateway profiles.
+Its state lives in `worker_gateway` (`access`: `off`, `pending`, `active`,
+`missing`; `telemetry`; current `key`); the key itself is an ordinary `api_keys`
+row with `worker` set.
 
 - **Issue.** The owner turns on **Gateway access** on the Worker's row in
-  Settings → Workers. Convex creates a `rad-sk` key linked to that Worker and
-  delivers the plaintext once through a command the Worker claims (payload
-  cleared on claim), like every Gateway key, whose plaintext is shown only once.
-  The Worker saves it in its local credential store beside its machine identity
-  (owner-only file permissions) and injects it only into Gateway-profile agent
-  processes.
-- **Visible as a Worker key.** Gateway → API keys lists it with its Worker's
-  name; deleting it from there warns that the Worker's Gateway profiles stop.
+  Settings → Workers (`workers.setGatewayAccess`), which only marks the Worker
+  `pending`. The Worker sees that on its control subscription (`acp.gatewayState`)
+  and calls the machine-authorized `acp.mintGatewayKey`, which creates the key and
+  returns the plaintext in its response. The plaintext is never stored in Convex.
+  The Worker saves it beside its machine identity (owner-only file permissions)
+  and injects it only into Gateway-profile processes.
+- **Lost response or local copy.** While access is on, the Worker mints again
+  whenever it holds no key or a different key than Convex records; each mint
+  revokes the previous key. Only the Worker's own machine identity can mint.
+- **Visible as a Worker key.** Gateway → API keys lists it under the Worker's
+  name with a `Worker` tag (`Worker · <name>` once the key is renamed);
+  deleting it from there warns that the Worker's Gateway agents stop.
 - **Disable.** Turning Gateway access off revokes the key and hides the
-  Worker's Gateway profiles from the picker. Each agent row also has its own
-  Gateway profile switch. Revoking the Worker revokes its key.
+  Worker's Gateway profiles from the picker. Each agent's Gateway switch in
+  Settings → ACP hides that agent's profile. Revoking the Worker revokes its key.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Off
-    Off --> Issued: owner turns Gateway access on
-    Issued --> Active: Worker claims and saves it
+    Off --> Pending: owner turns Gateway access on
+    Pending --> Active: Worker mints and saves it
+    Active --> Active: Worker lost its copy (mints again)
     Active --> Missing: key deleted in Gateway → API keys
-    Active --> Missing: local copy lost (Worker reinstalled)
-    Missing --> Issued: owner chooses Issue new key
+    Missing --> Pending: owner chooses Issue new key
     Active --> Off: owner turns Gateway access off
+    Pending --> Off: owner turns Gateway access off
     Missing --> Off: owner turns Gateway access off
     Active --> [*]: Worker revoked (key revoked)
 ```
 
-A deleted or lost key fails closed, and nothing is replaced silently:
+A deleted key fails closed, and nothing is replaced silently:
 
-- Convex marks the Worker's Gateway key `missing`; the Worker sees it on its
+- Convex marks the Worker's access `missing`; the Worker sees it on its
   control subscription, deletes its local copy, stops Gateway-profile processes
-  and fails their in-flight turns with `Gateway key deleted`. Their
-  `worker_agents` profiles become `needs_key`.
+  and fails their in-flight turns with `Gateway key deleted` (`Gateway access
+  turned off` when access is switched off). The picker shows the profile as
+  **Gateway key deleted**, and `acp.Prompt` refuses new prompts.
 - A Session on a Gateway profile is **not** moved to the agent's native profile:
   that would change credentials, billing and possibly models mid-Session, which
-  the Agent lock forbids. It shows the interruption card with **Issue new key**
-  for the owner (members see that the owner must reissue it).
-- A new key is never minted automatically, since deletion was an explicit owner
-  action. Issue new key delivers a fresh key; the profiles return to `ready`,
-  and Sessions continue through `session/resume` or `session/load`.
+  the Agent lock forbids. The Session shows a notice with **Issue new key** for
+  the owner (`workers.issueGatewayKey`); members see that the owner must issue it.
+- A new key is never minted after a deletion until the owner issues one, since
+  deletion was an explicit owner action. The Worker then mints a fresh key and
+  Sessions continue through `session/resume` or `session/load`.
 - If the Worker was offline when the key was deleted, the agent's next model
-  call gets a Gateway 401 whose message names the deleted Worker key, so the
-  agent's error is readable; the Worker reconciles when it reconnects.
-- A Worker that lost its local copy reports it; the owner reissues, which
-  revokes the old key.
+  call gets a Gateway 401 naming the Worker whose key was deleted, so the agent's
+  error is readable; the Worker reconciles when it reconnects.
 
 ### Telemetry
 
@@ -273,14 +369,15 @@ workspace's settings (`recordInputs`, `recordOutputs`, retention). This is
 one of the reasons for Gateway mode, and it is the one place ACP conversation
 content may be stored by Radium, only when the owner records content.
 
-- **Per-key switch.** Every Gateway key gets a **Telemetry** setting:
+- **Per-key switch.** Every Gateway key has a **Telemetry** setting:
   _Workspace settings_ (default) or _Off_ (nothing captured for that key's
-  requests). It applies to ordinary API keys too.
+  requests, `api_keys.telemetry`). Gateway → API keys sets it for ordinary keys
+  (`keys.setKeyTelemetry`).
 - **Worker keys follow the Worker.** The Worker's row has a **Gateway telemetry**
-  switch that sets its key's setting automatically, and a reissued key inherits it.
-- **Attribution.** Requests are attributed to the Worker's key. Telemetry groups
-  them into sessions by its content lineage; tying a request to a specific chat
-  needs an agent that forwards a custom header, which is a later refinement.
+  switch (`workers.setGatewayTelemetry`) that sets its key's setting, and every
+  newly minted key inherits it.
+- **Attribution.** Requests are attributed to the Worker's key, and to the
+  Session through the agent's session id when it sends one.
 
 ## Security
 
@@ -290,3 +387,9 @@ permission system decides what asks for approval; Radium relays those requests
 and records the decision but cannot enforce anything the agent does not ask
 about. Owners should treat enabling an ACP agent on a Worker like granting
 unrestricted Bash on it.
+
+A Gateway-profile agent, and every command it runs, can read the Worker's
+Gateway key from its environment. That grants no more than the agent already
+has as the OS user, but the key can call any model of the workspace: revoke it
+(Gateway access off, or delete it in Gateway → API keys) if the machine is
+compromised.

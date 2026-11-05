@@ -52,3 +52,4 @@ export {
   RegistryAgents,
   agentDefinitions,
 } from "../src/acp/agents";
+export { gatewayState, mintGatewayKey, gatewayModels } from "../src/worker/gateway";

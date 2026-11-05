@@ -466,6 +466,7 @@ async function chatRows(
     agent: chat.agent
       ? {
           agentId: chat.agent.agentId,
+          profile: chat.agent.profile,
           name: agentNames.get(chat.agent.agentId) ?? chat.agent.agentId,
           worker: chat.agent.worker,
         }

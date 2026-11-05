@@ -665,6 +665,9 @@ function SessionRow({
           {session.agent.name}
         </span>
       ) : null}
+      {session.agent?.profile === "gateway" ? (
+        <span className="-ml-1.5 shrink-0 text-xs text-muted-foreground">· Gateway</span>
+      ) : null}
       {offline ? <span className="shrink-0 text-xs text-muted-foreground">Offline</span> : null}
       {session.canManage ? (
         <SessionActionsMenu session={session} projects={projects} />

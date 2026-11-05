@@ -4,6 +4,11 @@ Status: Not started. Design after task 04 clarifies adapter and upstream contrac
 OpenAI-compatible Chat Completions and model listing are current; other protocols
 are roadmap items, not implemented compatibility promises.
 
+ACP agents are a concrete consumer: Codex ACP and Claude Agent ACP accept the
+Gateway through ACP's `providers/set` but call the Responses API and Anthropic
+Messages respectively ([Native provider configuration](../ACP/Agents.md#native-provider-configuration-planned)).
+Responses would give Codex a Gateway profile with no per-agent template.
+
 ## Work
 
 1. Inventory the current HTTP routes, translators, streaming/error handling, tool calls, usage attribution, and client tests under `packages/backend/convex/http/` and `packages/backend/src/translators/`.

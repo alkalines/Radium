@@ -16,13 +16,17 @@ export async function resolveAgentCommand(command: string): Promise<string | nul
 }
 
 /** Remove machine credentials/config before applying the validated owner-defined overrides. */
-export function agentEnvironment(definition: AcpAgentDefinition): NodeJS.ProcessEnv {
+export function agentEnvironment(
+  definition: AcpAgentDefinition,
+  extra: { name: string; value: string }[] = [],
+): NodeJS.ProcessEnv {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !/^(RADIUM_|CONVEX_)/i.test(key)),
   );
-  for (const { name, value } of definition.env) {
-    if (forbiddenAgentEnv(name)) throw new Error(`Unsafe environment key: ${name}`);
-    env[name] = value;
-  }
+  for (const rows of [definition.env, extra])
+    for (const { name, value } of rows) {
+      if (forbiddenAgentEnv(name)) throw new Error(`Unsafe environment key: ${name}`);
+      env[name] = value;
+    }
   return env;
 }

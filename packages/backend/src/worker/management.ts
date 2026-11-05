@@ -7,6 +7,8 @@ import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../../convex/helper
 import { backendOrigin, ENROLLMENT_TTL, machineSigningKey, randomToken, tokenDigest } from "./auth";
 import { validChatWorkerDirectory } from "./chat-config";
 import { findWorkerPresence } from "./chat-selection";
+import { acpGatewayAccessValidator, keyTelemetryValidator } from "../acp/gateway";
+import { findWorkerGateway } from "./gateway";
 
 /**
  * Parent-app policy around the isolated workerIdentity persistence component.
@@ -27,6 +29,7 @@ const workerSummary = v.object({
   ...workerMetadata.fields,
   lastSeenAt: v.optional(v.number()),
   tempDirectory: v.optional(v.string()),
+  gateway: v.object({ access: acpGatewayAccessValidator, telemetry: keyTelemetryValidator }),
 });
 
 /**
@@ -45,8 +48,13 @@ export const list = ownedWorkspaceQuery({
     return await Promise.all(
       workers.map(async (worker) => {
         const presence = await findWorkerPresence(ctx, ctx.workspace._id, worker.workerId);
+        const gateway = await findWorkerGateway(ctx, ctx.workspace._id, worker.workerId);
         return {
           ...worker,
+          gateway: {
+            access: gateway?.access ?? "off",
+            telemetry: gateway?.telemetry ?? "workspace",
+          },
           ...(presence ? { lastSeenAt: presence.lastSeenAt } : {}),
           ...(presence?.tempDirectory ? { tempDirectory: presence.tempDirectory } : {}),
         };
@@ -68,6 +76,9 @@ export const revoke = ownedWorkspaceMutation({
     // A revoked Worker can no longer report, so drop its presence instead of letting it go stale.
     const presence = await findWorkerPresence(ctx, ctx.workspace._id, args.workerId);
     if (presence) await ctx.db.delete("worker_presence", presence._id);
+    const gateway = await findWorkerGateway(ctx, ctx.workspace._id, args.workerId);
+    if (gateway?.key) await ctx.db.patch(gateway.key, { revokedAt: Date.now() });
+    if (gateway) await ctx.db.delete(gateway._id);
     return null;
   },
 });

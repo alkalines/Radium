@@ -90,6 +90,7 @@ export const claimCommand = workerMutation({
       session: session
         ? {
             agentId: session.agentId,
+            profile: session.profile ?? "native",
             cwd: session.cwd,
             sessionId: session.sessionId ?? null,
             status: session.status,
@@ -147,6 +148,7 @@ export const warmSessions = workerQuery({
       chat: row.chat,
       epoch: row.epoch,
       agentId: row.agentId,
+      profile: row.profile ?? "native",
       cwd: row.cwd,
       sessionId: row.sessionId ?? null,
       status: row.status,

@@ -1,5 +1,6 @@
 import { recoverPendingIdentity } from "../auth/enrollment.js";
 import { readWorkerState } from "../auth/state.js";
+import { createGatewayKeyStore } from "../auth/gateway.js";
 import {
   connectWorkerControl,
   type WorkerControlConnection,
@@ -95,7 +96,12 @@ export async function startWorker(options: CliOptions): Promise<void> {
       tasks.setAvailable(previousStatusKey === "connected");
       console.info("Worker edit and Bash task consumer enabled.");
     }
-    acp = new AcpHost(convexAcpTransport(control.client));
+    acp = new AcpHost(convexAcpTransport(control.client), {
+      gateway: {
+        url: `${state.setup.backendUrl}/api/openai/v1`,
+        keys: createGatewayKeyStore(options.stateDirectory),
+      },
+    });
     acp.setAvailable(previousStatusKey === "connected");
     localUsage = startLocalUsageSync(convexLocalUsageTransport(control.client));
     localUsage.setAvailable(previousStatusKey === "connected");

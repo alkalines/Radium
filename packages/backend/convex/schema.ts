@@ -1,5 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { acpGatewayAccessValidator, keyTelemetryValidator } from "../src/acp/gateway";
+import { acpProfileValidator } from "../src/acp/contract";
 import { publicKey as workerPublicKey } from "worker-component";
 import { completionPricingSchema, completionUsageSchema } from "../src/usage/completion";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
@@ -103,6 +105,7 @@ export default defineSchema({
     .searchIndex("search_title", { searchField: "title", filterFields: ["workspace", "agentId"] }),
   /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
   acp_sessions: defineTable({
+    profile: v.optional(acpProfileValidator),
     chat: v.id("aisdk_chats"),
     workspace: v.id("workspaces"),
     worker: v.string(),
@@ -307,6 +310,16 @@ export default defineSchema({
    * Last heartbeat and reported temp directory per Worker identity, written only by the Worker's
    * machine-authorized `workers.reportPresence`. Advisory: online state never authorizes dispatch.
    */
+  worker_gateway: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    access: acpGatewayAccessValidator,
+    telemetry: keyTelemetryValidator,
+    key: v.optional(v.id("api_keys")),
+    updatedAt: v.number(),
+  })
+    .index("by_workspace_and_worker", ["workspace", "worker"])
+    .index("by_key", ["key"]),
   worker_presence: defineTable({
     workspace: v.id("workspaces"),
     workerId: v.string(),
@@ -420,6 +433,8 @@ export default defineSchema({
     /** Masked, non-secret display value (e.g. `rad-sk-…aB12`). */
     preview: v.optional(v.string()),
     revokedAt: v.optional(v.number()),
+    worker: v.optional(v.string()),
+    telemetry: v.optional(v.literal("off")),
     /** Transitional source mapping; the legacy `keys` row is not deleted here. */
     legacyKey: v.optional(v.id("keys")),
   })

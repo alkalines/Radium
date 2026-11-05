@@ -50,6 +50,8 @@ export async function recordAcpTurn(
   tokens: AcpTurnUsage | undefined,
   stopReason: AcpStopReason | undefined,
 ) {
+  // Gateway completions are the billing record, even for agents that send no session id.
+  if (session.profile === "gateway") return;
   const existing = await ctx.db
     .query("acp_usage")
     .withIndex("by_chat_and_command", (q) =>

@@ -20,6 +20,7 @@ import { WorkspaceIcon } from "@/components/workspaces/workspace-icon";
 import { cn } from "@/lib/utils";
 import {
   agentAvailability,
+  agentListed,
   firstReadyWorker,
   type AgentAvailability,
   type SessionAgent,
@@ -311,6 +312,11 @@ export function RunTargetPicker({
             >
               <CommandGroup>
                 {agents.map((candidate) => {
+                  if (
+                    candidate.id !== agent.id &&
+                    !agentListed(candidate, selectedWorker, activeWorkers)
+                  )
+                    return null;
                   const state = agentAvailability(candidate, selectedWorker, now, agentRows);
                   return (
                     <div
@@ -637,6 +643,12 @@ function agentStateLabel(state: AgentAvailability) {
       return "Choose a Worker";
     case "unavailable":
       return "Unavailable";
+    case "gateway_off":
+      return "Gateway access off";
+    case "gateway_pending":
+      return "Waiting for Gateway key";
+    case "gateway_missing":
+      return "Gateway key deleted";
   }
 }
 
@@ -646,4 +658,7 @@ const workerAgentLabels: Record<AgentAvailability, string> = {
   unavailable: "Unavailable",
   offline: "Offline",
   no_worker: "Unavailable",
+  gateway_off: "Gateway access off",
+  gateway_pending: "Waiting for Gateway key",
+  gateway_missing: "Gateway key deleted",
 };

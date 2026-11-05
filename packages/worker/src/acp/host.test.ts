@@ -16,6 +16,8 @@ import type {
   AcpOp,
 } from "backend/src/acp/contract";
 import { AcpHost } from "./host.js";
+import type { AcpGatewayAccess, AcpGatewayModel } from "backend/src/acp/gateway";
+import type { GatewayKey, GatewayKeyStore } from "../auth/gateway.js";
 import type {
   AcpTransport,
   AcpAssignment,
@@ -27,6 +29,32 @@ import type {
 } from "./transport.js";
 
 class FakeTransport implements AcpTransport {
+  gateway: { access: AcpGatewayAccess; keyId?: string } = { access: "off" };
+  mintCount = 0;
+  mintGate?: Promise<void>;
+  models: AcpGatewayModel[] = [{ slug: "small", name: "Small", context: 32000, output: 4000 }];
+  private gatewayListener?: (state: { access: AcpGatewayAccess; keyId?: string }) => void;
+  gatewayState: AcpTransport["gatewayState"] = (receive) => {
+    this.gatewayListener = receive;
+    queueMicrotask(() => receive(this.gateway));
+    return () => {
+      this.gatewayListener = undefined;
+    };
+  };
+  publishGateway(state: { access: AcpGatewayAccess; keyId?: string }) {
+    this.gateway = state;
+    this.gatewayListener?.(state);
+  }
+  async mintGatewayKey() {
+    this.mintCount++;
+    const minted = { keyId: `key-${this.mintCount}`, key: `gateway-secret-${this.mintCount}` };
+    await this.mintGate;
+    this.publishGateway({ access: "active", keyId: minted.keyId });
+    return minted;
+  }
+  async gatewayModels() {
+    return this.models;
+  }
   assignments: AcpAssignment[] = [];
   claims = new Map<string, AcpClaim>();
   receipts = new Map<string, { status: string; error?: string; result?: string }>();
@@ -44,6 +72,7 @@ class FakeTransport implements AcpTransport {
   warm = true;
   binding: AcpSessionBinding = {
     agentId: "scripted",
+    profile: "native",
     cwd: tmpdir(),
     sessionId: null,
     status: "idle",
@@ -95,6 +124,7 @@ class FakeTransport implements AcpTransport {
             {
               chat: "chat",
               agentId: this.binding.agentId,
+              profile: this.binding.profile,
               cwd: this.binding.cwd,
               sessionId: this.binding.sessionId,
               epoch: this.epoch,
@@ -104,7 +134,7 @@ class FakeTransport implements AcpTransport {
         : [],
     );
   }
-  add(payload: AcpCommandPayload): string {
+  add(payload: AcpCommandPayload, chat = "chat"): string {
     const command = crypto.randomUUID();
     const agentLevel = ["sync_sessions", "authenticate", "logout", "close", "delete"].includes(
       payload.kind,
@@ -114,12 +144,12 @@ class FakeTransport implements AcpTransport {
       kind: payload.kind,
       payload,
       by: "user",
-      chat: agentLevel ? null : "chat",
+      chat: agentLevel ? null : chat,
       session: agentLevel ? null : { ...this.binding },
     });
     this.assignments = [
       ...this.assignments,
-      { _id: command, kind: payload.kind, chat: agentLevel ? null : "chat", createdAt: Date.now() },
+      { _id: command, kind: payload.kind, chat: agentLevel ? null : chat, createdAt: Date.now() },
     ];
     this.commandListener?.(this.assignments);
     return command;
@@ -205,6 +235,49 @@ class FakeTransport implements AcpTransport {
   }
 }
 
+class MemoryGatewayKeys implements GatewayKeyStore {
+  value: GatewayKey | null = null;
+  saves = 0;
+  async get() {
+    return this.value;
+  }
+  async set(value: GatewayKey) {
+    this.value = value;
+    this.saves++;
+  }
+  async delete() {
+    this.value = null;
+  }
+}
+
+async function startGateway(
+  transport: FakeTransport,
+  keys: MemoryGatewayKeys,
+  agent = definition(),
+) {
+  transport.definitions = [
+    {
+      ...agent,
+      gateway: {
+        enabled: true,
+        env: [
+          { name: "OPENAI_API_KEY", value: "{{gateway.key}}" },
+          { name: "OPENAI_BASE_URL", value: "{{gateway.url}}" },
+          { name: "OPENAI_MODEL", value: "{{gateway.model}}" },
+          { name: "GATEWAY_MODELS", value: "{{gateway.models}}" },
+        ],
+      },
+    },
+  ];
+  const host = new AcpHost(transport, {
+    gateway: { url: "https://radium.example/api/openai/v1", keys },
+  });
+  hosts.push(host);
+  host.setAvailable(true);
+  await until(() => transport.reports.length > 0);
+  return host;
+}
+
 async function until(check: () => boolean): Promise<void> {
   const expires = Date.now() + 10_000;
   while (!check()) {
@@ -248,6 +321,122 @@ afterEach(async () => {
 });
 
 describe("ACP host with real stdio agent", () => {
+  it("serializes repeated pending notifications into one mint and saves the secret", async () => {
+    const transport = new FakeTransport();
+    const keys = new MemoryGatewayKeys();
+    transport.gateway = { access: "pending" };
+    const gate = Promise.withResolvers<void>();
+    transport.mintGate = gate.promise;
+    await startGateway(transport, keys);
+    await until(() => transport.mintCount === 1);
+    transport.publishGateway({ access: "pending" });
+    transport.publishGateway({ access: "pending" });
+    gate.resolve();
+    await until(() => keys.saves === 1);
+    expect(transport.mintCount).toBe(1);
+    expect(keys.value).toEqual({ keyId: "key-1", key: "gateway-secret-1" });
+  });
+
+  it("re-mints an active key whose local id does not match", async () => {
+    const transport = new FakeTransport();
+    const keys = new MemoryGatewayKeys();
+    keys.value = { keyId: "old-key", key: "old-secret" };
+    transport.gateway = { access: "active", keyId: "different-key" };
+    await startGateway(transport, keys);
+    await until(() => keys.saves === 1);
+    expect(transport.mintCount).toBe(1);
+    expect(keys.value?.keyId).toBe("key-1");
+  });
+
+  it.each([
+    ["missing", "Gateway key deleted"],
+    ["off", "Gateway access turned off"],
+  ] as const)(
+    "tears down %s Gateway processes and fails running turns",
+    async (access, message) => {
+      const transport = new FakeTransport();
+      transport.binding.profile = "gateway";
+      transport.gateway = { access: "active", keyId: "key-1" };
+      const keys = new MemoryGatewayKeys();
+      keys.value = { keyId: "key-1", key: "gateway-secret-1" };
+      const host = await startGateway(transport, keys);
+      const command = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "slow" }] });
+      await until(() => transport.binding.status === "running");
+      const child = host["slots"].get("scripted:gateway")!.process!.child;
+      transport.publishGateway({ access });
+      await until(() => transport.receipts.has(command) && child.signalCode !== null);
+      expect(transport.receipts.get(command)).toMatchObject({ status: "failed", error: message });
+      expect(transport.patches).toContainEqual({ status: "failed", error: message });
+      expect(keys.value).toBeNull();
+      expect(host["slots"].get("scripted:gateway")?.process).toBeUndefined();
+      expect(transport.mintCount).toBe(0);
+    },
+  );
+
+  it("runs native and Gateway profiles in separate processes with isolated expanded environments", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "radium-acp-gateway-"));
+    directories.push(directory);
+    const environmentPath = join(directory, "environment");
+    const agent = definition();
+    agent.args = [
+      "-e",
+      `
+      import { runScriptedAgent } from ${JSON.stringify(script)};
+      await Bun.write(${JSON.stringify(environmentPath)} + "-" + (process.env.GATEWAY_MODELS ? "gateway" : "native"),
+        JSON.stringify({ key: process.env.OPENAI_API_KEY, url: process.env.OPENAI_BASE_URL,
+          model: process.env.OPENAI_MODEL, models: process.env.GATEWAY_MODELS }));
+      await runScriptedAgent();
+    `,
+    ];
+    const transport = new FakeTransport();
+    transport.warm = false;
+    transport.gateway = { access: "active", keyId: "key-1" };
+    const keys = new MemoryGatewayKeys();
+    keys.value = { keyId: "key-1", key: "gateway-secret-1" };
+    const host = await startGateway(transport, keys, agent);
+    const native = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
+    await until(() => transport.receipts.has(native));
+    transport.binding = { ...transport.binding, profile: "gateway", sessionId: null };
+    const gateway = transport.add(
+      { kind: "prompt", prompt: [{ type: "text", text: "hello" }] },
+      "gateway-chat",
+    );
+    await until(() => transport.receipts.has(gateway));
+    expect(transport.receipts.get(gateway)?.status).toBe("done");
+    const nativeProcess = host["slots"].get("scripted:native")!.process!;
+    const gatewayProcess = host["slots"].get("scripted:gateway")!.process!;
+    expect(nativeProcess.child.pid).not.toBe(gatewayProcess.child.pid);
+    const nativeEnv: unknown = JSON.parse(await readFile(`${environmentPath}-native`, "utf8"));
+    const gatewayEnv: unknown = JSON.parse(await readFile(`${environmentPath}-gateway`, "utf8"));
+    expect(JSON.stringify(nativeEnv)).not.toContain("gateway-secret-1");
+    expect(gatewayEnv).toEqual({
+      key: "gateway-secret-1",
+      url: "https://radium.example/api/openai/v1",
+      model: "small",
+      models: JSON.stringify({ small: { name: "Small", limit: { context: 32000, output: 4000 } } }),
+    });
+    expect(transport.reports).toHaveLength(1);
+    expect(JSON.stringify([transport.reports, transport.frames, transport.patches])).not.toContain(
+      "gateway-secret-1",
+    );
+  });
+
+  it("fails a Gateway turn clearly when the workspace has no models", async () => {
+    const transport = new FakeTransport();
+    transport.binding.profile = "gateway";
+    transport.gateway = { access: "active", keyId: "key-1" };
+    transport.models = [];
+    const keys = new MemoryGatewayKeys();
+    keys.value = { keyId: "key-1", key: "gateway-secret-1" };
+    await startGateway(transport, keys);
+    const command = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
+    await until(() => transport.receipts.has(command));
+    expect(transport.receipts.get(command)).toMatchObject({
+      status: "failed",
+      error: "The workspace has no Gateway models.",
+    });
+  });
+
   it("discovers defaults with a temporary session and deletes it before indexing", async () => {
     const directory = await mkdtemp(join(tmpdir(), "radium-acp-defaults-"));
     directories.push(directory);
@@ -602,6 +791,7 @@ describe("ACP host with real stdio agent", () => {
     const removed = transport.add({
       kind: "delete",
       agentId: "scripted",
+      profile: "native",
       cwd: tmpdir(),
       sessionId: transport.binding.sessionId!,
     });

@@ -166,7 +166,13 @@ export async function queueChatDeletion(
   chat: {
     _id: Id<"aisdk_chats">;
     workspace?: Id<"workspaces">;
-    agent?: { worker: string; agentId: string; sessionId?: string; cwd: string };
+    agent?: {
+      worker: string;
+      agentId: string;
+      sessionId?: string;
+      cwd: string;
+      profile?: "native" | "gateway";
+    };
   },
   by: string,
   deleteInAgent?: boolean,
@@ -194,6 +200,7 @@ export async function queueChatDeletion(
     await enqueue(ctx, { workspace: chat.workspace, worker: chat.agent.worker }, by, {
       kind,
       agentId: chat.agent.agentId,
+      profile: chat.agent.profile ?? session?.profile ?? "native",
       cwd: chat.agent.cwd,
       sessionId,
     });

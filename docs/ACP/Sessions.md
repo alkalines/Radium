@@ -15,7 +15,7 @@ type ChatAgent = {
   kind: "acp";
   worker: string; // Worker identity ID, same workspace as the chat
   agentId: string; // registry id or custom id, e.g. "claude-acp"
-  profile: "native"; // launch profile; "gateway" arrives with Gateway mode (Agents.md#gateway-mode)
+  profile: "native" | "gateway"; // launch profile (Agents.md#gateway-mode)
   agentVersion: string; // version that created the session
   cwd: string; // absolute directory on the Worker (Project folder or explicit)
   sessionId?: string; // ACP session ID, set by the Worker after session/new
@@ -28,6 +28,12 @@ Invariants, enforced server-side:
   `acp.Fork`, and no mutation changes `kind`, `worker`, `agentId`, `profile` or
   `cwd` afterwards. `sessionId` is written once, by the bound Worker
   (`ACP_SESSION_BOUND` otherwise), unless `OpenAgentSession` set it at creation.
+- `profile` is `gateway` only when `CreateSession` asked for it, the agent's
+  definition offers a Gateway profile and the Worker's Gateway access is
+  `active` (`ACP_GATEWAY_UNAVAILABLE` otherwise); `Fork` keeps it and
+  `OpenAgentSession` always opens `native`. `acp_sessions.profile` copies it for
+  the Worker, and `Prompt` refuses a Gateway Session whose Worker key is not
+  active (`ACP_GATEWAY_KEY_MISSING`).
 - `SetChatWorker` rejects ACP chats; Worker tool selections (`aisdk_chats.worker`,
   `tools`) do not apply to them. The built-in agent's Worker tools stay editable
   as today.
@@ -45,20 +51,20 @@ usage, pending interactions) do not invalidate the Home `ListChats`
 subscription. Only turn boundaries touch `aisdk_chats` (`activeStream`,
 `lastInteractionAt`, `interruption`, `title`).
 
-| Field                                           | Meaning                                                                                                                    |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `chat`, `worker`, `agentId`, `cwd`, `sessionId` | Owning chat, its bound Worker (indexed for the Worker's subscriptions) and a copy of the binding fields the Worker needs   |
-| `status`                                        | `starting`, `idle`, `running`, `awaiting`, `failed`, `ended`                                                               |
-| `epoch`                                         | Stream epoch; bumped on each snapshot so stale frames are ignored                                                          |
-| `stopReason`                                    | Last `session/prompt` stop reason                                                                                          |
-| `config`                                        | Current `configOptions` (ids, categories, choices, selected values), `modes`, `currentModeId`                              |
-| `commands`                                      | Latest `available_commands_update` (names, descriptions, input hints)                                                      |
-| `usage`                                         | Latest `usage_update`: context `used`/`size`, optional cumulative `cost`                                                   |
+| Field                                           | Meaning                                                                                                                       |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `chat`, `worker`, `agentId`, `cwd`, `sessionId` | Owning chat, its bound Worker (indexed for the Worker's subscriptions) and a copy of the binding fields the Worker needs      |
+| `status`                                        | `starting`, `idle`, `running`, `awaiting`, `failed`, `ended`                                                                  |
+| `epoch`                                         | Stream epoch; bumped on each snapshot so stale frames are ignored                                                             |
+| `stopReason`                                    | Last `session/prompt` stop reason                                                                                             |
+| `config`                                        | Current `configOptions` (ids, categories, choices, selected values), `modes`, `currentModeId`                                 |
+| `commands`                                      | Latest `available_commands_update` (names, descriptions, input hints)                                                         |
+| `usage`                                         | Latest `usage_update`: context `used`/`size`, optional cumulative `cost`                                                      |
 | `turnUsage`                                     | Token breakdown of the latest `session/prompt` response (unstable `PromptResponse.usage`), shown as the last turn's breakdown |
-| `warm`                                          | Whether content is currently held in Convex ([Transport](Transport.md#warm-and-cold-sessions)); flips only on transitions  |
-| `history`                                       | `full` (load), `resumed` (resume, no replay) or `none`                                                                     |
-| `draft`                                         | Config and mode chosen before the ACP session exists, applied after `session/new`                                          |
-| `turnBy`, `userTitled`                          | Who sent the running prompt (notifications); whether a user renamed the chat                                               |
+| `warm`                                          | Whether content is currently held in Convex ([Transport](Transport.md#warm-and-cold-sessions)); flips only on transitions     |
+| `history`                                       | `full` (load), `resumed` (resume, no replay) or `none`                                                                        |
+| `draft`                                         | Config and mode chosen before the ACP session exists, applied after `session/new`                                             |
+| `turnBy`, `userTitled`                          | Who sent the running prompt (notifications); whether a user renamed the chat                                                  |
 
 None of these fields contain conversation content. `acp.GetSession` returns them
 with the agent's name and capabilities.

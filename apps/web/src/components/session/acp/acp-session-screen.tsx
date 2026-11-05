@@ -10,10 +10,10 @@ import {
 import type { UIMessage } from "ai";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation } from "convex/react";
 import { AnimatePresence } from "motion/react";
-import { ArchiveXIcon, ServerOffIcon } from "lucide-react";
+import { ArchiveXIcon, KeyRoundIcon, ServerOffIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
@@ -31,6 +31,8 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { modelDisplayName } from "@/components/models/model-options";
 import type { TabProjectHint } from "@/components/window/window-tabs";
+import { IssueGatewayKeyButton } from "@/components/workspaces/worker-management";
+import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import {
   Composer,
   ConversationVisibilityMenu,
@@ -85,6 +87,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   const acp = useAcpSession({ chatId, isVisible });
   const { session, timeline, messages, runState } = acp;
   const navigate = useNavigate();
+  const { workspaces } = useWorkspace();
   const { data: chatResult, error: chatError } = useQuery(
     convexQuery(api.aisdk.GetChat, { chatId }),
   );
@@ -194,7 +197,16 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     session?.status === "running" ||
     session?.status === "awaiting";
   const ended = session?.status === "ended";
-  const canSend = acp.workerOnline && (session?.status === "idle" || session?.status === "failed");
+  // A Gateway session runs only while its Worker holds an active Gateway key.
+  const gatewayAccess = session?.gateway?.access;
+  const gatewayBlocked = gatewayAccess !== undefined && gatewayAccess !== "active";
+  const isOwner = workspaces.some(
+    (candidate) => candidate._id === chat?.workspace && candidate.role === "owner",
+  );
+  const canSend =
+    acp.workerOnline &&
+    !gatewayBlocked &&
+    (session?.status === "idle" || session?.status === "failed");
   const trayTodos = useTodoTrayItems(acp.todos);
   const [trayAttached, setTrayAttached] = useState(false);
   if (trayTodos && !trayAttached) setTrayAttached(true);
@@ -280,7 +292,10 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
           <SessionWorkerControl
             isFixed
             workerName={workerName}
-            agent={{ protocol: "acp", name: agentName }}
+            agent={{
+              protocol: "acp",
+              name: session?.profile === "gateway" ? `${agentName} · Gateway` : agentName,
+            }}
           />
         </div>
         {offline && !hasContent && isVisible ? (
@@ -364,6 +379,50 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
                   ? "The turn continues if the Worker reconnects, but fails if it restarted."
                   : "This Session continues when the Worker is back."}{" "}
                 {lastSeen}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {gatewayBlocked && !ended ? (
+            <Alert>
+              <KeyRoundIcon />
+              <AlertTitle>
+                {gatewayAccess === "missing"
+                  ? "Gateway key deleted"
+                  : gatewayAccess === "pending"
+                    ? "Waiting for the Gateway key"
+                    : "Gateway access is off"}
+              </AlertTitle>
+              <AlertDescription>
+                <p>
+                  {gatewayAccess === "missing"
+                    ? `${workerName}'s Gateway key was deleted, so this Gateway session cannot run.`
+                    : gatewayAccess === "pending"
+                      ? `${workerName} creates its new Gateway key when it is online; this session continues once it has one.`
+                      : `Gateway access is off on ${workerName}, so this Gateway session cannot run.`}{" "}
+                  {isOwner
+                    ? gatewayAccess === "off"
+                      ? "Turn it on in Settings → Workers."
+                      : null
+                    : gatewayAccess === "missing"
+                      ? "Ask the workspace owner to issue a new key."
+                      : gatewayAccess === "off"
+                        ? "Ask the workspace owner to turn Gateway access on."
+                        : null}
+                </p>
+                {isOwner && gatewayAccess === "missing" && chat?.agent ? (
+                  <div className="mt-2">
+                    <IssueGatewayKeyButton
+                      workspace={chat.workspace}
+                      workerId={chat.agent.worker}
+                    />
+                  </div>
+                ) : isOwner && gatewayAccess === "off" ? (
+                  <Button size="sm" variant="outline" className="mt-2" asChild>
+                    <Link to="/chatroom/$section" params={{ section: "workers" }}>
+                      Open Workers
+                    </Link>
+                  </Button>
+                ) : null}
               </AlertDescription>
             </Alert>
           ) : null}

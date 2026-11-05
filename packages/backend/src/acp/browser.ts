@@ -1,4 +1,8 @@
 import { v } from "convex/values";
+import { ConvexError } from "convex/values";
+import { acpGatewayProfileOffered } from "./gateway";
+import { findWorkerGateway } from "../worker/gateway";
+import { acpProfileValidator, type AcpProfile } from "./contract";
 import { paginationOptsValidator } from "convex/server";
 import { mergedStream, stream } from "convex-helpers/server/stream";
 import schema from "../../convex/schema";
@@ -50,6 +54,7 @@ async function insertAgentChat(
     agentId: string;
     cwd: string;
     version: string;
+    profile?: AcpProfile;
     scope?: "personal" | "workspace";
     project?: Id<"projects">;
     sessionId?: string;
@@ -66,7 +71,7 @@ async function insertAgentChat(
     title: args.title,
     agent: {
       kind: "acp",
-      profile: "native",
+      profile: args.profile ?? "native",
       worker: args.worker,
       agentId: args.agentId,
       agentVersion: args.version,
@@ -81,6 +86,7 @@ async function insertAgentChat(
     workspace: args.workspace,
     worker: args.worker,
     agentId: args.agentId,
+    profile: args.profile ?? "native",
     cwd: args.cwd,
     sessionId: args.sessionId,
     status: "idle",
@@ -145,7 +151,7 @@ function indexedSessionRow(row: Doc<"acp_agent_sessions">, project: Id<"projects
   };
 }
 
-/** Owner-selected immutable native binding; every creation starts a new agent session. */
+/** Owner-selected immutable binding; every creation starts a new agent session. */
 export const CreateSession = ownedWorkspaceMutation({
   args: {
     scope: v.optional(v.union(v.literal("personal"), v.literal("workspace"))),
@@ -153,6 +159,7 @@ export const CreateSession = ownedWorkspaceMutation({
     worker: v.string(),
     agentId: v.string(),
     cwd: v.optional(v.string()),
+    profile: v.optional(acpProfileValidator),
   },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args) => {
@@ -162,6 +169,25 @@ export const CreateSession = ownedWorkspaceMutation({
       workspaceWorkerMetadata(ctx, ctx.workspace._id),
     );
     if (args.project) await requireWorkspaceProject(ctx, args.project, ctx.workspace._id);
+    if (args.profile === "gateway") {
+      const definition = await ctx.db
+        .query("acp_agents")
+        .withIndex("by_workspace_and_agentId", (q) =>
+          q.eq("workspace", ctx.workspace._id).eq("agentId", args.agentId),
+        )
+        .unique();
+      const gateway = await findWorkerGateway(ctx, ctx.workspace._id, args.worker);
+      if (!definition || !acpGatewayProfileOffered(definition))
+        throw new ConvexError({
+          code: "ACP_GATEWAY_UNAVAILABLE",
+          message: "This agent does not offer a Gateway profile.",
+        });
+      if (gateway?.access !== "active")
+        throw new ConvexError({
+          code: "ACP_GATEWAY_UNAVAILABLE",
+          message: "Gateway access is not active on this Worker.",
+        });
+    }
     const agent = await findAgent(ctx, ctx.workspace._id, args.worker, args.agentId);
     if (!agent || (agent.status !== "ready" && agent.status !== "needs_auth"))
       acpError("ACP_AGENT_UNAVAILABLE");
@@ -176,6 +202,7 @@ export const CreateSession = ownedWorkspaceMutation({
       agentId: args.agentId,
       cwd,
       version: agent.version,
+      profile: args.profile ?? "native",
       scope: args.scope,
       project: args.project,
     });
@@ -192,6 +219,17 @@ export const Prompt = mutation({
   returns: v.id("acp_commands"),
   handler: async (ctx, args) => {
     const { session, userId, chat } = await accessibleSession(ctx, args.chat);
+    if (session.profile === "gateway") {
+      const gateway = await findWorkerGateway(ctx, session.workspace, session.worker);
+      if (gateway?.access !== "active")
+        throw new ConvexError({
+          code: "ACP_GATEWAY_KEY_MISSING",
+          message:
+            !gateway || gateway.access === "off"
+              ? "Gateway access is off on this Worker."
+              : "This Worker's Gateway key was deleted. The workspace owner must issue a new key in Settings → Workers.",
+        });
+    }
     const existing = await existingCommand(
       ctx,
       session.workspace,
@@ -436,6 +474,7 @@ export const Fork = mutation({
       workspace: session.workspace,
       worker: session.worker,
       agentId: session.agentId,
+      profile: session.profile ?? "native",
       cwd: session.cwd,
       status: "starting",
       epoch: 0,
@@ -820,6 +859,14 @@ export const GetSession = query({
     const report = await findAgent(ctx, session.workspace, session.worker, session.agentId);
     return {
       agent,
+      profile: session.profile ?? "native",
+      gateway:
+        session.profile === "gateway"
+          ? {
+              access:
+                (await findWorkerGateway(ctx, session.workspace, session.worker))?.access ?? "off",
+            }
+          : null,
       ...(report
         ? {
             agentName: report.name,
@@ -833,9 +880,10 @@ export const GetSession = query({
       stopReason: session.stopReason,
       error: session.error,
       config: session.config,
-      // Before `session/new` these are the draft's starting values; afterwards they tell the
-      // Composer which choices are still the agent's defaults.
-      ...(report?.defaults?.config ? { defaultConfig: report.defaults.config } : {}),
+      // Native process defaults cannot describe the Gateway process's model choices.
+      ...(session.profile !== "gateway" && report?.defaults?.config
+        ? { defaultConfig: report.defaults.config }
+        : {}),
       commands: session.commands ?? (session.sessionId ? undefined : report?.defaults?.commands),
       usage: session.usage,
       turnUsage: session.turnUsage,

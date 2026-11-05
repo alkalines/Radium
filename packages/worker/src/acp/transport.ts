@@ -15,11 +15,14 @@ import type {
   AcpTurnReport,
   AcpTurnUsage,
   AcpUsage,
+  AcpProfile,
 } from "backend/src/acp/contract";
+import type { AcpGatewayAccess, AcpGatewayModel } from "backend/src/acp/gateway";
 
 /** Durable session metadata supplied when claiming a command; IDs remain opaque locally. */
 export interface AcpSessionBinding {
   agentId: string;
+  profile: AcpProfile;
   cwd: string;
   sessionId: string | null;
   status: AcpSessionStatus;
@@ -52,6 +55,7 @@ export interface AcpWarmSession {
   chat: string;
   epoch: number;
   agentId: string;
+  profile: AcpProfile;
   cwd: string;
   sessionId: string | null;
   status: AcpSessionStatus;
@@ -88,6 +92,9 @@ type Subscription<T> = (
 
 /** The entire authorized Convex boundary, replaceable by an in-memory transport in tests. */
 export interface AcpTransport {
+  gatewayState: Subscription<{ access: AcpGatewayAccess; keyId?: string }>;
+  mintGatewayKey(): Promise<{ keyId: string; key: string }>;
+  gatewayModels(): Promise<AcpGatewayModel[]>;
   agentDefinitions: Subscription<AcpAgentDefinition[]>;
   assignedCommands: Subscription<AcpAssignment[]>;
   warmSessions: Subscription<AcpWarmSession[]>;

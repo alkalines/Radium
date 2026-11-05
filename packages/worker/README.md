@@ -243,6 +243,11 @@ metadata, never the private JWK. In file mode the key is stored separately as
 `.worker-credential-<requestId>.json`, with mode `0600` inside the `0700` state
 directory. This is a permissions-based fallback, not encrypted storage.
 These file protections use POSIX ownership/modes; Windows ACL hardening is not implemented.
+When the owner turns on Gateway access for the Worker, its Gateway key is saved as
+`.worker-gateway-key.json` (`{keyId, key}`, mode `0600`) in the same directory,
+in every credential store mode. It is passed only to Gateway-profile ACP agents
+([Gateway mode](../../docs/ACP/Agents.md#worker-gateway-key)), deleted when Convex
+reports the key deleted or access off, and wiped by `forget`.
 
 Existing version-1 state is migrated locally, preserving the original key, request
 ID, setup selector, and identity. Migration completes before any authentication

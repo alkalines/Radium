@@ -27,9 +27,16 @@ import {
   type AcpInteractionAnswer,
   type AcpInteractionRequest,
   type AcpTurnReport,
+  type AcpProfile,
 } from "backend/src/acp/contract";
 import { selectedAcpModel } from "backend/src/acp/models";
-import { resolveAgentCommand } from "./config.js";
+import {
+  acpGatewayProfileOffered,
+  expandGatewayEnv,
+  type AcpGatewayAccess,
+} from "backend/src/acp/gateway";
+import type { GatewayKey, GatewayKeyStore } from "../auth/gateway.js";
+import { agentEnvironment, resolveAgentCommand } from "./config.js";
 import { AcpAgentProcess, agentReport, probeAgent } from "./process.js";
 import { AcpLifecycle, acpDelay } from "./lifecycle.js";
 import { normalizeElicitation } from "./interactions.js";
@@ -64,9 +71,11 @@ interface LocalSession {
   updates: Promise<void>;
   /** Set by `session/new`: the agent's cumulative cost starts at zero in this process. */
   costFromZero?: boolean;
+  gatewayFailure?: string;
 }
 interface AgentSlot {
   definition: AcpAgentDefinition;
+  profile: AcpProfile;
   process?: AcpAgentProcess;
   starting?: Promise<AcpAgentProcess>;
   stopping?: Promise<void>;
@@ -77,6 +86,14 @@ interface AgentSlot {
 interface PendingInteraction {
   chat: string;
   resolve(answer: AcpInteractionAnswer | null): void;
+}
+
+export interface AcpHostOptions {
+  gateway?: { url: string; keys: GatewayKeyStore };
+}
+
+function slotKey(agentId: string, profile: AcpProfile): string {
+  return `${agentId}:${profile}`;
 }
 
 /** Hosts local agents while Convex owns authority, durable commands and user decisions. */
@@ -107,12 +124,20 @@ export class AcpHost {
   private definitionsReady = false;
   private definitionsRevision = 0;
   private maintenance: Promise<void> = Promise.resolve();
+  private gatewayState: { access: AcpGatewayAccess; keyId?: string } = { access: "off" };
+  private gatewayKey: GatewayKey | null = null;
+  private gatewayReconciliation?: Promise<void>;
+  private gatewayDirty = false;
 
-  constructor(private readonly transport: AcpTransport) {
+  constructor(
+    private readonly transport: AcpTransport,
+    private readonly options: AcpHostOptions = {},
+  ) {
     this.retry = setInterval(() => {
       void this.connect();
       void this.pump();
       void this.syncWarm();
+      if (this.gatewayDirty) void this.reconcileGateway();
     }, 1_000);
     this.idle = setInterval(() => {
       void this.stopIdleAgents();
@@ -126,7 +151,11 @@ export class AcpHost {
     this.lifecycle.setAvailable(value);
     if (value) {
       if (reconnected && this.initialized)
-        void this.applyDefinitions([...this.slots.values()].map((slot) => slot.definition));
+        void this.applyDefinitions(
+          [...this.slots.values()]
+            .filter((slot) => slot.profile === "native")
+            .map((slot) => slot.definition),
+        );
       void this.connect();
       void this.pump();
       void this.syncWarm();
@@ -143,6 +172,24 @@ export class AcpHost {
         this.recovered = true;
       }
       if (this.stopped) return;
+      if (this.options.gateway) {
+        this.unsubscribers.push(
+          this.transport.gatewayState(
+            (state) => {
+              this.gatewayState = state;
+              this.gatewayDirty = true;
+              if (state.access === "off" || state.access === "missing") {
+                const message =
+                  state.access === "missing" ? "Gateway key deleted" : "Gateway access turned off";
+                for (const local of this.sessions.values())
+                  if (local.binding.profile === "gateway") local.gatewayFailure = message;
+              }
+              void this.reconcileGateway();
+            },
+            () => undefined,
+          ),
+        );
+      }
       this.unsubscribers.push(
         this.transport.agentDefinitions(
           (definitions) => {
@@ -198,6 +245,78 @@ export class AcpHost {
       });
     await this.initializing;
   }
+  private reconcileGateway(): Promise<void> {
+    if (this.gatewayReconciliation) return this.gatewayReconciliation;
+    const gateway = this.options.gateway;
+    if (!gateway || this.stopped || !this.available) return Promise.resolve();
+    this.gatewayReconciliation = (async () => {
+      while (this.gatewayDirty && !this.stopped && this.available) {
+        this.gatewayDirty = false;
+        const state = this.gatewayState;
+        if (state.access === "off" || state.access === "missing") {
+          this.gatewayKey = null;
+          const slots = [...this.slots.values(), ...this.retired].filter(
+            (slot) => slot.profile === "gateway",
+          );
+          await Promise.all([gateway.keys.delete(), ...slots.map((slot) => this.stopAgent(slot))]);
+          continue;
+        }
+        this.gatewayKey ??= await gateway.keys.get();
+        if (state !== this.gatewayState) {
+          this.gatewayDirty = true;
+          continue;
+        }
+        if (state.access === "active" && this.gatewayKey?.keyId === state.keyId) continue;
+        for (const local of this.sessions.values())
+          if (local.binding.profile === "gateway") local.gatewayFailure = "Gateway key deleted";
+        await Promise.all(
+          [...this.slots.values(), ...this.retired]
+            .filter((slot) => slot.profile === "gateway")
+            .map((slot) => this.stopAgent(slot)),
+        );
+        if (this.gatewayState !== state) {
+          this.gatewayDirty = true;
+          continue;
+        }
+        const minted = await this.transport.mintGatewayKey();
+        const latest = this.gatewayState;
+        if (this.stopped || latest.access === "off" || latest.access === "missing") {
+          this.gatewayDirty = !this.stopped;
+          continue;
+        }
+        if (latest.access === "active" && latest !== state && latest.keyId !== minted.keyId) {
+          this.gatewayDirty = true;
+          continue;
+        }
+        await gateway.keys.set(minted);
+        this.gatewayKey = minted;
+        if (this.gatewayState === latest)
+          this.gatewayState = { access: "active", keyId: minted.keyId };
+        this.gatewayDirty =
+          this.gatewayState.access !== "active" || this.gatewayState.keyId !== minted.keyId;
+      }
+    })()
+      .catch(() => {
+        this.gatewayDirty = true;
+      })
+      .finally(() => {
+        this.gatewayReconciliation = undefined;
+      });
+    return this.gatewayReconciliation;
+  }
+
+  private activeGatewayKey(): GatewayKey {
+    const secret = this.gatewayKey;
+    if (
+      this.gatewayState.access !== "active" ||
+      !secret ||
+      secret.keyId !== this.gatewayState.keyId
+    )
+      throw new Error(
+        this.gatewayState.access === "off" ? "Gateway access turned off" : "Gateway key deleted",
+      );
+    return secret;
+  }
 
   private async applyDefinitions(definitions: AcpAgentDefinition[]): Promise<void> {
     const revision = ++this.definitionsRevision;
@@ -206,28 +325,37 @@ export class AcpHost {
     this.slots.clear();
     for (const definition of definitions) {
       if (!definition.enabled) continue;
-      const existing = previous.get(definition.agentId);
-      if (existing && JSON.stringify(existing.definition) === JSON.stringify(definition)) {
-        this.slots.set(definition.agentId, existing);
-        previous.delete(definition.agentId);
-      } else {
-        this.slots.set(definition.agentId, {
-          definition,
-          failures: 0,
-          lastUsed: Date.now(),
-          restartAt: 0,
-        });
+      for (const profile of ["native", "gateway"] as const) {
+        if (profile === "gateway" && !acpGatewayProfileOffered(definition)) continue;
+        const key = slotKey(definition.agentId, profile);
+        const existing = previous.get(key);
+        if (existing && JSON.stringify(existing.definition) === JSON.stringify(definition)) {
+          this.slots.set(key, existing);
+          previous.delete(key);
+        } else {
+          this.slots.set(key, {
+            definition,
+            profile,
+            failures: 0,
+            lastUsed: Date.now(),
+            restartAt: 0,
+          });
+        }
       }
     }
     for (const slot of previous.values()) this.retired.add(slot);
     void this.stopRetiredAgents();
     try {
       const reports = await Promise.all(
-        [...this.slots.values()].map(async (slot) => {
-          const report = await probeAgent(slot.definition, this.abort.signal);
-          const defaults = this.reports.find((entry) => entry.agentId === report.agentId)?.defaults;
-          return defaults ? { ...report, defaults } : report;
-        }),
+        [...this.slots.values()]
+          .filter((slot) => slot.profile === "native")
+          .map(async (slot) => {
+            const report = await probeAgent(slot.definition, this.abort.signal);
+            const defaults = this.reports.find(
+              (entry) => entry.agentId === report.agentId,
+            )?.defaults;
+            return defaults ? { ...report, defaults } : report;
+          }),
       );
       if (this.stopped || revision !== this.definitionsRevision) return;
       this.reports = reports;
@@ -396,7 +524,9 @@ export class AcpHost {
         [...this.sessions.values()].some(
           (local) =>
             (local.process === slot.process && local.running) ||
-            (local.binding.agentId === slot.definition.agentId && (local.setup || local.preparing)),
+            (local.binding.agentId === slot.definition.agentId &&
+              local.binding.profile === slot.profile &&
+              (local.setup || local.preparing)),
         )
       )
         continue;
@@ -484,9 +614,20 @@ export class AcpHost {
     );
   }
 
-  private async processFor(agentId: string): Promise<AcpAgentProcess> {
-    const slot = this.slots.get(agentId);
-    if (!slot) throw new Error("Agent removed");
+  private async processFor(
+    agentId: string,
+    profile: AcpProfile = "native",
+  ): Promise<AcpAgentProcess> {
+    const key = slotKey(agentId, profile);
+    const slot = this.slots.get(key);
+    if (!slot)
+      throw new Error(
+        profile === "gateway" ? "This agent does not offer a Gateway profile." : "Agent removed",
+      );
+    if (profile === "gateway") {
+      await this.reconcileGateway();
+      this.activeGatewayKey();
+    }
     slot.lastUsed = Date.now();
     if (slot.starting) return slot.starting;
     if (slot.process) return slot.process;
@@ -496,23 +637,50 @@ export class AcpHost {
       if (this.stopped) throw new Error("ACP host stopped");
       const invalid = acpAgentDefinitionError(slot.definition);
       if (invalid) throw new Error(invalid);
+      let environment: NodeJS.ProcessEnv | undefined;
+      let gatewayKey: GatewayKey | undefined;
+      if (profile === "gateway") {
+        if (!acpGatewayProfileOffered(slot.definition) || !this.options.gateway)
+          throw new Error("This agent does not offer a Gateway profile.");
+        gatewayKey = this.activeGatewayKey();
+        const models = await this.transport.gatewayModels();
+        if (!models.length) throw new Error("The workspace has no Gateway models.");
+        if (this.activeGatewayKey() !== gatewayKey) throw new Error("Gateway key deleted");
+        environment = agentEnvironment(
+          slot.definition,
+          expandGatewayEnv(slot.definition.gateway!.env, {
+            url: this.options.gateway.url,
+            key: gatewayKey.key,
+            models,
+          }),
+        );
+      }
       const command = await resolveAgentCommand(slot.definition.command);
       if (!command)
         throw new Error(`${slot.definition.command} was not found on this Worker's PATH`);
       if (this.stopped) throw new Error("ACP host stopped");
-      const process = new AcpAgentProcess(slot.definition, command, {
-        update: (notification) => this.onUpdate(process, notification),
-        permission: (request) => this.permission(process, request),
-        elicitation: (request) => this.elicitation(process, request),
-        elicitationComplete: () => undefined,
-        exited: () => this.processExited(slot, process),
-      });
+      if (gatewayKey && this.activeGatewayKey() !== gatewayKey)
+        throw new Error("Gateway key deleted");
+      const process = new AcpAgentProcess(
+        slot.definition,
+        command,
+        {
+          update: (notification) => this.onUpdate(process, notification),
+          permission: (request) => this.permission(process, request),
+          elicitation: (request) => this.elicitation(process, request),
+          elicitationComplete: () => undefined,
+          exited: () => this.processExited(slot, process),
+        },
+        environment,
+      );
       // Shutdown must own the child even before initialize has answered.
       slot.process = process;
       try {
         const response = await process.ready;
         if (this.stopped) throw new Error("ACP host stopped");
-        if (this.slots.get(agentId) === slot) {
+        if (gatewayKey && this.activeGatewayKey() !== gatewayKey)
+          throw new Error("Gateway key deleted");
+        if (profile === "native" && this.slots.get(key) === slot) {
           const previous = this.reports.find((entry) => entry.agentId === agentId);
           const report = agentReport(slot.definition, response);
           if (previous?.defaults) report.defaults = previous.defaults;
@@ -578,8 +746,12 @@ export class AcpHost {
   }
 
   private async ensureSession(local: LocalSession): Promise<LocalSession> {
-    const slot = this.slots.get(local.binding.agentId);
+    const slot = this.slots.get(slotKey(local.binding.agentId, local.binding.profile));
     if (!slot) throw new Error("Agent removed");
+    if (local.binding.profile === "gateway") {
+      await this.reconcileGateway();
+      this.activeGatewayKey();
+    }
     if (local.setup) return local.setup;
     if (
       local.process &&
@@ -588,8 +760,11 @@ export class AcpHost {
     )
       return local;
     local.setup = (async () => {
-      const process = await this.processFor(local.binding.agentId);
-      const report = this.reports.find((entry) => entry.agentId === local.binding.agentId)!;
+      const process = await this.processFor(local.binding.agentId, local.binding.profile);
+      const report =
+        local.binding.profile === "native"
+          ? this.reports.find((entry) => entry.agentId === local.binding.agentId)!
+          : agentReport(slot.definition, await process.ready);
       const previousId = local.binding.sessionId;
       local.process = process;
       try {
@@ -675,7 +850,7 @@ export class AcpHost {
         }
         // Last known config: every new session updates it; a reopened one fills it only when the
         // agent has none yet (imported sessions of an agent that never had `session/new` here).
-        if (!previousId || !report.defaults?.config) {
+        if (local.binding.profile === "native" && (!previousId || !report.defaults?.config)) {
           report.defaults = {
             config: local.binding.config ?? config,
             commands: local.timeline.sessionPatch.commands ?? [],
@@ -687,7 +862,11 @@ export class AcpHost {
         return local;
       } catch (error) {
         local.process = undefined;
-        if (error instanceof RequestError && error.code === -32000) {
+        if (
+          local.binding.profile === "native" &&
+          error instanceof RequestError &&
+          error.code === -32000
+        ) {
           report.status = "needs_auth";
           await this.lifecycle.run("worker", () =>
             this.transport.reportAgents({ agents: this.reports }),
@@ -745,6 +924,7 @@ export class AcpHost {
       if (payload.kind === "prompt") {
         if (!local) throw new Error("Session deleted");
         local.preparing = true;
+        local.gatewayFailure = undefined;
         await this.ensureSession(local);
         if (local.warming) await local.warming;
         if (this.warm.has(local.chat) && !local.relay.active) {
@@ -826,7 +1006,10 @@ export class AcpHost {
           },
           clientInfo: { name: "radium-worker", version: "0.1.0" },
         });
-        const report = agentReport(this.slots.get(payload.agentId)!.definition, response);
+        const report = agentReport(
+          this.slots.get(slotKey(payload.agentId, "native"))!.definition,
+          response,
+        );
         this.reports = this.reports.map((entry) =>
           entry.agentId === payload.agentId
             ? { ...report, ...(entry.defaults ? { defaults: entry.defaults } : {}) }
@@ -862,7 +1045,8 @@ export class AcpHost {
           }),
         );
       } else if (payload.kind === "close" || payload.kind === "delete") {
-        const process = await this.processFor(payload.agentId);
+        const profile = payload.profile;
+        const process = await this.processFor(payload.agentId, profile);
         const capability = this.reports.find((entry) => entry.agentId === payload.agentId)
           ?.capabilities[payload.kind];
         if (capability)
@@ -870,7 +1054,7 @@ export class AcpHost {
             payload.kind === "close" ? methods.agent.session.close : methods.agent.session.delete,
             { sessionId: payload.sessionId },
           );
-        if (capability && payload.kind === "delete")
+        if (profile === "native" && capability && payload.kind === "delete")
           await this.lifecycle.run(`agent-index:${payload.agentId}`, () =>
             this.transport.syncAgentSessions({
               agentId: payload.agentId,
@@ -881,6 +1065,7 @@ export class AcpHost {
         for (const [chat, session] of this.sessions)
           if (
             session.binding.agentId === payload.agentId &&
+            session.binding.profile === profile &&
             session.binding.sessionId === payload.sessionId
           ) {
             this.cancelInteractions(chat);
@@ -890,7 +1075,9 @@ export class AcpHost {
       }
       await this.finish(claim, "done");
     } catch (error) {
-      const message = error instanceof Error ? error.message.slice(0, 500) : "Agent command failed";
+      const message =
+        local?.gatewayFailure ??
+        (error instanceof Error ? error.message.slice(0, 500) : "Agent command failed");
       if (local && payload.kind === "prompt" && local.binding.status !== "ended")
         await this.patch(local, { status: "failed", error: message });
       await this.finish(claim, "failed", message);
@@ -913,6 +1100,7 @@ export class AcpHost {
         methods.agent.session.prompt,
         { sessionId: local.binding.sessionId!, prompt: claim.payload.prompt },
       );
+      if (local.gatewayFailure) throw new Error(local.gatewayFailure);
       await local.updates;
       this.cancelInteractions(local.chat);
       local.relay.push(local.timeline.endTurn(response.stopReason));
@@ -947,12 +1135,18 @@ export class AcpHost {
       await this.finish(claim, "done");
     } catch (error) {
       let message =
-        !local.process || local.process.connection.signal.aborted
+        local.gatewayFailure ??
+        (!local.process || local.process.connection.signal.aborted
           ? "Agent process exited"
           : error instanceof Error
             ? error.message.slice(0, 500)
-            : "Agent prompt failed";
-      if (error instanceof RequestError && error.code === -32000) {
+            : "Agent prompt failed");
+      if (
+        !local.gatewayFailure &&
+        local.binding.profile === "native" &&
+        error instanceof RequestError &&
+        error.code === -32000
+      ) {
         const report = this.reports.find((entry) => entry.agentId === local.binding.agentId)!;
         report.status = "needs_auth";
         message = `Sign in to ${report.name}`;
@@ -967,7 +1161,7 @@ export class AcpHost {
       await this.finish(claim, "failed", message);
     } finally {
       local.running = false;
-      const slot = this.slots.get(local.binding.agentId);
+      const slot = this.slots.get(slotKey(local.binding.agentId, local.binding.profile));
       if (slot) {
         slot.lastUsed = Date.now();
         if (local.process) slot.failures = 0;
@@ -1170,6 +1364,7 @@ export class AcpHost {
     this.abort.abort();
     for (const unsubscribe of this.unsubscribers) unsubscribe();
     for (const pending of this.interactions.values()) pending.resolve(null);
+    await this.gatewayReconciliation;
     const slots = [...this.slots.values(), ...this.retired];
     await Promise.all(slots.map((slot) => this.stopAgent(slot)));
     await Promise.all(

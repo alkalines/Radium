@@ -54,7 +54,9 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { acpActionError } from "@/components/session/acp/use-acp-session";
 import { useWorkspace } from "./workspace-provider";
 
 type WorkerList = Exclude<FunctionReturnType<typeof api.workers.list>, string>;
@@ -75,6 +77,8 @@ export function WorkerManagement() {
   const createEnrollment = useAction(api.workers.createEnrollment);
   const revokeWorker = useMutation(api.workers.revoke);
   const revokeEnrollment = useMutation(api.workers.revokeEnrollment);
+  const setGatewayAccess = useMutation(api.workers.setGatewayAccess);
+  const setGatewayTelemetry = useMutation(api.workers.setGatewayTelemetry);
 
   const [name, setName] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -215,6 +219,21 @@ export function WorkerManagement() {
     }
   }
 
+  async function updateGateway(
+    workerId: string,
+    update: (workspace: Id<"workspaces">) => Promise<null>,
+  ) {
+    if (!workspaceId || pendingAction) return;
+    setPendingAction(`gateway:${workerId}`);
+    try {
+      await update(workspaceId);
+    } catch (actionError) {
+      toast.error(acpActionError(actionError) ?? "Could not update Gateway access.");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
   function openEnrollmentDialog() {
     clearEnrollment();
     setDialogOpen(true);
@@ -255,8 +274,23 @@ export function WorkerManagement() {
           hasError={Boolean(error)}
           isLoading={data === undefined}
           workers={workers}
+          workspaceId={workspaceId}
           disabled={pendingAction !== null}
           onRevoke={setRevokeTarget}
+          onGatewayAccess={(worker, enabled) =>
+            void updateGateway(worker.workerId, (workspace) =>
+              setGatewayAccess({ workspace, workerId: worker.workerId, enabled }),
+            )
+          }
+          onGatewayTelemetry={(worker, enabled) =>
+            void updateGateway(worker.workerId, (workspace) =>
+              setGatewayTelemetry({
+                workspace,
+                workerId: worker.workerId,
+                telemetry: enabled ? "workspace" : "off",
+              }),
+            )
+          }
         />
       </GroupList>
       {isOwner ? (
@@ -435,15 +469,21 @@ function WorkerRows({
   hasError,
   isLoading,
   workers,
+  workspaceId,
   disabled,
   onRevoke,
+  onGatewayAccess,
+  onGatewayTelemetry,
 }: {
   canManage: boolean;
   hasError: boolean;
   isLoading: boolean;
   workers: WorkerList;
+  workspaceId: Id<"workspaces"> | undefined;
   disabled: boolean;
   onRevoke: (worker: WorkerList[number]) => void;
+  onGatewayAccess: (worker: WorkerList[number], enabled: boolean) => void;
+  onGatewayTelemetry: (worker: WorkerList[number], enabled: boolean) => void;
 }) {
   if (!canManage) {
     return (
@@ -492,57 +532,155 @@ function WorkerRows({
     <WorkerRow
       key={worker.workerId}
       worker={worker}
+      workspaceId={workspaceId}
       disabled={disabled}
       onRevoke={() => onRevoke(worker)}
+      onGatewayAccess={(enabled) => onGatewayAccess(worker, enabled)}
+      onGatewayTelemetry={(enabled) => onGatewayTelemetry(worker, enabled)}
     />
   ));
 }
 
-/** One Worker identity: name, id, authorization status, and owner actions in a `…` menu. */
+const gatewayAccessLabels: Record<WorkerList[number]["gateway"]["access"], string> = {
+  off: "Lets the Worker's Gateway agents call models with a key the Worker creates.",
+  pending: "Waiting for the Worker",
+  active: "Active",
+  missing: "Key deleted",
+};
+
+/**
+ * One Worker identity: name, id, authorization status, and owner actions in a `…` menu. An
+ * authorized Worker also shows its Gateway access and, while on, its Gateway telemetry.
+ */
 function WorkerRow({
   worker,
+  workspaceId,
   disabled,
   onRevoke,
+  onGatewayAccess,
+  onGatewayTelemetry,
 }: {
   worker: WorkerList[number];
+  workspaceId: Id<"workspaces"> | undefined;
   disabled: boolean;
   onRevoke: () => void;
+  onGatewayAccess: (enabled: boolean) => void;
+  onGatewayTelemetry: (enabled: boolean) => void;
 }) {
   const isActive = worker.status === "active";
+  const { access, telemetry } = worker.gateway;
 
   return (
-    <Row
-      icon={ServerIcon}
-      title={worker.name}
-      description={<span className="font-mono text-[13px]">{worker.workerId}</span>}
-    >
-      <AgentStatus
-        state={isActive ? "succeeded" : "idle"}
-        label={isActive ? "Authorized" : "Revoked"}
-        title="Identity authorization status"
-      />
+    <>
+      <Row
+        icon={ServerIcon}
+        title={worker.name}
+        description={<span className="font-mono text-[13px]">{worker.workerId}</span>}
+      >
+        <AgentStatus
+          state={isActive ? "succeeded" : "idle"}
+          label={isActive ? "Authorized" : "Revoked"}
+          title="Identity authorization status"
+        />
+        {isActive ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                disabled={disabled}
+                aria-label={`${worker.name} actions`}
+              >
+                <MoreHorizontalIcon />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuGroup>
+                <DropdownMenuItem variant="destructive" onSelect={onRevoke}>
+                  Revoke
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </Row>
       {isActive ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-xs"
+        <Row
+          className="pl-7"
+          title="Gateway access"
+          description={
+            <span className={access === "missing" ? "text-destructive" : undefined}>
+              {gatewayAccessLabels[access]}
+            </span>
+          }
+        >
+          {access === "missing" && workspaceId ? (
+            <IssueGatewayKeyButton
+              workspace={workspaceId}
+              workerId={worker.workerId}
               disabled={disabled}
-              aria-label={`${worker.name} actions`}
-            >
-              <MoreHorizontalIcon />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuGroup>
-              <DropdownMenuItem variant="destructive" onSelect={onRevoke}>
-                Revoke
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            />
+          ) : null}
+          <Switch
+            checked={access !== "off"}
+            disabled={disabled}
+            onCheckedChange={onGatewayAccess}
+            aria-label={`Gateway access for ${worker.name}`}
+          />
+        </Row>
       ) : null}
-    </Row>
+      {isActive && access !== "off" ? (
+        <Row
+          className="pl-7"
+          title="Gateway telemetry"
+          description={
+            telemetry === "workspace"
+              ? "Follows the workspace telemetry settings."
+              : "Requests with this Worker's key are not captured."
+          }
+        >
+          <Switch
+            checked={telemetry === "workspace"}
+            disabled={disabled}
+            onCheckedChange={onGatewayTelemetry}
+            aria-label={`Gateway telemetry for ${worker.name}`}
+          />
+        </Row>
+      ) : null}
+    </>
+  );
+}
+
+/** Replaces a deleted Worker Gateway key: the Worker creates the new one when it next connects. */
+export function IssueGatewayKeyButton({
+  workspace,
+  workerId,
+  disabled,
+}: {
+  workspace: Id<"workspaces">;
+  workerId: string;
+  disabled?: boolean;
+}) {
+  const issueGatewayKey = useMutation(api.workers.issueGatewayKey);
+  const [busy, setBusy] = useState(false);
+
+  async function issue() {
+    setBusy(true);
+    try {
+      await issueGatewayKey({ workspace, workerId });
+      toast.success("New Gateway key requested. The Worker creates it when it is online.");
+    } catch (actionError) {
+      toast.error(acpActionError(actionError) ?? "Could not issue a new Gateway key.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Button size="xs" variant="outline" disabled={disabled || busy} onClick={() => void issue()}>
+      {busy ? <Spinner data-icon="inline-start" /> : null}
+      Issue new key
+    </Button>
   );
 }
 

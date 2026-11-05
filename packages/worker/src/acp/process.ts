@@ -39,9 +39,14 @@ export class AcpAgentProcess {
   private readonly exited = Promise.withResolvers<void>();
   private stopPromise?: Promise<void>;
 
-  constructor(definition: AcpAgentDefinition, command: string, handlers: AcpProcessHandlers) {
+  constructor(
+    definition: AcpAgentDefinition,
+    command: string,
+    handlers: AcpProcessHandlers,
+    environment: NodeJS.ProcessEnv = agentEnvironment(definition),
+  ) {
     this.child = spawn(command, definition.args, {
-      env: agentEnvironment(definition),
+      env: environment,
       stdio: ["pipe", "pipe", "pipe"],
     });
     const app = client({ name: "radium-worker" })

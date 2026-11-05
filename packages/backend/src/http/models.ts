@@ -1,5 +1,6 @@
 import { api, internal } from "../../convex/_generated/api";
 import type { ActionCtx } from "../../convex/_generated/server";
+import { gatewayAuthorizationMessage } from "./key-error";
 
 /** List models available to the workspace assigned to the supplied API key. */
 export async function handleOpenAIModels(ctx: ActionCtx, req: Request): Promise<Response> {
@@ -15,16 +16,19 @@ export async function handleOpenAIModels(ctx: ActionCtx, req: Request): Promise<
       { status: 401 },
     );
   // Treat lookup failures like an invalid key rather than exposing backend errors.
+  let authorizationMessage = "The Authorization is invalid!";
   const keyInfo = await ctx
     .runQuery(api.keys.getKeyInfo, {
       key: bearerToken,
     })
-    .catch(() => {});
+    .catch((error: unknown) => {
+      authorizationMessage = gatewayAuthorizationMessage(error);
+    });
   if (!keyInfo)
     return Response.json(
       {
         error: {
-          message: "The Authorization is invalid!",
+          message: authorizationMessage,
           code: 401,
         },
       },

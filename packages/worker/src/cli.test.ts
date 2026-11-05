@@ -34,6 +34,10 @@ vi.mock("./presence.js", () => ({
   prepareTempDirectory: vi.fn().mockResolvedValue("/tmp/radium"),
   startPresenceReporter: vi.fn(() => ({ setAvailable: vi.fn(), close: vi.fn() })),
 }));
+vi.mock("./usage/local-usage.js", () => ({
+  convexLocalUsageTransport: vi.fn(),
+  startLocalUsageSync: vi.fn(() => ({ setAvailable: vi.fn(), close: vi.fn() })),
+}));
 vi.mock("@clack/prompts", () => ({
   password: vi.fn(),
   isCancel: vi.fn(() => false),
@@ -193,7 +197,10 @@ describe("Worker CLI credential lifecycle", () => {
     "runs outbound-only and closes control on shutdown (failure: %s)",
     async (fails) => {
       vi.spyOn(console, "info").mockImplementation(() => undefined);
-      const state = { identity: { workerId: "worker-id" } };
+      const state = {
+        setup: { backendUrl: "https://backend.example" },
+        identity: { workerId: "worker-id" },
+      };
       vi.mocked(readWorkerState).mockResolvedValue(state as never);
       vi.mocked(recoverPendingIdentity).mockResolvedValue(state as never);
       const serve = vi.fn(() => {
@@ -223,7 +230,10 @@ describe("Worker CLI credential lifecycle", () => {
 
   it("consumes backend-directory tasks on start and drains tasks before closing control", async () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const state = { identity: { workerId: "worker-id" } };
+    const state = {
+      setup: { backendUrl: "https://backend.example" },
+      identity: { workerId: "worker-id" },
+    };
     vi.mocked(readWorkerState).mockResolvedValue(state as never);
     vi.mocked(recoverPendingIdentity).mockResolvedValue(state as never);
     const tasks = { setAvailable: vi.fn(), close: vi.fn().mockResolvedValue(undefined) };
@@ -252,7 +262,10 @@ describe("Worker CLI credential lifecycle", () => {
 
   it("prints deduplicated, actionable disconnect reasons without exposing auth details", async () => {
     const output = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const state = { identity: { workerId: "worker-id" } };
+    const state = {
+      setup: { backendUrl: "https://backend.example" },
+      identity: { workerId: "worker-id" },
+    };
     vi.mocked(readWorkerState).mockResolvedValue(state as never);
     vi.mocked(recoverPendingIdentity).mockResolvedValue(state as never);
     let reportStatus: ((status: WorkerControlStatus) => void) | undefined;
@@ -286,7 +299,10 @@ describe("Worker CLI credential lifecycle", () => {
   it("reports stalled startup stages and stops diagnostics after shutdown", async () => {
     vi.useFakeTimers();
     const output = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const state = { identity: { workerId: "worker-id" } };
+    const state = {
+      setup: { backendUrl: "https://backend.example" },
+      identity: { workerId: "worker-id" },
+    };
     vi.mocked(readWorkerState).mockResolvedValue(state as never);
     vi.mocked(recoverPendingIdentity).mockResolvedValue(state as never);
     const snapshot = vi.fn(diagnostics);
