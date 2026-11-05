@@ -27,7 +27,8 @@ import {
 } from "./agent_usage";
 import { estimateCompletionCost } from "./completion";
 import type { ProviderPricing } from "../workspaces/provider";
-import { isTurnCovered } from "./local_contract";
+import { isGatewayCompletionWithoutChat } from "../workspaces/policy";
+import { isTurnCovered, utcDay } from "./local_contract";
 
 /** A matched models.dev price is refreshed weekly; a failed or empty lookup is retried daily. */
 const MATCH_REFRESH_MS = 7 * 24 * 60 * 60 * 1000;
@@ -401,10 +402,12 @@ export const resolveModelPrices = internalAction({
 /**
  * Estimated total cost of one Session, built-in or ACP, for anyone who can open it (the same
  * audience as the per-message Gateway cost and the agent-reported cost already shown there).
- * Built-in Sessions sum their Gateway completions. ACP Sessions sum the local rows ccusage read
- * for their session id, plus the priced turns those rows do not cover yet (`isTurnCovered`), so
- * an agent ccusage cannot read still has a total. `steps` counts what was summed; `unknown` and
- * `pending` say how much of the total is missing. Bounded to the newest 1,000 rows of each source.
+ * Built-in Sessions sum their Gateway completions. ACP Sessions sum the direct Gateway calls
+ * their agent tagged with its session id, then, for days without such calls, the local rows
+ * ccusage read for that session id, plus the priced turns those rows do not cover yet
+ * (`isTurnCovered`), so an agent ccusage cannot read still has a total. `steps` counts what was
+ * summed; `unknown` and `pending` say how much of the total is missing. Bounded to the newest
+ * 1,000 rows of each source.
  */
 export const GetChatCost = query({
   args: { chat: v.id("aisdk_chats") },
@@ -434,6 +437,27 @@ export const GetChatCost = query({
     }
 
     const sessionId = chat.agent?.sessionId;
+    // Exact Gateway figures replace the agent's own records for the days they cover.
+    const gatewayDays = new Set<string>();
+    const gatewayCalls =
+      sessionId && chat.workspace
+        ? await ctx.db
+            .query("chat_completions")
+            .withIndex("by_workspace_and_clientSession", (q) =>
+              q.eq("bill.workspace", chat.workspace).eq("clientSession", sessionId),
+            )
+            .order("desc")
+            .take(1000)
+        : [];
+    for (const completion of gatewayCalls) {
+      if (!isGatewayCompletionWithoutChat(completion)) continue;
+      const cost = completion.response.pricing.cost;
+      gatewayDays.add(utcDay(completion._creationTime));
+      summary.steps += 1;
+      if (cost === undefined) summary.unknown += 1;
+      summary.cost += cost ?? 0;
+    }
+
     const localRows =
       chat.agent && sessionId && chat.workspace
         ? await ctx.db
@@ -447,6 +471,7 @@ export const GetChatCost = query({
             .take(1000)
         : [];
     for (const row of localRows) {
+      if (gatewayDays.has(row.day)) continue;
       for (const model of row.models) {
         summary.steps += 1;
         const cost = model.cost ?? model.estimatedCost;
@@ -461,7 +486,7 @@ export const GetChatCost = query({
       .withIndex("by_chat_and_command", (q) => q.eq("chat", args.chat))
       .take(1000);
     for (const turn of turns) {
-      if (isTurnCovered(localRows, turn.endedAt)) continue;
+      if (isTurnCovered(localRows, turn.endedAt) || gatewayDays.has(utcDay(turn.endedAt))) continue;
       summary.steps += 1;
       if (turn.pricing.status === "pending") summary.pending += 1;
       else if (turn.pricing.cost === undefined) summary.unknown += 1;

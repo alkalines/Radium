@@ -1585,3 +1585,148 @@ test("local ccusage rows replace the turns they cover, per session, and place te
   const sessionCost = await f.owner.query(api.agent_usage.GetChatCost, { chat: f.chat });
   expect(sessionCost?.cost).toBeCloseTo(0.5 + 4.5);
 });
+
+test("an agent's Gateway calls join its session and replace its local rows and turns that day", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation(async () => new Response("{}")),
+  );
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "ses-chat" },
+  });
+  const command = await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "one" });
+  await f.first.machine.mutation(api.acp.claimCommand, { command });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { status: "running" },
+  });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: {
+      status: "idle",
+      stopReason: "end_turn",
+      turnUsage: { inputTokens: 1000, outputTokens: 100, totalTokens: 1100 },
+      turn: { command, startedAt: Date.now(), cost: { amount: 7, currency: "USD" } },
+    },
+  });
+  await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  const turn = (await f.t.run((ctx) => ctx.db.query("acp_usage").first()))!;
+  const day = new Date(turn.endedAt).toISOString().slice(0, 10);
+
+  const local = (sessionId: string, cost: number) => ({
+    agent: "opencode",
+    sessionId,
+    lastActivity: Date.now(),
+    totalTokens: 1000,
+    models: [
+      {
+        model: "glm-5",
+        inputTokens: 1000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        cost,
+      },
+    ],
+  });
+  await f.first.machine.mutation(api.agent_usage.reportLocalUsage, {
+    day,
+    syncedAt: turn.endedAt - 1,
+    rows: [local("ses-chat", 0.5), local("ses-terminal", 2), local("ses-other", 3)],
+  });
+
+  await f.t.run(async (ctx) => {
+    await ctx.db.insert("acp_agents", {
+      workspace: f.workspace,
+      agentId: "opencode",
+      name: "OpenCode",
+      command: "opencode",
+      args: ["acp"],
+      env: [],
+      enabled: true,
+      source: "registry",
+      updatedAt: Date.now(),
+    });
+    const apiKey = await ctx.db.insert("api_keys", {
+      workspace: f.workspace,
+      name: "OpenCode",
+      hash: "api-hash",
+      preview: "rad-sk-...code",
+    });
+    const author = await ctx.db.insert("authors", { name: "Test", slug: "test" });
+    const model = await ctx.db.insert("models", {
+      name: "Model",
+      launch_date: 0,
+      author,
+      slug: "test/model",
+      type: "chat",
+      description: "",
+      reasoning: false,
+      features: {},
+      architecture: { input_modalities: ["text"], output_modalities: ["text"], tokenizer: "GPT" },
+    });
+    // OpenCode sends its session id as `x-session-id`; a client with an unrelated id stays API.
+    for (const [clientSession, cost] of [
+      ["ses-chat", 0.25],
+      ["ses-terminal", 0.1],
+      ["unrelated", 1],
+    ] as const) {
+      await ctx.db.insert("chat_completions", {
+        bill: { workspace: f.workspace, apiKey },
+        clientSession,
+        request: { provider: "plain", byok: true, model, streamed: false, canceled: false },
+        response: {
+          genId: "gen",
+          providerGenId: "upstream",
+          usage: {
+            prompt_tokens: 10,
+            completion_tokens: 10,
+            completion_tokens_details: {},
+            prompt_tokens_details: {},
+          },
+          pricing: {
+            prompt_tokens: cost / 2,
+            completion_tokens: cost / 2,
+            prompt_tokens_details: { cached_tokens: 0 },
+            cost,
+          },
+          ttft: 1,
+          gen_time: 1,
+          finish_reason: "stop",
+        },
+      });
+    }
+  });
+
+  const activity = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  // The turn and both tagged sessions' ccusage rows are replaced by the exact Gateway figures.
+  expect(activity.summary).toMatchObject({ requests: 3, agentTurns: 0, localSessions: 1 });
+  expect(activity.summary.gatewayCost).toBeCloseTo(1.35);
+  expect(activity.summary.agentCost).toBeCloseTo(3);
+  expect(activity.harnesses).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: "acp:test-agent", requests: 1, turns: 0 }),
+      expect.objectContaining({ id: "acp:opencode", requests: 1, sessions: 1 }),
+      expect.objectContaining({ id: "api", requests: 1 }),
+    ]),
+  );
+  const byId = Object.fromEntries(activity.harnesses.map((harness) => [harness.id, harness.cost]));
+  expect(byId["acp:test-agent"]).toBeCloseTo(0.25);
+  expect(byId["acp:opencode"]).toBeCloseTo(3.1);
+  expect(activity.projects).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: "none", requests: 2, sessions: 1 }),
+      expect.objectContaining({ id: "outside", requests: 1 }),
+    ]),
+  );
+
+  const sessionCost = await f.owner.query(api.agent_usage.GetChatCost, { chat: f.chat });
+  expect(sessionCost).toMatchObject({ steps: 1, unknown: 0, pending: 0 });
+  expect(sessionCost?.cost).toBeCloseTo(0.25);
+});

@@ -97,8 +97,9 @@ export default defineSchema({
       "updatedAt",
     ])
     .index("by_chat", ["chat"])
-    // Local usage (ccusage) rows carry only Worker and session id; this finds their folder.
-    .index("by_worker_and_sessionId", ["workspace", "worker", "sessionId"])
+    // Local usage rows and Gateway calls carry a session id (and maybe a Worker); this finds
+    // the agent and folder.
+    .index("by_sessionId_and_worker", ["workspace", "sessionId", "worker"])
     .searchIndex("search_title", { searchField: "title", filterFields: ["workspace", "agentId"] }),
   /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
   acp_sessions: defineTable({
@@ -128,7 +129,9 @@ export default defineSchema({
     .index("by_worker_and_warm", ["workspace", "worker", "warm"])
     .index("by_worker_and_status", ["workspace", "worker", "status"])
     .index("by_warm", ["warm"])
-    .index("by_worker_and_sessionId", ["workspace", "worker", "sessionId"]),
+    .index("by_worker_and_sessionId", ["workspace", "worker", "sessionId"])
+    // Gateway calls carry an agent session id but no Worker.
+    .index("by_sessionId", ["workspace", "sessionId"]),
   /**
    * Coding-CLI usage read from a Worker machine's own logs by ccusage: one row per session per
    * UTC day, token counts and costs only (`src/usage/local_contract.ts`). Models ccusage could
@@ -547,6 +550,11 @@ export default defineSchema({
      */
     chatId: v.optional(v.id("aisdk_chats")),
     userId: v.optional(v.string()),
+    /**
+     * Direct Gateway calls only: the client's own session id (session header, `session_id` or
+     * `prompt_cache_key`). Coding agents send theirs, which joins the call to the agent session.
+     */
+    clientSession: v.optional(v.string()),
     bill: v.object({
       /** Deprecated ownership pointer retained for historical records. */
       balance: v.optional(v.id("balances")),
@@ -585,7 +593,9 @@ export default defineSchema({
     .index("by_workspace", ["bill.workspace"])
     .index("by_credential", ["request.credential"])
     // Session cost totals (`agent_usage.GetChatCost`) read one chat's completions.
-    .index("by_chatId", ["chatId"]),
+    .index("by_chatId", ["chatId"])
+    // ...and an ACP Session's direct Gateway calls, by its agent session id.
+    .index("by_workspace_and_clientSession", ["bill.workspace", "clientSession"]),
   models: defineTable({
     name: v.string(),
     launch_date: v.number(), // UNIX in ms

@@ -114,7 +114,10 @@ provider without fallbacks, or an OpenRouter-compatible object:
 Supported fields are `order`, `allow_fallbacks`, `only`, `ignore`, and `sort`
 (`price`, `throughput`, `latency`, or `{ "by": … }`); slugs name the workspace's
 providers. Session affinity reads `session_id` from the body, client session
-headers such as `X-Session-ID`, or `prompt_cache_key`.
+headers such as `X-Session-ID`, or `prompt_cache_key`. The same id is stored on
+the completion, so a coding agent that sends its session id has its Gateway
+calls counted under that agent's session in Activity
+([Agents on the Gateway](observability.md#local-cli-usage-ccusage)).
 
 Provider-specific model IDs are internal catalogue configuration. API callers
 send the global Radium model slug returned by the models endpoint.

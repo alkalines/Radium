@@ -7,7 +7,7 @@ import {
   providersForServiceTier,
   type SelectionCursor,
 } from "./selection";
-import { extractRoutingSession } from "./session";
+import { clientSessionId, extractRoutingSession } from "./session";
 import type { ChatCompletions_RequestBody_Type } from "@/types/openai/types";
 import type { ProviderPricing } from "../workspaces/provider";
 
@@ -297,6 +297,14 @@ describe("routing sessions", () => {
       fallback: "header:parent",
       isSubagent: true,
     });
+  });
+
+  test("only a client-sent session id is the client session", () => {
+    const headers = new Headers({ "X-Session-ID": "ses_1" });
+    expect(clientSessionId(request({ prompt_cache_key: "conv" }), headers)).toBe("ses_1");
+    expect(clientSessionId(request({ prompt_cache_key: "conv" }))).toBe("conv");
+    expect(clientSessionId(request({ user: "alice" }))).toBeUndefined();
+    expect(clientSessionId(request({}))).toBeUndefined();
   });
 
   test("the first-turn message hash carries over once an assistant reply exists", () => {

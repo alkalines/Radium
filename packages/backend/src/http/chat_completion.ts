@@ -28,7 +28,7 @@ import {
 } from "@/routing/failures";
 import { routingPreferencesFromRequest } from "@/routing/preferences";
 import { inferenceModeTier } from "@/routing/selection";
-import { extractRoutingSession } from "@/routing/session";
+import { clientSessionId, extractRoutingSession } from "@/routing/session";
 import type { ActionCtx } from "../../convex/_generated/server";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
@@ -208,10 +208,14 @@ async function recordCompletion(
 ): Promise<Id<"chat_completions"> | null> {
   const providerGenerationId =
     generation.genId || details.originalProviderGenerationId || details.generationId;
+  // Direct Gateway calls keep the client's session id so Activity can join an agent's calls to
+  // its session; Chatroom calls are already attributed to their chat.
+  const clientSession = info.chatContext ? undefined : clientSessionId(requestBody, info.headers);
 
   return await info.ctx.runMutation(internal.keys.recordCompletion, {
     bill: completionBill(info),
     ...completionActor(info),
+    ...(clientSession ? { clientSession } : {}),
     request: {
       api: "chat_completions",
       byok: info.byok,

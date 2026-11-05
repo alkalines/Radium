@@ -14,6 +14,8 @@ import { isTurnCovered, localAgentName, utcDay } from "./local_contract";
 
 /** Rows aggregated per source; older rows in a busier window are dropped and flagged. */
 const WINDOW_LIMIT = 2000;
+/** Distinct Gateway client session ids resolved to an agent session per read. */
+const SESSION_LOOKUP_LIMIT = 200;
 
 /**
  * Owner-visible Gateway completions, newest first. Reads `readLimit` rows from each ownership
@@ -186,35 +188,48 @@ export const getActivity = query({
 
     const visibility = new Map<string, boolean>();
     const chats = new Map<Id<"aisdk_chats">, Doc<"aisdk_chats"> | null>();
+    async function chatDoc(chatId: Id<"aisdk_chats">) {
+      if (!chats.has(chatId)) chats.set(chatId, await ctx.db.get(chatId));
+      return chats.get(chatId) ?? null;
+    }
     // Project filing is read from the chat now, so moving a chat moves its history too.
     async function projectOf(chatId: Id<"aisdk_chats"> | undefined) {
       if (!chatId) return OUTSIDE_CHATROOM;
-      if (!chats.has(chatId)) chats.set(chatId, await ctx.db.get(chatId));
-      return chats.get(chatId)?.project ?? NO_PROJECT;
+      return (await chatDoc(chatId))?.project ?? NO_PROJECT;
     }
 
-    // Each local session resolves once: the Radium chat bound to it (hidden when that chat is
+    // Each agent session resolves once: the Radium chat bound to it (hidden when that chat is
     // private to someone else), else an indexed agent session whose folder is a Project folder.
-    type LocalSession = { chat?: Id<"aisdk_chats">; agentId?: string; project: string };
-    const localSessions = new Map<string, LocalSession | null>();
+    // Local rows know their Worker; Gateway calls carry only the session id.
+    type AgentSession = { chat?: Id<"aisdk_chats">; agentId?: string; project: string };
+    const agentSessions = new Map<string, AgentSession | null>();
     let folders: Map<string, Id<"projects">> | undefined;
-    async function resolveLocalSession(worker: string, sessionId: string) {
-      const key = `${worker}\0${sessionId}`;
-      if (localSessions.has(key)) return localSessions.get(key)!;
-      let resolved: LocalSession | null;
-      const bound = await ctx.db
-        .query("acp_sessions")
-        .withIndex("by_worker_and_sessionId", (q) =>
-          q.eq("workspace", workspace._id).eq("worker", worker).eq("sessionId", sessionId),
-        )
-        .first();
+    async function resolveSession(sessionId: string, worker?: string) {
+      const key = `${worker ?? ""}\0${sessionId}`;
+      if (agentSessions.has(key)) return agentSessions.get(key)!;
+      let resolved: AgentSession | null;
+      const bound =
+        worker === undefined
+          ? await ctx.db
+              .query("acp_sessions")
+              .withIndex("by_sessionId", (q) =>
+                q.eq("workspace", workspace._id).eq("sessionId", sessionId),
+              )
+              .first()
+          : await ctx.db
+              .query("acp_sessions")
+              .withIndex("by_worker_and_sessionId", (q) =>
+                q.eq("workspace", workspace._id).eq("worker", worker).eq("sessionId", sessionId),
+              )
+              .first();
       const indexed = bound
         ? null
         : await ctx.db
             .query("acp_agent_sessions")
-            .withIndex("by_worker_and_sessionId", (q) =>
-              q.eq("workspace", workspace._id).eq("worker", worker).eq("sessionId", sessionId),
-            )
+            .withIndex("by_sessionId_and_worker", (q) => {
+              const session = q.eq("workspace", workspace._id).eq("sessionId", sessionId);
+              return worker === undefined ? session : session.eq("worker", worker);
+            })
             .first();
       const chat = bound?.chat ?? indexed?.chat;
       if (chat) {
@@ -225,29 +240,57 @@ export const getActivity = query({
         folders ??= await projectFolders(ctx, workspace._id);
         resolved = {
           ...(indexed ? { agentId: indexed.agentId } : {}),
-          project: (indexed && folders.get(folderKey(worker, indexed.cwd))) || NO_PROJECT,
+          project: (indexed && folders.get(folderKey(indexed.worker, indexed.cwd))) || NO_PROJECT,
         };
       }
-      localSessions.set(key, resolved);
+      agentSessions.set(key, resolved);
       return resolved;
     }
 
+    let definitions: Doc<"acp_agents">[] | undefined;
+    async function harnessOf(session: AgentSession, source?: string) {
+      definitions ??= await ctx.db
+        .query("acp_agents")
+        .withIndex("by_workspace_and_agentId", (q) => q.eq("workspace", workspace._id))
+        .take(100);
+      const agentId = session.agentId ?? (source ? agentForSource(definitions, source) : undefined);
+      if (agentId) return `acp:${agentId}`;
+      return source ? `local:${source}` : undefined;
+    }
+
+    // Direct Gateway calls a coding agent tagged with its session id. They are exact, so for that
+    // session and UTC day they replace the agent's own records (ccusage rows, turn reports).
+    const gatewayDays = new Map<string, Set<string>>();
+    for (const completion of completions.slice(0, WINDOW_LIMIT)) {
+      if (completion.chatId || !completion.clientSession) continue;
+      const days = gatewayDays.get(completion.clientSession) ?? new Set<string>();
+      days.add(utcDay(completion._creationTime));
+      gatewayDays.set(completion.clientSession, days);
+    }
+    const viaGateway = (sessionId: string | undefined, day: string) =>
+      !!sessionId && !!gatewayDays.get(sessionId)?.has(day);
+
     const localByChat = new Map<Id<"aisdk_chats">, Doc<"local_usage">[]>();
-    const localEntries: Array<{ row: Doc<"local_usage">; session: LocalSession }> = [];
+    const localEntries: Array<{ row: Doc<"local_usage">; session: AgentSession }> = [];
+    // A Gateway call with no Radium session may still match a terminal session ccusage read.
+    const localSources = new Map<string, Doc<"local_usage">>();
     for (const row of localRows.slice(0, WINDOW_LIMIT)) {
-      const session = await resolveLocalSession(row.worker, row.sessionId);
+      localSources.set(row.sessionId, row);
+      if (viaGateway(row.sessionId, row.day)) continue;
+      const session = await resolveSession(row.sessionId, row.worker);
       if (!session) continue;
       localEntries.push({ row, session });
       if (session.chat)
         localByChat.set(session.chat, [...(localByChat.get(session.chat) ?? []), row]);
     }
 
-    // Radium's own turn reports count only where ccusage has not read the session yet.
+    // Radium's own turn reports count only where neither ccusage nor the Gateway has the session.
     const turns: Doc<"acp_usage">[] = [];
     for (const turn of agentRows.slice(0, WINDOW_LIMIT)) {
       if (isTurnCovered(localByChat.get(turn.chat) ?? [], turn.endedAt)) continue;
-      if (await isChatVisibleToWorkspace(ctx, workspace._id, turn.chat, visibility))
-        turns.push(turn);
+      if (!(await isChatVisibleToWorkspace(ctx, workspace._id, turn.chat, visibility))) continue;
+      if (viaGateway((await chatDoc(turn.chat))?.agent?.sessionId, utcDay(turn.endedAt))) continue;
+      turns.push(turn);
     }
 
     // Gateway models group by their Radium model; agent usage joins them through a model slug.
@@ -275,8 +318,28 @@ export const getActivity = query({
       legacyCredits: { requests: 0, cost: 0 },
     };
 
+    let lookups = 0;
     for (const completion of completions.slice(0, WINDOW_LIMIT)) {
-      const project = await projectOf(completion.chatId);
+      let project = await projectOf(completion.chatId);
+      let harness = completion.chatId ? "radium" : "api";
+      // An agent's Gateway calls join that agent's session: its harness row and Project. Clients
+      // may send a fresh `prompt_cache_key` per call, so only the newest distinct ids are looked up.
+      if (!completion.chatId && completion.clientSession) {
+        const local = localSources.get(completion.clientSession);
+        const looked = agentSessions.has(`\0${completion.clientSession}`);
+        const session =
+          looked || local || lookups++ < SESSION_LOOKUP_LIMIT
+            ? await resolveSession(completion.clientSession)
+            : null;
+        const agentHarness =
+          session && (session.agentId || local)
+            ? await harnessOf(session, local?.agent)
+            : undefined;
+        if (session && agentHarness) {
+          harness = agentHarness;
+          project = session.project;
+        }
+      }
       if (args.project && project !== args.project) continue;
 
       const { usage, pricing } = completion.response;
@@ -288,7 +351,7 @@ export const getActivity = query({
       const entry: Entry = {
         time: completion._creationTime,
         source: "gateway",
-        harness: completion.chatId ? "radium" : "api",
+        harness,
         project,
         model: modelId,
         cost: pricing.cost,
@@ -341,14 +404,8 @@ export const getActivity = query({
       });
     }
 
-    const definitions = localEntries.length
-      ? await ctx.db
-          .query("acp_agents")
-          .withIndex("by_workspace_and_agentId", (q) => q.eq("workspace", workspace._id))
-          .take(100)
-      : [];
     for (const { row, session } of localEntries) {
-      const agentId = session.agentId ?? agentForSource(definitions, row.agent);
+      const harness = (await harnessOf(session, row.agent))!;
       if (args.project && session.project !== args.project) continue;
       // ccusage's total also counts reasoning tokens its per-model rows leave out.
       const modelTokens = row.models.reduce(
@@ -385,7 +442,7 @@ export const getActivity = query({
           time: Date.parse(`${row.day}T00:00:00Z`),
           source: "local",
           session: `${row.worker}\0${row.agent}\0${row.sessionId}`,
-          harness: agentId ? `acp:${agentId}` : `local:${row.agent}`,
+          harness,
           project: session.project,
           model,
           cost: usage.cost ?? usage.estimatedCost,

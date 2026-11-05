@@ -211,6 +211,10 @@ tracking and telemetry.
 - **Models.** The agent still advertises its own model choices; in Gateway mode
   those IDs must resolve to models the workspace has providers for. Unresolvable
   IDs fail at the Gateway with its normal error, shown on the interruption card.
+- **Session id on every call.** A recipe must make the agent send its ACP
+  session id as `X-Session-ID` (OpenCode already does). Activity uses it to join
+  the Gateway calls to the Session and to stop counting the agent's own usage
+  records for it ([Agents on the Gateway](../observability.md#local-cli-usage-ccusage)).
 
 ### Worker Gateway Key
 

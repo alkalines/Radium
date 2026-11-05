@@ -123,6 +123,8 @@ export const recordCompletion = internalMutation({
     }),
     actor: v.optional(v.string()),
     chatId: v.optional(v.id("aisdk_chats")),
+    /** Direct Gateway calls only: the client's own session id (`RoutingSession.client`). */
+    clientSession: v.optional(v.string()),
     request: v.object({
       model_slug: v.string(),
       app: v.optional(v.id("ai_apps")),
@@ -314,7 +316,9 @@ export const recordCompletion = internalMutation({
       bill,
       ...(args.actor !== undefined && args.chatId !== undefined
         ? { chatId: args.chatId, userId: args.actor }
-        : {}),
+        : args.clientSession
+          ? { clientSession: args.clientSession }
+          : {}),
       request: {
         byok: true,
         streamed: args.request.stream,
