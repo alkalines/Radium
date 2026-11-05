@@ -23,14 +23,18 @@ export const Route = createFileRoute("/chat/$chatId")({
     const session = await requireSession({ queryClient, location });
     return { session };
   },
-  loader: ({ context: { queryClient }, params: { chatId } }) => {
-    void queryClient.prefetchQuery(
-      convexQuery(api.aisdk.GetChat, { chatId: chatId as Id<"aisdk_chats"> }),
-    );
-    void queryClient.prefetchQuery(
-      convexQuery(api.aisdk.GetChatMessages, { chatId: chatId as Id<"aisdk_chats"> }),
+  loader: async ({ context: { queryClient }, params: { chatId } }) => {
+    const id = chatId as Id<"aisdk_chats">;
+    const chat = queryClient.prefetchQuery(convexQuery(api.aisdk.GetChat, { chatId: id }));
+    const messages = queryClient.prefetchQuery(
+      convexQuery(api.aisdk.GetChatMessages, { chatId: id }),
     );
     void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+
+    // The Session screen renders a spinner until the chat and its messages load. Streamed results
+    // land before hydration but after the server rendered that spinner, so the server waits for
+    // them to render what the client hydrates. Client navigations stay instant.
+    if (typeof window === "undefined") await Promise.all([chat, messages]);
   },
   component: () => null,
 });
