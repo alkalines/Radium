@@ -1,4 +1,5 @@
 import { api, internal } from "../../convex/_generated/api";
+import { gatewayAuthorizationMessage } from "./key-error";
 import {
   ChatCompletions_RequestBody,
   type ChatCompletions_RequestBody_Type,
@@ -28,7 +29,7 @@ import {
 } from "@/routing/failures";
 import { routingPreferencesFromRequest } from "@/routing/preferences";
 import { inferenceModeTier } from "@/routing/selection";
-import { extractRoutingSession } from "@/routing/session";
+import { clientSessionId, extractRoutingSession } from "@/routing/session";
 import type { ActionCtx } from "../../convex/_generated/server";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
@@ -96,16 +97,19 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
         { status: 401 },
       );
     // Treat lookup failures like an invalid key rather than exposing backend errors.
+    let authorizationMessage = "The Authorization is invalid!";
     const keyInfo = await ctx
       .runQuery(api.keys.getKeyInfo, {
         key: bearerToken,
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        authorizationMessage = gatewayAuthorizationMessage(error);
+      });
     if (!keyInfo)
       return Response.json(
         {
           error: {
-            message: "The Authorization is invalid!",
+            message: authorizationMessage,
             code: 401,
           },
         },
@@ -143,15 +147,16 @@ export async function handleChatCompletion(ctx: ActionCtx, req: Request): Promis
       legacyKeyId: legacyKey,
       byok: true,
       abortSignal: req.signal,
-      telemetry: telemetrySettings.enabled
-        ? {
-            workspace: workspaceId,
-            apiKey,
-            userId: keyInfo.userId,
-            requestId: crypto.randomUUID(),
-            settings: telemetrySettings,
-          }
-        : undefined,
+      telemetry:
+        telemetrySettings.enabled && keyInfo.telemetry !== "off"
+          ? {
+              workspace: workspaceId,
+              apiKey,
+              userId: keyInfo.userId,
+              requestId: crypto.randomUUID(),
+              settings: telemetrySettings,
+            }
+          : undefined,
     });
   } catch (e: any) {
     if (e instanceof z.ZodError) {
@@ -208,10 +213,14 @@ async function recordCompletion(
 ): Promise<Id<"chat_completions"> | null> {
   const providerGenerationId =
     generation.genId || details.originalProviderGenerationId || details.generationId;
+  // Direct Gateway calls keep the client's session id so Activity can join an agent's calls to
+  // its session; Chatroom calls are already attributed to their chat.
+  const clientSession = info.chatContext ? undefined : clientSessionId(requestBody, info.headers);
 
   return await info.ctx.runMutation(internal.keys.recordCompletion, {
     bill: completionBill(info),
     ...completionActor(info),
+    ...(clientSession ? { clientSession } : {}),
     request: {
       api: "chat_completions",
       byok: info.byok,

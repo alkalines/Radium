@@ -21,6 +21,8 @@ import {
 import { variants } from "@/lib/motion";
 import { DeniedMarker } from "./approval-gate";
 import { MessageActions } from "./message-actions";
+import { AcpNotice } from "./acp/notice";
+import { isAcpNoticePart, isAcpToolPart, type AcpToolPart } from "./acp/parts";
 import {
   getMessageModel,
   getMessageText,
@@ -59,7 +61,7 @@ function groupMessageParts(parts: MessagePart[]) {
     // Metadata-only reasoning carries continuation state but has no visible trace.
     if (part.type === "reasoning" && !part.text.trim()) continue;
 
-    if (part.type === "reasoning" || isToolPart(part)) {
+    if (part.type === "reasoning" || isAcpToolPart(part) || isToolPart(part)) {
       const previous = blocks.at(-1);
       if (previous?.type === "steps") {
         previous.items.push({ index, part });
@@ -85,11 +87,13 @@ export type SessionMessageProps = {
   forkModels: ModelOption[] | undefined;
   /** Name of the agent that answers this Session's turns, shown in the assistant footer. */
   agentName: string;
-  canRevert: boolean;
+  modelLabel?: string;
+  forkWithoutModel?: boolean;
+  canRevert?: boolean;
   onCopy: (message: UIMessage) => void;
-  onRevert: (message: UIMessage) => void;
-  onRegenerate: (message: UIMessage) => void;
-  onFork: (message: UIMessage, modelSlug: string) => void;
+  onRevert?: (message: UIMessage) => void;
+  onRegenerate?: (message: UIMessage) => void;
+  onFork?: (message: UIMessage, modelSlug: string) => void;
 };
 
 /**
@@ -120,10 +124,13 @@ export const SessionMessage = memo(function SessionMessage(props: SessionMessage
             <MessageActions
               role="user"
               forkModels={props.forkModels}
+              forkWithoutModel={props.forkWithoutModel}
               disabled={props.actionsDisabled}
               onCopy={() => props.onCopy(message)}
-              onRevert={props.canRevert ? () => props.onRevert(message) : undefined}
-              onFork={(modelSlug) => props.onFork(message, modelSlug)}
+              onRevert={
+                props.canRevert && props.onRevert ? () => props.onRevert?.(message) : undefined
+              }
+              onFork={props.onFork ? (modelSlug) => props.onFork?.(message, modelSlug) : undefined}
             />
           ) : null}
         </MessageContent>
@@ -140,12 +147,14 @@ export const SessionMessage = memo(function SessionMessage(props: SessionMessage
             role="assistant"
             forkModels={props.forkModels}
             disabled={props.actionsDisabled}
+            forkWithoutModel={props.forkWithoutModel}
             agentName={props.agentName}
             model={getMessageModel(message)}
+            modelLabel={props.modelLabel}
             performance={getPerformanceMetadata(message.metadata)}
             onCopy={() => props.onCopy(message)}
-            onRegenerate={() => props.onRegenerate(message)}
-            onFork={(modelSlug) => props.onFork(message, modelSlug)}
+            onRegenerate={props.onRegenerate ? () => props.onRegenerate?.(message) : undefined}
+            onFork={props.onFork ? (modelSlug) => props.onFork?.(message, modelSlug) : undefined}
           />
         ) : null}
       </MessageContent>
@@ -163,6 +172,13 @@ function AssistantParts({ message, isLive, showChainOfThought }: SessionMessageP
   return blocks.map((block, blockIndex) => {
     if (block.type === "content") {
       const { index, part } = block.item;
+      if (isAcpNoticePart(part)) {
+        return (
+          <Reveal key={`${message.id}-${index}`} isNew={index >= mountedPartCount}>
+            <AcpNotice notice={part.data} />
+          </Reveal>
+        );
+      }
       if (part.type !== "text") return null;
 
       return (
@@ -183,12 +199,13 @@ function AssistantParts({ message, isLive, showChainOfThought }: SessionMessageP
         <MessageStep
           part={part}
           isLive={isLive}
-          isGrouped={showChainOfThought}
           hasLaterContent={message.parts.slice(index + 1).some(hasRenderableAssistantContent)}
         />
       </Reveal>
     ));
-    const tools = block.items.flatMap(({ part }) => (isToolPart(part) ? [part] : []));
+    const tools = block.items.flatMap(({ part }) =>
+      isAcpToolPart(part) || isToolPart(part) ? [part] : [],
+    );
 
     return (
       <div key={`${message.id}-steps-${firstIndex}`} className="flex min-w-0 flex-col gap-3">
@@ -217,8 +234,8 @@ function AssistantParts({ message, isLive, showChainOfThought }: SessionMessageP
  * component, because `AnimatePresence` must see the keyed motion elements (or their absence) as
  * its direct children to run exits and measure for `popLayout`.
  */
-function deniedSlot(part: ToolUIPart) {
-  if (!isDeniedTool(part)) return null;
+function deniedSlot(part: ToolUIPart | AcpToolPart) {
+  if (isAcpToolPart(part) || !isDeniedTool(part)) return null;
 
   return (
     <m.div
@@ -233,53 +250,39 @@ function deniedSlot(part: ToolUIPart) {
   );
 }
 
-/** One reasoning or tool step; inside a chain of thought, reasoning is plain text under the summary. */
+/** One reasoning or tool step; a chain of thought nests the same steps under its summary. */
 function MessageStep({
   part,
   isLive,
-  isGrouped,
   hasLaterContent,
 }: {
   part: MessagePart;
   isLive: boolean;
-  isGrouped: boolean;
   hasLaterContent: boolean;
 }) {
   if (part.type === "reasoning") {
-    const isStreaming = isLive && part.state === "streaming";
     const metadata = part.providerMetadata;
     const isSummary =
       metadata?.radium?.reasoningType === "summary" || metadata?.openai !== undefined;
     const heading = isSummary
       ? /^(?:#{1,6}\s+([^\n]+)|\*\*([^*\n]+)\*\*)/.exec(part.text.trim())
       : null;
-    const title = heading?.[1] ?? heading?.[2];
 
-    if (isGrouped) {
-      return (
-        <div className="flex flex-col gap-1">
-          <span className="text-xs text-muted-foreground">
-            {isSummary ? "Reasoning summary" : "Visible reasoning"}
-            {title ? `: ${title}` : ""}
-          </span>
-          <Markdown isAnimating={isStreaming} className="text-[13px]">
-            {part.text}
-          </Markdown>
-        </div>
-      );
-    }
+    // Whole seconds the model reasoned, recorded by the Chatroom stream and the ACP Worker.
+    const duration = "duration" in part && typeof part.duration === "number" ? part.duration : 0;
 
     return (
       <ReasoningStep
         text={part.text}
-        isStreaming={isStreaming}
+        isStreaming={isLive && part.state === "streaming"}
         isSummary={isSummary}
-        title={title}
+        title={heading?.[1] ?? heading?.[2]}
+        duration={duration}
       />
     );
   }
 
-  if (isToolPart(part)) {
+  if (isAcpToolPart(part) || isToolPart(part)) {
     return <ToolStep part={part} isLive={isLive} hasLaterContent={hasLaterContent} />;
   }
 
@@ -292,14 +295,19 @@ function ReasoningStep({
   isStreaming,
   isSummary,
   title,
+  duration,
 }: {
   text: string;
   isStreaming: boolean;
   isSummary: boolean;
   title?: string;
+  duration: number;
 }) {
   const [userOpen, setUserOpen] = useState<boolean>();
   const state: RunState = isStreaming ? "thinking" : "succeeded";
+  let label = duration > 0 ? `Reasoned for ${formatDuration(duration)}` : "Reasoning";
+  if (isSummary) label = "Reasoning summary";
+  if (isStreaming) label = "Thinking";
 
   return (
     <TraceCollapsible open={userOpen ?? isStreaming} onOpenChange={setUserOpen}>
@@ -309,7 +317,7 @@ function ReasoningStep({
             <BrainIcon />
           </TraceIcon>
           <TraceTitle>
-            {isSummary ? "Reasoning summary" : isStreaming ? "Thinking" : "Visible reasoning"}
+            {label}
             {title ? `: ${title}` : ""}
           </TraceTitle>
         </TraceLine>
@@ -321,6 +329,13 @@ function ReasoningStep({
       </TraceCollapsibleContent>
     </TraceCollapsible>
   );
+}
+
+function formatDuration(seconds: number) {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
 }
 
 /**
@@ -343,7 +358,9 @@ function ChainOfThought({
   children: ReactNode;
 }) {
   const [userOpen, setUserOpen] = useState<boolean>();
-  const tools = items.flatMap(({ part }) => (isToolPart(part) ? [part] : []));
+  const tools = items.flatMap(({ part }) =>
+    isAcpToolPart(part) || isToolPart(part) ? [part] : [],
+  );
   const isAwaiting = tools.some((part) => getToolRunState(part, isLive) === "awaiting");
   const failedCount = tools.filter((part) => getToolRunState(part, isLive) === "failed").length;
 

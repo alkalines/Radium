@@ -9,6 +9,21 @@
 @source "../../node_modules/@streamdown/mermaid/dist/*.js";
 @source "../../node_modules/@streamdown/math/dist/*.js";
 
+/*
+ * Nerd Font icons (Private Use Area code points), such as the ones agents like Oh-My-Pi put in
+ * session titles. No system font is used for these code points, so text falls back to this one;
+ * `unicode-range` means the browser downloads it only when such a character is on screen.
+ * Symbols Nerd Font v3.5.1, MIT (fonts/SymbolsNerdFont-LICENSE).
+ */
+@font-face {
+  font-family: "Symbols Nerd Font";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./fonts/SymbolsNerdFont-Regular.woff2") format("woff2");
+  unicode-range: U+E000-F8FF, U+F0000-FFFFD;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -40,10 +55,10 @@
   --color-telemetry-assistant: var(--telemetry-assistant);
   --color-telemetry-tool: var(--telemetry-tool);
   --color-telemetry-thinking: var(--telemetry-thinking);
-  --font-sans: "Inter Variable", sans-serif;
+  --font-sans: "Inter Variable", "Symbols Nerd Font", sans-serif;
   /* shadcn titles use `font-heading`; the harness has no serif, so it resolves to Inter (spec §3.3). */
-  --font-heading: "Inter Variable", sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --font-heading: "Inter Variable", "Symbols Nerd Font", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "Symbols Nerd Font", ui-monospace, monospace;
   /* Run-state signals; see docs/Interface_Design.md §3.3. */
   --color-signal-idle: var(--signal-idle);
   --color-signal-thinking: var(--signal-thinking);

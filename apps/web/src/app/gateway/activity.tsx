@@ -12,6 +12,9 @@ export const Route = createFileRoute("/gateway/activity")({
     screen: "settings",
     settingsWidth: "wide",
   },
+  validateSearch: (search: Record<string, unknown>): { project?: string } => ({
+    project: typeof search.project === "string" ? search.project : undefined,
+  }),
   async beforeLoad({ context: { queryClient }, location }) {
     const session = await requireSession({ queryClient, location });
     return { session };
@@ -23,12 +26,17 @@ export const Route = createFileRoute("/gateway/activity")({
 });
 
 function ActivityPage() {
+  const { project } = Route.useSearch();
+  const navigate = Route.useNavigate();
   return (
     <WorkspaceSettingsGate
       title="Activity"
       ownerOnlyDetail="Workspace usage and estimated cost are visible only to the workspace owner."
     >
-      <ActivityPanel />
+      <ActivityPanel
+        project={project}
+        onProjectChange={(next) => void navigate({ search: { project: next }, replace: true })}
+      />
     </WorkspaceSettingsGate>
   );
 }

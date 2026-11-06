@@ -20,6 +20,8 @@ export type DiffFile = {
   op: DiffFileOp;
   /** Destination of a rename, when the patch or receipt reports one. */
   moveTo?: string;
+  /** Cut at a size cap: the tail is missing, so the diff shows no `+/−` counts. */
+  partial?: boolean;
   lines: DiffLine[];
 };
 

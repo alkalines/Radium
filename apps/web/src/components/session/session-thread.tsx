@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { ChatStatus, UIMessage } from "ai";
 import { MessageCircleDashedIcon } from "lucide-react";
 
@@ -33,7 +33,8 @@ const PENDING_PROMPT_ID = "pending-prompt";
  *
  * Turns present when the thread first shows content (history, restored Tabs) render in place;
  * only turns and steps that arrive afterwards reveal. `pendingPrompt` shows the just-sent prompt
- * while `messages` is still empty (between creating the chat and the first send).
+ * until the real user turn arrives; callers pass it only until then (the built-in screen while
+ * `messages` is still empty, `AcpSessionScreen` until the timeline holds a user item).
  */
 export function SessionThread({
   messages,
@@ -47,6 +48,9 @@ export function SessionThread({
   onRevert,
   onRegenerate,
   onFork,
+  forkLatestOnly = false,
+  modelLabel,
+  historyControl,
 }: {
   messages: UIMessage[];
   status: ChatStatus;
@@ -54,11 +58,16 @@ export function SessionThread({
   showChainOfThought: boolean;
   forkModels?: ModelOption[];
   agentName: string;
-  canRevert: boolean;
+  canRevert?: boolean;
   onCopy: (message: UIMessage) => void;
-  onRevert: (message: UIMessage) => void;
-  onRegenerate: (message: UIMessage) => void;
-  onFork: (message: UIMessage, modelSlug: string) => void;
+  onRevert?: (message: UIMessage) => void;
+  onRegenerate?: (message: UIMessage) => void;
+  onFork?: (message: UIMessage, modelSlug: string) => void;
+  /** ACP supports only a latest-point fork, without a model picker. */
+  forkLatestOnly?: boolean;
+  modelLabel?: string;
+  /** Lives above the oldest loaded turn, inside the scroll viewport. */
+  historyControl?: ReactNode;
 }) {
   // Snapshot of the turns the thread opened with. Taken during render (React's "adjust state
   // while rendering" pattern) so the very first paint of history is already static.
@@ -67,13 +76,19 @@ export function SessionThread({
     setLoadedMessageIds(new Set(messages.map((message) => message.id)));
   }
 
+  // Turns that join above the opening ones are older history, not new arrivals: only turns after
+  // the last opening turn reveal.
+  const lastLoadedIndex = loadedMessageIds
+    ? messages.findLastIndex((message) => loadedMessageIds.has(message.id))
+    : -1;
   const isBusy = status === "submitted" || status === "streaming";
   const lastMessage = messages.at(-1);
-  const showPendingPrompt = messages.length === 0 && pendingPrompt !== undefined;
+  const latestAssistantId = messages.findLast((message) => message.role === "assistant")?.id;
+  const showPendingPrompt = pendingPrompt !== undefined;
   const isWaitingForReply =
     showPendingPrompt || (status === "submitted" && lastMessage?.role === "user");
 
-  if (messages.length === 0 && !showPendingPrompt) {
+  if (messages.length === 0 && !showPendingPrompt && !historyControl) {
     return (
       <Empty className="min-h-0 flex-1">
         <EmptyHeader>
@@ -95,6 +110,7 @@ export function SessionThread({
             aria-busy={isBusy}
             className="mx-auto w-full max-w-190 gap-6 px-4 py-8"
           >
+            {historyControl}
             {showPendingPrompt ? (
               <MessageScrollerItem messageId={PENDING_PROMPT_ID} scrollAnchor>
                 <Reveal isNew>
@@ -120,7 +136,13 @@ export function SessionThread({
                   messageId={message.id}
                   scrollAnchor={message.role === "user"}
                 >
-                  <Reveal isNew={loadedMessageIds !== null && !loadedMessageIds.has(message.id)}>
+                  <Reveal
+                    isNew={
+                      loadedMessageIds !== null &&
+                      !loadedMessageIds.has(message.id) &&
+                      index > lastLoadedIndex
+                    }
+                  >
                     <SessionMessage
                       message={message}
                       isLive={isBusy && isLast && message.role === "assistant"}
@@ -128,11 +150,15 @@ export function SessionThread({
                       showChainOfThought={showChainOfThought}
                       forkModels={forkModels}
                       agentName={agentName}
+                      modelLabel={modelLabel}
+                      forkWithoutModel={forkLatestOnly}
                       canRevert={canRevert}
                       onCopy={onCopy}
                       onRevert={onRevert}
                       onRegenerate={onRegenerate}
-                      onFork={onFork}
+                      onFork={
+                        !forkLatestOnly || message.id === latestAssistantId ? onFork : undefined
+                      }
                     />
                   </Reveal>
                 </MessageScrollerItem>

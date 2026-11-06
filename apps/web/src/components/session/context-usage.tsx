@@ -27,21 +27,38 @@ type GatewayExecution = {
 const RING_RADIUS = 6;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
+function formatUsd(value: number | undefined) {
+  if (value === undefined) return "Unknown";
+  if (value > 0 && value < 0.000001) return "<$0.000001";
+  return usdNumber.format(value);
+}
+
 /**
  * Context window usage for the Composer toolbar (shadcn Context pattern): a compact Chip with the
  * share of `maxTokens` the conversation has used, and a hover card breaking down input, output,
  * reasoning, and cached tokens. `usage` is the latest assistant message's cumulative usage;
- * `maxTokens` is the selected provider's context window. Costs come from Gateway executions,
- * not a model-only price lookup; an incomplete multi-step total remains unknown.
+ * `maxTokens` is the selected provider's context window. `executions` price the latest response
+ * from Gateway executions; `sessionCost` is Radium's estimate for the whole Session at list
+ * prices; `cost` is what an external agent reports in its own currency, shown beside the estimate
+ * because subscription plans report 0 or a discount. Incomplete totals read Unknown.
  */
 export function ContextUsage({
   usage,
   maxTokens,
   executions,
+  sessionCost,
+  cost,
+  breakdownLabel,
 }: {
-  usage: LanguageModelUsage;
+  usage: Partial<LanguageModelUsage>;
   maxTokens: number;
   executions?: GatewayExecution[];
+  /** `agent_usage.GetChatCost`; absent until loaded or for a Session without priced steps. */
+  sessionCost?: { cost: number; steps: number; unknown: number; pending: number };
+  /** Native cost reported by an external agent, without Gateway conversion. */
+  cost?: { amount: number; currency: string };
+  /** Names the token rows' scope when it differs from the context total (an agent's last turn). */
+  breakdownLabel?: string;
 }) {
   const usedTokens = usage.totalTokens ?? 0;
   const usedShare = maxTokens > 0 ? Math.min(usedTokens / maxTokens, 1) : 0;
@@ -109,26 +126,45 @@ export function ContextUsage({
             track would be invisible; `bg-accent` stays distinct on popovers in both themes. */}
         <Progress value={usedShare * 100} aria-label="Context used" className="bg-accent" />
         {rows.length > 0 ? (
-          <dl className="flex flex-col gap-1">
-            {rows.map((row) => (
-              <div key={row.label} className="flex justify-between gap-3">
-                <dt className="text-muted-foreground">{row.label}</dt>
-                <dd className="tabular-nums">{compactNumber.format(row.tokens)}</dd>
-              </div>
-            ))}
-          </dl>
+          <div className="flex flex-col gap-1">
+            {breakdownLabel ? (
+              <p className="text-xs text-muted-foreground">{breakdownLabel}</p>
+            ) : null}
+            <dl className="flex flex-col gap-1">
+              {rows.map((row) => (
+                <div key={row.label} className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">{row.label}</dt>
+                  <dd className="tabular-nums">{compactNumber.format(row.tokens)}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
         ) : null}
         <div className="flex flex-col gap-1 border-t pt-3">
-          <div className="flex justify-between gap-3">
-            <span className="text-muted-foreground">Gateway cost</span>
-            <span className="tabular-nums">
-              {totalCost === undefined
-                ? "Unknown"
-                : totalCost > 0 && totalCost < 0.000001
-                  ? "<$0.000001"
-                  : usdNumber.format(totalCost)}
-            </span>
-          </div>
+          {executions !== undefined || (!sessionCost?.steps && !cost) ? (
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">Last response</span>
+              <span className="tabular-nums">{formatUsd(totalCost)}</span>
+            </div>
+          ) : null}
+          {sessionCost?.steps ? (
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">Session estimate</span>
+              <span className="tabular-nums">
+                {formatUsd(
+                  sessionCost.unknown || sessionCost.pending ? undefined : sessionCost.cost,
+                )}
+              </span>
+            </div>
+          ) : null}
+          {cost ? (
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">Reported by agent</span>
+              <span className="tabular-nums">
+                {`${cost.amount.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cost.currency}`}
+              </span>
+            </div>
+          ) : null}
           {sources.size === 1 && executions?.every((execution) => execution.costSource) && (
             <div className="text-muted-foreground">Source: {[...sources][0]}</div>
           )}

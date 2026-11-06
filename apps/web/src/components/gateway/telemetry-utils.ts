@@ -47,6 +47,17 @@ export function formatCost(cost: number | undefined): string {
   return `$${cost < 0.01 ? cost.toFixed(6) : cost.toFixed(4)}`;
 }
 
+/** Aggregate USD estimate (Activity, Project usage): four decimals below a dollar, else two. */
+export function formatCurrency(value: number): string {
+  if (value > 0 && value < 0.0001) return "<$0.0001";
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: value < 1 ? 4 : 2,
+    maximumFractionDigits: value < 1 ? 4 : 2,
+  }).format(value);
+}
+
 export type LineageKind = "root" | "continue" | "retry" | "rewrite" | "branch" | "compacted";
 
 const lineageLabels: Record<LineageKind, string> = {

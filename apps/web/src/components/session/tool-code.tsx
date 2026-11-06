@@ -44,7 +44,8 @@ export function DiffStats({ added, removed }: { added: number; removed: number }
 /**
  * Small `CodeBlock` for tool input and output inside a Trace step or the Approval gate: wraps,
  * caps at 16rem and scrolls. `title` is Machine text (a path or language) and gets a copy button.
- * `startLine` numbers the lines from that line; `followTail` keeps a streaming block at its end.
+ * `startLine` numbers the lines from that line; `numbers` gives each line its own number (a file
+ * excerpt with gaps), as the diff gutter does; `followTail` keeps a streaming block at its end.
  */
 export function ToolCodeBlock({
   code,
@@ -53,6 +54,7 @@ export function ToolCodeBlock({
   stats,
   footer,
   startLine,
+  numbers,
   followTail = false,
   variant = "default",
 }: {
@@ -62,11 +64,15 @@ export function ToolCodeBlock({
   stats?: ReactNode;
   footer?: ReactNode;
   startLine?: number;
+  numbers?: readonly (number | undefined)[];
   followTail?: boolean;
   variant?: "default" | "destructive";
 }) {
   const lines = useHighlightedCode(code, language);
   const contentRef = useFollowTail<HTMLPreElement>(followTail, code);
+  const gutterWidth = numbers
+    ? `${String(Math.max(0, ...numbers.map((number) => number ?? 0))).length}ch`
+    : undefined;
 
   return (
     <CodeBlock size="sm" variant={variant}>
@@ -84,12 +90,22 @@ export function ToolCodeBlock({
       <CodeBlockContent
         ref={contentRef}
         wrap
-        lineNumbers={startLine !== undefined}
+        lineNumbers={!numbers && startLine !== undefined}
         startLine={startLine}
         className="max-h-64"
       >
         {lines.map((line, index) => (
-          <CodeBlockLine key={index}>{line}</CodeBlockLine>
+          <CodeBlockLine key={index}>
+            {numbers ? (
+              <span
+                className="mr-3 ml-1.5 inline-block text-right text-muted-foreground/60 tabular-nums select-none"
+                style={{ width: gutterWidth }}
+              >
+                {numbers[index] ?? ""}
+              </span>
+            ) : null}
+            {line}
+          </CodeBlockLine>
         ))}
       </CodeBlockContent>
       {footer ? <CodeBlockFooter className="text-xs">{footer}</CodeBlockFooter> : null}
@@ -120,7 +136,8 @@ const opLabels: Record<DiffFile["op"], string | undefined> = {
 /**
  * One file of an edit as a diff: additions and removals tinted, hunk and operation lines muted,
  * file line numbers in a gutter when the source reports them (a Worker receipt), none for a patch
- * still being written. The header shows the path, a rename target, and `+/−` counts.
+ * still being written. The header shows the path, a rename target, and `+/−` counts (`partial`
+ * instead when the file was cut at a size cap).
  */
 export function DiffCodeBlock({
   file,
@@ -146,7 +163,11 @@ export function DiffCodeBlock({
           {title}
         </CodeBlockTitle>
         {opLabel ? <span className="shrink-0 text-xs">{opLabel}</span> : null}
-        <DiffStats added={added} removed={removed} />
+        {file.partial ? (
+          <span className="shrink-0 text-xs text-muted-foreground">partial</span>
+        ) : (
+          <DiffStats added={added} removed={removed} />
+        )}
         <CodeBlockActions>
           <CodeBlockCopyButton value={copyValue} />
         </CodeBlockActions>

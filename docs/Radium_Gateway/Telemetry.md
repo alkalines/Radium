@@ -87,7 +87,9 @@ param key diffs.
 
 1. The entry point loads settings through
    `internal.observability.telemetry.getSettingsForWorkspace` and keeps the raw
-   JSON body before validation.
+   JSON body before validation. A key whose **Telemetry** setting is _Off_
+   (`api_keys.telemetry`, set in Gateway → API keys, or on the Worker's row for
+   [Worker keys](../ACP/Agents.md#telemetry)) skips capture entirely.
 2. `src/telemetry/capture.ts` hashes the request in the background while routing
    runs, finds the deepest stored prefix with a binary search (prefix existence is
    monotone), and writes only missing blobs and nodes

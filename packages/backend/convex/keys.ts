@@ -1,14 +1,15 @@
 import { query, mutation, internalMutation } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { components, internal } from "./_generated/api";
 import { estimateCompletionCost } from "@/usage/completion";
 import { canAccessWorkspace, isByokRequest } from "../src/workspaces/policy";
 import { providerPricingValidator, providerSnapshotFromCatalog } from "../src/workspaces/provider";
 import { scheduleBudgetRefresh } from "../src/limits/store";
 import { authComponent } from "./auth";
 import { requireOwnedWorkspace } from "./workspaces";
+import { keyTelemetryValidator } from "../src/acp/gateway";
 
 export const hashAlgorithm = "SHA-512";
 export const hashText = async (text: string) =>
@@ -44,7 +45,21 @@ export const getKeyInfo = query({
       .unique();
 
     if (apiKey) {
-      if (isRevokedKey(apiKey)) throw new Error("This key is invalid!");
+      if (isRevokedKey(apiKey)) {
+        if (apiKey.worker) {
+          const worker = await ctx
+            .runQuery(components.workerIdentity.identities.getWorkerMetadata, {
+              workspaceId: apiKey.workspace,
+              workerId: apiKey.worker,
+            })
+            .catch(() => null);
+          throw new ConvexError({
+            code: "GATEWAY_KEY_DELETED",
+            message: `The Gateway key of Worker ${worker?.name ?? apiKey.name} was deleted. The workspace owner can issue a new key in Settings → Workers.`,
+          });
+        }
+        throw new Error("This key is invalid!");
+      }
       const legacyKey = apiKey.legacyKey ? await ctx.db.get("keys", apiKey.legacyKey) : null;
       if (apiKey.legacyKey && (!legacyKey || isRevokedKey(legacyKey))) {
         throw new Error("This key is invalid!");
@@ -70,6 +85,7 @@ export const getKeyInfo = query({
         workspace: workspace._id,
         apiKey: apiKey._id,
         userId: workspace.ownerId,
+        telemetry: apiKey.telemetry ?? "workspace",
       };
     }
 
@@ -107,6 +123,7 @@ export const getKeyInfo = query({
       legacyBalance: legacyKey.balance,
       legacyKey: legacyKey._id,
       userId: balance.userId,
+      telemetry: "workspace" as const,
     };
   },
 });
@@ -123,6 +140,8 @@ export const recordCompletion = internalMutation({
     }),
     actor: v.optional(v.string()),
     chatId: v.optional(v.id("aisdk_chats")),
+    /** Direct Gateway calls only: the client's own session id (`RoutingSession.client`). */
+    clientSession: v.optional(v.string()),
     request: v.object({
       model_slug: v.string(),
       app: v.optional(v.id("ai_apps")),
@@ -314,7 +333,9 @@ export const recordCompletion = internalMutation({
       bill,
       ...(args.actor !== undefined && args.chatId !== undefined
         ? { chatId: args.chatId, userId: args.actor }
-        : {}),
+        : args.clientSession
+          ? { clientSession: args.clientSession }
+          : {}),
       request: {
         byok: true,
         streamed: args.request.stream,
@@ -411,7 +432,7 @@ export async function requireUserId(ctx: QueryCtx | MutationCtx): Promise<string
   return identity._id;
 }
 
-function generateApiKey(): { key: string; preview: string } {
+export function generateApiKey(): { key: string; preview: string } {
   const bytes = new Uint8Array(24);
   crypto.getRandomValues(bytes);
   const body = btoa(String.fromCharCode(...bytes))
@@ -429,6 +450,8 @@ export type ListedKey =
       _creationTime: number;
       name: string;
       preview?: string;
+      worker?: { id: string; name: string };
+      telemetry: "workspace" | "off";
     }
   | {
       source: "legacy";
@@ -436,6 +459,7 @@ export type ListedKey =
       _creationTime: number;
       name: string;
       preview?: string;
+      telemetry: "workspace" | "off";
     };
 
 /**
@@ -475,6 +499,23 @@ export const listKeys = query({
         _creationTime: key._creationTime,
         name: key.name,
         preview: key.preview,
+        telemetry: key.telemetry ?? "workspace",
+        ...(key.worker
+          ? {
+              worker: {
+                id: key.worker,
+                name:
+                  (
+                    await ctx
+                      .runQuery(components.workerIdentity.identities.getWorkerMetadata, {
+                        workspaceId: args.workspace,
+                        workerId: key.worker,
+                      })
+                      .catch(() => null)
+                  )?.name ?? key.name,
+              },
+            }
+          : {}),
       });
     }
 
@@ -499,6 +540,7 @@ export const listKeys = query({
             _creationTime: key._creationTime,
             name: key.name,
             preview: key.preview,
+            telemetry: "workspace",
           });
         }
       }
@@ -568,7 +610,31 @@ export const deleteKey = mutation({
       const legacyKeyRevocation = { revokedAt };
       await ctx.db.patch("keys", legacyKey._id, legacyKeyRevocation);
     }
+    if (key.worker) {
+      const row = await ctx.db
+        .query("worker_gateway")
+        .withIndex("by_key", (q) => q.eq("key", key._id))
+        .unique();
+      if (row)
+        await ctx.db.patch(row._id, { access: "missing", key: undefined, updatedAt: revokedAt });
+    }
     return true;
+  },
+});
+
+export const setKeyTelemetry = mutation({
+  args: { key: v.id("api_keys"), telemetry: keyTelemetryValidator },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const key = await ctx.db.get(args.key);
+    if (!key) throw new Error("Key not found.");
+    await requireOwnedWorkspace(ctx, key.workspace);
+    if (key.worker)
+      throw new ConvexError(
+        "Set Gateway telemetry for this key on its Worker in Settings → Workers.",
+      );
+    await ctx.db.patch(key._id, { telemetry: args.telemetry === "off" ? "off" : undefined });
+    return null;
   },
 });
 

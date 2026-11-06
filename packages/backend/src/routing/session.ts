@@ -43,37 +43,48 @@ export function extractRoutingSession(
   if (explicit) {
     const parent = headers ? firstValidHeader(headers, PARENT_HEADERS) : undefined;
     if (parent) {
-      const prefix = explicit.slice(0, explicit.indexOf(":"));
-      return { primary: explicit, fallback: `${prefix}:${parent}`, isSubagent: true };
+      const prefix = explicit.key.slice(0, explicit.key.indexOf(":"));
+      return { primary: explicit.key, fallback: `${prefix}:${parent}`, isSubagent: true };
     }
-    return { primary: explicit, isSubagent: false };
+    return { primary: explicit.key, isSubagent: false };
   }
 
   return messageHashSession(request);
+}
+
+/**
+ * The client's own session id, unprefixed, when it sent one: the routing session's header,
+ * body `session_id` or `prompt_cache_key` (never `user`, a chat or a message hash). Coding
+ * agents send theirs (OpenCode: `x-session-id: ses_…`), which Activity uses to join their
+ * Gateway calls to the agent session so its local usage is not counted twice.
+ */
+export function clientSessionId(request: ChatCompletions_RequestBody_Type, headers?: Headers) {
+  return explicitSessionId(request, headers, undefined)?.client;
 }
 
 function explicitSessionId(
   request: ChatCompletions_RequestBody_Type,
   headers: Headers | undefined,
   chatId: string | undefined,
-) {
-  if (chatId) return `chat:${chatId}`;
+): { key: string; client?: string } | undefined {
+  if (chatId) return { key: `chat:${chatId}` };
 
   if (headers) {
     for (const [header, prefix] of SESSION_HEADERS) {
       const value = normalizeId(headers.get(header));
-      if (value) return `${prefix}:${value}`;
+      if (value) return { key: `${prefix}:${value}`, client: value };
     }
   }
 
-  const bodyIds: Array<[value: string | undefined, prefix: string]> = [
-    [request.session_id, "session"],
-    [request.prompt_cache_key, "pck"],
-    [request.user, "user"],
+  // `user` names an end user, not a session.
+  const bodyIds: Array<[value: string | undefined, prefix: string, session: boolean]> = [
+    [request.session_id, "session", true],
+    [request.prompt_cache_key, "pck", true],
+    [request.user, "user", false],
   ];
-  for (const [rawValue, prefix] of bodyIds) {
+  for (const [rawValue, prefix, session] of bodyIds) {
     const value = normalizeId(rawValue);
-    if (value) return `${prefix}:${value}`;
+    if (value) return { key: `${prefix}:${value}`, ...(session ? { client: value } : {}) };
   }
   return undefined;
 }

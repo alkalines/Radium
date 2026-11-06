@@ -1,5 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { acpGatewayAccessValidator, keyTelemetryValidator } from "../src/acp/gateway";
+import { acpProfileValidator } from "../src/acp/contract";
 import { publicKey as workerPublicKey } from "worker-component";
 import { completionPricingSchema, completionUsageSchema } from "../src/usage/completion";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
@@ -45,8 +47,255 @@ import {
   sessionNotificationKindValidator,
 } from "../src/notifications/contract";
 import { chatInterruptionValidator } from "../src/chatroom/interruption";
+import {
+  acpChatAgentValidator,
+  acpSessionStatusValidator,
+  acpStopReasonValidator,
+  acpConfigValidator,
+  acpCommandInfoValidator,
+  acpUsageValidator,
+  acpTurnUsageValidator,
+  acpHistoryValidator,
+  acpDraftConfigValidator,
+  acpCommandPayloadValidator,
+  acpCommandKindValidator,
+  acpCommandStatusValidator,
+  acpInteractionRequestValidator,
+  acpInteractionStatusValidator,
+  acpInteractionAnswerValidator,
+  acpFrameKindValidator,
+  acpAgentReportValidator,
+  acpAgentDefinitionValidator,
+  acpAgentSessionEntryValidator,
+  acpTurnModelValidator,
+} from "../src/acp/contract";
+import { agentTurnPricingValidator, modelsDevMatchValidator } from "../src/usage/agent_usage";
+import { storedLocalUsageModelValidator } from "../src/usage/local_contract";
 
 export default defineSchema({
+  /** Owner-defined launch configuration, shared by every Worker in the workspace. */
+  acp_agents: defineTable({
+    workspace: v.id("workspaces"),
+    ...acpAgentDefinitionValidator.fields,
+    updatedAt: v.number(),
+  }).index("by_workspace_and_agentId", ["workspace", "agentId"]),
+  /** Owner-only agent session catalog, independent of Radium chat creation. */
+  acp_agent_sessions: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    agentId: v.string(),
+    ...acpAgentSessionEntryValidator.fields,
+    chat: v.optional(v.id("aisdk_chats")),
+  })
+    .index("by_workspace_and_agentId_and_updatedAt", ["workspace", "agentId", "updatedAt"])
+    .index("by_worker_and_agentId_and_sessionId", ["workspace", "worker", "agentId", "sessionId"])
+    // Home lists the sessions Radium has not opened (`chat` unset), newest first.
+    .index("by_workspace_and_chat_and_updatedAt", ["workspace", "chat", "updatedAt"])
+    .index("by_worker_and_cwd_and_chat_and_updatedAt", [
+      "workspace",
+      "worker",
+      "cwd",
+      "chat",
+      "updatedAt",
+    ])
+    .index("by_chat", ["chat"])
+    // Local usage rows and Gateway calls carry a session id (and maybe a Worker); this finds
+    // the agent and folder.
+    .index("by_sessionId_and_worker", ["workspace", "sessionId", "worker"])
+    .searchIndex("search_title", { searchField: "title", filterFields: ["workspace", "agentId"] }),
+  /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
+  acp_sessions: defineTable({
+    profile: v.optional(acpProfileValidator),
+    chat: v.id("aisdk_chats"),
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    agentId: v.string(),
+    cwd: v.string(),
+    sessionId: v.optional(v.string()),
+    status: acpSessionStatusValidator,
+    epoch: v.number(),
+    warm: v.boolean(),
+    warmSince: v.optional(v.number()),
+    /** Cooling cleared this epoch and every older one; the Worker must open a newer epoch. */
+    cooledEpoch: v.optional(v.number()),
+    stopReason: v.optional(acpStopReasonValidator),
+    error: v.optional(v.string()),
+    config: v.optional(acpConfigValidator),
+    commands: v.optional(v.array(acpCommandInfoValidator)),
+    usage: v.optional(acpUsageValidator),
+    turnUsage: v.optional(acpTurnUsageValidator),
+    history: v.optional(acpHistoryValidator),
+    draft: v.optional(acpDraftConfigValidator),
+    turnBy: v.optional(v.string()),
+    userTitled: v.optional(v.boolean()),
+    updatedAt: v.number(),
+  })
+    .index("by_chat", ["chat"])
+    .index("by_worker_and_warm", ["workspace", "worker", "warm"])
+    .index("by_worker_and_status", ["workspace", "worker", "status"])
+    .index("by_warm", ["warm"])
+    .index("by_worker_and_sessionId", ["workspace", "worker", "sessionId"])
+    // A binding is unique per agent: different agents may reuse the same session id.
+    .index("by_worker_and_agentId_and_sessionId", ["workspace", "worker", "agentId", "sessionId"])
+    // Gateway calls carry an agent session id but no Worker.
+    .index("by_sessionId", ["workspace", "sessionId"]),
+  /**
+   * Coding-CLI usage read from a Worker machine's own logs by ccusage: one row per session per
+   * UTC day, token counts and costs only (`src/usage/local_contract.ts`). Models ccusage could
+   * not price get Radium's estimate; `priceKey` is set while one waits for a models.dev lookup.
+   */
+  local_usage: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    agent: v.string(),
+    sessionId: v.string(),
+    day: v.string(),
+    syncedAt: v.number(),
+    lastActivity: v.number(),
+    totalTokens: v.number(),
+    models: v.array(storedLocalUsageModelValidator),
+    priceKey: v.optional(v.string()),
+  })
+    .index("by_workspace_and_day", ["workspace", "day"])
+    .index("by_worker_and_sessionId_and_day", ["workspace", "worker", "sessionId", "day"])
+    .index("by_priceKey", ["priceKey"]),
+  /** Each Worker's local usage cursor and last sync result. */
+  local_usage_syncs: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    syncedThrough: v.optional(v.string()),
+    lastSyncAt: v.number(),
+    error: v.optional(v.string()),
+  }).index("by_worker", ["workspace", "worker"]),
+  /**
+   * One finished ACP prompt turn's usage: metadata only, never content. Reported by the bound
+   * Worker with the turn-end patch; Convex prices it (`src/usage/acp.ts`). Project and visibility
+   * follow the chat at read time.
+   */
+  acp_usage: defineTable({
+    workspace: v.id("workspaces"),
+    chat: v.id("aisdk_chats"),
+    worker: v.string(),
+    agentId: v.string(),
+    /** Claimed prompt command; one row per command even when the Worker retries the patch. */
+    command: v.string(),
+    userId: v.optional(v.string()),
+    startedAt: v.number(),
+    endedAt: v.number(),
+    stopReason: v.optional(acpStopReasonValidator),
+    model: v.optional(acpTurnModelValidator),
+    tokens: v.optional(acpTurnUsageValidator),
+    /** The turn's share of the agent's cumulative cost, in the agent's currency. */
+    agentCost: v.optional(v.object({ amount: v.number(), currency: v.string() })),
+    pricing: agentTurnPricingValidator,
+    /** Set only while the turn waits for a models.dev match (`acp_model_prices` key). */
+    priceKey: v.optional(v.string()),
+  })
+    .index("by_workspace", ["workspace"])
+    .index("by_chat_and_command", ["chat", "command"])
+    .index("by_priceKey", ["priceKey"]),
+  /**
+   * models.dev matches of a workspace's agent model choices, so a model Radium does not define is
+   * fetched once and refreshed weekly rather than on every turn. `queued` rows await the resolver.
+   */
+  acp_model_prices: defineTable({
+    workspace: v.id("workspaces"),
+    agentId: v.string(),
+    model: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    queued: v.boolean(),
+    checkedAt: v.optional(v.number()),
+    match: v.optional(modelsDevMatchValidator),
+  })
+    .index("by_workspace_and_agentId_and_model", ["workspace", "agentId", "model"])
+    .index("by_queued", ["queued"]),
+  /** Append counters are separate so streaming never invalidates lifecycle subscriptions. */
+  acp_streams: defineTable({
+    chat: v.id("aisdk_chats"),
+    epoch: v.number(),
+    nextSeq: v.number(),
+    bytes: v.number(),
+  }).index("by_chat_and_epoch", ["chat", "epoch"]),
+  /** Command payloads exist only until the assigned Worker claims them. */
+  acp_commands: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    chat: v.optional(v.id("aisdk_chats")),
+    kind: acpCommandKindValidator,
+    /** Agent-level target survives payload erasure, so sync admission can debounce claimed work. */
+    agentId: v.optional(v.string()),
+    payload: v.optional(acpCommandPayloadValidator),
+    clientId: v.string(),
+    by: v.string(),
+    status: acpCommandStatusValidator,
+    error: v.optional(v.string()),
+    result: v.optional(v.string()),
+    claimedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
+  })
+    .index("by_worker_and_status", ["workspace", "worker", "status"])
+    .index("by_worker_and_clientId", ["workspace", "worker", "clientId"])
+    .index("by_chat_and_status", ["chat", "status"])
+    .index("by_status_and_finishedAt", ["status", "finishedAt"])
+    .index("by_status", ["status"]),
+  /** Durable decisions are relayed once, then retained briefly for retries. */
+  acp_interactions: defineTable({
+    chat: v.id("aisdk_chats"),
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    requestKey: v.string(),
+    kind: v.union(v.literal("permission"), v.literal("elicitation")),
+    request: acpInteractionRequestValidator,
+    status: acpInteractionStatusValidator,
+    answer: v.optional(acpInteractionAnswerValidator),
+    answeredBy: v.optional(v.string()),
+    answeredAt: v.optional(v.number()),
+    resolvedAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_chat_and_status", ["chat", "status"])
+    .index("by_chat_and_requestKey", ["chat", "requestKey"])
+    .index("by_worker_and_status", ["workspace", "worker", "status"])
+    .index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
+  /** Viewer-gated normalized output; no ACP content is saved in chat_messages. */
+  chat_frames: defineTable({
+    chat: v.id("aisdk_chats"),
+    stream: v.string(),
+    seqFrom: v.number(),
+    seqTo: v.number(),
+    format: v.literal("acp"),
+    kind: acpFrameKindValidator,
+    payload: v.string(),
+  })
+    .index("by_chat_and_stream_and_seqFrom", ["chat", "stream", "seqFrom"])
+    .index("by_chat", ["chat"]),
+  chat_viewers: defineTable({
+    chat: v.id("aisdk_chats"),
+    tab: v.string(),
+    user: v.string(),
+    lastSeenAt: v.number(),
+  })
+    .index("by_chat_and_tab", ["chat", "tab"])
+    .index("by_chat_and_lastSeenAt", ["chat", "lastSeenAt"]),
+  /** Worker-owned agent availability; presence is deliberately not part of session reads. */
+  worker_agents: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    ...acpAgentReportValidator.fields,
+    sessionsSync: v.optional(
+      v.object({
+        status: v.union(v.literal("running"), v.literal("done"), v.literal("failed")),
+        at: v.number(),
+        count: v.optional(v.number()),
+        truncated: v.optional(v.boolean()),
+        error: v.optional(v.string()),
+      }),
+    ),
+    checkedAt: v.number(),
+  })
+    .index("by_worker_and_agentId", ["workspace", "worker", "agentId"])
+    .index("by_workspace_and_agentId", ["workspace", "agentId"]),
   /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
   worker_tasks: defineTable(workerTaskFields)
     .index("by_worker_request", ["workspace", "workerId", "requestId"])
@@ -65,6 +314,16 @@ export default defineSchema({
    * Last heartbeat and reported temp directory per Worker identity, written only by the Worker's
    * machine-authorized `workers.reportPresence`. Advisory: online state never authorizes dispatch.
    */
+  worker_gateway: defineTable({
+    workspace: v.id("workspaces"),
+    worker: v.string(),
+    access: acpGatewayAccessValidator,
+    telemetry: keyTelemetryValidator,
+    key: v.optional(v.id("api_keys")),
+    updatedAt: v.number(),
+  })
+    .index("by_workspace_and_worker", ["workspace", "worker"])
+    .index("by_key", ["key"]),
   worker_presence: defineTable({
     workspace: v.id("workspaces"),
     workerId: v.string(),
@@ -178,6 +437,8 @@ export default defineSchema({
     /** Masked, non-secret display value (e.g. `rad-sk-…aB12`). */
     preview: v.optional(v.string()),
     revokedAt: v.optional(v.number()),
+    worker: v.optional(v.string()),
+    telemetry: v.optional(v.literal("off")),
     /** Transitional source mapping; the legacy `keys` row is not deleted here. */
     legacyKey: v.optional(v.id("keys")),
   })
@@ -308,6 +569,11 @@ export default defineSchema({
      */
     chatId: v.optional(v.id("aisdk_chats")),
     userId: v.optional(v.string()),
+    /**
+     * Direct Gateway calls only: the client's own session id (session header, `session_id` or
+     * `prompt_cache_key`). Coding agents send theirs, which joins the call to the agent session.
+     */
+    clientSession: v.optional(v.string()),
     bill: v.object({
       /** Deprecated ownership pointer retained for historical records. */
       balance: v.optional(v.id("balances")),
@@ -344,7 +610,11 @@ export default defineSchema({
   })
     .index("by_balance", ["bill.balance"])
     .index("by_workspace", ["bill.workspace"])
-    .index("by_credential", ["request.credential"]),
+    .index("by_credential", ["request.credential"])
+    // Session cost totals (`agent_usage.GetChatCost`) read one chat's completions.
+    .index("by_chatId", ["chatId"])
+    // ...and an ACP Session's direct Gateway calls, by its agent session id.
+    .index("by_workspace_and_clientSession", ["bill.workspace", "clientSession"]),
   models: defineTable({
     name: v.string(),
     launch_date: v.number(), // UNIX in ms
@@ -622,6 +892,7 @@ export default defineSchema({
     balance: v.optional(v.id("balances")),
     workspace: v.optional(v.id("workspaces")),
     scope: v.optional(v.union(v.literal("personal"), v.literal("workspace"))),
+    agent: v.optional(acpChatAgentValidator),
     /**
      * Deprecated embedded history. Messages live in `chat_messages`; `migrations.chatMessagesToTable`
      * moves legacy histories out and every save clears this field. Narrow once that backfill is
@@ -674,7 +945,7 @@ export default defineSchema({
       "userId",
       "lastInteractionAt",
     ])
-    // Pinned chats can be older than the recency window, so ListChats reads them separately.
+    // Pinned chats can be older than any loaded page, so ListPinnedChats reads them separately.
     .index("by_workspace_and_userId_and_pinnedAt", ["workspace", "userId", "pinnedAt"])
     .index("by_workspace_and_scope_and_pinnedAt", ["workspace", "scope", "pinnedAt"])
     .index("by_workspace_and_userId_and_project_and_lastInteractionAt", [

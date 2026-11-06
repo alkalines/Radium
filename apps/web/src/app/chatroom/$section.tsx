@@ -2,6 +2,7 @@ import { convexQuery } from "@convex-dev/react-query";
 import { createFileRoute, notFound } from "@tanstack/react-router";
 
 import { chatroomSections } from "@/components/chatroom/chatroom-settings";
+import { AcpPanel } from "@/components/chatroom/acp-panel";
 import { PreferencesPanel } from "@/components/chatroom/preferences-panel";
 import { ToolsPanel } from "@/components/chatroom/tools-panel";
 import { WorkspaceSettingsGate } from "@/components/settings/workspace-settings-gate";
@@ -29,7 +30,7 @@ export const Route = createFileRoute("/chatroom/$section")({
 });
 
 const chatroomOwnerOnlyDetail =
-  "Shared chat defaults, tools, and MCP servers stay with the workspace owner. You can still start and use chats here.";
+  "Shared chat defaults, agents, tools, and MCP servers stay with the workspace owner. You can still start and use chats here.";
 
 function ChatroomPage() {
   const { section } = Route.useParams();
@@ -54,6 +55,15 @@ function ChatroomPage() {
           ownerOnlyDetail={chatroomOwnerOnlyDetail}
         >
           <PreferencesPanel />
+        </WorkspaceSettingsGate>
+      );
+    case "acp":
+      return (
+        <WorkspaceSettingsGate
+          title={chatroomSection.label}
+          ownerOnlyDetail={chatroomOwnerOnlyDetail}
+        >
+          <AcpPanel />
         </WorkspaceSettingsGate>
       );
     case "tools":

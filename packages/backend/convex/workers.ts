@@ -14,3 +14,4 @@ export {
   getChallenge,
   pruneChallenges,
 } from "../src/worker/identity";
+export { setGatewayAccess, issueGatewayKey, setGatewayTelemetry } from "../src/worker/gateway";

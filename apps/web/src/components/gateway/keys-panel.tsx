@@ -2,6 +2,7 @@ import { useState } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
+import { ConvexError } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
 import { CheckIcon, CopyIcon, KeySquareIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
@@ -35,20 +36,41 @@ import {
 } from "@/components/ui/input-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
 type KeyRow = FunctionReturnType<typeof api.keys.listKeys>[number];
 
+function keyError(error: unknown, fallback: string): string {
+  if (error instanceof ConvexError && typeof error.data === "string") return error.data;
+  return error instanceof Error ? error.message : fallback;
+}
+
 export function KeysPanel() {
   const { workspaceId } = useWorkspace();
   const { data: keys } = useQuery(
     convexQuery(api.keys.listKeys, workspaceId ? { workspace: workspaceId } : "skip"),
   );
+  const setKeyTelemetry = useMutation(api.keys.setKeyTelemetry);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [deleting, setDeleting] = useState<KeyRow | null>(null);
+  const [savingTelemetry, setSavingTelemetry] = useState<string | null>(null);
+
+  async function changeTelemetry(key: KeyRow, enabled: boolean) {
+    if (key.source !== "workspace" || savingTelemetry) return;
+    setSavingTelemetry(key._id);
+    try {
+      await setKeyTelemetry({ key: key._id, telemetry: enabled ? "workspace" : "off" });
+    } catch (error) {
+      toast.error(keyError(error, "Failed to update key telemetry."));
+    } finally {
+      setSavingTelemetry(null);
+    }
+  }
 
   return (
     <>
@@ -99,9 +121,24 @@ export function KeysPanel() {
               key={key._id}
               icon={KeySquareIcon}
               title={key.name}
-              tag={key.source === "legacy" ? "Historical" : "Workspace"}
+              tag={
+                key.source === "legacy"
+                  ? "Historical"
+                  : key.worker
+                    ? key.worker.name === key.name
+                      ? "Worker"
+                      : `Worker · ${key.worker.name}`
+                    : "Workspace"
+              }
               description={<span className="font-mono text-xs">{key.preview ?? "rad-sk-…"}</span>}
             >
+              {key.source === "workspace" ? (
+                <KeyTelemetrySwitch
+                  keyRow={key}
+                  disabled={savingTelemetry !== null}
+                  onChange={(enabled) => void changeTelemetry(key, enabled)}
+                />
+              ) : null}
               <Button
                 variant="ghost"
                 size="icon-xs"
@@ -123,6 +160,42 @@ export function KeysPanel() {
         onOpenChange={(open) => !open && setDeleting(null)}
       />
     </>
+  );
+}
+
+/** On follows the workspace telemetry settings; a Worker key's switch lives on its Worker. */
+function KeyTelemetrySwitch({
+  keyRow,
+  disabled,
+  onChange,
+}: {
+  keyRow: Extract<KeyRow, { source: "workspace" }>;
+  disabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  const isWorkerKey = keyRow.worker !== undefined;
+  const enabled = keyRow.telemetry === "workspace";
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span tabIndex={isWorkerKey ? 0 : -1} className="mr-2 flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">Telemetry</span>
+          <Switch
+            checked={enabled}
+            disabled={disabled || isWorkerKey}
+            onCheckedChange={onChange}
+            aria-label={`Telemetry for ${keyRow.name}`}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>
+        {isWorkerKey
+          ? "Set on the Worker"
+          : enabled
+            ? "Follows the workspace telemetry settings"
+            : "Requests with this key are not captured"}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -275,6 +348,9 @@ function RevokeKeyDialog({
             {target?.source === "legacy"
               ? "This historical key will stop working immediately. This cannot be undone."
               : "Requests using this key will immediately stop working. This cannot be undone."}
+            {target?.source === "workspace" && target.worker
+              ? " The Worker's Gateway agents stop until the owner issues a new key."
+              : null}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter className="sm:justify-between">

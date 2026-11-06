@@ -3,6 +3,15 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
 /**
+ * Providers without a models.dev logo whose own artwork is published elsewhere: OpenCode's
+ * `claude-agent` provider (a Claude subscription through the Claude Agent SDK) uses the ACP
+ * registry's Claude Agent mark.
+ */
+const providerLogoUrls: Record<string, string> = {
+  "claude-agent": "https://cdn.agentclientprotocol.com/registry/v1/latest/claude-acp.svg",
+};
+
+/**
  * Renders a models.dev provider or author ("labs") logo, falling back to a
  * monogram tile when the SVG is missing (many long-tail slugs have no logo).
  */
@@ -20,7 +29,9 @@ export function ProviderLogo({
     variant === "provider" && ["openai-codex", "chatgpt-subscription"].includes(slug)
       ? "openai"
       : slug;
-  const src = `https://models.dev/logos/${variant === "labs" ? "labs/" : ""}${logoSlug}.svg`;
+  const src =
+    (variant === "provider" ? providerLogoUrls[slug] : undefined) ??
+    `https://models.dev/logos/${variant === "labs" ? "labs/" : ""}${logoSlug}.svg`;
 
   // Reset the error state when the slug changes so a new logo gets a fresh try.
   useEffect(() => setFailed(false), [slug]);

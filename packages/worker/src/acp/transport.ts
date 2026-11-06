@@ -1,0 +1,137 @@
+import type {
+  AcpAgentDefinition,
+  AcpAgentReport,
+  AcpAgentSessionEntry,
+  AcpCommandKind,
+  AcpCommandPayload,
+  AcpConfig,
+  AcpDraftConfig,
+  AcpFrameInput,
+  AcpInteractionAnswer,
+  AcpInteractionRequest,
+  AcpSessionStatus,
+  AcpStopReason,
+  AcpCommandInfo,
+  AcpTurnReport,
+  AcpTurnUsage,
+  AcpUsage,
+  AcpProfile,
+} from "backend/src/acp/contract";
+import type { AcpGatewayAccess, AcpGatewayModel } from "backend/src/acp/gateway";
+
+/** Durable session metadata supplied when claiming a command; IDs remain opaque locally. */
+export interface AcpSessionBinding {
+  agentId: string;
+  profile: AcpProfile;
+  cwd: string;
+  sessionId: string | null;
+  status: AcpSessionStatus;
+  epoch: number;
+  warm: boolean;
+  draft: AcpDraftConfig | null;
+  config: AcpConfig | null;
+}
+
+/** Metadata-only pending assignment; payloads are obtained only by an atomic claim. */
+export interface AcpAssignment {
+  _id: string;
+  kind: AcpCommandKind;
+  chat: string | null;
+  createdAt: number;
+}
+
+/** Claimed intent; execution must never be repeated merely because receipt delivery fails. */
+export interface AcpClaim {
+  command: string;
+  kind: AcpCommandKind;
+  payload: AcpCommandPayload;
+  chat: string | null;
+  by: string;
+  session: AcpSessionBinding | null;
+}
+
+/** Warm-session subscription contains metadata only, never transcript content. */
+export interface AcpWarmSession {
+  chat: string;
+  epoch: number;
+  agentId: string;
+  profile: AcpProfile;
+  cwd: string;
+  sessionId: string | null;
+  status: AcpSessionStatus;
+}
+
+/** Durable decision waiting to be relayed to an agent request. */
+export interface AcpAnsweredInteraction {
+  _id: string;
+  chat: string;
+  requestKey: string;
+  answer: AcpInteractionAnswer;
+}
+
+/** Lifecycle fields mirrored by Convex; null explicitly clears an error. */
+export interface AcpSessionPatch {
+  status?: AcpSessionStatus;
+  stopReason?: AcpStopReason;
+  error?: string | null;
+  config?: AcpConfig;
+  commands?: AcpCommandInfo[];
+  usage?: AcpUsage;
+  turnUsage?: AcpTurnUsage;
+  history?: "full" | "resumed" | "none";
+  sessionId?: string;
+  title?: string;
+  /** Usage facts of the turn this patch ends (model, cost delta, prompt command). */
+  turn?: AcpTurnReport;
+}
+
+type Subscription<T> = (
+  receive: (value: T) => void,
+  failed: (error: unknown) => void,
+) => () => void;
+
+/** The entire authorized Convex boundary, replaceable by an in-memory transport in tests. */
+export interface AcpTransport {
+  gatewayState: Subscription<{ access: AcpGatewayAccess; keyId?: string }>;
+  mintGatewayKey(): Promise<{ keyId: string; key: string }>;
+  gatewayModels(): Promise<AcpGatewayModel[]>;
+  agentDefinitions: Subscription<AcpAgentDefinition[]>;
+  assignedCommands: Subscription<AcpAssignment[]>;
+  warmSessions: Subscription<AcpWarmSession[]>;
+  answeredInteractions: Subscription<AcpAnsweredInteraction[]>;
+  claimCommand(args: { command: string }): Promise<AcpClaim | null>;
+  finishCommand(args: {
+    command: string;
+    status: "done" | "failed";
+    error?: string;
+    result?: string;
+  }): Promise<unknown>;
+  openInteraction(args: {
+    chat: string;
+    requestKey: string;
+    request: AcpInteractionRequest;
+  }): Promise<string>;
+  resolveInteraction(args: {
+    interaction: string;
+    status: "resolved" | "cancelled";
+  }): Promise<unknown>;
+  startEpoch(args: { chat: string; epoch: number }): Promise<{ accepted: boolean }>;
+  appendFrames(args: {
+    chat: string;
+    epoch: number;
+    frames: AcpFrameInput[];
+  }): Promise<{ accepted: boolean; bytes: number }>;
+  updateSession(args: { chat: string; patch: AcpSessionPatch }): Promise<unknown>;
+  reportAgents(args: {
+    agents: AcpAgentReport[];
+  }): Promise<Record<string, NonNullable<AcpAgentReport["defaults"]>>>;
+  knownAgentSessions(args: { agentId: string }): Promise<AcpAgentSessionEntry[]>;
+  syncAgentSessions(args: {
+    agentId: string;
+    upserts: AcpAgentSessionEntry[];
+    removals: string[];
+    start?: boolean;
+    finish?: { count: number; truncated: boolean } | { error: string };
+  }): Promise<unknown>;
+  recoverWorker(args: Record<string, never>): Promise<{ more: boolean }>;
+}

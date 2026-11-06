@@ -11,6 +11,7 @@ import {
   type WorkerCredentialStoreMode,
   type WorkerCredentialStorePreference,
 } from "./credentials.js";
+import { createGatewayKeyStore } from "./gateway.js";
 import {
   ensurePrivateDirectory,
   ensurePrivateFileMode,
@@ -220,6 +221,7 @@ export async function forgetWorkerState(
     if (isMissing(error)) return;
     throw error;
   }
+  await createGatewayKeyStore(stateDirectory).delete();
 
   const path = join(stateDirectory, STATE_FILE_NAME);
   let info;

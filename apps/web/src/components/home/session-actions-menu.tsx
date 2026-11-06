@@ -1,5 +1,7 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { useMutation } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   FolderInputIcon,
   FolderMinusIcon,
@@ -63,12 +65,17 @@ export type SessionActionsTarget = {
   title?: string;
   pinnedAt?: number;
   project?: Id<"projects">;
+  agent: { agentId: string; name: string } | null;
+  /** Manager-only actions: Regenerate title and Move to project. */
+  canManage: boolean;
 };
 
 /**
  * The `…` menu of a Home session Row (`docs/Interface_Design.md` §5.1): Pin, Rename, Regenerate
- * title, Move to project, Delete. Only rendered for sessions the user can manage; the backend
- * re-checks every mutation and returns a string on refusal, which is shown as a toast.
+ * title, Move to project, Delete. Rendered for sessions the user can act on (`canAct`: managers,
+ * and everyone who sees an ACP session); Regenerate title and Move to project also need
+ * `canManage`. The backend re-checks every mutation and returns a string on refusal, which is
+ * shown as a toast.
  * Moving to a Project (or out of one) asks for confirmation first, since the session's next turns
  * run in the target's context; this menu is the only place a saved session changes Project.
  * `projects` is the workspace's Project list, passed in once by Home rather than queried per Row.
@@ -83,6 +90,10 @@ export function SessionActionsMenu({
 }) {
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deleteInAgentStep, setDeleteInAgentStep] = useState(false);
+  const { data: acpSession, error: acpSessionError } = useQuery(
+    convexQuery(api.acp.GetSession, isDeleteOpen && session.agent ? { chat: session.id } : "skip"),
+  );
   // The target outlives the open state so the dialog keeps its text while it animates closed.
   const [moveTarget, setMoveTarget] = useState<{ id: Id<"projects"> | null; name: string } | null>(
     null,
@@ -169,9 +180,13 @@ export function SessionActionsMenu({
     }
   }
 
-  async function confirmDelete() {
+  async function confirmDelete(deleteInAgent = false) {
+    if (session.agent && acpSession?.capabilities?.delete && !deleteInAgentStep) {
+      setDeleteInAgentStep(true);
+      return;
+    }
     // An open Tab for this session drops itself once the chat is gone (spec §4).
-    const succeeded = await run("delete", () => deleteChat({ chatId: session.id }));
+    const succeeded = await run("delete", () => deleteChat({ chatId: session.id, deleteInAgent }));
     if (succeeded) {
       toast.success("Session deleted.");
       setIsDeleteOpen(false);
@@ -201,34 +216,39 @@ export function SessionActionsMenu({
               <PencilIcon />
               Rename
             </DropdownMenuItem>
-            <DropdownMenuItem disabled={isBusy} onSelect={() => void regenerate()}>
-              <SparklesIcon />
-              Regenerate title
-            </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger disabled={isBusy}>
-                <FolderInputIcon />
-                Move to project
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                <DropdownMenuRadioGroup
-                  value={session.project ?? noProject}
-                  onValueChange={requestMove}
-                >
-                  <DropdownMenuRadioItem value={noProject}>
-                    <FolderMinusIcon />
-                    No project
-                  </DropdownMenuRadioItem>
-                  {projects.length > 0 ? <DropdownMenuSeparator /> : null}
-                  {projects.map((project) => (
-                    <DropdownMenuRadioItem key={project._id} value={project._id}>
-                      <ProjectGlyph project={project} />
-                      <span className="truncate">{project.name}</span>
+            {/* ACP prompts are not stored in Radium, so there is no first message to title from. */}
+            {session.agent || !session.canManage ? null : (
+              <DropdownMenuItem disabled={isBusy} onSelect={() => void regenerate()}>
+                <SparklesIcon />
+                Regenerate title
+              </DropdownMenuItem>
+            )}
+            {session.canManage ? (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger disabled={isBusy}>
+                  <FolderInputIcon />
+                  Move to project
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                  <DropdownMenuRadioGroup
+                    value={session.project ?? noProject}
+                    onValueChange={requestMove}
+                  >
+                    <DropdownMenuRadioItem value={noProject}>
+                      <FolderMinusIcon />
+                      No project
                     </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
+                    {projects.length > 0 ? <DropdownMenuSeparator /> : null}
+                    {projects.map((project) => (
+                      <DropdownMenuRadioItem key={project._id} value={project._id}>
+                        <ProjectGlyph project={project} />
+                        <span className="truncate">{project.name}</span>
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            ) : null}
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
@@ -277,26 +297,54 @@ export function SessionActionsMenu({
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
+      <AlertDialog
+        open={isDeleteOpen}
+        onOpenChange={(open) => {
+          if (!isBusy) {
+            setIsDeleteOpen(open);
+            if (!open) setDeleteInAgentStep(false);
+          }
+        }}
+      >
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete session?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {deleteInAgentStep
+                ? `Also delete this session in ${acpSession?.agentName ?? "the agent"}?`
+                : "Delete session?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This removes “{displayTitle}” and its messages. This cannot be undone.
+              {deleteInAgentStep
+                ? "This conversation will disappear from the agent and other clients such as Zed. You can instead remove it from Radium only."
+                : `This removes “${displayTitle}” and its messages. This cannot be undone.`}
+              {acpSessionError ? (
+                <span className="mt-2 block text-destructive">
+                  Could not load the agent's deletion capabilities. Close this dialog and try again.
+                </span>
+              ) : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
+            {deleteInAgentStep ? (
+              <Button variant="outline" disabled={isBusy} onClick={() => void confirmDelete(false)}>
+                Radium only
+              </Button>
+            ) : null}
             <AlertDialogAction
               variant="destructive"
-              disabled={isBusy}
+              disabled={
+                isBusy ||
+                Boolean(acpSessionError) ||
+                Boolean(session.agent && acpSession === undefined)
+              }
               onClick={(event) => {
                 // Stay open until the mutation settles so a refusal is visible in context.
                 event.preventDefault();
-                void confirmDelete();
+                void confirmDelete(deleteInAgentStep);
               }}
             >
-              Delete
+              {deleteInAgentStep ? "Delete in both" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -25,6 +25,8 @@ import {
   TraceTitle,
   Trace,
 } from "@/components/ui/trace";
+import { isAcpToolPart, type AcpToolPart } from "./acp/parts";
+import { AcpToolStep } from "./acp/tool-step";
 import { TodoList } from "./todo-list";
 import {
   DiffCodeBlock,
@@ -53,7 +55,7 @@ import {
   getWorkerFailure,
   isDeniedTool,
   type BashResult,
-  type ToolKind,
+  type BuiltinToolKind as ToolKind,
   type WorkerFailure,
 } from "./tool-parts";
 import { WebSources } from "./web-sources";
@@ -257,6 +259,23 @@ function toolDetail(part: ToolUIPart, kind: ToolKind): ReactNode {
   }
 }
 
+/** Agent-owned tool calls branch before the built-in input/receipt protocol. */
+export function ToolStep(props: {
+  part: ToolUIPart | AcpToolPart;
+  isLive: boolean;
+  hasLaterContent: boolean;
+}) {
+  return isAcpToolPart(props.part) ? (
+    <AcpToolStep part={props.part} hasLaterContent={props.hasLaterContent} />
+  ) : (
+    <BuiltinToolStep
+      part={props.part}
+      isLive={props.isLive}
+      hasLaterContent={props.hasLaterContent}
+    />
+  );
+}
+
 /**
  * One tool call as a Trace step: verb + subject (+ change counts or progress), with the call's
  * input and output in a collapsible body. The body is open while the model writes the call and
@@ -265,7 +284,7 @@ function toolDetail(part: ToolUIPart, kind: ToolKind): ReactNode {
  * follows, and the reader can reopen it. Approval and question prompts take the Composer's place
  * (`ApprovalPrompt`, `QuestionPrompt`), so a call awaiting the user stays a closed line.
  */
-export function ToolStep({
+function BuiltinToolStep({
   part,
   isLive,
   hasLaterContent,
@@ -276,7 +295,7 @@ export function ToolStep({
   /** Text or other visible content follows this call in the same message. */
   hasLaterContent: boolean;
 }) {
-  const kind = getToolKind(part);
+  const kind = getToolKind(part) as ToolKind;
   const state = getToolRunState(part, isLive);
   // A program folds away once it starts running; the calls it makes show on their own rail.
   const isRunningInput =

@@ -1,4 +1,4 @@
-import { type SyntheticEvent, useEffect, useState } from "react";
+import { type ReactNode, type SyntheticEvent, useEffect, useState } from "react";
 import { getToolName, type ToolUIPart } from "ai";
 import { MessageSquareXIcon, ShieldAlertIcon, XIcon } from "lucide-react";
 
@@ -7,12 +7,12 @@ import { Kbd } from "@/components/ui/kbd";
 import { Marker, MarkerContent } from "@/components/ui/marker";
 import { Textarea } from "@/components/ui/textarea";
 import { ToolInputBlock } from "./tool-code";
-import { getToolKind, type ToolKind } from "./tool-parts";
+import { getToolKind, type BuiltinToolKind } from "./tool-parts";
 
 /** The answer `useChat().addToolApprovalResponse` expects for one approval request. */
 export type ApprovalResponse = { id: string; approved: boolean; reason?: string };
 
-const gateCopy: Record<ToolKind, { title: string; description: string }> = {
+const gateCopy: Record<BuiltinToolKind, { title: string; description: string }> = {
   code: {
     title: "Allow this code?",
     description: "The program runs using this chat's tools.",
@@ -46,7 +46,7 @@ const gateCopy: Record<ToolKind, { title: string; description: string }> = {
   other: { title: "Allow this tool call?", description: "The tool runs after you approve it." },
 };
 
-const deniedCopy: Record<ToolKind, string> = {
+const deniedCopy: Record<BuiltinToolKind, string> = {
   code: "Denied. No code was run.",
   bash: "Denied. No command was executed.",
   edit: "Denied. No files were changed.",
@@ -60,8 +60,22 @@ const deniedCopy: Record<ToolKind, string> = {
 
 // Keyboard shortcuts belong to the prompt, not to an open menu, dialog, or picker list that the
 // same keys would close or select in.
-const overlaySelector =
+export const approvalOverlaySelector =
   "[role=dialog], [role=menu], [role=listbox], [data-radix-popper-content-wrapper]";
+
+/** Shared Composer-shaped approval shell for built-in and agent-owned permissions. */
+export function ApprovalPromptShell({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div
+      data-state="awaiting"
+      role="group"
+      aria-label={title}
+      className="flex w-full flex-col overflow-hidden rounded-2xl border border-signal-awaiting/40 bg-card group-data-[tray=attached]/prompt-slot:rounded-t-none"
+    >
+      {children}
+    </div>
+  );
+}
 
 /**
  * Execution approval for one tool call in `approval-requested`. It temporarily takes the
@@ -91,7 +105,7 @@ export function ApprovalPrompt({
   const [isGivingReason, setIsGivingReason] = useState(false);
   const [reason, setReason] = useState("");
   const approvalId = part.approval.id;
-  const kind = getToolKind(part);
+  const kind = getToolKind(part) as BuiltinToolKind;
   const copy = gateCopy[kind];
   const title =
     kind === "other" ? `Allow ${getToolName(part).replaceAll(/[_-]/g, " ")}?` : copy.title;
@@ -110,7 +124,7 @@ export function ApprovalPrompt({
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || event.repeat) return;
-      if (event.target instanceof Element && event.target.closest(overlaySelector)) return;
+      if (event.target instanceof Element && event.target.closest(approvalOverlaySelector)) return;
 
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
@@ -134,12 +148,7 @@ export function ApprovalPrompt({
   }
 
   return (
-    <div
-      data-state="awaiting"
-      role="group"
-      aria-label={title}
-      className="flex w-full flex-col overflow-hidden rounded-2xl border border-signal-awaiting/40 bg-card group-data-[tray=attached]/prompt-slot:rounded-t-none"
-    >
+    <ApprovalPromptShell title={title}>
       <div className="flex max-h-[min(24rem,50svh)] flex-col gap-3 overflow-y-auto p-3">
         <div className="flex items-start gap-2.5 px-1">
           <ShieldAlertIcon className="mt-0.5 size-4 shrink-0 text-signal-awaiting" />
@@ -223,7 +232,7 @@ export function ApprovalPrompt({
           </div>
         </div>
       )}
-    </div>
+    </ApprovalPromptShell>
   );
 }
 
@@ -252,7 +261,9 @@ export function DeniedMarker({ part }: { part: ToolUIPart }) {
   return (
     <Marker className="text-xs">
       <XIcon />
-      <MarkerContent>{deniedCopy[getToolKind(part)]}</MarkerContent>
+      <MarkerContent>
+        {deniedCopy[getToolKind(part) as BuiltinToolKind] ?? deniedCopy.other}
+      </MarkerContent>
     </Marker>
   );
 }

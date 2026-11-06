@@ -10,7 +10,11 @@ export function getRouter() {
   if (!convexUrl) {
     console.error("missing envar VITE_CONVEX_URL");
   }
-  const convexQueryClient = new ConvexQueryClient(convexUrl);
+  // Hold browser subscriptions until `ConvexBetterAuthProvider` sends the first token. Without it,
+  // queries hydrated from SSR or mounted before the provider's auth effect run anonymously, fail
+  // with "Unauthenticated", and screens that treat a query error as lost access (Session Tabs)
+  // close themselves. Signed-out screens use Better Auth over HTTP, not Convex.
+  const convexQueryClient = new ConvexQueryClient(convexUrl, { expectAuth: true });
 
   const queryClient: QueryClient = new QueryClient({
     defaultOptions: {

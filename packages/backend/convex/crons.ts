@@ -9,6 +9,8 @@ crons.interval(
   {},
 );
 crons.interval("terminal worker tasks", { minutes: 5 }, internal.worker_tasks.prune, {});
+crons.interval("cold ACP sessions", { minutes: 1 }, internal.acp.coolSessions, {});
+crons.interval("expired ACP intent", { minutes: 5 }, internal.acp.prune, {});
 crons.interval("expired routing state", { minutes: 10 }, internal.routing.prune, {});
 crons.interval("usage limit polling", { minutes: 5 }, internal.limits.pollDue, {});
 crons.interval("expired limit events", { hours: 1 }, internal.limits.pruneEvents, {});

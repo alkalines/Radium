@@ -1,3 +1,4 @@
+export { Watch, LiveFrames } from "../src/acp/live";
 import { v } from "convex/values";
 import { WEB_SEARCH_TOOL_ID } from "@/chatroom/tools";
 import {
@@ -42,6 +43,7 @@ import {
 import { ownedWorkspaceMutation, workspaceQuery } from "./helpers";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
 import { chatWorkerToolValidator, type ChatWorkerTool } from "../src/worker/chat-config";
+import { accessibleSession } from "../src/acp/policy";
 
 /**
  * Workspace Chatroom configuration replaces the legacy per-user
@@ -461,6 +463,34 @@ export const titleGenerationInfo = internalQuery({
   },
 });
 
+/**
+ * Authorize an ACP viewer and resolve the ordinary workspace title model without reading a
+ * transcript. The action receives the first prompt only in memory, never through this query.
+ */
+export const acpTitleGenerationInfo = internalQuery({
+  args: { chatId: v.id("aisdk_chats") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      workspace: v.id("workspaces"),
+      userId: v.string(),
+      model: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const { chat, session, workspace } = await accessibleSession(ctx, args.chatId);
+    if (chat.title || session.userTitled) return null;
+    const settings = await loadWorkspaceSettings(ctx, workspace);
+    const model = await firstAvailableModel(
+      ctx,
+      workspace,
+      settings?.titleModel ?? settings?.defaultModel,
+    );
+    if (!model) return null;
+    return { workspace: workspace._id, userId: chat.userId, model };
+  },
+});
+
 export const saveGeneratedTitle = internalMutation({
   args: {
     chatId: v.id("aisdk_chats"),
@@ -523,23 +553,17 @@ function visibilityKey(workspaceId: Id<"workspaces">, chatId: Id<"aisdk_chats">)
 }
 
 /**
- * Resolve chat visibility through the same policy as Chatroom. Any missing,
- * deleted, cross-workspace, or malformed chat is intentionally invisible.
+ * The chat when it is visible to the caller inside `workspaceId`, through the same policy as
+ * Chatroom; otherwise null. Any missing, deleted, cross-workspace, or malformed chat is
+ * intentionally invisible.
  */
-export async function isChatVisibleToWorkspace(
+export async function visibleWorkspaceChat(
   ctx: DatabaseCtx,
   workspaceId: Id<"workspaces">,
   chatId: Id<"aisdk_chats">,
-  cache: VisibilityCache = new Map(),
-): Promise<boolean> {
-  const key = visibilityKey(workspaceId, chatId);
-  const cached = cache.get(key);
-  if (cached !== undefined) return cached;
-
-  let visible = false;
+): Promise<Doc<"aisdk_chats"> | null> {
   try {
-    const result = await requireAccessibleChat(ctx, chatId);
-    const { chat, workspace } = result;
+    const { chat, workspace } = await requireAccessibleChat(ctx, chatId);
 
     // Match both ownership keys during the legacy migration; a legacy balance
     // alone identifies a chat only when it has no workspace id yet.
@@ -552,11 +576,25 @@ export async function isChatVisibleToWorkspace(
       belongsToWorkspace = chat.balance !== undefined && chat.balance === workspace.legacyBalance;
     }
 
-    visible = workspace._id === workspaceId && belongsToWorkspace;
+    return workspace._id === workspaceId && belongsToWorkspace ? chat : null;
   } catch {
     // A deleted or inaccessible chat must not turn into an observable row.
+    return null;
   }
+}
 
+/** `visibleWorkspaceChat` as a cached yes/no for filters. */
+export async function isChatVisibleToWorkspace(
+  ctx: DatabaseCtx,
+  workspaceId: Id<"workspaces">,
+  chatId: Id<"aisdk_chats">,
+  cache: VisibilityCache = new Map(),
+): Promise<boolean> {
+  const key = visibilityKey(workspaceId, chatId);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+
+  const visible = (await visibleWorkspaceChat(ctx, workspaceId, chatId)) !== null;
   cache.set(key, visible);
   return visible;
 }

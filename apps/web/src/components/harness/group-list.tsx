@@ -24,7 +24,8 @@ export function GroupList({
   return (
     <section data-slot="group-list" className={cn("flex min-w-0 flex-col gap-3", className)}>
       {title || action ? (
-        <div className="flex min-h-7 items-end justify-between gap-3 px-4">
+        // The heading indents to the Row content; bordered actions end on the block's own edge.
+        <div className="flex min-h-7 items-end justify-between gap-3 pl-4">
           <div className="flex min-w-0 flex-col gap-0.5">
             {title ? <h2 className="text-sm font-medium">{title}</h2> : null}
             {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}

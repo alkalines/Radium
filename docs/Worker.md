@@ -21,7 +21,8 @@ implements owner-dispatched, machine-claimed edit tasks and short-lived results.
 backend dispatch supplies an absolute directory on the target Worker, and native
 editing is loaded lazily for a valid request. See [Worker tasks](Worker/Tasks.md)
 for directory selection, result subscriptions and crash behavior. Root `bun run dev`
-starts the enrolled Worker with a source watcher; `bun run dev:worker` runs the
+starts the enrolled Worker with a source watcher after Convex's first successful
+push; `bun run dev:worker` runs the
 Worker watcher independently. The [Worker CLI guide](../packages/worker/README.md) covers
 masked interactive setup, local status, authentication refresh and forgetting credentials.
 
@@ -72,6 +73,13 @@ The [native tools guide](Worker/Native_Tools.md) describes Oh-My-Pi's own
 `@oh-my-pi/pi-natives` package and the edit adapter's read/preview/apply lifecycle,
 as well as foreground shell execution and planned background-job/PTY primitives.
 
+While connected, the Worker also uploads this machine's coding-CLI usage read by ccusage (every 15 minutes, totals only, never content) for Activity and Session cost estimates; see [Local CLI usage](observability.md#local-cli-usage-ccusage).
+
+The ACP host and relay are implemented: the Worker launches the agents defined in
+Settings → ACP (after checking each command on its `PATH`), speaks stdio ACP through `@agentclientprotocol/sdk`, and relays
+commands, permission/elicitation decisions, lifecycle and viewer-gated frames
+through Convex (`packages/worker/src/acp/`, `packages/backend/src/acp/`). Agents with a Gateway environment also run in [Gateway mode](ACP/Agents.md#gateway-mode) with a Gateway key the Worker mints itself.
+
 ## Proposed
 
 The [Bash tool reference](Worker/Bash_Tool.md) details shell execution,
@@ -84,8 +92,11 @@ commands, approvals, batched output and results through Convex. Worker and Chatr
 connect outbound to Convex; Worker adapts a local stdio ACP agent. Local batching,
 bounded output chunks, separate control/output subscriptions and retention limit
 database load. Machine JWT authentication and identity-management wrappers are now
-implemented; file and foreground Bash request/result paths are implemented locally. ACP,
-streaming/batched output and approval transport remain planned.
+implemented; file and foreground Bash request/result paths are implemented locally.
+
+The [ACP agents design](ACP.md) details the Worker as ACP client: agent
+install and launch, viewer-gated frames, commands and durable permission
+decisions through Convex, with conversation content kept by the agent.
 
 The [authentication research](Worker/Authentication.md) supplies the enrollment
 and per-worker proof-of-possession foundation. Its transport recommendation and

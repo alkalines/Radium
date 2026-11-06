@@ -1,0 +1,857 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import type {
+  AcpAgentDefinition,
+  AcpAgentReport,
+  AcpAgentSessionEntry,
+  AcpCommandPayload,
+  AcpFrameInput,
+  AcpInteractionAnswer,
+  AcpInteractionRequest,
+  AcpOp,
+} from "backend/src/acp/contract";
+import { AcpHost } from "./host.js";
+import type { AcpGatewayAccess, AcpGatewayModel } from "backend/src/acp/gateway";
+import type { GatewayKey, GatewayKeyStore } from "../auth/gateway.js";
+import type {
+  AcpTransport,
+  AcpAssignment,
+  AcpAnsweredInteraction,
+  AcpClaim,
+  AcpSessionBinding,
+  AcpSessionPatch,
+  AcpWarmSession,
+} from "./transport.js";
+
+class FakeTransport implements AcpTransport {
+  gateway: { access: AcpGatewayAccess; keyId?: string } = { access: "off" };
+  mintCount = 0;
+  mintGate?: Promise<void>;
+  models: AcpGatewayModel[] = [{ slug: "small", name: "Small", context: 32000, output: 4000 }];
+  private gatewayListener?: (state: { access: AcpGatewayAccess; keyId?: string }) => void;
+  gatewayState: AcpTransport["gatewayState"] = (receive) => {
+    this.gatewayListener = receive;
+    queueMicrotask(() => receive(this.gateway));
+    return () => {
+      this.gatewayListener = undefined;
+    };
+  };
+  publishGateway(state: { access: AcpGatewayAccess; keyId?: string }) {
+    this.gateway = state;
+    this.gatewayListener?.(state);
+  }
+  async mintGatewayKey() {
+    this.mintCount++;
+    const minted = { keyId: `key-${this.mintCount}`, key: `gateway-secret-${this.mintCount}` };
+    await this.mintGate;
+    this.publishGateway({ access: "active", keyId: minted.keyId });
+    return minted;
+  }
+  async gatewayModels() {
+    return this.models;
+  }
+  assignments: AcpAssignment[] = [];
+  claims = new Map<string, AcpClaim>();
+  receipts = new Map<string, { status: string; error?: string; result?: string }>();
+  patches: AcpSessionPatch[] = [];
+  reports: AcpAgentReport[] = [];
+  definitions: AcpAgentDefinition[] = [definition()];
+  reportCount = 0;
+  savedDefaults: Record<string, NonNullable<AcpAgentReport["defaults"]>> = {};
+  indexed = new Map<string, AcpAgentSessionEntry>();
+  syncs: Parameters<AcpTransport["syncAgentSessions"]>[0][] = [];
+  frames: { epoch: number; frame: AcpFrameInput }[] = [];
+  opened: { id: string; key: string; request: AcpInteractionRequest }[] = [];
+  resolved: { interaction: string; status: string }[] = [];
+  epoch = 0;
+  warm = true;
+  binding: AcpSessionBinding = {
+    agentId: "scripted",
+    profile: "native",
+    cwd: tmpdir(),
+    sessionId: null,
+    status: "idle",
+    epoch: 0,
+    warm: true,
+    draft: null,
+    config: null,
+  };
+  private commandListener?: (commands: AcpAssignment[]) => void;
+  private definitionListener?: (definitions: AcpAgentDefinition[]) => void;
+  private warmListener?: (sessions: AcpWarmSession[]) => void;
+  private answerListener?: (answers: AcpAnsweredInteraction[]) => void;
+
+  agentDefinitions = (receive: (rows: AcpAgentDefinition[]) => void) => {
+    this.definitionListener = receive;
+    queueMicrotask(() => receive(this.definitions));
+    return () => {
+      this.definitionListener = undefined;
+    };
+  };
+  publishDefinitions(definitions: AcpAgentDefinition[]) {
+    this.definitions = definitions;
+    this.definitionListener?.(definitions);
+  }
+  assignedCommands = (receive: (rows: AcpAssignment[]) => void) => {
+    this.commandListener = receive;
+    queueMicrotask(() => receive(this.assignments));
+    return () => {
+      this.commandListener = undefined;
+    };
+  };
+  warmSessions = (receive: (rows: AcpWarmSession[]) => void) => {
+    this.warmListener = receive;
+    queueMicrotask(() => this.publishWarm());
+    return () => {
+      this.warmListener = undefined;
+    };
+  };
+  answeredInteractions = (receive: (rows: AcpAnsweredInteraction[]) => void) => {
+    this.answerListener = receive;
+    return () => {
+      this.answerListener = undefined;
+    };
+  };
+  publishWarm() {
+    this.warmListener?.(
+      this.warm
+        ? [
+            {
+              chat: "chat",
+              agentId: this.binding.agentId,
+              profile: this.binding.profile,
+              cwd: this.binding.cwd,
+              sessionId: this.binding.sessionId,
+              epoch: this.epoch,
+              status: this.binding.status,
+            },
+          ]
+        : [],
+    );
+  }
+  add(payload: AcpCommandPayload, chat = "chat"): string {
+    const command = crypto.randomUUID();
+    const agentLevel = ["sync_sessions", "authenticate", "logout", "close", "delete"].includes(
+      payload.kind,
+    );
+    this.claims.set(command, {
+      command,
+      kind: payload.kind,
+      payload,
+      by: "user",
+      chat: agentLevel ? null : chat,
+      session: agentLevel ? null : { ...this.binding },
+    });
+    this.assignments = [
+      ...this.assignments,
+      { _id: command, kind: payload.kind, chat: agentLevel ? null : chat, createdAt: Date.now() },
+    ];
+    this.commandListener?.(this.assignments);
+    return command;
+  }
+  async claimCommand({ command }: { command: string }) {
+    const claim = this.claims.get(command) ?? null;
+    this.claims.delete(command);
+    this.assignments = this.assignments.filter((row) => row._id !== command);
+    queueMicrotask(() => this.commandListener?.(this.assignments));
+    return claim;
+  }
+  async finishCommand(args: {
+    command: string;
+    status: "done" | "failed";
+    error?: string;
+    result?: string;
+  }) {
+    this.receipts.set(args.command, args);
+  }
+  async startEpoch({ epoch }: { chat: string; epoch: number }) {
+    this.epoch = epoch;
+    this.binding.epoch = epoch;
+    return { accepted: this.warm };
+  }
+  async appendFrames(args: { chat: string; epoch: number; frames: AcpFrameInput[] }) {
+    if (!this.warm || args.epoch !== this.epoch) return { accepted: false, bytes: 0 };
+    this.frames.push(...args.frames.map((frame) => ({ epoch: args.epoch, frame })));
+    return {
+      accepted: true,
+      bytes: this.frames
+        .filter((entry) => entry.epoch === args.epoch)
+        .reduce((sum, entry) => sum + entry.frame.payload.length, 0),
+    };
+  }
+  async updateSession({ patch }: { chat: string; patch: AcpSessionPatch }) {
+    this.patches.push(patch);
+    if (patch.sessionId) this.binding.sessionId = patch.sessionId;
+    if (patch.status) this.binding.status = patch.status;
+    if (patch.config) this.binding.config = patch.config;
+    this.publishWarm();
+  }
+  async reportAgents({ agents }: { agents: AcpAgentReport[] }) {
+    for (const agent of agents)
+      if (agent.defaults) this.savedDefaults[agent.agentId] = structuredClone(agent.defaults);
+    this.reports = structuredClone(agents).map((agent) => ({
+      ...agent,
+      ...(this.savedDefaults[agent.agentId] ? { defaults: this.savedDefaults[agent.agentId] } : {}),
+    }));
+    this.reportCount++;
+    return structuredClone(this.savedDefaults);
+  }
+  async knownAgentSessions() {
+    return [...this.indexed.values()];
+  }
+  async syncAgentSessions(args: Parameters<AcpTransport["syncAgentSessions"]>[0]) {
+    this.syncs.push(structuredClone(args));
+    for (const entry of args.upserts) this.indexed.set(entry.sessionId, structuredClone(entry));
+    for (const id of args.removals) this.indexed.delete(id);
+  }
+  async recoverWorker() {
+    return { more: false };
+  }
+  async openInteraction(args: {
+    chat: string;
+    requestKey: string;
+    request: AcpInteractionRequest;
+  }) {
+    const id = crypto.randomUUID();
+    this.opened.push({ id, key: args.requestKey, request: args.request });
+    return id;
+  }
+  async resolveInteraction(args: { interaction: string; status: "resolved" | "cancelled" }) {
+    this.resolved.push(args);
+  }
+  answer(index: number, answer: AcpInteractionAnswer) {
+    const interaction = this.opened[index]!;
+    this.answerListener?.([
+      { _id: interaction.id, chat: "chat", requestKey: interaction.key, answer },
+    ]);
+  }
+  ops(): AcpOp[] {
+    return this.frames.flatMap(({ frame }) => JSON.parse(frame.payload) as AcpOp[]);
+  }
+}
+
+class MemoryGatewayKeys implements GatewayKeyStore {
+  value: GatewayKey | null = null;
+  saves = 0;
+  async get() {
+    return this.value;
+  }
+  async set(value: GatewayKey) {
+    this.value = value;
+    this.saves++;
+  }
+  async delete() {
+    this.value = null;
+  }
+}
+
+async function startGateway(
+  transport: FakeTransport,
+  keys: MemoryGatewayKeys,
+  agent = definition(),
+) {
+  transport.definitions = [
+    {
+      ...agent,
+      gateway: {
+        enabled: true,
+        env: [
+          { name: "OPENAI_API_KEY", value: "{{gateway.key}}" },
+          { name: "OPENAI_BASE_URL", value: "{{gateway.url}}" },
+          { name: "OPENAI_MODEL", value: "{{gateway.model}}" },
+          { name: "GATEWAY_MODELS", value: "{{gateway.models}}" },
+        ],
+      },
+    },
+  ];
+  const host = new AcpHost(transport, {
+    gateway: { url: "https://radium.example/api/openai/v1", keys },
+  });
+  hosts.push(host);
+  host.setAvailable(true);
+  await until(() => transport.reports.length > 0);
+  return host;
+}
+
+async function until(check: () => boolean): Promise<void> {
+  const expires = Date.now() + 10_000;
+  while (!check()) {
+    if (Date.now() > expires) throw new Error("Timed out waiting for observable ACP state");
+    // Real subprocess I/O and its cancellation timers cannot use the parent's fake clock.
+    await delay(10);
+  }
+}
+const hosts: AcpHost[] = [];
+const directories: string[] = [];
+const script = fileURLToPath(new URL("./test-agent.ts", import.meta.url));
+const bun = execFileSync("bun", ["-p", "process.execPath"], { encoding: "utf8" }).trim();
+function definition(args: string[] = []): AcpAgentDefinition {
+  return {
+    agentId: "scripted",
+    name: "Scripted",
+    command: bun,
+    args: [script, ...args],
+    env: [],
+    enabled: true,
+    source: "custom",
+  };
+}
+async function start(transport: FakeTransport, args: string[] = []) {
+  transport.definitions = [definition(args)];
+  const host = new AcpHost(transport);
+  hosts.push(host);
+  host.setAvailable(true);
+  const previousSyncs = transport.syncs.length;
+  await until(
+    () =>
+      transport.reports.length > 0 &&
+      transport.syncs.slice(previousSyncs).some((sync) => sync.finish),
+  );
+  return host;
+}
+afterEach(async () => {
+  for (const host of hosts.splice(0)) await host.close();
+  for (const directory of directories.splice(0))
+    await rm(directory, { recursive: true, force: true });
+});
+
+describe("ACP host with real stdio agent", () => {
+  it("serializes repeated pending notifications into one mint and saves the secret", async () => {
+    const transport = new FakeTransport();
+    const keys = new MemoryGatewayKeys();
+    transport.gateway = { access: "pending" };
+    const gate = Promise.withResolvers<void>();
+    transport.mintGate = gate.promise;
+    await startGateway(transport, keys);
+    await until(() => transport.mintCount === 1);
+    transport.publishGateway({ access: "pending" });
+    transport.publishGateway({ access: "pending" });
+    gate.resolve();
+    await until(() => keys.saves === 1);
+    expect(transport.mintCount).toBe(1);
+    expect(keys.value).toEqual({ keyId: "key-1", key: "gateway-secret-1" });
+  });
+
+  it("re-mints an active key whose local id does not match", async () => {
+    const transport = new FakeTransport();
+    const keys = new MemoryGatewayKeys();
+    keys.value = { keyId: "old-key", key: "old-secret" };
+    transport.gateway = { access: "active", keyId: "different-key" };
+    await startGateway(transport, keys);
+    await until(() => keys.saves === 1);
+    expect(transport.mintCount).toBe(1);
+    expect(keys.value?.keyId).toBe("key-1");
+  });
+
+  it.each([
+    ["missing", "Gateway key deleted"],
+    ["off", "Gateway access turned off"],
+  ] as const)(
+    "tears down %s Gateway processes and fails running turns",
+    async (access, message) => {
+      const transport = new FakeTransport();
+      transport.binding.profile = "gateway";
+      transport.gateway = { access: "active", keyId: "key-1" };
+      const keys = new MemoryGatewayKeys();
+      keys.value = { keyId: "key-1", key: "gateway-secret-1" };
+      const host = await startGateway(transport, keys);
+      const command = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "slow" }] });
+      await until(() => transport.binding.status === "running");
+      const child = host["slots"].get("scripted:gateway")!.process!.child;
+      transport.publishGateway({ access });
+      await until(() => transport.receipts.has(command) && child.signalCode !== null);
+      expect(transport.receipts.get(command)).toMatchObject({ status: "failed", error: message });
+      expect(transport.patches).toContainEqual({ status: "failed", error: message });
+      expect(keys.value).toBeNull();
+      expect(host["slots"].get("scripted:gateway")?.process).toBeUndefined();
+      expect(transport.mintCount).toBe(0);
+    },
+  );
+
+  it("runs native and Gateway profiles in separate processes with isolated expanded environments", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "radium-acp-gateway-"));
+    directories.push(directory);
+    const environmentPath = join(directory, "environment");
+    const agent = definition();
+    agent.args = [
+      "-e",
+      `
+      import { runScriptedAgent } from ${JSON.stringify(script)};
+      await Bun.write(${JSON.stringify(environmentPath)} + "-" + (process.env.GATEWAY_MODELS ? "gateway" : "native"),
+        JSON.stringify({ key: process.env.OPENAI_API_KEY, url: process.env.OPENAI_BASE_URL,
+          model: process.env.OPENAI_MODEL, models: process.env.GATEWAY_MODELS }));
+      await runScriptedAgent();
+    `,
+    ];
+    const transport = new FakeTransport();
+    transport.warm = false;
+    transport.gateway = { access: "active", keyId: "key-1" };
+    const keys = new MemoryGatewayKeys();
+    keys.value = { keyId: "key-1", key: "gateway-secret-1" };
+    const host = await startGateway(transport, keys, agent);
+    const native = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
+    await until(() => transport.receipts.has(native));
+    transport.binding = { ...transport.binding, profile: "gateway", sessionId: null };
+    const gateway = transport.add(
+      { kind: "prompt", prompt: [{ type: "text", text: "hello" }] },
+      "gateway-chat",
+    );
+    await until(() => transport.receipts.has(gateway));
+    expect(transport.receipts.get(gateway)?.status).toBe("done");
+    const nativeProcess = host["slots"].get("scripted:native")!.process!;
+    const gatewayProcess = host["slots"].get("scripted:gateway")!.process!;
+    expect(nativeProcess.child.pid).not.toBe(gatewayProcess.child.pid);
+    const nativeEnv: unknown = JSON.parse(await readFile(`${environmentPath}-native`, "utf8"));
+    const gatewayEnv: unknown = JSON.parse(await readFile(`${environmentPath}-gateway`, "utf8"));
+    expect(JSON.stringify(nativeEnv)).not.toContain("gateway-secret-1");
+    expect(gatewayEnv).toEqual({
+      key: "gateway-secret-1",
+      url: "https://radium.example/api/openai/v1",
+      model: "small",
+      models: JSON.stringify({ small: { name: "Small", limit: { context: 32000, output: 4000 } } }),
+    });
+    expect(transport.reports).toHaveLength(1);
+    expect(JSON.stringify([transport.reports, transport.frames, transport.patches])).not.toContain(
+      "gateway-secret-1",
+    );
+  });
+
+  it("fails a Gateway turn clearly when the workspace has no models", async () => {
+    const transport = new FakeTransport();
+    transport.binding.profile = "gateway";
+    transport.gateway = { access: "active", keyId: "key-1" };
+    transport.models = [];
+    const keys = new MemoryGatewayKeys();
+    keys.value = { keyId: "key-1", key: "gateway-secret-1" };
+    await startGateway(transport, keys);
+    const command = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
+    await until(() => transport.receipts.has(command));
+    expect(transport.receipts.get(command)).toMatchObject({
+      status: "failed",
+      error: "The workspace has no Gateway models.",
+    });
+  });
+
+  it("discovers defaults with a temporary session and deletes it before indexing", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "radium-acp-defaults-"));
+    directories.push(directory);
+    const store = join(directory, "sessions.json");
+    const transport = new FakeTransport();
+    transport.warm = false;
+    const host = await start(transport, ["--store", store]);
+    expect(transport.reports[0]?.defaults?.config?.options).toContainEqual(
+      expect.objectContaining({ id: "model", currentValue: "scripted-small" }),
+    );
+    expect(transport.reports[0]?.defaults?.commands?.length).toBeGreaterThan(0);
+    const state = JSON.parse(await readFile(store, "utf8"));
+    expect(state.sessions).toEqual([]);
+    expect(transport.binding.sessionId).toBeNull();
+    expect(transport.indexed.size).toBe(0);
+    expect(transport.syncs.at(-1)?.finish).toEqual({ count: 0, truncated: false });
+    await host.close();
+    transport.reports = [];
+    const reports = transport.reportCount;
+    await start(transport, ["--store", store]);
+    expect(transport.reportCount).toBe(reports + 1);
+  });
+
+  it("never discovers defaults for an agent without deletion support", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "radium-acp-no-delete-"));
+    directories.push(directory);
+    const store = join(directory, "sessions.json");
+    const transport = new FakeTransport();
+    transport.warm = false;
+    await start(transport, ["--store", store, "--no-delete"]);
+    expect(transport.reports[0]?.capabilities.delete).toBe(false);
+    expect(transport.reports[0]?.defaults).toBeUndefined();
+    await expect(readFile(store, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(transport.indexed.size).toBe(0);
+  });
+
+  it("syncs agent sessions by diff and writes no upserts on an unchanged second sync", async () => {
+    const transport = new FakeTransport();
+    await start(transport);
+    const prompt = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
+    await until(() => transport.receipts.has(prompt));
+    const first = transport.add({ kind: "sync_sessions", agentId: "scripted" });
+    await until(() => transport.receipts.has(first));
+    expect(transport.receipts.get(first)?.status).toBe("done");
+    expect([...transport.indexed.values()]).toMatchObject([
+      { sessionId: transport.binding.sessionId, cwd: tmpdir(), updatedAt: expect.any(Number) },
+    ]);
+    expect(transport.syncs.flatMap((sync) => sync.upserts)).toHaveLength(1);
+    const writes = transport.syncs.length;
+    const second = transport.add({ kind: "sync_sessions", agentId: "scripted" });
+    await until(() => transport.receipts.has(second));
+    expect(transport.syncs.slice(writes).flatMap((sync) => sync.upserts)).toEqual([]);
+    expect(transport.syncs.slice(writes).flatMap((sync) => sync.removals)).toEqual([]);
+    expect(transport.syncs.at(-1)?.finish).toEqual({ count: 1, truncated: false });
+  });
+
+  it("keeps a running turn on its old definition and uses the replacement for the next prompt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "radium-acp-redefine-"));
+    directories.push(directory);
+    const transport = new FakeTransport();
+    const store = join(directory, "sessions.json");
+    await start(transport, ["--store", store]);
+    const running = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "permission" }],
+    });
+    await until(() => transport.opened.length === 1);
+    const reportCount = transport.reportCount;
+    transport.publishDefinitions([
+      {
+        ...definition(["--store", store, "--require-auth"]),
+        name: "Changed agent",
+      },
+    ]);
+    await until(() => transport.reportCount > reportCount);
+    expect(transport.receipts.has(running)).toBe(false);
+    transport.answer(0, { kind: "permission", optionId: "allow_once" });
+    await until(() => transport.receipts.has(running));
+    expect(transport.receipts.get(running)?.status).toBe("done");
+    const next = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "hello" }],
+    });
+    await until(() => transport.receipts.has(next));
+    expect(transport.receipts.get(next)).toMatchObject({
+      status: "failed",
+      error: "Sign in to Changed agent",
+    });
+  });
+
+  it("fails a new prompt with Agent removed after its definition is deleted", async () => {
+    const transport = new FakeTransport();
+    await start(transport);
+    const first = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "hello" }],
+    });
+    await until(() => transport.receipts.has(first));
+    const reportCount = transport.reportCount;
+    transport.publishDefinitions([]);
+    await until(() => transport.reportCount > reportCount);
+    expect(transport.reports).toEqual([]);
+    const next = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "hello again" }],
+    });
+    await until(() => transport.receipts.has(next));
+    expect(transport.receipts.get(next)).toMatchObject({
+      status: "failed",
+      error: "Agent removed",
+    });
+  });
+
+  it("re-probes definitions when the Worker reconnects", async () => {
+    const transport = new FakeTransport();
+    const host = await start(transport);
+    const count = transport.reportCount;
+    host.setAvailable(false);
+    host.setAvailable(true);
+    await until(() => transport.reportCount > count);
+    expect(transport.reports[0]?.status).toBe("ready");
+  });
+
+  it("relays a prompt and durable lifecycle, applies drafts and agent title/config updates", async () => {
+    const transport = new FakeTransport();
+    transport.binding.draft = {
+      config: [{ configId: "model", value: "scripted-large" }],
+      modeId: "plan",
+    };
+    await start(transport);
+    const command = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
+    await until(() => transport.receipts.has(command));
+    await until(() => transport.ops().some((op) => op.op === "turn.end"));
+    expect(transport.receipts.get(command)?.status).toBe("done");
+    expect(transport.binding.sessionId).toBeTruthy();
+    expect(
+      transport.binding.config?.options.find((option) => option.id === "model")?.currentValue,
+    ).toBe("scripted-large");
+    expect(transport.binding.config?.modes?.currentModeId).toBe("plan");
+    expect(transport.patches.map((patch) => patch.status).filter(Boolean)).toEqual([
+      "running",
+      "idle",
+    ]);
+    expect(transport.patches.some((patch) => patch.title)).toBe(true);
+    expect(transport.patches.some((patch) => patch.usage)).toBe(true);
+    expect(transport.ops().some((op) => op.op === "item.upsert" && op.item.kind === "tool")).toBe(
+      true,
+    );
+    expect(transport.ops().some((op) => op.op === "item.upsert" && op.item.kind === "plan")).toBe(
+      true,
+    );
+    expect(transport.frames.some(({ frame }) => frame.kind === "snapshot")).toBe(true);
+  });
+
+  it("reports each turn's model and its share of the cumulative agent cost", async () => {
+    const transport = new FakeTransport();
+    transport.binding.draft = { config: [{ configId: "model", value: "scripted-large" }] };
+    await start(transport);
+    const first = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "one" }] });
+    await until(() => transport.receipts.has(first));
+    const second = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "two" }] });
+    await until(() => transport.receipts.has(second));
+
+    const turns = transport.patches.flatMap((patch) => (patch.turn ? [patch.turn] : []));
+    expect(turns.map((turn) => turn.command)).toEqual([first, second]);
+    expect(turns.map((turn) => turn.model?.id)).toEqual(["scripted-large", "scripted-large"]);
+    // The agent reports 0.001 then 0.002 cumulatively; each turn is charged only its share.
+    for (const turn of turns) {
+      expect(turn.cost?.currency).toBe("USD");
+      expect(turn.cost?.amount).toBeCloseTo(0.001);
+    }
+  });
+
+  it("round trips permission and form decisions through durable interactions", async () => {
+    const transport = new FakeTransport();
+    await start(transport);
+    const permission = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "permission" }],
+    });
+    await until(() => transport.opened.length === 1);
+    expect(transport.opened[0]?.request.kind).toBe("permission");
+    transport.answer(0, { kind: "permission", optionId: "allow_once" });
+    await until(() => transport.receipts.has(permission));
+    expect(transport.resolved[0]).toEqual({
+      interaction: transport.opened[0]!.id,
+      status: "resolved",
+    });
+    expect(JSON.stringify(transport.ops())).toContain("allow_once");
+    const question = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "question" }],
+    });
+    await until(() => transport.opened.length === 2);
+    expect(transport.opened[1]?.request).toMatchObject({
+      kind: "elicitation",
+      mode: "form",
+      required: ["color", "confirm"],
+    });
+    transport.answer(1, {
+      kind: "elicitation",
+      action: "accept",
+      content: [
+        { name: "color", value: "blue" },
+        { name: "confirm", value: true },
+      ],
+    });
+    await until(() => transport.receipts.has(question));
+    expect(transport.receipts.get(question)?.status).toBe("done");
+    expect(JSON.stringify(transport.ops())).toContain("blue");
+  });
+
+  it("cancels a running slow prompt without waiting for it to finish, including open requests", async () => {
+    const transport = new FakeTransport();
+    await start(transport);
+    const slow = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "slow" }] });
+    await until(() => transport.binding.status === "running");
+    const cancel = transport.add({ kind: "cancel" });
+    await until(() => transport.receipts.has(slow) && transport.receipts.has(cancel));
+    expect(transport.patches.at(-1)).toMatchObject({ status: "idle", stopReason: "cancelled" });
+    const permission = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "permission" }],
+    });
+    await until(() => transport.opened.length === 1);
+    transport.add({ kind: "cancel" });
+    await until(() => transport.receipts.has(permission));
+    expect(transport.resolved).toContainEqual({
+      interaction: transport.opened[0]!.id,
+      status: "cancelled",
+    });
+  });
+
+  it("fails a crashed turn and lazily reloads the persisted session on the next command", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "radium-acp-crash-"));
+    directories.push(directory);
+    const transport = new FakeTransport();
+    await start(transport, ["--store", join(directory, "sessions.json")]);
+    const crash = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "crash" }] });
+    await until(() => transport.receipts.has(crash));
+    expect(transport.receipts.get(crash)).toMatchObject({
+      status: "failed",
+      error: "Agent process exited",
+    });
+    expect(transport.patches).toContainEqual({ status: "failed", error: "Agent process exited" });
+    const next = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello again" }] });
+    await until(() => transport.receipts.has(next));
+    expect(transport.receipts.get(next)?.status).toBe("done");
+    expect(transport.patches.some((patch) => patch.history === "full")).toBe(true);
+  });
+
+  it("never reloads under a running turn and reloads an evicted timeline only for history", async () => {
+    const transport = new FakeTransport();
+    const host = await start(transport);
+    const slow = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "slow" }] });
+    await until(() => transport.binding.status === "running");
+    const local = host["sessions"].get("chat")!;
+    const { timeline, relay } = local;
+    timeline.needsReload = true;
+    const history = () =>
+      transport.add({ kind: "history", epoch: transport.epoch, before: 1, limit: 10 });
+    const reloads = () => transport.patches.filter((patch) => patch.history === "full").length;
+    const during = [history(), transport.add({ kind: "set_mode", modeId: "default" })];
+    await until(() => during.every((command) => transport.receipts.has(command)));
+    expect(local.timeline).toBe(timeline);
+    expect(local.relay).toBe(relay);
+    expect(reloads()).toBe(0);
+    transport.add({ kind: "cancel" });
+    await until(() => transport.receipts.has(slow));
+    // Over the memory cap, prompts keep using the open session instead of replaying it.
+    const prompt = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
+    await until(() => transport.receipts.get(prompt)?.status === "done");
+    expect(local.timeline).toBe(timeline);
+    expect(reloads()).toBe(0);
+    const reload = history();
+    await until(() => transport.receipts.has(reload));
+    expect(reloads()).toBe(1);
+    // A reloaded timeline that is still over the cap cannot recover more by loading again.
+    local.timeline.needsReload = true;
+    const again = history();
+    await until(() => transport.receipts.has(again));
+    expect(reloads()).toBe(1);
+  });
+
+  it("rebuilds warm history by loading the actual persistent agent store after host restart", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "radium-acp-load-"));
+    directories.push(directory);
+    const args = ["--store", join(directory, "sessions.json")];
+    const transport = new FakeTransport();
+    const first = await start(transport, args);
+    const command = transport.add({
+      kind: "prompt",
+      prompt: [{ type: "text", text: "persistent hello" }],
+    });
+    await until(() => transport.receipts.has(command));
+    await first.close();
+    const previousEpoch = transport.epoch;
+    transport.frames = [];
+    transport.reports = [];
+    await start(transport, args);
+    await until(() => transport.epoch > previousEpoch && transport.frames.length > 0);
+    expect(transport.patches.some((patch) => patch.history === "full")).toBe(true);
+    expect(JSON.stringify(transport.ops())).toContain("persistent hello");
+    expect(transport.frames[0]?.frame.kind).toBe("snapshot");
+  });
+
+  it("ends a warm session the agent no longer knows instead of leaving viewers waiting", async () => {
+    const transport = new FakeTransport();
+    transport.binding.sessionId = "lost-session";
+    await start(transport);
+    await until(() => transport.patches.some((patch) => patch.status === "ended"));
+    expect(transport.patches.find((patch) => patch.status === "ended")?.error).toContain(
+      "no longer has this session",
+    );
+    expect(transport.frames).toEqual([]);
+  });
+
+  it("reports auth_required, authenticates, syncs sessions and handles refusal", async () => {
+    const transport = new FakeTransport();
+    await start(transport, ["--require-auth"]);
+    expect(transport.reports[0]?.status).toBe("ready");
+    expect(transport.reports[0]?.defaults).toBeUndefined();
+    const denied = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
+    await until(() => transport.receipts.has(denied));
+    expect(transport.reports[0]?.status).toBe("needs_auth");
+    expect(transport.receipts.get(denied)?.error).toContain("Sign in to");
+    const auth = transport.add({ kind: "authenticate", agentId: "scripted", methodId: "scripted" });
+    await until(() => transport.receipts.has(auth));
+    expect(transport.reports[0]?.status).toBe("ready");
+    const refuse = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "refuse" }] });
+    await until(() => transport.receipts.has(refuse));
+    expect(transport.patches.at(-1)).toMatchObject({ status: "failed", stopReason: "refusal" });
+    const sync = transport.add({ kind: "sync_sessions", agentId: "scripted" });
+    await until(() => transport.receipts.has(sync));
+    expect([...transport.indexed.values()]).toMatchObject([
+      { sessionId: transport.binding.sessionId },
+    ]);
+  });
+
+  it("round trips URL consent, keeps cold output local, and snapshots again after warming", async () => {
+    const transport = new FakeTransport();
+    transport.warm = false;
+    await start(transport);
+    const command = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "link" }] });
+    await until(() => transport.opened.length === 1);
+    expect(transport.opened[0]?.request).toMatchObject({ kind: "elicitation", mode: "url" });
+    transport.answer(0, { kind: "elicitation", action: "accept", content: [] });
+    await until(() => transport.receipts.has(command));
+    expect(transport.frames).toEqual([]);
+    transport.warm = true;
+    transport.publishWarm();
+    await until(() => transport.frames.length > 0);
+    expect(transport.frames[0]?.frame.kind).toBe("snapshot");
+    expect(transport.ops().some((op) => op.op === "item.upsert")).toBe(true);
+    const previousEpoch = transport.epoch;
+    transport.warm = false;
+    transport.publishWarm();
+    transport.warm = true;
+    transport.publishWarm();
+    await until(() => transport.epoch > previousEpoch);
+    expect(
+      transport.frames.some(
+        ({ epoch, frame }) => epoch > previousEpoch && frame.kind === "snapshot",
+      ),
+    ).toBe(true);
+  });
+
+  it("runs config commands during a prompt and deletes only the selected persisted session", async () => {
+    const transport = new FakeTransport();
+    await start(transport);
+    const slow = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "slow" }] });
+    await until(() => transport.binding.status === "running");
+    const config = transport.add({
+      kind: "set_config",
+      configId: "model",
+      value: "scripted-large",
+    });
+    await until(() => transport.receipts.has(config));
+    expect(transport.receipts.has(slow)).toBe(false);
+    expect(
+      transport.binding.config?.options.find((option) => option.id === "model")?.currentValue,
+    ).toBe("scripted-large");
+    transport.add({ kind: "cancel" });
+    await until(() => transport.receipts.has(slow));
+    const removed = transport.add({
+      kind: "delete",
+      agentId: "scripted",
+      profile: "native",
+      cwd: tmpdir(),
+      sessionId: transport.binding.sessionId!,
+    });
+    await until(() => transport.receipts.has(removed));
+    const sync = transport.add({ kind: "sync_sessions", agentId: "scripted" });
+    await until(() => transport.receipts.has(sync));
+    expect([...transport.indexed.values()]).toEqual([]);
+  });
+
+  it("cancels a running turn before closing its session and drops it locally", async () => {
+    const transport = new FakeTransport();
+    // A warm viewer would re-open the chat after the close; this test checks the local drop only.
+    transport.warm = false;
+    const host = await start(transport);
+    const slow = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "slow" }] });
+    await until(() => transport.binding.status === "running");
+    const closed = transport.add({
+      kind: "close",
+      agentId: "scripted",
+      profile: "native",
+      cwd: tmpdir(),
+      sessionId: transport.binding.sessionId!,
+    });
+    await until(() => transport.receipts.has(closed) && transport.receipts.has(slow));
+    expect(transport.receipts.get(closed)?.status).toBe("done");
+    expect(transport.receipts.get(slow)?.status).toBe("done");
+    expect(transport.patches).toContainEqual(expect.objectContaining({ stopReason: "cancelled" }));
+    expect(host["sessions"].has("chat")).toBe(false);
+  });
+});

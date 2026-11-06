@@ -3,73 +3,80 @@ import { v } from "convex/values";
 import { internalQuery, query } from "./_generated/server";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
 import { workspaceQuery } from "./helpers";
+import type { Id } from "./_generated/dataModel";
+import type { QueryCtx } from "./_generated/server";
 
 /** Return the OpenAI-compatible model listing for one validated workspace. */
 export const openaiModels = internalQuery({
   args: { workspace: v.id("workspaces") },
-  handler: async (ctx, args): Promise<Models_Response_Type[]> => {
-    const workspace = await ctx.db.get("workspaces", args.workspace);
-    if (!workspace || workspace.archivedAt !== undefined) throw new Error("Workspace not found.");
-    const [models, providerRecords] = await Promise.all([
-      ctx.db.query("models").take(200),
-      workspaceProviderRecords(ctx, workspace),
-    ]);
-    const configuredProviders = providerRecords.filter(isWorkspaceProviderEnabled);
-
-    return models.flatMap((model) => {
-      // @todo: Get more consistent statics
-      const providerModels = configuredProviders.flatMap(({ provider }) =>
-        provider.models.filter((providerModel) => providerModel.model === model.slug),
-      );
-      // Preserve configured-provider order; the API exposes the first matching provider model.
-      const selectedProviderModel = providerModels[0];
-      if (!selectedProviderModel) return [];
-
-      return [
-        {
-          id: model.slug,
-          canonical_slug: model.slug,
-          created: Math.floor(model._creationTime / 1000), // Unix timestamp in seconds.
-          object: "model",
-          description: model.description,
-          name: model.name,
-          hugging_face_id: model.model_weights?.split("https://huggingface.co/")[1],
-          architecture: {
-            modality: `${model.architecture.input_modalities.join("+")}->${model.architecture.output_modalities.join("+")}`,
-            input_modalities: model.architecture.input_modalities,
-            output_modalities: model.architecture.output_modalities,
-            tokenizer: model.architecture.tokenizer,
-            instruct_type: null, // Kept for compatibility with OpenRouter model metadata.
-          },
-          default_parameters: {
-            frequency_penalty: model.default_parameters?.frequency_penalty,
-            temperature: model.default_parameters?.temperature,
-            top_p: model.default_parameters?.top_p,
-          },
-          per_request_limits: {
-            completion_tokens: null,
-            prompt_tokens: null,
-          },
-          // Provider based
-          supported_parameters: selectedProviderModel.supported_parameters,
-          pricing: {
-            prompt: selectedProviderModel.pricing.input,
-            completion: selectedProviderModel.pricing.output,
-            input_cache_read: selectedProviderModel.pricing.cache_read,
-            input_cache_write: selectedProviderModel.pricing.cache_write,
-            // @todo
-          },
-          context_length: selectedProviderModel.context,
-          top_provider: {
-            context_length: selectedProviderModel.context,
-            max_completion_tokens: selectedProviderModel.max_output,
-            is_moderated: selectedProviderModel.moderated,
-          },
-        } as Models_Response_Type,
-      ];
-    });
-  },
+  handler: (ctx, args) => workspaceOpenaiModels(ctx, args.workspace),
 });
+
+export async function workspaceOpenaiModels(
+  ctx: QueryCtx,
+  workspaceId: Id<"workspaces">,
+): Promise<Models_Response_Type[]> {
+  const workspace = await ctx.db.get("workspaces", workspaceId);
+  if (!workspace || workspace.archivedAt !== undefined) throw new Error("Workspace not found.");
+  const [models, providerRecords] = await Promise.all([
+    ctx.db.query("models").take(200),
+    workspaceProviderRecords(ctx, workspace),
+  ]);
+  const configuredProviders = providerRecords.filter(isWorkspaceProviderEnabled);
+
+  return models.flatMap((model) => {
+    // @todo: Get more consistent statics
+    const providerModels = configuredProviders.flatMap(({ provider }) =>
+      provider.models.filter((providerModel) => providerModel.model === model.slug),
+    );
+    // Preserve configured-provider order; the API exposes the first matching provider model.
+    const selectedProviderModel = providerModels[0];
+    if (!selectedProviderModel) return [];
+
+    return [
+      {
+        id: model.slug,
+        canonical_slug: model.slug,
+        created: Math.floor(model._creationTime / 1000), // Unix timestamp in seconds.
+        object: "model",
+        description: model.description,
+        name: model.name,
+        hugging_face_id: model.model_weights?.split("https://huggingface.co/")[1],
+        architecture: {
+          modality: `${model.architecture.input_modalities.join("+")}->${model.architecture.output_modalities.join("+")}`,
+          input_modalities: model.architecture.input_modalities,
+          output_modalities: model.architecture.output_modalities,
+          tokenizer: model.architecture.tokenizer,
+          instruct_type: null, // Kept for compatibility with OpenRouter model metadata.
+        },
+        default_parameters: {
+          frequency_penalty: model.default_parameters?.frequency_penalty,
+          temperature: model.default_parameters?.temperature,
+          top_p: model.default_parameters?.top_p,
+        },
+        per_request_limits: {
+          completion_tokens: null,
+          prompt_tokens: null,
+        },
+        // Provider based
+        supported_parameters: selectedProviderModel.supported_parameters,
+        pricing: {
+          prompt: selectedProviderModel.pricing.input,
+          completion: selectedProviderModel.pricing.output,
+          input_cache_read: selectedProviderModel.pricing.cache_read,
+          input_cache_write: selectedProviderModel.pricing.cache_write,
+          // @todo
+        },
+        context_length: selectedProviderModel.context,
+        top_provider: {
+          context_length: selectedProviderModel.context,
+          max_completion_tokens: selectedProviderModel.max_output,
+          is_moderated: selectedProviderModel.moderated,
+        },
+      } as Models_Response_Type,
+    ];
+  });
+}
 
 /** List global models available from at least one enabled provider in this workspace. */
 export const availableModels = workspaceQuery({

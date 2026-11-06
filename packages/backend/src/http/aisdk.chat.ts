@@ -111,6 +111,12 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
   }
 
   const { chat, workspace } = authorizedChat;
+  if (chat.agent) {
+    return Response.json(
+      { error: { message: "ACP chats use the Worker transport", code: 409 } },
+      { status: 409 },
+    );
+  }
   const workspaceId = workspace._id;
 
   const previousPerformance = getLastAssistantPerformance(body.messages);

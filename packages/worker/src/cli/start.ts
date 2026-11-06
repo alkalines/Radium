@@ -1,5 +1,6 @@
 import { recoverPendingIdentity } from "../auth/enrollment.js";
 import { readWorkerState } from "../auth/state.js";
+import { createGatewayKeyStore } from "../auth/gateway.js";
 import {
   connectWorkerControl,
   type WorkerControlConnection,
@@ -13,6 +14,13 @@ import { createBashExecutor } from "../bash/service.js";
 import { prepareTempDirectory, startPresenceReporter, type PresenceReporter } from "../presence.js";
 import type { CliOptions } from "./options.js";
 import { storageDescription } from "./prompt.js";
+import { convexAcpTransport } from "../acp/convex-transport.js";
+import { AcpHost } from "../acp/host.js";
+import {
+  convexLocalUsageTransport,
+  startLocalUsageSync,
+  type LocalUsageSync,
+} from "../usage/local-usage.js";
 
 const DISCONNECT_GUIDANCE: Record<WorkerControlDisconnectReason, string> = {
   connecting: "Opening the Convex connection.",
@@ -41,10 +49,14 @@ export async function startWorker(options: CliOptions): Promise<void> {
   let bash: ReturnType<typeof createBashExecutor> | undefined;
   let diagnosticsTimer: ReturnType<typeof setInterval> | undefined;
   let presence: PresenceReporter | undefined;
+  let acp: AcpHost | undefined;
+  let localUsage: LocalUsageSync | undefined;
   const close = async () => {
     clearInterval(diagnosticsTimer);
     presence?.close();
+    localUsage?.close();
     try {
+      await acp?.close();
       if (tasks) await tasks.close();
       else {
         await bash?.close();
@@ -62,6 +74,8 @@ export async function startWorker(options: CliOptions): Promise<void> {
     control = connectWorkerControl(state, (status) => {
       tasks?.setAvailable(status.status === "connected");
       presence?.setAvailable(status.status === "connected");
+      acp?.setAvailable(status.status === "connected");
+      localUsage?.setAvailable(status.status === "connected");
       const statusKey =
         status.status === "connected" ? "connected" : `disconnected:${status.reason}`;
       if (previousStatusKey === statusKey) return;
@@ -82,6 +96,15 @@ export async function startWorker(options: CliOptions): Promise<void> {
       tasks.setAvailable(previousStatusKey === "connected");
       console.info("Worker edit and Bash task consumer enabled.");
     }
+    acp = new AcpHost(convexAcpTransport(control.client), {
+      gateway: {
+        url: `${state.setup.backendUrl}/api/openai/v1`,
+        keys: createGatewayKeyStore(options.stateDirectory),
+      },
+    });
+    acp.setAvailable(previousStatusKey === "connected");
+    localUsage = startLocalUsageSync(convexLocalUsageTransport(control.client));
+    localUsage.setAvailable(previousStatusKey === "connected");
     await waitForShutdown(close);
   } catch (error) {
     await close().catch(() => undefined);

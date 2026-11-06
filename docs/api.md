@@ -30,6 +30,11 @@ credentials. New requests do not require prepaid credits or a Radium charge.
 Legacy balance keys remain usable through the bounded compatibility path while
 their workspace mapping and credential backfill are pending.
 
+Worker keys (tagged `Worker` in Gateway → API keys) are minted by a Worker for
+its ACP agents' [Gateway profiles](ACP/Agents.md#worker-gateway-key). A deleted
+Worker key is answered with `401` and a message naming the Worker, so an agent
+shows a readable error; other invalid keys get `The Authorization is invalid!`.
+
 ## List Models
 
 `GET /api/openai/v1/models`
@@ -114,7 +119,10 @@ provider without fallbacks, or an OpenRouter-compatible object:
 Supported fields are `order`, `allow_fallbacks`, `only`, `ignore`, and `sort`
 (`price`, `throughput`, `latency`, or `{ "by": … }`); slugs name the workspace's
 providers. Session affinity reads `session_id` from the body, client session
-headers such as `X-Session-ID`, or `prompt_cache_key`.
+headers such as `X-Session-ID`, or `prompt_cache_key`. The same id is stored on
+the completion, so a coding agent that sends its session id has its Gateway
+calls counted under that agent's session in Activity
+([Agents on the Gateway](observability.md#local-cli-usage-ccusage)).
 
 Provider-specific model IDs are internal catalogue configuration. API callers
 send the global Radium model slug returned by the models endpoint.

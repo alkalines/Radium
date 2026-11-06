@@ -1,0 +1,2275 @@
+/// <reference types="vite/client" />
+import { convexTest } from "convex-test";
+import { afterEach, expect, test, vi } from "vitest";
+import { exportJWK, generateKeyPair } from "jose";
+import { register } from "worker-component/test";
+import { api, components, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
+import type { QueryCtx } from "./_generated/server";
+import schema from "./schema";
+import { normalizeWorkerKey, tokenDigest, workerIssuer } from "../src/worker/auth";
+import {
+  ACP_COLD_AFTER_MS,
+  ACP_COMMAND_RETENTION_MS,
+  ACP_COMMAND_EXPIRY_MS,
+  ACP_INTERACTION_RETENTION_MS,
+  ACP_WARM_SESSIONS_MAX,
+  acpAnswerError,
+  type AcpAgentReport,
+  type AcpInteractionRequest,
+} from "../src/acp/contract";
+import { normalizeRegistryAgents } from "../src/acp/agents";
+import { ACP_AGENT_DEFINITIONS_MAX, type AcpAgentDefinition } from "../src/acp/contract";
+
+vi.mock("./auth", () => ({
+  authComponent: {
+    getAuthUser: async (ctx: QueryCtx) => {
+      const identity = await ctx.auth.getUserIdentity();
+      if (!identity || identity.kind === "worker") throw new Error("Not logged in");
+      return { _id: identity.subject };
+    },
+  },
+  createAuth: vi.fn(),
+}));
+
+const modules = import.meta.glob("./**/*.ts");
+const agent: AcpAgentReport = {
+  agentId: "test-agent",
+  name: "Test agent",
+  version: "1",
+  source: "custom",
+  status: "ready",
+  capabilities: {
+    loadSession: true,
+    list: true,
+    resume: true,
+    close: true,
+    delete: true,
+    fork: true,
+    logout: true,
+    image: false,
+    audio: false,
+    embeddedContext: false,
+    mcpHttp: false,
+    mcpSse: false,
+  },
+  authMethods: [{ id: "login", name: "Sign in", type: "agent" }],
+  defaults: {
+    config: {
+      options: [
+        {
+          id: "model",
+          name: "Model",
+          type: "select",
+          currentValue: "a",
+          choices: [
+            { value: "a", name: "A" },
+            { value: "b", name: "B" },
+          ],
+        },
+      ],
+      modes: { currentModeId: "code", available: [{ id: "code", name: "Code" }] },
+    },
+  },
+};
+const permission: AcpInteractionRequest = {
+  kind: "permission",
+  toolCallId: "read-1",
+  options: [
+    { optionId: "allow", name: "Allow", kind: "allow_once" },
+    { optionId: "reject", name: "Reject", kind: "reject_once" },
+  ],
+};
+const prompt = [{ type: "text" as const, text: "Hello" }];
+const frame = { seqFrom: 0, seqTo: 1, kind: "snapshot" as const, payload: "[]" };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  vi.useRealTimers();
+});
+
+async function fixture() {
+  vi.stubEnv("CONVEX_SITE_URL", "https://backend.example.invalid");
+  const t = convexTest(schema, modules);
+  register(t);
+  const workspace = await t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "ACP" }),
+  );
+  await t.run((ctx) =>
+    ctx.db.insert("workspace_members", { workspace, userId: "member", role: "member" }),
+  );
+  async function enroll(name: string) {
+    const tokenHash = await tokenDigest(name.padEnd(43, "_"));
+    const pair = await generateKeyPair("ES256", { extractable: true });
+    const publicKey = await normalizeWorkerKey(await exportJWK(pair.publicKey));
+    await t.run((ctx) =>
+      ctx.runMutation(components.workerIdentity.enrollment.createEnrollment, {
+        workspaceId: workspace,
+        name,
+        tokenHash,
+        expiresAt: Date.now() + 60_000,
+        capabilities: [],
+      }),
+    );
+    const identity = await t.run((ctx) =>
+      ctx.runMutation(components.workerIdentity.enrollment.completeEnrollment, {
+        workspaceId: workspace,
+        tokenHash,
+        requestId: tokenHash,
+        publicKey,
+      }),
+    );
+    const machine = t.withIdentity({
+      ...identity,
+      subject: identity.workerId,
+      kind: "worker",
+      issuer: workerIssuer("https://backend.example.invalid"),
+    });
+    await machine.mutation(api.acp.reportAgents, { agents: [agent] });
+    return { identity, machine };
+  }
+  const first = await enroll("first");
+  const second = await enroll("second");
+  const owner = t.withIdentity({ subject: "owner" });
+  const member = t.withIdentity({ subject: "member" });
+  const chat = await owner.mutation(api.acp.CreateSession, {
+    workspace,
+    worker: first.identity.workerId,
+    agentId: agent.agentId,
+    cwd: "/work",
+  });
+  return { t, workspace, first, second, owner, member, chat };
+}
+
+test("visible ACP Worker status includes identity and the latest machine heartbeat", async () => {
+  const f = await fixture();
+  expect(await f.owner.query(api.acp.WorkerStatus, { chat: f.chat })).toEqual({
+    name: "first",
+    lastSeenAt: null,
+  });
+  const before = Date.now();
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/acp" });
+  const status = await f.owner.query(api.acp.WorkerStatus, { chat: f.chat });
+  expect(status.name).toBe("first");
+  expect(status.lastSeenAt).toBeGreaterThanOrEqual(before);
+  expect(status.lastSeenAt).toBeLessThanOrEqual(Date.now());
+
+  await expect(f.member.query(api.acp.WorkerStatus, { chat: f.chat })).rejects.toThrow();
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { scope: "workspace" }));
+  expect(await f.member.query(api.acp.WorkerStatus, { chat: f.chat })).toEqual(status);
+});
+
+test("revoked or unknown ACP Workers have no display name", async () => {
+  const f = await fixture();
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/acp" });
+  await f.owner.mutation(api.workers.revoke, {
+    workspace: f.workspace,
+    workerId: f.first.identity.workerId,
+  });
+  expect(await f.owner.query(api.acp.WorkerStatus, { chat: f.chat })).toEqual({
+    name: null,
+    lastSeenAt: null,
+  });
+  await f.t.run(async (ctx) => {
+    const session = await ctx.db
+      .query("acp_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", f.chat))
+      .unique();
+    await ctx.db.patch(session!._id, { worker: "unknown-worker" });
+  });
+  expect(await f.owner.query(api.acp.WorkerStatus, { chat: f.chat })).toEqual({
+    name: null,
+    lastSeenAt: null,
+  });
+});
+
+test("chat listings use agent definition names, fall back to IDs and mark built-in chats null", async () => {
+  const f = await fixture();
+  const builtin = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+  });
+  const list = async () =>
+    (
+      await f.owner.query(api.aisdk.ListChats, {
+        workspace: f.workspace,
+        paginationOpts: { cursor: null, numItems: 50 },
+      })
+    ).page;
+  const chats = await list();
+  expect(chats.find((chat) => chat.id === f.chat)?.agent).toEqual({
+    agentId: agent.agentId,
+    name: agent.agentId,
+    worker: f.first.identity.workerId,
+    profile: "native",
+  });
+  expect(chats.find((chat) => chat.id === builtin)?.agent).toBeNull();
+  const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, agentId: agent.agentId, name: "Workspace agent name" },
+  });
+  const renamed = await list();
+  expect(renamed.find((chat) => chat.id === f.chat)?.agent).toEqual({
+    agentId: agent.agentId,
+    name: "Workspace agent name",
+    worker: f.first.identity.workerId,
+    profile: "native",
+  });
+  await f.owner.mutation(api.acp.DeleteAgentDefinition, { workspace: f.workspace, id });
+  const removed = await list();
+  expect(removed.find((chat) => chat.id === f.chat)?.agent?.name).toBe(agent.agentId);
+  expect((await f.owner.query(api.acp.GetSession, { chat: f.chat })).agent.agentId).toBe(
+    agent.agentId,
+  );
+});
+
+test("Home rows let every viewer of a shared ACP chat act on it; manager-only stays gated", async () => {
+  const f = await fixture();
+  const builtin = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+  });
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(f.chat, { scope: "workspace" });
+    await ctx.db.patch(builtin, { scope: "workspace" });
+  });
+  const rows = (
+    await f.member.query(api.aisdk.ListChats, {
+      workspace: f.workspace,
+      paginationOpts: { cursor: null, numItems: 50 },
+    })
+  ).page;
+  expect(rows.find((chat) => chat.id === f.chat)).toMatchObject({
+    canAct: true,
+    canManage: false,
+  });
+  expect(rows.find((chat) => chat.id === builtin)).toMatchObject({
+    canAct: false,
+    canManage: false,
+  });
+  await f.member.mutation(api.aisdk.SetChatPinned, { chatId: f.chat, pinned: true });
+  expect(
+    await f.member.query(api.aisdk.ListPinnedChats, { workspace: f.workspace }),
+  ).toMatchObject([{ id: f.chat, canAct: true, canManage: false }]);
+});
+
+test("ACP title generation authorizes viewers and skips titled or user-titled chats", async () => {
+  const f = await fixture();
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { title: "Agent title", emoji: "💡" }));
+  await expect(
+    f.owner.action(api.acp.GenerateTitle, { chat: f.chat, text: "  A first prompt  " }),
+  ).resolves.toBeNull();
+  expect(await f.t.run((ctx) => ctx.db.get(f.chat))).toMatchObject({
+    title: "Agent title",
+    emoji: "💡",
+  });
+  await expect(
+    f.member.action(api.acp.GenerateTitle, { chat: f.chat, text: "Private prompt" }),
+  ).rejects.toThrow();
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { scope: "workspace" }));
+  await expect(
+    f.member.action(api.acp.GenerateTitle, { chat: f.chat, text: "Shared prompt" }),
+  ).resolves.toBeNull();
+
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(f.chat, { title: undefined });
+    const session = await ctx.db
+      .query("acp_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", f.chat))
+      .unique();
+    await ctx.db.patch(session!._id, { userTitled: true });
+  });
+  expect(
+    await f.owner.query(internal.chatroom.acpTitleGenerationInfo, { chatId: f.chat }),
+  ).toBeNull();
+  await expect(
+    f.owner.action(api.acp.GenerateTitle, { chat: f.chat, text: "Do not retitle" }),
+  ).resolves.toBeNull();
+  expect(await f.t.run((ctx) => ctx.db.get(f.chat))).not.toHaveProperty("title");
+
+  const builtin = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+  });
+  await expect(
+    f.owner.action(api.acp.GenerateTitle, { chat: builtin, text: "Not an ACP chat" }),
+  ).rejects.toThrow(/ACP_NOT_ACP/);
+});
+
+test("opening an indexed agent session creates and links a personal chat while offline", async () => {
+  const f = await fixture();
+  const worker = f.first.identity.workerId;
+  const project = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "Code",
+    folders: [{ workerId: worker, directory: "/work" }],
+  });
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId: agent.agentId,
+    upserts: [
+      { sessionId: "outside-session", cwd: "/work", title: "Earlier work", updatedAt: 1234 },
+    ],
+    removals: [],
+    finish: { count: 1, truncated: false },
+  });
+  const binding = {
+    workspace: f.workspace,
+    worker,
+    agentId: agent.agentId,
+    sessionId: "outside-session",
+  };
+  const chat = await f.owner.mutation(api.acp.OpenAgentSession, binding);
+  expect(await f.t.run((ctx) => ctx.db.get(chat))).toMatchObject({
+    title: "Earlier work",
+    lastInteractionAt: 1234,
+    project,
+    scope: "personal",
+    agent: { sessionId: "outside-session", cwd: "/work" },
+  });
+  const rows = await f.owner.query(api.acp.ListAgentSessionIndex, {
+    workspace: f.workspace,
+    agentId: agent.agentId,
+    paginationOpts: { cursor: null, numItems: 30 },
+  });
+  expect(rows.page).toMatchObject([{ chat, project, sessionId: "outside-session" }]);
+  expect(
+    await f.owner.query(api.acp.SearchAgentSessionIndex, {
+      workspace: f.workspace,
+      agentId: agent.agentId,
+      query: "Earlier",
+    }),
+  ).toMatchObject([{ chat, project, sessionId: "outside-session" }]);
+  expect(await f.owner.mutation(api.acp.OpenAgentSession, binding)).toBe(chat);
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat,
+    patch: { sessionId: "outside-session", history: "full" },
+  });
+  await expect(
+    f.first.machine.mutation(api.acp.updateSession, {
+      chat,
+      patch: { sessionId: "other" },
+    }),
+  ).rejects.toThrow(/ACP_SESSION_BOUND/);
+  await expect(f.member.mutation(api.acp.OpenAgentSession, binding)).rejects.toThrow();
+  await expect(
+    f.member.query(api.acp.ListAgentSessionIndex, {
+      workspace: f.workspace,
+      agentId: agent.agentId,
+      paginationOpts: { cursor: null, numItems: 30 },
+    }),
+  ).rejects.toThrow();
+});
+
+test("an agent session binding is found among many other agents sharing its session id", async () => {
+  const f = await fixture();
+  const worker = f.first.identity.workerId;
+  const other = await f.owner.mutation(api.acp.CreateSession, {
+    workspace: f.workspace,
+    worker,
+    agentId: agent.agentId,
+    cwd: "/work",
+  });
+  await f.t.run(async (ctx) => {
+    const session = (chat: typeof f.chat, agentId: string) => ({
+      chat,
+      workspace: f.workspace,
+      worker,
+      agentId,
+      cwd: "/work",
+      sessionId: "shared",
+      status: "idle" as const,
+      epoch: 0,
+      warm: false,
+      updatedAt: 1,
+    });
+    for (let index = 0; index < 9; index++)
+      await ctx.db.insert("acp_sessions", session(other, `other-${index}`));
+    await ctx.db.insert("acp_sessions", session(other, agent.agentId));
+  });
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId: agent.agentId,
+    upserts: [{ sessionId: "shared", cwd: "/work", updatedAt: 1 }],
+    removals: [],
+  });
+  const [row] = (
+    await f.owner.query(api.acp.ListAgentSessionIndex, {
+      workspace: f.workspace,
+      agentId: agent.agentId,
+      paginationOpts: { cursor: null, numItems: 30 },
+    })
+  ).page;
+  expect(row).toMatchObject({ sessionId: "shared", chat: other });
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(row!._id, { chat: undefined });
+  });
+  await expect(
+    f.owner.mutation(api.acp.OpenAgentSession, {
+      workspace: f.workspace,
+      worker,
+      agentId: agent.agentId,
+      sessionId: "shared",
+    }),
+  ).rejects.toThrow(/ACP_SESSION_BOUND/);
+  await expect(
+    f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { sessionId: "shared" },
+    }),
+  ).rejects.toThrow(/ACP_SESSION_BOUND/);
+});
+
+test("the agent session index hides sessions linked to another member's personal chat", async () => {
+  const f = await fixture();
+  const worker = f.first.identity.workerId;
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(f.chat, { userId: "member" });
+    for (const [sessionId, chat] of [
+      ["private-session", f.chat],
+      ["unopened-session", undefined],
+    ] as const)
+      await ctx.db.insert("acp_agent_sessions", {
+        workspace: f.workspace,
+        worker,
+        agentId: agent.agentId,
+        sessionId,
+        cwd: "/work",
+        title: `Indexed ${sessionId}`,
+        updatedAt: 1,
+        chat,
+      });
+  });
+  const sessions = async () => ({
+    list: (
+      await f.owner.query(api.acp.ListAgentSessionIndex, {
+        workspace: f.workspace,
+        agentId: agent.agentId,
+        paginationOpts: { cursor: null, numItems: 30 },
+      })
+    ).page.map((row) => row.sessionId),
+    search: (
+      await f.owner.query(api.acp.SearchAgentSessionIndex, {
+        workspace: f.workspace,
+        agentId: agent.agentId,
+        query: "Indexed",
+      })
+    ).map((row) => row.sessionId),
+  });
+  expect(await sessions()).toEqual({ list: ["unopened-session"], search: ["unopened-session"] });
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { scope: "workspace" }));
+  const shared = await sessions();
+  expect(shared.list.sort()).toEqual(["private-session", "unopened-session"]);
+  expect(shared.search.sort()).toEqual(["private-session", "unopened-session"]);
+});
+
+test("Home lists unopened agent sessions by Project folder, either spelling, until opened", async () => {
+  const f = await fixture();
+  const first = f.first.identity.workerId;
+  const second = f.second.identity.workerId;
+  await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, agentId: agent.agentId },
+  });
+  await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, agentId: "disabled", enabled: false },
+  });
+  const project = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "Code",
+    folders: [
+      { workerId: first, directory: "/work/" },
+      { workerId: second, directory: "/repo" },
+    ],
+  });
+  const sync = (
+    machine: typeof f.first.machine,
+    agentId: string,
+    upserts: { sessionId: string; cwd: string; title: string; updatedAt: number }[],
+  ) =>
+    machine.mutation(api.acp.syncAgentSessions, {
+      agentId,
+      upserts,
+      removals: [],
+      finish: { count: upserts.length, truncated: false },
+    });
+  await sync(f.first.machine, agent.agentId, [
+    // Agents report a folder without its trailing separator; Radium-created ones keep the folder's.
+    { sessionId: "plain", cwd: "/work", title: "Plain", updatedAt: 1500 },
+    { sessionId: "older", cwd: "/work/", title: "Older", updatedAt: 1000 },
+    { sessionId: "elsewhere", cwd: "/other", title: "Elsewhere", updatedAt: 3000 },
+    { sessionId: "nested", cwd: "/work/sub", title: "Nested", updatedAt: 4000 },
+  ]);
+  // A session of a disabled agent the Worker indexed before it was disabled.
+  await f.t.run((ctx) =>
+    ctx.db.insert("acp_agent_sessions", {
+      workspace: f.workspace,
+      worker: first,
+      agentId: "disabled",
+      sessionId: "hidden",
+      cwd: "/work",
+      title: "Disabled agent",
+      updatedAt: 6000,
+    }),
+  );
+  // The same directory on another Worker is not this Project's folder there.
+  await sync(f.second.machine, agent.agentId, [
+    { sessionId: "newer", cwd: "/repo", title: "Newer", updatedAt: 2000 },
+    { sessionId: "wrong-worker", cwd: "/work", title: "Wrong Worker", updatedAt: 5000 },
+  ]);
+  const list = async (filter: Id<"projects"> | null | undefined, numItems = 50) =>
+    f.owner.query(api.acp.ListUnopenedAgentSessions, {
+      workspace: f.workspace,
+      project: filter,
+      paginationOpts: { cursor: null, numItems },
+    });
+  const ids = async (filter: Id<"projects"> | null | undefined) =>
+    (await list(filter)).page.map((row) => row.sessionId);
+
+  expect((await list(project)).page).toMatchObject([
+    { sessionId: "newer", worker: second, project, chat: null },
+    { sessionId: "plain", worker: first, project, chat: null },
+    { sessionId: "older", worker: first, project, chat: null },
+  ]);
+  expect(await ids(null)).toEqual(["wrong-worker", "nested", "elsewhere"]);
+  expect(await ids(undefined)).toEqual([
+    "wrong-worker",
+    "nested",
+    "elsewhere",
+    "newer",
+    "plain",
+    "older",
+  ]);
+  const firstPage = await list(undefined, 4);
+  const rest = await f.owner.query(api.acp.ListUnopenedAgentSessions, {
+    workspace: f.workspace,
+    paginationOpts: { cursor: firstPage.continueCursor, numItems: 4 },
+  });
+  expect([...firstPage.page, ...rest.page].map((row) => row.sessionId)).toEqual(
+    await ids(undefined),
+  );
+
+  const chat = await f.owner.mutation(api.acp.OpenAgentSession, {
+    workspace: f.workspace,
+    worker: first,
+    agentId: agent.agentId,
+    sessionId: "plain",
+  });
+  expect(await f.t.run((ctx) => ctx.db.get(chat))).toMatchObject({ project });
+  expect(await ids(project)).toEqual(["newer", "older"]);
+  expect(await ids(undefined)).not.toContain("plain");
+
+  await expect(
+    f.member.query(api.acp.ListUnopenedAgentSessions, {
+      workspace: f.workspace,
+      paginationOpts: { cursor: null, numItems: 50 },
+    }),
+  ).rejects.toThrow();
+});
+
+test("opening a stale linked index recreates its chat, but never duplicates an existing binding", async () => {
+  const f = await fixture();
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "bound" },
+  });
+  const binding = {
+    workspace: f.workspace,
+    worker: f.first.identity.workerId,
+    agentId: agent.agentId,
+    sessionId: "bound",
+  };
+  expect(await f.owner.mutation(api.acp.OpenAgentSession, binding)).toBe(f.chat);
+  const indexed = await f.t.run((ctx) => ctx.db.query("acp_agent_sessions").first());
+  await f.t.run((ctx) => ctx.db.patch(indexed!._id, { chat: undefined }));
+  await expect(f.owner.mutation(api.acp.OpenAgentSession, binding)).rejects.toThrow(
+    /ACP_SESSION_BOUND/,
+  );
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(indexed!._id, { chat: f.chat });
+    await ctx.db.delete(f.chat);
+    const session = await ctx.db
+      .query("acp_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", f.chat))
+      .first();
+    await ctx.db.delete(session!._id);
+  });
+  expect(await f.owner.mutation(api.acp.OpenAgentSession, binding)).not.toBe(f.chat);
+});
+
+test("new sessions always create fresh bindings and derive Project or temporary directories", async () => {
+  const f = await fixture();
+  const worker = f.first.identity.workerId;
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/agent" });
+  const project = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "Code",
+    folders: [{ workerId: worker, directory: "/projects/code" }],
+  });
+  const noFolder = await f.owner.mutation(api.projects.create, {
+    workspace: f.workspace,
+    name: "No folder",
+  });
+  for (const target of [
+    { project: undefined, cwd: undefined, expected: "/tmp/agent" },
+    { project, cwd: undefined, expected: "/projects/code" },
+    { project: noFolder, cwd: undefined, expected: "/tmp/agent" },
+    { project, cwd: "/explicit", expected: "/explicit" },
+  ]) {
+    const args = {
+      workspace: f.workspace,
+      worker,
+      agentId: agent.agentId,
+      project: target.project,
+      cwd: target.cwd,
+    };
+    const first = await f.owner.mutation(api.acp.CreateSession, args);
+    const second = await f.owner.mutation(api.acp.CreateSession, args);
+    expect(second).not.toBe(first);
+    const chat = await f.t.run((ctx) => ctx.db.get(first));
+    expect(chat?.agent?.cwd).toBe(target.expected);
+    expect(chat?.agent).not.toHaveProperty("sessionId");
+  }
+  await expect(
+    f.owner.mutation(api.acp.CreateSession, {
+      workspace: f.workspace,
+      worker,
+      agentId: agent.agentId,
+      cwd: "relative",
+    }),
+  ).rejects.toThrow("ACP_INVALID_CWD");
+});
+
+test("prompt admission is busy-aware, ended-aware and retry-idempotent; claim erases content", async () => {
+  const f = await fixture();
+  const command = await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "one" });
+  expect(await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "one" })).toBe(
+    command,
+  );
+  await expect(
+    f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "two" }),
+  ).rejects.toThrow("ACP_SESSION_BUSY");
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toMatchObject([
+    { _id: command, kind: "prompt", chat: f.chat },
+  ]);
+  const claimed = await f.first.machine.mutation(api.acp.claimCommand, { command });
+  expect(claimed?.payload).toEqual({ kind: "prompt", prompt });
+  expect(await f.t.run((ctx) => ctx.db.get(command))).not.toHaveProperty("payload");
+  expect(await f.first.machine.mutation(api.acp.claimCommand, { command })).toBeNull();
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { status: "ended" },
+  });
+  await expect(
+    f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "three" }),
+  ).rejects.toThrow("ACP_SESSION_ENDED");
+});
+
+test("personal chats stay private from workspace owners for prompt, watch, frames and answers", async () => {
+  const f = await fixture();
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { userId: "member" }));
+  await f.member.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "member" });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { status: "running" },
+  });
+  const interaction = await f.first.machine.mutation(api.acp.openInteraction, {
+    chat: f.chat,
+    requestKey: "permission",
+    request: permission,
+  });
+  await expect(
+    f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "owner" }),
+  ).rejects.toThrow();
+  await expect(
+    f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "owner" }),
+  ).rejects.toThrow();
+  await expect(
+    f.owner.query(api.chatroom.LiveFrames, { chat: f.chat, stream: "acp:1", fromSeq: 0 }),
+  ).rejects.toThrow();
+  await expect(
+    f.owner.mutation(api.acp.Answer, {
+      interaction,
+      answer: { kind: "permission", optionId: "allow" },
+    }),
+  ).rejects.toThrow();
+  expect(await f.member.mutation(api.chatroom.Watch, { chat: f.chat, tab: "member" })).toEqual({
+    warm: true,
+  });
+});
+
+test("machine-selected writes deny a different enrolled Worker", async () => {
+  const f = await fixture();
+  const command = await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "one" });
+  await expect(f.second.machine.mutation(api.acp.claimCommand, { command })).rejects.toThrow(
+    "ACP_DENIED",
+  );
+  await expect(
+    f.second.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 1, frames: [frame] }),
+  ).rejects.toThrow("ACP_DENIED");
+  await expect(
+    f.second.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { status: "running" },
+    }),
+  ).rejects.toThrow("ACP_DENIED");
+  await expect(f.owner.query(api.acp.assignedCommands, {})).rejects.toThrow();
+});
+
+test("frames enforce exact retries, conflicts, continuity, stale epochs and cold rejection", async () => {
+  const f = await fixture();
+  expect(await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 })).toEqual({
+    accepted: false,
+  });
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  expect(await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 })).toEqual({
+    accepted: true,
+  });
+  expect(await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 })).toEqual({
+    accepted: true,
+  });
+  const args = { chat: f.chat, epoch: 1, frames: [frame] };
+  expect(await f.first.machine.mutation(api.acp.appendFrames, args)).toEqual({
+    accepted: true,
+    bytes: 2,
+  });
+  expect(await f.first.machine.mutation(api.acp.appendFrames, args)).toEqual({
+    accepted: true,
+    bytes: 2,
+  });
+  await expect(
+    f.first.machine.mutation(api.acp.appendFrames, {
+      ...args,
+      frames: [{ ...frame, payload: "[1]" }],
+    }),
+  ).rejects.toThrow("ACP_FRAME_CONFLICT");
+  await expect(
+    f.first.machine.mutation(api.acp.appendFrames, {
+      ...args,
+      frames: [{ ...frame, seqFrom: 3, seqTo: 3 }],
+    }),
+  ).rejects.toThrow("ACP_FRAME_GAP");
+  expect(
+    await f.owner.query(api.chatroom.LiveFrames, { chat: f.chat, stream: "acp:1", fromSeq: 0 }),
+  ).toEqual([frame]);
+  await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 2 });
+  expect(await f.first.machine.mutation(api.acp.appendFrames, args)).toEqual({
+    accepted: false,
+    bytes: 0,
+  });
+  await expect(
+    f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 }),
+  ).rejects.toThrow("ACP_STALE_EPOCH");
+});
+
+test("watch warms; cooling removes transient content after five minutes but retains metadata", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  expect(await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" })).toEqual({
+    warm: true,
+  });
+  await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 });
+  await f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 1, frames: [frame] });
+  vi.setSystemTime(Date.now() + ACP_COLD_AFTER_MS + 1);
+  await f.t.mutation(internal.acp.coolSessions, {});
+  await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  expect(await f.owner.query(api.acp.GetSession, { chat: f.chat })).toMatchObject({
+    warm: false,
+    epoch: 1,
+  });
+  expect(
+    await f.owner.query(api.chatroom.LiveFrames, { chat: f.chat, stream: "acp:1", fromSeq: 0 }),
+  ).toEqual([]);
+  expect(await f.t.run((ctx) => ctx.db.query("chat_viewers").take(1))).toEqual([]);
+  expect(
+    await f.first.machine.mutation(api.acp.appendFrames, {
+      chat: f.chat,
+      epoch: 1,
+      frames: [frame],
+    }),
+  ).toEqual({ accepted: false, bytes: 0 });
+});
+
+test("a re-warm during cooling cleanup opens a fresh epoch the cleanup never touches", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 });
+  await f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 1, frames: [frame] });
+  vi.setSystemTime(Date.now() + ACP_COLD_AFTER_MS + 1);
+  await f.t.mutation(internal.acp.coolSessions, {});
+  // Re-warmed before the scheduled cleanup ran; the Worker never saw the cold flag.
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  const next = { ...frame, seqFrom: 2, seqTo: 2 };
+  await expect(
+    f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 1, frames: [next] }),
+  ).rejects.toThrow("ACP_STALE_EPOCH");
+  await expect(
+    f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 }),
+  ).rejects.toThrow("ACP_STALE_EPOCH");
+  expect(await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 2 })).toEqual({
+    accepted: true,
+  });
+  await f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 2, frames: [frame] });
+  await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  expect(
+    await f.owner.query(api.chatroom.LiveFrames, { chat: f.chat, stream: "acp:2", fromSeq: 0 }),
+  ).toEqual([frame]);
+  expect(
+    await f.owner.query(api.chatroom.LiveFrames, { chat: f.chat, stream: "acp:1", fromSeq: 0 }),
+  ).toEqual([]);
+});
+
+test("a Worker admits at most the warm-session cap, so its warm subscription is complete", async () => {
+  const f = await fixture();
+  const worker = f.first.identity.workerId;
+  await f.t.run(async (ctx) => {
+    for (let index = 0; index < ACP_WARM_SESSIONS_MAX - 1; index++) {
+      const chat = await ctx.db.insert("aisdk_chats", {
+        workspace: f.workspace,
+        userId: "owner",
+        scope: "personal",
+        agent: {
+          kind: "acp",
+          profile: "native",
+          worker,
+          agentId: agent.agentId,
+          agentVersion: "1",
+          cwd: "/work",
+        },
+        activeStream: false,
+      });
+      await ctx.db.insert("acp_sessions", {
+        chat,
+        workspace: f.workspace,
+        worker,
+        agentId: agent.agentId,
+        cwd: "/work",
+        status: "idle",
+        epoch: 0,
+        warm: true,
+        updatedAt: 1,
+      });
+    }
+  });
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  expect(await f.first.machine.query(api.acp.warmSessions, {})).toHaveLength(
+    ACP_WARM_SESSIONS_MAX,
+  );
+  // An already warm Session keeps its heartbeat and prompts.
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "warm" });
+  const cold = await f.owner.mutation(api.acp.CreateSession, {
+    workspace: f.workspace,
+    worker,
+    agentId: agent.agentId,
+    cwd: "/work",
+  });
+  await expect(f.owner.mutation(api.chatroom.Watch, { chat: cold, tab: "tab" })).rejects.toThrow(
+    "ACP_WORKER_BUSY",
+  );
+  await expect(
+    f.owner.mutation(api.acp.Prompt, { chat: cold, prompt, clientId: "cold" }),
+  ).rejects.toThrow("ACP_WORKER_BUSY");
+  // Another Worker's warm Sessions are counted separately.
+  const other = await f.owner.mutation(api.acp.CreateSession, {
+    workspace: f.workspace,
+    worker: f.second.identity.workerId,
+    agentId: agent.agentId,
+    cwd: "/work",
+  });
+  await f.owner.mutation(api.chatroom.Watch, { chat: other, tab: "tab" });
+});
+
+test("answers validate offered choices and first answer wins; resolving resumes the turn", async () => {
+  const f = await fixture();
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { status: "running" },
+  });
+  const args = { chat: f.chat, requestKey: "permission", request: permission };
+  const interaction = await f.first.machine.mutation(api.acp.openInteraction, args);
+  expect(await f.first.machine.mutation(api.acp.openInteraction, args)).toBe(interaction);
+  await expect(
+    f.owner.mutation(api.acp.Answer, {
+      interaction,
+      answer: { kind: "permission", optionId: "invented" },
+    }),
+  ).rejects.toThrow("ACP_INVALID_ANSWER");
+  await f.owner.mutation(api.acp.Answer, {
+    interaction,
+    answer: { kind: "permission", optionId: "allow" },
+  });
+  await expect(
+    f.owner.mutation(api.acp.Answer, {
+      interaction,
+      answer: { kind: "permission", optionId: "reject" },
+    }),
+  ).rejects.toThrow("ACP_INTERACTION_CLOSED");
+  expect(await f.first.machine.query(api.acp.answeredInteractions, {})).toMatchObject([
+    { _id: interaction, answer: { kind: "permission", optionId: "allow" } },
+  ]);
+  await f.first.machine.mutation(api.acp.resolveInteraction, { interaction, status: "resolved" });
+  expect(await f.owner.query(api.acp.GetSession, { chat: f.chat })).toMatchObject({
+    status: "running",
+  });
+});
+
+test("lifecycle mirrors boundaries, preserves user titles and writes the ACP session id once", async () => {
+  const f = await fixture();
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { status: "running", sessionId: "bound", title: "  Agent\n title " },
+  });
+  expect(await f.owner.query(api.aisdk.GetChat, { chatId: f.chat })).toMatchObject({
+    activeStream: true,
+    title: "Agent title",
+    agent: { sessionId: "bound" },
+  });
+  expect(await f.t.run((ctx) => ctx.db.query("acp_agent_sessions").first())).toMatchObject({
+    chat: f.chat,
+    sessionId: "bound",
+    cwd: "/work",
+    title: "Agent title",
+  });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { title: "Changed title" },
+  });
+  expect(await f.t.run((ctx) => ctx.db.query("acp_agent_sessions").first())).toMatchObject({
+    chat: f.chat,
+    title: "Changed title",
+  });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "bound" },
+  });
+  await expect(
+    f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { sessionId: "different" },
+    }),
+  ).rejects.toThrow("ACP_SESSION_BOUND");
+  await f.owner.mutation(api.aisdk.RenameChat, { chatId: f.chat, title: "My title" });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { status: "idle", stopReason: "cancelled", title: "Agent override" },
+  });
+  expect(await f.owner.query(api.aisdk.GetChat, { chatId: f.chat })).toMatchObject({
+    activeStream: false,
+    title: "My title",
+    interruption: { kind: "interrupted" },
+  });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { status: "failed", stopReason: "max_tokens", error: null },
+  });
+  expect(await f.owner.query(api.aisdk.GetChat, { chatId: f.chat })).toMatchObject({
+    interruption: { kind: "failed", message: "Output limit reached" },
+  });
+  await expect(
+    f.owner.mutation(api.aisdk.SetChatWorker, { chatId: f.chat, selection: null }),
+  ).rejects.toThrow("ACP_IMMUTABLE_BINDING");
+});
+
+test("recovery fails unknown claimed turns and interactions but preserves unclaimed prompts", async () => {
+  const f = await fixture();
+  const pendingChat = await f.owner.mutation(api.acp.CreateSession, {
+    workspace: f.workspace,
+    worker: f.first.identity.workerId,
+    agentId: agent.agentId,
+    cwd: "/work",
+  });
+  await f.owner.mutation(api.acp.Prompt, { chat: pendingChat, prompt, clientId: "pending" });
+  const command = await f.owner.mutation(api.acp.Prompt, {
+    chat: f.chat,
+    prompt,
+    clientId: "claimed",
+  });
+  await f.first.machine.mutation(api.acp.claimCommand, { command });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { status: "running" },
+  });
+  const interaction = await f.first.machine.mutation(api.acp.openInteraction, {
+    chat: f.chat,
+    requestKey: "p",
+    request: permission,
+  });
+  expect(await f.first.machine.mutation(api.acp.recoverWorker, {})).toEqual({ more: false });
+  expect(await f.owner.query(api.acp.GetCommand, { command })).toMatchObject({
+    status: "failed",
+    error: "Worker restarted",
+  });
+  expect(await f.owner.query(api.acp.GetSession, { chat: f.chat })).toMatchObject({
+    status: "failed",
+    error: "Worker restarted",
+  });
+  expect(await f.owner.query(api.acp.GetSession, { chat: pendingChat })).toMatchObject({
+    status: "starting",
+  });
+  expect(await f.t.run((ctx) => ctx.db.get(interaction))).toMatchObject({ status: "cancelled" });
+});
+
+test.each([false, true])(
+  "deleting a bound chat queues a surviving close/delete command (%s)",
+  async (deleteInAgent) => {
+    const f = await fixture();
+    vi.useFakeTimers();
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { sessionId: "bound" },
+    });
+    await f.owner.mutation(api.aisdk.DeleteChat, { chatId: f.chat, deleteInAgent });
+    await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    const rows = await f.first.machine.query(api.acp.assignedCommands, {});
+    expect(rows).toMatchObject([{ kind: deleteInAgent ? "delete" : "close", chat: null }]);
+    const claimed = await f.first.machine.mutation(api.acp.claimCommand, { command: rows[0]!._id });
+    expect(claimed?.payload).toMatchObject({
+      sessionId: "bound",
+      agentId: "test-agent",
+      cwd: "/work",
+    });
+    expect(await f.t.run((ctx) => ctx.db.get(f.chat))).toBeNull();
+    expect(await f.t.run((ctx) => ctx.db.query("acp_sessions").take(1))).toEqual([]);
+    const indexed = await f.t.run((ctx) => ctx.db.query("acp_agent_sessions").first());
+    if (deleteInAgent) expect(indexed).toBeNull();
+    else {
+      expect(indexed).toMatchObject({ sessionId: "bound" });
+      expect(indexed).not.toHaveProperty("chat");
+    }
+  },
+);
+
+test("pruning keeps fresh receipts and removes expired terminal content", async () => {
+  const f = await fixture();
+  const now = Date.now();
+  const rows = await f.t.run(async (ctx) => {
+    const binding = {
+      workspace: f.workspace,
+      worker: f.first.identity.workerId,
+      by: "owner",
+      kind: "cancel" as const,
+      status: "done" as const,
+    };
+    const expired = await ctx.db.insert("acp_commands", {
+      ...binding,
+      clientId: "expired",
+      finishedAt: now - ACP_COMMAND_RETENTION_MS - 1,
+    });
+    const fresh = await ctx.db.insert("acp_commands", {
+      ...binding,
+      clientId: "fresh",
+      finishedAt: now,
+    });
+    const interaction = await ctx.db.insert("acp_interactions", {
+      chat: f.chat,
+      workspace: f.workspace,
+      worker: f.first.identity.workerId,
+      requestKey: "old",
+      kind: "permission",
+      request: permission,
+      status: "resolved",
+      resolvedAt: now - ACP_INTERACTION_RETENTION_MS - 1,
+      createdAt: now - ACP_INTERACTION_RETENTION_MS - 2,
+    });
+    return { expired, fresh, interaction };
+  });
+  await f.t.mutation(internal.acp.prune, {});
+  expect(await f.t.run((ctx) => ctx.db.get(rows.expired))).toBeNull();
+  expect(await f.t.run((ctx) => ctx.db.get(rows.interaction))).toBeNull();
+  expect(await f.t.run((ctx) => ctx.db.get(rows.fresh))).not.toBeNull();
+});
+
+test("pruning expires stale agent-level sync commands without needing a chat", async () => {
+  const f = await fixture();
+  const command = await f.t.run((ctx) =>
+    ctx.db.insert("acp_commands", {
+      workspace: f.workspace,
+      worker: f.first.identity.workerId,
+      agentId: agent.agentId,
+      kind: "sync_sessions",
+      payload: { kind: "sync_sessions", agentId: agent.agentId },
+      clientId: "stale-sync",
+      by: "owner",
+      status: "pending",
+    }),
+  );
+  vi.useFakeTimers();
+  // A full second past expiry: convex-test creation times can lead the faked clock by a tick.
+  vi.setSystemTime(Date.now() + ACP_COMMAND_EXPIRY_MS + 1_000);
+  await f.t.mutation(internal.acp.prune, {});
+  expect(await f.t.run((ctx) => ctx.db.get(command))).toBeNull();
+});
+
+test("draft config validates advertised choices; live commands and results remain issuer-only", async () => {
+  const f = await fixture();
+  await expect(
+    f.owner.mutation(api.acp.SetConfig, { chat: f.chat, configId: "model", value: "wrong" }),
+  ).rejects.toThrow("ACP_INVALID_CONFIG");
+  await f.owner.mutation(api.acp.SetConfig, { chat: f.chat, configId: "model", value: "b" });
+  await f.owner.mutation(api.acp.SetMode, { chat: f.chat, modeId: "code" });
+  expect(await f.owner.query(api.acp.GetSession, { chat: f.chat })).toMatchObject({
+    draft: { config: [{ configId: "model", value: "b" }], modeId: "code" },
+  });
+  const command = await f.owner.mutation(api.acp.Authenticate, {
+    workspace: f.workspace,
+    worker: f.first.identity.workerId,
+    agentId: agent.agentId,
+    methodId: "login",
+    clientId: "login",
+  });
+  expect(await f.member.query(api.acp.GetCommand, { command })).toBeNull();
+  await expect(f.member.query(api.acp.ListAgents, { workspace: f.workspace })).rejects.toThrow();
+});
+
+test("draft choices made after the first prompt is claimed but before binding reach the Worker", async () => {
+  const f = await fixture();
+  await f.owner.mutation(api.acp.SetMode, { chat: f.chat, modeId: "code" });
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "first" });
+  const [queued] = await f.first.machine.query(api.acp.assignedCommands, {});
+  await f.first.machine.mutation(api.acp.claimCommand, { command: queued!._id });
+  await f.owner.mutation(api.acp.SetConfig, { chat: f.chat, configId: "model", value: "b" });
+  await f.owner.mutation(api.acp.SetMode, { chat: f.chat, modeId: "code" });
+  const commands = await f.first.machine.query(api.acp.assignedCommands, {});
+  expect(commands.map((command) => command.kind)).toEqual(["set_config", "set_mode"]);
+  expect(
+    (await f.first.machine.mutation(api.acp.claimCommand, { command: commands[0]!._id }))
+      ?.payload,
+  ).toEqual({ kind: "set_config", configId: "model", value: "b" });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "bound", status: "running" },
+  });
+  expect((await f.owner.query(api.acp.GetSession, { chat: f.chat })).draft).toBeUndefined();
+});
+
+test("history requests share an unfinished command and a retry after it finished asks again", async () => {
+  const f = await fixture();
+  await f.t.run(async (ctx) => {
+    const session = await ctx.db
+      .query("acp_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", f.chat))
+      .unique();
+    await ctx.db.patch(session!._id, { warm: true });
+  });
+  const request = () =>
+    f.owner.mutation(api.acp.RequestHistory, { chat: f.chat, epoch: 0, before: 10, limit: 20 });
+  await request();
+  await request();
+  const [first] = await f.first.machine.query(api.acp.assignedCommands, {});
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toHaveLength(1);
+  await f.first.machine.mutation(api.acp.claimCommand, { command: first!._id });
+  await request();
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.first.machine.mutation(api.acp.finishCommand, { command: first!._id, status: "failed" });
+  await request();
+  const retried = await f.first.machine.query(api.acp.assignedCommands, {});
+  expect(retried).toHaveLength(1);
+  expect(retried[0]!._id).not.toBe(first!._id);
+});
+
+test("agent session sync is online-only and debounces pending, claimed and fresh syncs", async () => {
+  const f = await fixture();
+  const args = { workspace: f.workspace, agentId: agent.agentId };
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.first.machine.mutation(api.workers.reportPresence, { tempDirectory: "/tmp/agent" });
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  let commands = await f.first.machine.query(api.acp.assignedCommands, {});
+  expect(commands).toHaveLength(1);
+  expect(commands[0]?.kind).toBe("sync_sessions");
+  const command = commands[0]!._id;
+  expect((await f.first.machine.mutation(api.acp.claimCommand, { command }))?.payload).toEqual({
+    kind: "sync_sessions",
+    agentId: agent.agentId,
+  });
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.first.machine.mutation(api.acp.finishCommand, { command, status: "done" });
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId: agent.agentId,
+    upserts: [],
+    removals: [],
+    finish: { count: 0, truncated: false },
+  });
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId: agent.agentId,
+    upserts: [],
+    removals: [],
+    start: true,
+  });
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.t.run(async (ctx) => {
+    const row = await ctx.db
+      .query("worker_agents")
+      .withIndex("by_worker_and_agentId", (q) =>
+        q
+          .eq("workspace", f.workspace)
+          .eq("worker", f.first.identity.workerId)
+          .eq("agentId", agent.agentId),
+      )
+      .first();
+    await ctx.db.patch(row!._id, {
+      sessionsSync: { status: "done", at: Date.now() - 60_001, count: 0, truncated: false },
+    });
+  });
+  await f.owner.mutation(api.acp.SyncAgentSessions, args);
+  commands = await f.first.machine.query(api.acp.assignedCommands, {});
+  expect(commands).toHaveLength(1);
+  expect(await f.second.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await expect(f.member.mutation(api.acp.SyncAgentSessions, args)).rejects.toThrow();
+});
+
+test("machine sync applies metadata diffs, keeps links and finishes state across agent reports", async () => {
+  const f = await fixture();
+  const agentId = agent.agentId;
+  const before = { sessionId: "one", cwd: "/one", title: "Original", updatedAt: 10 };
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId,
+    upserts: [before, { sessionId: "gone", cwd: "/gone", updatedAt: 1 }],
+    removals: [],
+    start: true,
+  });
+  expect(
+    (await f.owner.query(api.acp.ListAgents, { workspace: f.workspace })).find(
+      (row) => row.worker === f.first.identity.workerId,
+    )?.sessionsSync?.status,
+  ).toBe("running");
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "one", title: "Bound title" },
+  });
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId,
+    upserts: [
+      { sessionId: "one", cwd: "/changed", updatedAt: 20 },
+      { sessionId: "two", cwd: "/two", title: "Second", updatedAt: 30 },
+    ],
+    removals: ["gone"],
+    finish: { count: 2, truncated: false },
+  });
+  expect(await f.first.machine.query(api.acp.knownAgentSessions, { agentId })).toEqual([
+    { sessionId: "one", cwd: "/changed", updatedAt: 20 },
+    { sessionId: "two", cwd: "/two", title: "Second", updatedAt: 30 },
+  ]);
+  const linked = await f.t.run((ctx) =>
+    ctx.db
+      .query("acp_agent_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", f.chat))
+      .first(),
+  );
+  expect(linked).toMatchObject({ sessionId: "one", chat: f.chat });
+  expect(linked).not.toHaveProperty("title");
+  const { defaults: _defaults, ...probe } = agent;
+  expect(await f.first.machine.mutation(api.acp.reportAgents, { agents: [probe] })).toEqual({
+    [agentId]: agent.defaults,
+  });
+  expect(
+    (await f.owner.query(api.acp.ListAgents, { workspace: f.workspace })).find(
+      (row) => row.worker === f.first.identity.workerId,
+    ),
+  ).toMatchObject({
+    defaults: agent.defaults,
+    sessionsSync: { status: "done", count: 2, truncated: false },
+  });
+  await f.second.machine.mutation(api.acp.syncAgentSessions, {
+    agentId,
+    upserts: [{ sessionId: "one", cwd: "/other-worker", updatedAt: 40 }],
+    removals: [],
+    finish: { error: "Cannot list" },
+  });
+  expect(await f.first.machine.query(api.acp.knownAgentSessions, { agentId })).toHaveLength(2);
+  expect(await f.second.machine.query(api.acp.knownAgentSessions, { agentId })).toEqual([
+    { sessionId: "one", cwd: "/other-worker", updatedAt: 40 },
+  ]);
+});
+
+test("contract answers reject wrong kinds, undeclared or duplicate fields, and form bounds", () => {
+  expect(acpAnswerError(permission, { kind: "permission", optionId: "allow" })).toBeNull();
+  expect(acpAnswerError(permission, { kind: "elicitation", action: "cancel" })).not.toBeNull();
+  const form: AcpInteractionRequest = {
+    kind: "elicitation",
+    mode: "form",
+    message: "Pick",
+    required: ["choice"],
+    fields: [
+      { name: "choice", type: "string", choices: [{ value: "a" }] },
+      { name: "confirm", type: "boolean" },
+    ],
+  };
+  const accept = (content: { name: string; value: string | boolean }[]) =>
+    acpAnswerError(form, { kind: "elicitation", action: "accept", content });
+  expect(
+    accept([
+      { name: "choice", value: "a" },
+      { name: "confirm", value: true },
+    ]),
+  ).toBeNull();
+  expect(accept([])).not.toBeNull();
+  expect(accept([{ name: "choice", value: "b" }])).not.toBeNull();
+  expect(
+    accept([
+      { name: "choice", value: "a" },
+      { name: "choice", value: "a" },
+    ]),
+  ).not.toBeNull();
+  expect(
+    accept([
+      { name: "choice", value: "a" },
+      { name: "extra", value: true },
+    ]),
+  ).not.toBeNull();
+});
+
+const definition: AcpAgentDefinition = {
+  agentId: "configured-agent",
+  name: "Configured agent",
+  command: "test-acp",
+  args: ["--acp"],
+  env: [{ name: "AGENT_MODE", value: "code" }],
+  enabled: true,
+  source: "custom",
+};
+
+test("workspace owners create, sort, update and delete launch definitions", async () => {
+  const f = await fixture();
+  const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, name: "  Zebra  ", command: "  test-acp  " },
+  });
+  const alpha = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, agentId: "alpha", name: "Alpha" },
+  });
+  const rows = await f.owner.query(api.acp.ListAgentDefinitions, { workspace: f.workspace });
+  expect(rows.map((row) => row._id)).toEqual([alpha, id]);
+  expect(rows[1]).toMatchObject({ name: "Zebra", command: "test-acp" });
+  expect(rows[1]).not.toHaveProperty("workspace");
+  expect(rows[1]).not.toHaveProperty("_creationTime");
+  expect(rows[1]?.updatedAt).toBeTypeOf("number");
+  expect(
+    await f.owner.mutation(api.acp.SaveAgentDefinition, {
+      workspace: f.workspace,
+      id,
+      definition: { ...definition, name: "New name", enabled: false, args: ["changed"] },
+    }),
+  ).toBe(id);
+  expect(await f.owner.query(api.acp.ListAgentDefinitions, { workspace: f.workspace })).toEqual([
+    expect.objectContaining({ _id: alpha, name: "Alpha" }),
+    expect.objectContaining({ _id: id, name: "New name", enabled: false, args: ["changed"] }),
+  ]);
+  expect(
+    await f.owner.mutation(api.acp.DeleteAgentDefinition, { workspace: f.workspace, id }),
+  ).toBeNull();
+  expect(
+    await f.owner.query(api.acp.ListAgentDefinitions, { workspace: f.workspace }),
+  ).toHaveLength(1);
+});
+
+test("agent definitions reject members, foreign owners and foreign document IDs", async () => {
+  const f = await fixture();
+  const otherWorkspace = await f.t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "other", name: "Other" }),
+  );
+  const other = f.t.withIdentity({ subject: "other" });
+  const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition,
+  });
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+  for (const unauthorized of [f.member, other]) {
+    await expect(
+      unauthorized.query(api.acp.ListAgentDefinitions, { workspace: f.workspace }),
+    ).rejects.toThrow();
+    await expect(
+      unauthorized.mutation(api.acp.SaveAgentDefinition, { workspace: f.workspace, definition }),
+    ).rejects.toThrow();
+    await expect(
+      unauthorized.mutation(api.acp.SaveAgentDefinition, {
+        workspace: f.workspace,
+        id,
+        definition,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      unauthorized.mutation(api.acp.DeleteAgentDefinition, { workspace: f.workspace, id }),
+    ).rejects.toThrow();
+    await expect(
+      unauthorized.action(api.acp.RegistryAgents, { workspace: f.workspace }),
+    ).rejects.toThrow();
+  }
+  expect(fetchMock).not.toHaveBeenCalled();
+  await expect(
+    other.mutation(api.acp.SaveAgentDefinition, { workspace: otherWorkspace, id, definition }),
+  ).rejects.toThrow(/ACP_AGENT_NOT_FOUND/);
+  await expect(
+    other.mutation(api.acp.DeleteAgentDefinition, { workspace: otherWorkspace, id }),
+  ).rejects.toThrow(/ACP_AGENT_NOT_FOUND/);
+});
+
+test("agent definitions reject duplicate and changed IDs, unsafe env and malformed IDs", async () => {
+  const f = await fixture();
+  const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition,
+  });
+  await expect(
+    f.owner.mutation(api.acp.SaveAgentDefinition, { workspace: f.workspace, definition }),
+  ).rejects.toThrow(/ACP_AGENT_EXISTS/);
+  await expect(
+    f.owner.mutation(api.acp.SaveAgentDefinition, {
+      workspace: f.workspace,
+      id,
+      definition: { ...definition, agentId: "changed" },
+    }),
+  ).rejects.toThrow(/ACP_INVALID_AGENT/);
+  for (const invalid of [
+    { ...definition, agentId: "bad id" },
+    { ...definition, env: [{ name: "PATH", value: "/tmp/bin" }] },
+  ]) {
+    await expect(
+      f.owner.mutation(api.acp.SaveAgentDefinition, {
+        workspace: f.workspace,
+        definition: invalid,
+      }),
+    ).rejects.toThrow(/ACP_INVALID_AGENT/);
+    await expect(
+      f.owner.mutation(api.acp.SaveAgentDefinition, {
+        workspace: f.workspace,
+        id,
+        definition: invalid,
+      }),
+    ).rejects.toThrow(/ACP_INVALID_AGENT/);
+  }
+  expect(
+    await f.owner.query(api.acp.ListAgentDefinitions, { workspace: f.workspace }),
+  ).toHaveLength(1);
+});
+
+test("definition capacity is per workspace and updates still work at capacity", async () => {
+  const f = await fixture();
+  const ids = await f.t.run(async (ctx) => {
+    const ids = [];
+    for (let index = 0; index < ACP_AGENT_DEFINITIONS_MAX; index++) {
+      ids.push(
+        await ctx.db.insert("acp_agents", {
+          workspace: f.workspace,
+          ...definition,
+          agentId: `agent-${index}`,
+          updatedAt: Date.now(),
+        }),
+      );
+    }
+    return ids;
+  });
+  await expect(
+    f.owner.mutation(api.acp.SaveAgentDefinition, { workspace: f.workspace, definition }),
+  ).rejects.toThrow(/ACP_INVALID_AGENT/);
+  await expect(
+    f.owner.mutation(api.acp.SaveAgentDefinition, {
+      workspace: f.workspace,
+      id: ids[0],
+      definition: { ...definition, agentId: "agent-0", name: "Updated" },
+    }),
+  ).resolves.toBe(ids[0]);
+  expect(await f.first.machine.query(api.acp.agentDefinitions, {})).toHaveLength(
+    ACP_AGENT_DEFINITIONS_MAX,
+  );
+});
+
+test("machine definition subscriptions expose only enabled definitions in their workspace", async () => {
+  const f = await fixture();
+  await f.owner.mutation(api.acp.SaveAgentDefinition, { workspace: f.workspace, definition });
+  await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition: { ...definition, agentId: "disabled", enabled: false },
+  });
+  const foreignWorkspace = await f.t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "foreign", name: "Foreign" }),
+  );
+  await f.t.withIdentity({ subject: "foreign" }).mutation(api.acp.SaveAgentDefinition, {
+    workspace: foreignWorkspace,
+    definition: { ...definition, name: "Foreign agent" },
+  });
+  expect(await f.first.machine.query(api.acp.agentDefinitions, {})).toEqual([definition]);
+  expect(await f.second.machine.query(api.acp.agentDefinitions, {})).toEqual([definition]);
+  await expect(f.owner.query(api.acp.agentDefinitions, {})).rejects.toThrow(/WORKER_AUTH_DENIED/);
+});
+
+const registryFixture = {
+  version: "1",
+  agents: [
+    {
+      id: "npm-agent",
+      name: "Npm agent",
+      version: "1.2.3",
+      description: "An npm agent",
+      icon: "https://example.invalid/icon.svg",
+      distribution: {
+        npx: { package: "@example/agent@1.2.3", args: ["--acp"], env: { MODE: "code" } },
+      },
+    },
+    {
+      id: "python-agent",
+      name: "Python agent",
+      version: "2",
+      distribution: { uvx: { package: "agent==2", args: ["acp"] } },
+    },
+    {
+      id: "binary-agent",
+      name: "Binary agent",
+      version: "3",
+      distribution: {
+        binary: {
+          "windows-x86_64": { cmd: "bin\\\\agent.exe", args: ["acp"] },
+          "linux-x86_64": { cmd: "./bin/agent", args: ["acp"] },
+        },
+      },
+    },
+    { id: "bad id", name: "Invalid", version: "1", distribution: { npx: { package: "bad@1" } } },
+    { id: "no-launch", name: "Invalid", version: "1", distribution: {} },
+    {
+      id: "bad-args",
+      name: "Invalid",
+      version: "1",
+      distribution: { uvx: { package: "bad", args: [2] } },
+    },
+    {
+      id: "bad-env",
+      name: "Invalid",
+      version: "1",
+      distribution: { npx: { package: "bad", env: { PATH: "/tmp" } } },
+    },
+    {
+      id: "bad-package",
+      name: "Invalid",
+      version: "1",
+      distribution: { npx: { package: "--eval=bad" } },
+    },
+    { id: "no-version", name: "Invalid", distribution: { npx: { package: "bad" } } },
+    null,
+  ],
+};
+
+test("registry normalization handles npx, uvx and binary PATH hints and skips invalid entries", () => {
+  expect(normalizeRegistryAgents(registryFixture)).toEqual([
+    {
+      id: "npm-agent",
+      name: "Npm agent",
+      version: "1.2.3",
+      description: "An npm agent",
+      icon: "https://example.invalid/icon.svg",
+      launch: {
+        command: "npx",
+        args: ["-y", "@example/agent@1.2.3", "--acp"],
+        env: [{ name: "MODE", value: "code" }],
+      },
+    },
+    {
+      id: "python-agent",
+      name: "Python agent",
+      version: "2",
+      launch: { command: "uvx", args: ["agent==2", "acp"], env: [] },
+    },
+    {
+      id: "binary-agent",
+      name: "Binary agent",
+      version: "3",
+      pathCommand: { command: "agent", args: ["acp"] },
+    },
+  ]);
+  expect(normalizeRegistryAgents(null)).toEqual([]);
+  expect(normalizeRegistryAgents({ agents: [] })).toEqual([]);
+  expect(
+    normalizeRegistryAgents({
+      version: "1",
+      agents: Array.from({ length: 201 }, (_, index) => ({
+        ...registryFixture.agents[0],
+        id: `agent-${index}`,
+      })),
+    }),
+  ).toHaveLength(200);
+});
+
+test("owner registry actions fetch and normalize on demand without a Worker", async () => {
+  const f = await fixture();
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(registryFixture)));
+  vi.stubGlobal("fetch", fetchMock);
+  expect(await f.owner.action(api.acp.RegistryAgents, { workspace: f.workspace })).toEqual(
+    normalizeRegistryAgents(registryFixture),
+  );
+  expect(fetchMock).toHaveBeenCalledWith(
+    "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
+});
+
+test("registry actions reject responses exceeding one MiB while streaming", async () => {
+  const f = await fixture();
+  const cancel = vi.fn();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+          },
+          cancel,
+        }),
+      ),
+    ),
+  );
+  await expect(f.owner.action(api.acp.RegistryAgents, { workspace: f.workspace })).rejects.toThrow(
+    /1 MiB/,
+  );
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
+test("turn usage is recorded once per prompt, priced from models.dev, and shown in Activity", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  const fetch = vi.fn().mockImplementation(
+    async () =>
+      new Response(
+        JSON.stringify({
+          anthropic: {
+            id: "anthropic",
+            name: "Anthropic",
+            models: {
+              "claude-sonnet-4-5": {
+                id: "claude-sonnet-4-5",
+                name: "Claude Sonnet 4.5",
+                cost: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 },
+              },
+            },
+          },
+        }),
+      ),
+  );
+  vi.stubGlobal("fetch", fetch);
+
+  async function turn(clientId: string) {
+    const command = await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId });
+    await f.first.machine.mutation(api.acp.claimCommand, { command });
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { status: "running" },
+    });
+    const patch = {
+      status: "idle" as const,
+      stopReason: "end_turn" as const,
+      turnUsage: { inputTokens: 1_000_000, outputTokens: 100_000, totalTokens: 1_100_000 },
+      turn: {
+        command,
+        startedAt: Date.now(),
+        model: { id: "default", name: "Default", description: "Currently Claude Sonnet 4.5" },
+        // A subscription agent reports nothing spent; owners still see the list-price estimate.
+        cost: { amount: 0, currency: "USD" },
+      },
+    };
+    await f.first.machine.mutation(api.acp.updateSession, { chat: f.chat, patch });
+    // A retried patch whose receipt was lost must not count the turn twice.
+    await f.first.machine.mutation(api.acp.updateSession, { chat: f.chat, patch });
+    await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  }
+  await turn("one");
+  await turn("two");
+
+  // One catalogue lookup serves every later turn of the same model.
+  expect(fetch).toHaveBeenCalledOnce();
+  const rows = await f.t.run((ctx) => ctx.db.query("acp_usage").collect());
+  expect(rows).toHaveLength(2);
+  for (const row of rows) {
+    expect(row.pricing).toMatchObject({ status: "priced", source: "models.dev", reportedCost: 0 });
+    expect(row.pricing.cost).toBeCloseTo(3 + 1.5);
+  }
+  const sessionCost = await f.owner.query(api.agent_usage.GetChatCost, { chat: f.chat });
+  expect(sessionCost).toMatchObject({ steps: 2, unknown: 0, pending: 0 });
+  expect(sessionCost?.cost).toBeCloseTo(9);
+
+  const all = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  expect(all.summary).toMatchObject({ agentTurns: 2, requests: 0 });
+  expect(all.summary.agentCost).toBeCloseTo(9);
+  expect(all.harnesses).toMatchObject([{ id: "acp:test-agent", kind: "agent", turns: 2 }]);
+  expect(all.projects).toMatchObject([{ id: "none", turns: 2 }]);
+  expect(all.models).toMatchObject([{ name: "Claude Sonnet 4.5", turns: 2 }]);
+
+  const gatewayOnly = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+    sources: "gateway",
+  });
+  expect(gatewayOnly.summary).toMatchObject({ agentTurns: 0, spend: 0 });
+
+  // Another user's personal ACP chat stays out of the owner's Activity.
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { userId: "member" }));
+  const hidden = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  expect(hidden.summary.agentTurns).toBe(0);
+});
+
+test("a model choice whose description changes is matched again, not priced from the old match", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  const model = (id: string, name: string, input: number) => ({
+    id,
+    name,
+    cost: { input, output: 0 },
+  });
+  const fetch = vi.fn().mockImplementation(
+    async () =>
+      new Response(
+        JSON.stringify({
+          anthropic: {
+            id: "anthropic",
+            name: "Anthropic",
+            models: {
+              "claude-sonnet-4-5": model("claude-sonnet-4-5", "Claude Sonnet 4.5", 3),
+              "claude-opus-4-1": model("claude-opus-4-1", "Claude Opus 4.1", 15),
+            },
+          },
+        }),
+      ),
+  );
+  vi.stubGlobal("fetch", fetch);
+
+  async function turn(clientId: string, description: string) {
+    const command = await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId });
+    await f.first.machine.mutation(api.acp.claimCommand, { command });
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { status: "running" },
+    });
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: {
+        status: "idle",
+        stopReason: "end_turn",
+        turnUsage: { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+        turn: {
+          command,
+          startedAt: Date.now(),
+          model: { id: "default", name: "Default", description },
+        },
+      },
+    });
+    await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  }
+  await turn("one", "Currently Claude Sonnet 4.5");
+  // The `default` alias now points at another model.
+  await turn("two", "Currently Claude Opus 4.1");
+
+  expect(fetch).toHaveBeenCalledTimes(2);
+  const rows = await f.t.run((ctx) => ctx.db.query("acp_usage").collect());
+  expect(rows.map((row) => [row.pricing.modelName, row.pricing.cost])).toEqual([
+    ["Claude Sonnet 4.5", 3],
+    ["Claude Opus 4.1", 15],
+  ]);
+});
+
+test("local ccusage rows replace the turns they cover, per session, and place terminal sessions", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            anthropic: {
+              id: "anthropic",
+              name: "Anthropic",
+              models: {
+                "claude-sonnet-4-5": {
+                  id: "claude-sonnet-4-5",
+                  name: "Claude Sonnet 4.5",
+                  cost: { input: 3, output: 15 },
+                },
+              },
+            },
+          }),
+        ),
+    ),
+  );
+  const worker = f.first.identity.workerId;
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "ses-chat" },
+  });
+  async function turn(clientId: string) {
+    const command = await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId });
+    await f.first.machine.mutation(api.acp.claimCommand, { command });
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { status: "running" },
+    });
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: {
+        status: "idle",
+        stopReason: "end_turn",
+        turnUsage: { inputTokens: 1_000_000, outputTokens: 100_000, totalTokens: 1_100_000 },
+        turn: {
+          command,
+          startedAt: Date.now(),
+          model: { id: "default", name: "Default", description: "Currently Claude Sonnet 4.5" },
+        },
+      },
+    });
+    await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  }
+  const local = (sessionId: string, cost?: number) => ({
+    agent: "opencode",
+    sessionId,
+    lastActivity: Date.now(),
+    totalTokens: 1000,
+    models: [
+      {
+        model: "claude-sonnet-4-5",
+        inputTokens: 1000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        ...(cost === undefined ? {} : { cost }),
+      },
+    ],
+  });
+
+  // A terminal session the agent indexed in a Project folder, and one Radium knows nothing about.
+  const project = await f.t.run(async (ctx) => {
+    const id = await ctx.db.insert("projects", {
+      workspace: f.workspace,
+      userId: "owner",
+      name: "Repo",
+      folders: [{ workerId: worker, directory: "/repo" }],
+    });
+    // An ACP agent definition that runs the OpenCode CLI ccusage reads.
+    await ctx.db.insert("acp_agents", {
+      workspace: f.workspace,
+      agentId: "opencode",
+      name: "OpenCode",
+      command: "opencode",
+      args: ["acp"],
+      env: [],
+      enabled: true,
+      source: "registry",
+      updatedAt: Date.now(),
+    });
+    await ctx.db.insert("acp_agent_sessions", {
+      workspace: f.workspace,
+      worker,
+      agentId: "test-agent",
+      sessionId: "ses-terminal",
+      cwd: "/repo",
+      title: "Terminal work",
+      updatedAt: Date.now(),
+    });
+    return id;
+  });
+
+  await turn("before-sync");
+  // Functions run on the real clock: ccusage reads the logs just after the first turn ended.
+  const first = (await f.t.run((ctx) => ctx.db.query("acp_usage").first()))!;
+  await f.first.machine.mutation(api.agent_usage.reportLocalUsage, {
+    day: new Date(first.endedAt).toISOString().slice(0, 10),
+    syncedAt: first.endedAt + 1,
+    rows: [local("ses-chat", 0.5), local("ses-terminal", 2), local("ses-unknown")],
+  });
+  await turn("after-sync");
+
+  const activity = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  // The first turn is inside ccusage's row; the second ended after that read and still counts.
+  // ccusage's own costs stay as reported; the model it could not price gets Radium's models.dev
+  // rate ($3 per million input tokens × 1,000 tokens). Agent usage is one figure wherever it ran.
+  expect(activity.summary).toMatchObject({ agentTurns: 1, localSessions: 3, unknownCostTurns: 0 });
+  expect(activity.summary.agentCost).toBeCloseTo(0.5 + 4.5 + 2 + 0.003);
+  // The indexed terminal session joins its agent's row; an unindexed one joins the agent whose
+  // definition runs that CLI.
+  expect(activity.harnesses).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: "acp:test-agent", turns: 1, sessions: 2 }),
+      expect.objectContaining({ id: "acp:opencode", name: "OpenCode", sessions: 1 }),
+    ]),
+  );
+  expect(activity.projects).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: project, sessions: 1 }),
+      expect.objectContaining({ id: "none", name: "No project", turns: 1, sessions: 2 }),
+    ]),
+  );
+
+  const sessionCost = await f.owner.query(api.agent_usage.GetChatCost, { chat: f.chat });
+  expect(sessionCost?.cost).toBeCloseTo(0.5 + 4.5);
+
+  // A later read with the same totals still advances coverage: the second turn's tokens were
+  // already in these rows, so it stops counting on its own.
+  const second = (await f.t.run((ctx) => ctx.db.query("acp_usage").order("desc").first()))!;
+  await f.first.machine.mutation(api.agent_usage.reportLocalUsage, {
+    day: new Date(second.endedAt).toISOString().slice(0, 10),
+    syncedAt: second.endedAt + 1,
+    rows: [local("ses-chat", 0.5), local("ses-terminal", 2), local("ses-unknown")],
+  });
+  const reread = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  expect(reread.summary).toMatchObject({ agentTurns: 0, localSessions: 3 });
+  expect(reread.summary.agentCost).toBeCloseTo(0.5 + 2 + 0.003);
+});
+
+test("an agent's Gateway calls join its session and replace its local rows and turns that day", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation(async () => new Response("{}")),
+  );
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "ses-chat" },
+  });
+  const command = await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "one" });
+  await f.first.machine.mutation(api.acp.claimCommand, { command });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { status: "running" },
+  });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: {
+      status: "idle",
+      stopReason: "end_turn",
+      turnUsage: { inputTokens: 1000, outputTokens: 100, totalTokens: 1100 },
+      turn: { command, startedAt: Date.now(), cost: { amount: 7, currency: "USD" } },
+    },
+  });
+  await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  const turn = (await f.t.run((ctx) => ctx.db.query("acp_usage").first()))!;
+  const day = new Date(turn.endedAt).toISOString().slice(0, 10);
+
+  const local = (sessionId: string, cost: number) => ({
+    agent: "opencode",
+    sessionId,
+    lastActivity: Date.now(),
+    totalTokens: 1000,
+    models: [
+      {
+        model: "glm-5",
+        inputTokens: 1000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        cost,
+      },
+    ],
+  });
+  await f.first.machine.mutation(api.agent_usage.reportLocalUsage, {
+    day,
+    syncedAt: turn.endedAt - 1,
+    rows: [local("ses-chat", 0.5), local("ses-terminal", 2), local("ses-other", 3)],
+  });
+
+  await f.t.run(async (ctx) => {
+    await ctx.db.insert("acp_agents", {
+      workspace: f.workspace,
+      agentId: "opencode",
+      name: "OpenCode",
+      command: "opencode",
+      args: ["acp"],
+      env: [],
+      enabled: true,
+      source: "registry",
+      updatedAt: Date.now(),
+    });
+    const apiKey = await ctx.db.insert("api_keys", {
+      workspace: f.workspace,
+      name: "OpenCode",
+      hash: "api-hash",
+      preview: "rad-sk-...code",
+    });
+    const author = await ctx.db.insert("authors", { name: "Test", slug: "test" });
+    const model = await ctx.db.insert("models", {
+      name: "Model",
+      launch_date: 0,
+      author,
+      slug: "test/model",
+      type: "chat",
+      description: "",
+      reasoning: false,
+      features: {},
+      architecture: { input_modalities: ["text"], output_modalities: ["text"], tokenizer: "GPT" },
+    });
+    // OpenCode sends its session id as `x-session-id`; a client with an unrelated id stays API.
+    for (const [clientSession, cost] of [
+      ["ses-chat", 0.25],
+      ["ses-terminal", 0.1],
+      ["unrelated", 1],
+    ] as const) {
+      await ctx.db.insert("chat_completions", {
+        bill: { workspace: f.workspace, apiKey },
+        clientSession,
+        request: { provider: "plain", byok: true, model, streamed: false, canceled: false },
+        response: {
+          genId: "gen",
+          providerGenId: "upstream",
+          usage: {
+            prompt_tokens: 10,
+            completion_tokens: 10,
+            completion_tokens_details: {},
+            prompt_tokens_details: {},
+          },
+          pricing: {
+            prompt_tokens: cost / 2,
+            completion_tokens: cost / 2,
+            prompt_tokens_details: { cached_tokens: 0 },
+            cost,
+          },
+          ttft: 1,
+          gen_time: 1,
+          finish_reason: "stop",
+        },
+      });
+    }
+  });
+
+  const activity = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  // The turn and both tagged sessions' ccusage rows are replaced by the exact Gateway figures.
+  expect(activity.summary).toMatchObject({ requests: 3, agentTurns: 0, localSessions: 1 });
+  expect(activity.summary.gatewayCost).toBeCloseTo(1.35);
+  expect(activity.summary.agentCost).toBeCloseTo(3);
+  expect(activity.harnesses).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: "acp:test-agent", requests: 1, turns: 0 }),
+      expect.objectContaining({ id: "acp:opencode", requests: 1, sessions: 1 }),
+      expect.objectContaining({ id: "api", requests: 1 }),
+    ]),
+  );
+  const byId = Object.fromEntries(activity.harnesses.map((harness) => [harness.id, harness.cost]));
+  expect(byId["acp:test-agent"]).toBeCloseTo(0.25);
+  expect(byId["acp:opencode"]).toBeCloseTo(3.1);
+  expect(activity.projects).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: "none", requests: 2, sessions: 1 }),
+      expect.objectContaining({ id: "outside", requests: 1 }),
+    ]),
+  );
+
+  const sessionCost = await f.owner.query(api.agent_usage.GetChatCost, { chat: f.chat });
+  expect(sessionCost).toMatchObject({ steps: 1, unknown: 0, pending: 0 });
+  expect(sessionCost?.cost).toBeCloseTo(0.25);
+
+  // Once the chat is another member's private chat, its session's Gateway calls leave Activity
+  // instead of falling back to plain API traffic.
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { userId: "member" }));
+  const hidden = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  expect(hidden.summary.requests).toBe(2);
+  expect(hidden.summary.gatewayCost).toBeCloseTo(1.1);
+  expect(hidden.harnesses).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: "api", requests: 1 })]),
+  );
+  expect(hidden.harnesses).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: "acp:test-agent" })]),
+  );
+});
+
+test("Worker Gateway access lifecycle mints secrets only in the response and cascades revocation", async () => {
+  const f = await fixture();
+  const target = { workspace: f.workspace, workerId: f.first.identity.workerId };
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "off" });
+  await expect(f.first.machine.mutation(api.acp.mintGatewayKey, {})).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  await expect(f.owner.mutation(api.workers.issueGatewayKey, target)).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  await expect(
+    f.member.mutation(api.workers.setGatewayAccess, { ...target, enabled: true }),
+  ).rejects.toThrow();
+  await f.owner.mutation(api.workers.setGatewayTelemetry, { ...target, telemetry: "off" });
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "off" });
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: true });
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "pending" });
+  const first = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  expect(first.key).toMatch(/^rad-sk-/);
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({
+    access: "active",
+    keyId: first.keyId,
+  });
+  expect(await f.t.query(api.keys.getKeyInfo, { key: first.key })).toMatchObject({
+    apiKey: first.keyId,
+    telemetry: "off",
+  });
+  const stored = await f.t.run(async (ctx) => ({
+    key: await ctx.db.get(first.keyId),
+    state: await ctx.db.query("worker_gateway").first(),
+    commands: await ctx.db.query("acp_commands").collect(),
+  }));
+  expect(JSON.stringify(stored)).not.toContain(first.key);
+  expect(stored.key).toMatchObject({ worker: target.workerId, name: "first", telemetry: "off" });
+  expect(
+    (await f.owner.query(api.workers.list, { workspace: f.workspace })).find(
+      (worker) => worker.workerId === target.workerId,
+    )?.gateway,
+  ).toEqual({ access: "active", telemetry: "off" });
+  expect((await f.owner.query(api.keys.listKeys, { workspace: f.workspace }))[0]).toMatchObject({
+    worker: { id: target.workerId, name: "first" },
+    telemetry: "off",
+  });
+  await expect(
+    f.owner.mutation(api.keys.setKeyTelemetry, { key: first.keyId, telemetry: "workspace" }),
+  ).rejects.toThrow("Set Gateway telemetry for this key on its Worker");
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: true });
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({
+    access: "active",
+    keyId: first.keyId,
+  });
+  const second = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  expect(second.keyId).not.toBe(first.keyId);
+  expect((await f.t.run((ctx) => ctx.db.get(first.keyId)))?.revokedAt).toBeDefined();
+  await f.owner.mutation(api.keys.deleteKey, { key: second.keyId });
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "missing" });
+  await expect(f.first.machine.mutation(api.acp.mintGatewayKey, {})).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  await expect(f.t.query(api.keys.getKeyInfo, { key: second.key })).rejects.toThrow(
+    "The Gateway key of Worker first was deleted.",
+  );
+  await f.owner.mutation(api.workers.issueGatewayKey, target);
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "pending" });
+  const third = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  await f.owner.mutation(api.workers.setGatewayTelemetry, { ...target, telemetry: "workspace" });
+  expect(await f.t.query(api.keys.getKeyInfo, { key: third.key })).toMatchObject({
+    telemetry: "workspace",
+  });
+  await f.owner.mutation(api.workers.issueGatewayKey, target);
+  expect((await f.t.run((ctx) => ctx.db.get(third.keyId)))?.revokedAt).toBeDefined();
+  const fourth = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: false });
+  expect(await f.first.machine.query(api.acp.gatewayState, {})).toEqual({ access: "off" });
+  expect((await f.t.run((ctx) => ctx.db.get(fourth.keyId)))?.revokedAt).toBeDefined();
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: true });
+  const fifth = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  await f.owner.mutation(api.workers.revoke, target);
+  expect((await f.t.run((ctx) => ctx.db.get(fifth.keyId)))?.revokedAt).toBeDefined();
+  expect(await f.t.run((ctx) => ctx.db.query("worker_gateway").collect())).toEqual([]);
+});
+
+test("Gateway session admission, binding, prompt gate, fork and usage honor its profile", async () => {
+  const f = await fixture();
+  const target = { workspace: f.workspace, workerId: f.first.identity.workerId };
+  const create = {
+    workspace: f.workspace,
+    worker: target.workerId,
+    agentId: agent.agentId,
+    cwd: "/work",
+    profile: "gateway" as const,
+  };
+  await expect(f.owner.mutation(api.acp.CreateSession, create)).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  const definition = {
+    agentId: agent.agentId,
+    name: agent.name,
+    command: "test-agent",
+    args: [],
+    env: [],
+    enabled: true,
+    source: "custom" as const,
+  };
+  const id = await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    definition,
+  });
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: true });
+  await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  await expect(f.owner.mutation(api.acp.CreateSession, create)).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  await f.owner.mutation(api.acp.SaveAgentDefinition, {
+    workspace: f.workspace,
+    id,
+    definition: {
+      ...definition,
+      gateway: { enabled: true, env: [{ name: "KEY", value: "{{gateway.key}}" }] },
+    },
+  });
+  await f.owner.mutation(api.workers.issueGatewayKey, target);
+  await expect(f.owner.mutation(api.acp.CreateSession, create)).rejects.toThrow(
+    "ACP_GATEWAY_UNAVAILABLE",
+  );
+  const key = await f.first.machine.mutation(api.acp.mintGatewayKey, {});
+  const chat = await f.owner.mutation(api.acp.CreateSession, create);
+  expect(await f.owner.query(api.acp.GetSession, { chat })).toMatchObject({
+    profile: "gateway",
+    gateway: { access: "active" },
+    agent: { profile: "gateway" },
+  });
+  expect((await f.owner.query(api.acp.GetSession, { chat })).defaultConfig).toBeUndefined();
+  expect((await f.owner.query(api.acp.GetSession, { chat: f.chat })).defaultConfig).toEqual(
+    agent.defaults!.config,
+  );
+  const command = await f.owner.mutation(api.acp.Prompt, {
+    chat,
+    prompt,
+    clientId: "gateway-turn",
+  });
+  expect(
+    (await f.first.machine.mutation(api.acp.claimCommand, { command }))?.session?.profile,
+  ).toBe("gateway");
+  expect(
+    (await f.first.machine.query(api.acp.warmSessions, {})).find((session) => session.chat === chat)
+      ?.profile,
+  ).toBe("gateway");
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat,
+    patch: { status: "running", sessionId: "gateway-session" },
+  });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat,
+    patch: {
+      status: "idle",
+      stopReason: "end_turn",
+      turnUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      turn: { command, startedAt: Date.now(), cost: { amount: 5, currency: "USD" } },
+    },
+  });
+  expect(await f.t.run((ctx) => ctx.db.query("acp_usage").collect())).toEqual([]);
+  const fork = await f.owner.mutation(api.acp.Fork, { chat, clientId: "gateway-fork" });
+  expect(await f.owner.query(api.acp.GetSession, { chat: fork })).toMatchObject({
+    profile: "gateway",
+    agent: { profile: "gateway" },
+  });
+  await f.owner.mutation(api.keys.deleteKey, { key: key.keyId });
+  expect(await f.owner.query(api.acp.GetSession, { chat })).toMatchObject({
+    gateway: { access: "missing" },
+  });
+  await expect(
+    f.owner.mutation(api.acp.Prompt, { chat, prompt, clientId: "missing" }),
+  ).rejects.toThrow("This Worker's Gateway key was deleted.");
+  await f.owner.mutation(api.workers.setGatewayAccess, { ...target, enabled: false });
+  await expect(f.owner.mutation(api.acp.Prompt, { chat, prompt, clientId: "off" })).rejects.toThrow(
+    "Gateway access is off on this Worker.",
+  );
+});

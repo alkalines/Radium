@@ -1,9 +1,6 @@
 # Radium Worker
 
-The Worker package implements local machine identity setup, a narrowly scoped
-authenticated Convex subscription, and an edit-task consumer that lazily loads its
-native file-editing service for valid requests. It does not expose an agent protocol
-or receive deployment/admin credentials.
+The Worker package implements local machine identity setup, authenticated outbound Convex subscriptions, local file/Bash execution, and an ACP stdio agent host. It opens no inbound listener and never receives deployment/admin credentials.
 
 ## Setup and run
 
@@ -23,9 +20,11 @@ bun run --cwd packages/worker start
 ```
 
 For development, root `bun run dev` also starts the Worker using Bun's `--watch`
-mode. Imported file changes restart the process. Use `bun run dev:worker` to run
-only this watcher after enrollment. Without local enrollment the Worker reports
-a startup error; the root command's Vite, Convex, and component watchers continue.
+mode in its own `worker-dev` pane, after `convex dev` finishes its first
+successful push. Imported file changes restart the process. Use
+`bun run dev:worker` to run only this watcher after enrollment. Without local
+enrollment the Worker reports a startup error; the root command's Vite, Convex,
+and component watchers continue.
 Restarts discard in-memory edit snapshots and previews, and claimed tasks with
 unknown outcomes are not automatically rerun.
 
@@ -35,7 +34,7 @@ Run `bun run --cwd packages/worker cli` for an interactive command menu, or
 | Command                   | Purpose                                                                                                         |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `setup` / `add-token`     | Enroll with a one-time setup code; refuses to overwrite an identity.                                            |
-| `start`                   | Run the authenticated outbound Convex control subscription and consume assigned file/Bash tasks.                |
+| `start`                   | Run authenticated Convex control, consume file/Bash tasks, and host configured ACP agents.                      |
 | `status`                  | Inspect local enrollment state and identifiers; no network access.                                              |
 | `refresh`                 | Recover pending identity if needed, then verify a fresh backend token exchange. Prints expiry, never the token. |
 | `forget` / `forget-token` | Remove local identity and credentials. Does not revoke the backend record.                                      |
@@ -97,6 +96,8 @@ Convex-hosted authentication endpoints.
 
 While connected, `start` also reports presence through the machine-authorized `workers:reportPresence` mutation on connect and every 20 seconds (`WORKER_HEARTBEAT_INTERVAL_MS` in `backend/src/worker/presence.ts`). The report carries only the Worker's temp directory, `radium` under the OS temp folder (`/tmp` on Linux, `$TMPDIR` on macOS, `%TEMP%` on Windows), which `start` creates if missing. The website shows a Worker as online for 60 seconds after its last report, and chats without a Project folder for this Worker run in that temp directory. Presence is advisory and never authorizes tasks; failed reports are ignored and retried on the next heartbeat. A Worker started before this change reports nothing until it is restarted.
 
+`start` also uploads this machine's coding-CLI usage (Claude Code, Codex, OpenCode, pi-agent, Copilot CLI, Gemini CLI and the other CLIs [ccusage](https://ccusage.com) reads) on connect and every 15 minutes. It runs the bundled `ccusage` dependency read-only against the CLIs' local logs and sends per-session, per-day token counts and costs, never content; a new Worker backfills 90 days. A failed run (for example no supported CLI data) is shown per Worker on the Activity page and retried on the next interval. See [Local CLI usage](../../docs/observability.md#local-cli-usage-ccusage).
+
 `status` is a local, network-free inspection. For a completed identity, `refresh`
 performs a fresh backend challenge/token exchange without changing the saved key,
 identity, or remote Worker registration; it prints only the token expiry. A pending
@@ -110,6 +111,51 @@ The setup code's `backendUrl` and `convexUrl` are treated as explicit origins an
 are never rewritten. HTTP redirects are rejected, request timeouts are bounded,
 and response bodies are size-limited. Setup codes, proofs, machine JWTs, private
 keys, and response bodies are not logged.
+
+## ACP agents
+
+Configure ACP agents in **Settings → ACP** (`/chatroom/acp`) as the workspace owner. Definitions
+are stored in Convex and delivered to every enrolled Worker in that workspace;
+there is no local agents file or separate CLI agent configuration. Chat commands
+select only a configured agent ID and directory, never an executable, arguments
+or environment.
+
+Each Worker validates enabled definitions, resolves the command on its own
+`PATH` (or checks that an explicit path is an executable file), then probes
+present commands with ACP `initialize` and stops the probe process. Missing
+commands are reported as **Not on PATH** without spawning. Failed validation or
+initialization is shown on the ACP settings page, along with version, capabilities and
+authentication actions. Workers re-probe when definitions change and on
+reconnect, not on a polling loop. Registry choices fill pinned `npx`/`uvx`
+launch commands or the binary command to install on each Worker's `PATH`;
+Radium does not download binary archives.
+
+`start` launches one process per agent lazily when needed. Processes stop after
+15 idle minutes; active turns and approval/question waits prevent idle stop.
+Editing a definition applies it to new commands while an existing turn finishes
+on its original process; the superseded process stops once idle. Removing or
+disabling a definition leaves existing Sessions bound to that ID, but new
+prompts fail with `Agent removed`.
+
+To add the real scripted test agent, choose **Custom agent** on the ACP settings page:
+
+- Name: `Scripted ACP agent`; Agent ID: `scripted`
+- Command line:
+  `bun "/absolute/path/to/packages/worker/src/acp/test-agent.ts" --store "/absolute/path/to/sessions.json"`
+- Environment: empty; Enabled: on
+
+The form parses that line into `command: bun` and an argument array starting
+with the absolute `src/acp/test-agent.ts` path. `bun` must be on the Worker's
+`PATH`, and both paths refer to that Worker's filesystem. A persistent store
+lets the script reload its Sessions after a definition change or Worker restart.
+
+Agents run with the Worker's OS permissions: their session directory is not a sandbox. Child environment inherits the local user's agent credentials but excludes `RADIUM_*` and `CONVEX_*`. Configuration rejects executable lookup, loader, proxy and TLS-trust overrides (`PATH`, `LD_*`, `DYLD_*`, Node/Bun options, proxy variables, and related runtime variables). Agent stdout belongs exclusively to ACP JSON-RPC; stderr stays in a bounded 64 KiB local diagnostic ring and is never sent to Convex.
+
+Convex owns authorization, commands, durable interaction answers and session metadata. The Worker claims commands before execution, retries lifecycle delivery without repeating agent work, normalizes agent notifications, and relays bounded frames only while a session is warm. Cold turns retain content locally; opening a session loads/replays or resumes the agent's own history. A Worker restart fails previously claimed work rather than resending prompts. Agent crashes fail active turns with `Agent process exited`; the next command starts the agent lazily with backoff.
+
+Stable ACP v1 session/config/mode/list/load/resume/close/delete, permission and form/URL elicitation are supported; fork uses the SDK unstable method only when advertised. Filesystem/terminal client capabilities are disabled, MCP servers are empty, and prompts carry text/resource links only. Chatroom provides agent selection, Sessions and authentication; Gateway-profile agents are launched with the Worker's Gateway key (see below). Binary archive installation, terminal login and attachments remain outside this implementation.
+
+The real SDK fixture is available as `bun run test-agent --store /tmp/acp-sessions.json` (or `bun src/acp/test-agent.ts`). Prompt keywords exercise `permission`, `question`, `link`, `slow`, `refuse`, `crash`, and `auth`; the default script emits messages, thoughts, a tool, a plan, usage and a title. Add `--require-auth` to require the `scripted` authentication method before `session/new`. The optional store persists sessions and authentication for replay after process/host restart.
 
 ## Edit Tasks
 
@@ -197,6 +243,11 @@ metadata, never the private JWK. In file mode the key is stored separately as
 `.worker-credential-<requestId>.json`, with mode `0600` inside the `0700` state
 directory. This is a permissions-based fallback, not encrypted storage.
 These file protections use POSIX ownership/modes; Windows ACL hardening is not implemented.
+When the owner turns on Gateway access for the Worker, its Gateway key is saved as
+`.worker-gateway-key.json` (`{keyId, key}`, mode `0600`) in the same directory,
+in every credential store mode. It is passed only to Gateway-profile ACP agents
+([Gateway mode](../../docs/ACP/Agents.md#worker-gateway-key)), deleted when Convex
+reports the key deleted or access off, and wiped by `forget`.
 
 Existing version-1 state is migrated locally, preserving the original key, request
 ID, setup selector, and identity. Migration completes before any authentication
@@ -213,23 +264,24 @@ or copy-on-write storage. It does not revoke the remote identity.
 
 ### Source organization
 
-| Path                                                                        | Responsibility                                                              |
-| --------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `src/cli.ts`                                                                | Executable entry point and sanitized command-error output.                  |
-| `src/cli/run.ts`                                                            | Lifecycle command dispatch and interactive menu.                            |
-| `src/cli/options.ts`                                                        | Command aliases, option validation and help text.                           |
-| `src/cli/input.ts`, `src/cli/prompt.ts`                                     | Protected setup input and terminal presentation.                            |
-| `src/cli/start.ts`                                                          | Startup, status reporting and signal-driven shutdown.                       |
-| `src/auth/enrollment.ts`                                                    | Initial enrollment and restart recovery using persisted keys.               |
-| `src/auth/proof.ts`                                                         | Challenge validation and Worker-key proof signing.                          |
-| `src/auth/token.ts`                                                         | Access-token exchange, cache and concurrent-refresh deduplication.          |
-| `src/auth/state.ts`, `src/auth/credentials.ts`, `src/auth/private-files.ts` | Recovery metadata, credential adapters and protected local file operations. |
-| `src/control.ts`                                                            | Typed Convex subscription, auth retry and connection cleanup.               |
-| `src/tasks.ts`                                                              | Serialized file/Bash claims, local execution and completion receipts.       |
-| `src/presence.ts`                                                           | Temp directory setup and connected-only presence heartbeats.                |
-| `src/bash/`                                                                 | Native foreground shell sessions, deadlines and bounded output.             |
-| `src/edit/`                                                                 | Directory routing, native snapshot/preview sessions and local path policy.  |
-| `src/protocol.ts`                                                           | Setup/HTTP boundary validation and shared wire types.                       |
+| Path                                                                        | Responsibility                                                               |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `src/cli.ts`                                                                | Executable entry point and sanitized command-error output.                   |
+| `src/cli/run.ts`                                                            | Lifecycle command dispatch and interactive menu.                             |
+| `src/cli/options.ts`                                                        | Command aliases, option validation and help text.                            |
+| `src/cli/input.ts`, `src/cli/prompt.ts`                                     | Protected setup input and terminal presentation.                             |
+| `src/cli/start.ts`                                                          | Startup, status reporting and signal-driven shutdown.                        |
+| `src/auth/enrollment.ts`                                                    | Initial enrollment and restart recovery using persisted keys.                |
+| `src/auth/proof.ts`                                                         | Challenge validation and Worker-key proof signing.                           |
+| `src/auth/token.ts`                                                         | Access-token exchange, cache and concurrent-refresh deduplication.           |
+| `src/auth/state.ts`, `src/auth/credentials.ts`, `src/auth/private-files.ts` | Recovery metadata, credential adapters and protected local file operations.  |
+| `src/control.ts`                                                            | Typed Convex subscription, auth retry and connection cleanup.                |
+| `src/tasks.ts`                                                              | Serialized file/Bash claims, local execution and completion receipts.        |
+| `src/presence.ts`                                                           | Temp directory setup and connected-only presence heartbeats.                 |
+| `src/usage/`                                                                | Local CLI usage: ccusage reports, per-day session rows and incremental sync. |
+| `src/bash/`                                                                 | Native foreground shell sessions, deadlines and bounded output.              |
+| `src/edit/`                                                                 | Directory routing, native snapshot/preview sessions and local path policy.   |
+| `src/protocol.ts`                                                           | Setup/HTTP boundary validation and shared wire types.                        |
 
 `src/auth.ts` and `src/state.ts` retain small export facades for existing callers.
 Future tool implementations should have their own domain modules and use the
@@ -257,7 +309,8 @@ bun run --cwd packages/worker typecheck
 ```
 
 `dev:worker` delegates to `bun run --cwd packages/worker dev` (`bun --watch`).
-Enroll first. Root `bun run dev` already includes this watcher; use `dev:worker`
+Enroll first. Root `bun run dev` already includes this watcher (gated on Convex's
+first successful push); use `dev:worker`
 when starting the frontend/backend separately. Enrollment state lives
 outside the watched source tree and survives process restarts. `--state-dir`
 can be passed to the package's `dev` script just as with `start`.

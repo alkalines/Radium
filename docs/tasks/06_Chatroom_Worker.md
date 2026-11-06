@@ -354,6 +354,100 @@ retention before introducing output tables. Real execution capabilities depend
 on the isolation contract; packaging depends on task 09. No dependency adoption
 or remote deployment is authorized by this plan.
 
+### ACP Transport Slice (2026-11-01)
+
+Implemented the [ACP transport](../ACP/Transport.md): Convex tables `acp_sessions`,
+`acp_streams`, `acp_commands`, `acp_interactions`, `chat_frames`, `chat_viewers`,
+`worker_agents` and `aisdk_chats.agent`; machine and browser functions in
+`packages/backend/src/acp/`; the Worker host (`packages/worker/src/acp/`) with
+`@agentclientprotocol/sdk` 2.2.0, local `agents.json`, a scripted SDK test agent and
+the `agents` CLI probe. Text batching uses 300 ms rather than the 500 ms candidate.
+
+Verification: backend suite 49 files / 368 tests; Worker unit suite 15 files / 105
+tests (44 ACP, including the real test-agent subprocess); Worker typecheck clean
+except the pre-existing `src/limits/capture.ts` `fetch.preconnect` errors under Bun
+types. Deployment-backed: with `bun dev` pushing to the dev deployment, the real
+enrolled Worker and the test agent exercised agent report, session creation, warm
+snapshot, a full turn with frames and lifecycle mirroring, permission and form
+elicitation round trips (invalid and second answers rejected), busy rejection,
+Stop of a running turn, history page, config change, Worker restart with
+`session/load` into a new epoch, cron cooling (frames deleted), `session/list`
+import, duplicate-import rejection and chat deletion with `close`/`delete`.
+Not measured: the load profile, long Convex outages, agent crashes against the
+deployment (covered by unit tests only).
+
+### ACP Chatroom Slice (2026-11-01)
+
+Implemented the [Chatroom side](../ACP/Interactions.md): agent picker entries with
+sign-in, ACP drafts (`acp.CreateSession` → draft config → `acp.Prompt` →
+`acp.GenerateTitle`), the ACP Session screen on the shared renderers, permission and
+form/URL elicitation prompts, config/mode controls, slash-command autocomplete, Stop,
+run state and interruption card, history pages, **Open existing** import, two-step
+delete (`deleteInAgent`), and Settings → Workers agent status with sign in/out.
+Backend additions: `acp.WorkerStatus`, `acp.GenerateTitle`, `GetSession.defaultConfig`,
+`ListChats.acp`, and the client frame fold `src/acp/fold.ts`. Content subscriptions
+run only while a Session is visible ([Loading And Visibility](../ACP/Interactions.md#loading-and-visibility)).
+
+Verification: backend suite 50 files / 379 tests (incl. `fold.test.ts`); web
+`bun test src/components/session` 22 tests; web typecheck unchanged at the 113
+pre-existing errors; `vite build` passes. Dev deployment with the enrolled Worker and
+the scripted agent: draft → session creation, streamed turn with thought/tool/text,
+permission and two-field elicitation round trips, slash list, second viewer streaming
+the same turn and stopping it, a Tab switched away or a browser tab hidden receiving
+no content frames (WebSocket inspection) and catching up on return, lifecycle
+notification, and delete-in-agent. Not exercised in the browser: history pages,
+import, fork, URL elicitation, Worker-offline state.
+
+### ACP Agents Tab And Shared Controls (2026-11-01)
+
+Agents moved from the Worker's `agents.json` to Chatroom → Agents: owner-managed
+`acp_agents` definitions (registry presets from the ACP registry or custom command lines,
+non-secret env), shared validation `acpAgentDefinitionError`, and the machine
+subscription `acp.agentDefinitions`. Every Worker resolves each command on its own `PATH`
+(or checks an explicit path) and reports `unavailable` without spawning when it is
+missing; present commands are probed as before. The `agents` CLI command and local file
+were removed. ACP drafts and Sessions now use the shared `ModelPicker`,
+`SessionWorkerControl`, `ContextUsage` and a disabled `ToolsDialog` trigger;
+`ListChats.acp` became `ListChats.agent {agentId, name}`, shown on Home rows. A warm
+Session whose agent no longer knows its ACP session (`-32002`) now ends with a reason
+instead of leaving viewers on a spinner.
+
+Verification: backend 50 files / 387 tests; Worker unit 16 files / 112 tests; web 37
+tests; web typecheck at the 113-error baseline; `vite build` passes. Dev deployment:
+registry OpenCode reported available (2.2.4) from the real binary, a missing command
+reported "not found on this Worker's PATH", a custom scripted agent ran a turn with the
+shared Model picker and Session corner, Home rows showed the agent name, and a lost
+session rendered as ended.
+
+Open: registry binary install, terminal-auth `agent login`, Gateway profiles, MCP
+pass-through and prompt attachments.
+
+### ACP Session Index, Model Menu And Offline States (2026-11-01)
+
+The Run target picker's **Session** row and the import path through
+`CreateSession({sessionId})`/`ListAgentSessions`/the `list` command are gone: a New
+session always starts a new agent session. Instead the Worker mirrors a small index of
+every list-capable agent's sessions (`acp_agent_sessions`, `worker_agents.sessionsSync`)
+with diff-only writes (`acp.knownAgentSessions` / `acp.syncAgentSessions`), after each
+definitions probe and on `sync_sessions` commands from `acp.SyncAgentSessions`
+(online Workers, 60 s debounce). Home → Agents browses it (`ListAgentSessionIndex`,
+`SearchAgentSessionIndex`), every Home list pages its unopened rows among its Sessions
+(`ListUnopenedAgentSessions`), and `acp.OpenAgentSession` binds a chat on demand. Agents
+with `delete` get draft defaults from a throwaway session after the probe. The ACP
+Model menu infers the lab per model (neutral tile when unknown), lists a model routed
+through several agent providers once with a Provider selector, and holds Provider,
+Mode, Reasoning and Options in its footer. Offline Workers are marked on Home rows and
+explained in the Session screen.
+
+Verification: backend 50 files / 392 tests; Worker unit 16 files / 115 tests; web 43
+tests; web typecheck at the 113-error baseline with none in touched files. Dev
+deployment with the real OpenCode agent: the first sync indexed 766 sessions over 33
+directories, a session deleted in OpenCode disappeared on the next sync, defaults
+discovery produced 448 models, `effort` and `mode` for drafts, a June session was
+found by title search and opened from Home with its history replayed, and pausing the
+Worker (`SIGSTOP`) produced the offline Alert in the Session and `Offline` on Home rows,
+clearing after it resumed.
+
 ## Acceptance
 
 - The design covers offline workers, duplicate dispatch, crash/restart, cancellation, unauthorized jobs, and output backpressure.

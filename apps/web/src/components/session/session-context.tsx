@@ -5,8 +5,14 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { ChatWorkerSelection, ChatWorkerTool } from "backend/src/worker/chat-config";
+import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { cn } from "@/lib/utils";
-import { agentsOnWorker, type SessionAgent, type SessionProject } from "./agents";
+import {
+  agentAvailability,
+  workspaceAgents,
+  type SessionAgent,
+  type SessionProject,
+} from "./agents";
 import { ProjectPicker, RunTargetPicker, SessionProjectTile } from "./run-target-picker";
 import { SessionBranch } from "./session-branch";
 
@@ -88,7 +94,8 @@ export function SessionContext({
         selection={workerProps.selection}
         defaultWorkerTools={workerProps.defaultWorkerTools}
         agent={workerProps.agent}
-        agents={agentsOnWorker(worker.selected)}
+        agents={worker.agents}
+        agentRows={worker.agentRows}
         isAgentFixed={false}
         disabled={isSaving}
         onSelectionChange={worker.changeSelection}
@@ -138,7 +145,26 @@ export function SessionContext({
  * whose process lives on its Worker) turns the control into a plain label, as do members, who
  * cannot configure Workers.
  */
-export function SessionWorkerControl({
+export function SessionWorkerControl(
+  props:
+    | (WorkerControlProps & { isFixed: boolean })
+    | {
+        isFixed: true;
+        workerName: string;
+        agent: Pick<SessionAgent, "name" | "protocol">;
+      },
+) {
+  if ("workerName" in props) {
+    return (
+      <span className={cn(plainLabelClassName, "text-xs")}>
+        <WorkerTargetLabel name={props.workerName} agent={props.agent} />
+      </span>
+    );
+  }
+  return <ConfigurableSessionWorkerControl {...props} />;
+}
+
+function ConfigurableSessionWorkerControl({
   isFixed,
   ...workerProps
 }: WorkerControlProps & { isFixed: boolean }) {
@@ -155,7 +181,8 @@ export function SessionWorkerControl({
         selection={workerProps.selection}
         defaultWorkerTools={workerProps.defaultWorkerTools}
         agent={workerProps.agent}
-        agents={agentsOnWorker(worker.selected)}
+        agents={worker.agents}
+        agentRows={worker.agentRows}
         isAgentFixed
         disabled={isSaving}
         onSelectionChange={worker.changeSelection}
@@ -167,7 +194,7 @@ export function SessionWorkerControl({
   return <WorkerLabel isOwner={isOwner} canManage={canManage && !isFixed} worker={worker} />;
 }
 
-type SessionWorker = ReturnType<typeof useSessionWorker>;
+type SessionWorkerLabelState = { label: ReactNode; workersError: unknown };
 
 /** The Worker part as plain text: for members, fixed Workers, or while the Worker list loads. */
 function WorkerLabel({
@@ -177,7 +204,7 @@ function WorkerLabel({
 }: {
   isOwner: boolean;
   canManage: boolean;
-  worker: SessionWorker;
+  worker: SessionWorkerLabelState;
 }) {
   let label: ReactNode = worker.label;
   if (isOwner && canManage && worker.workersError) {
@@ -196,34 +223,31 @@ function WorkerLabel({
   );
 }
 
-/**
- * The Session's Worker as both surfaces show it: the owner-only Worker list, the selected Worker,
- * its display name and `Worker (Agent)` label, and a selection change that falls back to the
- * built-in agent when the chosen ACP agent is not installed on the new Worker.
- */
+/** The selected Worker and its definition-backed harness; changing Workers keeps the agent. */
 function useSessionWorker({
   workspaceId,
   isOwner,
   selection,
   agent,
   onSelectionChange,
-  onAgentChange,
 }: WorkerControlProps) {
   const { data: workers, error: workersError } = useQuery(
     convexQuery(api.workers.list, workspaceId && isOwner ? { workspace: workspaceId } : "skip"),
   );
+  const { data: agentRows } = useQuery(
+    convexQuery(api.acp.ListAgents, workspaceId && isOwner ? { workspace: workspaceId } : "skip"),
+  );
+  const { data: definitions } = useQuery(
+    convexQuery(
+      api.acp.ListAgentDefinitions,
+      workspaceId && isOwner ? { workspace: workspaceId } : "skip",
+    ),
+  );
+  const agents = workspaceAgents(definitions, selection?.workerId, agentRows);
+  const now = useWorkerPresenceClock();
   const selected = workers?.find(
     (candidate) => candidate.workerId === selection?.workerId && candidate.status === "active",
   );
-
-  function changeSelection(next: ChatWorkerSelection | null) {
-    const nextWorker = workers?.find((candidate) => candidate.workerId === next?.workerId);
-    const nextAgents = agentsOnWorker(nextWorker);
-    if (!nextAgents.some((candidate) => candidate.id === agent.id)) {
-      onAgentChange(nextAgents[0]);
-    }
-    onSelectionChange(next);
-  }
 
   // A selection without `workerId` only carries Worker tools chosen before a Worker.
   const hasWorker = Boolean(selection?.workerId);
@@ -239,7 +263,37 @@ function useSessionWorker({
     name = "Worker";
   }
 
+  const availability = agentAvailability(agent, selected, now, agentRows);
   const label = (
+    <>
+      <WorkerTargetLabel name={name} agent={agent} />
+      {agent.protocol === "acp" && availability !== "ready" ? (
+        <span className="shrink-0 text-subtle-foreground">· Unavailable</span>
+      ) : null}
+    </>
+  );
+
+  return {
+    workers,
+    agents,
+    agentRows,
+    workersError,
+    selected,
+    name,
+    label,
+    changeSelection: onSelectionChange,
+  };
+}
+
+/** `Worker (Agent)` as text only; agent artwork stays inside the Run target picker. */
+function WorkerTargetLabel({
+  name,
+  agent,
+}: {
+  name: string;
+  agent: Pick<SessionAgent, "name" | "protocol">;
+}) {
+  return (
     <>
       <span className="truncate">{name}</span>
       {agent.protocol === "acp" ? (
@@ -247,6 +301,4 @@ function useSessionWorker({
       ) : null}
     </>
   );
-
-  return { workers, workersError, selected, name, label, changeSelection };
 }

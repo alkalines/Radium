@@ -5,6 +5,7 @@ import { convexTest } from "convex-test";
 import { expect, test, vi } from "vitest";
 import schema from "./schema";
 import { hashText } from "./keys";
+import { api } from "./_generated/api";
 
 type TestIdentity = {
   tokenIdentifier?: string;
@@ -240,20 +241,45 @@ test("recordCompletion only records BYOK usage and does not debit a balance", as
   const quoted = await t.mutation(anyApi.keys.recordCompletion, {
     bill: { workspace: ids.workspace },
     request: {
-      ...request, byok: true, requestedServiceTier: "priority", quoteCaptured: true,
-      quote: { input: "1", output: "2", cache_read: "0.1", cache_write: "0.5", cache_write_1h: "2" },
+      ...request,
+      byok: true,
+      requestedServiceTier: "priority",
+      quoteCaptured: true,
+      quote: {
+        input: "1",
+        output: "2",
+        cache_read: "0.1",
+        cache_write: "0.5",
+        cache_write_1h: "2",
+      },
     },
     response: {
       ...response,
-      usage: { ...response.usage, prompt_tokens: 100, completion_tokens: 10, total_tokens: 110,
-        prompt_tokens_details: { cached_tokens: 30, written_cache_tokens: 20, written_cache_tokens_1h: 8 } },
+      usage: {
+        ...response.usage,
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        total_tokens: 110,
+        prompt_tokens_details: {
+          cached_tokens: 30,
+          written_cache_tokens: 20,
+          written_cache_tokens_1h: 8,
+        },
+      },
       servedServiceTier: "priority",
     },
   });
   const quotedRecord = await t.run((ctx) => ctx.db.get("chat_completions", quoted));
   expect(quotedRecord?.response.pricing).toMatchObject({
-    prompt_tokens: 50, completion_tokens: 20, estimatedCost: 95, cost: 95,
-    prompt_tokens_details: { cached_tokens: 3, written_cache_tokens: 22, written_cache_tokens_1h: 16 },
+    prompt_tokens: 50,
+    completion_tokens: 20,
+    estimatedCost: 95,
+    cost: 95,
+    prompt_tokens_details: {
+      cached_tokens: 3,
+      written_cache_tokens: 22,
+      written_cache_tokens_1h: 16,
+    },
   });
   expect(quotedRecord?.response.pricing.cost_details?.upstream_inference_cost).toBeUndefined();
 
@@ -265,7 +291,11 @@ test("recordCompletion only records BYOK usage and does not debit a balance", as
   const pro = await t.mutation(anyApi.keys.recordCompletion, {
     bill: { workspace: ids.workspace },
     request: {
-      ...request, byok: true, inferenceMode: "pro", quoteCaptured: true, quote: contextualQuote,
+      ...request,
+      byok: true,
+      inferenceMode: "pro",
+      quoteCaptured: true,
+      quote: contextualQuote,
     },
     response: {
       ...response,
@@ -301,4 +331,28 @@ test("recordCompletion only records BYOK usage and does not debit a balance", as
       response,
     }),
   ).rejects.toThrow("Completion credential does not belong to its workspace provider.");
+});
+
+test("workspace keys default to workspace telemetry and owners can turn capture off", async () => {
+  const t = makeTest();
+  const workspace = await t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Telemetry" }),
+  );
+  const owner = asUser(t, "owner");
+  const created = await owner.mutation(api.keys.createKey, { workspace, name: "Key" });
+  expect(await t.query(api.keys.getKeyInfo, { key: created.key })).toMatchObject({
+    telemetry: "workspace",
+  });
+  await expect(
+    asUser(t, "other").mutation(api.keys.setKeyTelemetry, { key: created._id, telemetry: "off" }),
+  ).rejects.toThrow();
+  await owner.mutation(api.keys.setKeyTelemetry, { key: created._id, telemetry: "off" });
+  expect(await t.query(api.keys.getKeyInfo, { key: created.key })).toMatchObject({
+    telemetry: "off",
+  });
+  expect(await owner.query(api.keys.listKeys, { workspace })).toEqual([
+    expect.objectContaining({ _id: created._id, telemetry: "off" }),
+  ]);
+  await owner.mutation(api.keys.setKeyTelemetry, { key: created._id, telemetry: "workspace" });
+  expect((await t.run((ctx) => ctx.db.get(created._id)))?.telemetry).toBeUndefined();
 });
