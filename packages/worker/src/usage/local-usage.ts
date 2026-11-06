@@ -14,6 +14,8 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CCUSAGE_TIMEOUT_MS = 120_000;
+/** Longest failure reason stored on the Worker's sync row. */
+const FAILURE_REASON_MAX = 200;
 
 /** The Convex calls local usage needs; replaceable by an in-memory transport in tests. */
 export interface LocalUsageTransport {
@@ -22,8 +24,8 @@ export interface LocalUsageTransport {
   finish(args: { syncedThrough?: string; error?: string }): Promise<unknown>;
 }
 
-/** Runs one ccusage report and returns its parsed JSON. */
-export type CcusageRunner = (args: string[]) => Promise<unknown>;
+/** Runs one ccusage report and returns its parsed JSON; `signal` stops the run. */
+export type CcusageRunner = (args: string[], signal: AbortSignal) => Promise<unknown>;
 
 /** Bind local usage to the machine-authorized Convex functions. */
 export function convexLocalUsageTransport(client: ConvexClient): LocalUsageTransport {
@@ -35,21 +37,57 @@ export function convexLocalUsageTransport(client: ConvexClient): LocalUsageTrans
 }
 
 /**
+ * Why a ccusage run failed, short and safe to store: the first stderr line, or a timeout / exit
+ * status. Never the command line, which carries the launcher's absolute path, and with any path
+ * in ccusage's own message replaced.
+ */
+export function ccusageFailure(error: unknown) {
+  const failure = (error ?? {}) as {
+    code?: unknown;
+    killed?: boolean;
+    signal?: unknown;
+    stderr?: unknown;
+  };
+  let reason: string;
+  if (failure.code === "ENOENT") reason = "could not start";
+  else if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") reason = "report too large";
+  else if (failure.killed && failure.signal)
+    reason = `timed out after ${CCUSAGE_TIMEOUT_MS / 1000}s`;
+  else {
+    const line = String(failure.stderr ?? "")
+      // eslint-disable-next-line no-control-regex -- ANSI colors in CLI output
+      .replace(/\x1b\[[0-9;]*m/g, "")
+      .split("\n")
+      .map((part) => part.trim())
+      .find(Boolean);
+    reason = line
+      ? line.replace(/(?<![\w.])(?:~|[A-Za-z]:)?[\\/][^\s'"`,;()]*/g, "<path>")
+      : typeof failure.code === "number"
+        ? `exited with code ${failure.code}`
+        : "failed";
+  }
+  const message = `ccusage ${reason}`;
+  return message.length > FAILURE_REASON_MAX
+    ? `${message.slice(0, FAILURE_REASON_MAX - 1)}…`
+    : message;
+}
+
+/**
  * Run the bundled ccusage (a direct dependency; its launcher picks the platform binary) with a
  * JSON report. Days are grouped in UTC so rows line up with Activity's daily buckets.
  */
-export const runCcusage: CcusageRunner = async (args) => {
+export const runCcusage: CcusageRunner = async (args, signal) => {
   const launcher = createRequire(import.meta.url).resolve("ccusage/src/cli.js");
   let stdout: string;
   try {
     ({ stdout } = await promisify(execFile)(
       process.execPath,
       [launcher, ...args, "--json", "--timezone", "UTC"],
-      { maxBuffer: 64 * 1024 * 1024, timeout: CCUSAGE_TIMEOUT_MS },
+      { maxBuffer: 64 * 1024 * 1024, timeout: CCUSAGE_TIMEOUT_MS, signal },
     ));
   } catch (error) {
-    const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
-    throw new Error(`ccusage failed: ${reason}`);
+    if (signal.aborted) throw new Error("ccusage was stopped");
+    throw new Error(ccusageFailure(error));
   }
   try {
     return JSON.parse(stdout);
@@ -130,9 +168,12 @@ export interface LocalUsageSync {
  * Upload this machine's coding-CLI usage while connected: once on connect, then every
  * `LOCAL_USAGE_SYNC_INTERVAL_MS`. Each sync reads only from the backend's cursor day (a new Worker
  * backfills `LOCAL_USAGE_BACKFILL_DAYS`), finds the days with usage in one `daily` report, and
- * reads sessions day by day. A day whose rows equal the last upload is not sent, so a quiet
- * machine costs one ccusage run and no writes. Failures (no supported CLI data, missing binary)
- * are recorded on the Worker's sync row and retried on the next interval, never thrown.
+ * reads sessions day by day. Every day read is reported, unchanged rows included: the backend keeps
+ * their content and only advances their coverage (`syncedAt`), so a turn that ended after an
+ * earlier read of the same tokens is not counted twice. A machine with no usage since the cursor
+ * day costs one ccusage run and no writes. Failures (no supported CLI data, missing binary,
+ * timeout) are recorded on the Worker's sync row as a short reason and retried on the next
+ * interval, never thrown. `close` stops a ccusage run in progress.
  */
 export function startLocalUsageSync(
   transport: LocalUsageTransport,
@@ -143,7 +184,7 @@ export function startLocalUsageSync(
   let closed = false;
   let running: Promise<void> = Promise.resolve();
   let syncing = false;
-  const uploaded = new Map<string, string>();
+  const stopped = new AbortController();
 
   async function sync() {
     const today = utcDay(now());
@@ -153,13 +194,10 @@ export function startLocalUsageSync(
       const cursor = await transport.cursor();
       const from = cursor && cursor > earliest ? cursor : earliest;
       const days = activeDays(
-        await runner([
-          "daily",
-          "--since",
-          from.replaceAll("-", ""),
-          "--until",
-          today.replaceAll("-", ""),
-        ]),
+        await runner(
+          ["daily", "--since", from.replaceAll("-", ""), "--until", today.replaceAll("-", "")],
+          stopped.signal,
+        ),
       ).filter((day) => day >= from && day <= today);
 
       for (const day of days.sort()) {
@@ -169,10 +207,11 @@ export function startLocalUsageSync(
         // Older days are final; their prices come from ccusage's bundled table without a fetch.
         const offline = day < yesterday ? ["--offline"] : [];
         const rows = sessionRows(
-          await runner(["session", "--since", compact, "--until", compact, ...offline]),
+          await runner(
+            ["session", "--since", compact, "--until", compact, ...offline],
+            stopped.signal,
+          ),
         );
-        const digest = JSON.stringify(rows);
-        if (uploaded.get(day) === digest) continue;
         for (let start = 0; start < rows.length; start += LOCAL_USAGE_ROWS_PER_REPORT) {
           await transport.report({
             day,
@@ -180,11 +219,12 @@ export function startLocalUsageSync(
             rows: rows.slice(start, start + LOCAL_USAGE_ROWS_PER_REPORT),
           });
         }
-        uploaded.set(day, digest);
       }
       // Today stays open: the next sync re-reads it (and yesterday's late writes) from here.
       await transport.finish({ syncedThrough: today });
     } catch (error) {
+      // A run stopped by `close` is shutdown, not a failure to record.
+      if (closed) return;
       const message = error instanceof Error ? error.message : "Local usage sync failed";
       await transport.finish({ error: message }).catch(() => undefined);
     }
@@ -218,6 +258,7 @@ export function startLocalUsageSync(
     close() {
       closed = true;
       stop();
+      stopped.abort();
     },
   };
 }

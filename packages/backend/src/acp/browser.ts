@@ -13,6 +13,7 @@ import { action, mutation, query } from "../../convex/_generated/server";
 import { components, internal } from "../../convex/_generated/api";
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { authComponent } from "../../convex/auth";
+import { authorizeChatRecord } from "../../convex/workspaces";
 import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../../convex/helpers";
 import { requireWorkspaceProject } from "../projects/projects";
 import { requireActiveWorkspaceWorker, validChatWorkerDirectory } from "../worker/chat-config";
@@ -36,6 +37,7 @@ import {
 import {
   accessibleSession,
   acpError,
+  admitWarm,
   enqueue,
   existingCommand,
   findAgent,
@@ -151,6 +153,23 @@ function indexedSessionRow(row: Doc<"acp_agent_sessions">, project: Id<"projects
   };
 }
 
+/** Index rows linked to a chat the caller cannot see (another member's personal chat) are hidden. */
+async function visibleIndexRows(
+  ctx: QueryCtx,
+  userId: string,
+  rows: Doc<"acp_agent_sessions">[],
+) {
+  const visible = await Promise.all(
+    rows.map(
+      async (row) =>
+        !row.chat ||
+        !(await ctx.db.get(row.chat)) ||
+        (await authorizeChatRecord(ctx, row.chat, userId)) !== null,
+    ),
+  );
+  return rows.filter((_, index) => visible[index]);
+}
+
 /** Owner-selected immutable binding; every creation starts a new agent session. */
 export const CreateSession = ownedWorkspaceMutation({
   args: {
@@ -261,7 +280,7 @@ export const Prompt = mutation({
       stopReason: undefined,
       error: undefined,
       updatedAt: now,
-      ...(!session.warm ? { warm: true, warmSince: now } : {}),
+      ...(await admitWarm(ctx, session, now)),
     });
     await ctx.db.patch(chat._id, { lastInteractionAt: now, interruption: undefined });
     return command;
@@ -315,6 +334,19 @@ export const Cancel = mutation({
   },
 });
 
+/**
+ * The first prompt's claim hands the draft to the Worker; until the session id is bound, later
+ * choices still update the draft but must also travel as live commands or they would be lost.
+ */
+async function promptClaimed(ctx: MutationCtx, chat: Id<"aisdk_chats">) {
+  const claimed = await ctx.db
+    .query("acp_commands")
+    .withIndex("by_chat_and_status", (q) => q.eq("chat", chat).eq("status", "claimed"))
+    .filter((q) => q.eq(q.field("kind"), "prompt"))
+    .first();
+  return claimed !== null;
+}
+
 /** Store pre-session choices as metadata; live changes go through the assigned Worker. */
 export const SetConfig = mutation({
   args: {
@@ -333,17 +365,18 @@ export const SetConfig = mutation({
       const config = draft.config.filter((option) => option.configId !== args.configId);
       config.push({ configId: args.configId, value: args.value });
       await ctx.db.patch(session._id, { draft: { ...draft, config }, updatedAt: Date.now() });
+      if (!(await promptClaimed(ctx, args.chat))) return null;
     } else {
       if (!session.config) acpError("ACP_INVALID_CONFIG");
       validateConfig(session.config, args.configId, args.value);
-      await enqueue(
-        ctx,
-        { workspace: session.workspace, worker: session.worker },
-        userId,
-        { kind: "set_config", configId: args.configId, value: args.value },
-        args.chat,
-      );
     }
+    await enqueue(
+      ctx,
+      { workspace: session.workspace, worker: session.worker },
+      userId,
+      { kind: "set_config", configId: args.configId, value: args.value },
+      args.chat,
+    );
     return null;
   },
 });
@@ -362,17 +395,18 @@ export const SetMode = mutation({
         draft: { ...(session.draft ?? { config: [] }), modeId: args.modeId },
         updatedAt: Date.now(),
       });
+      if (!(await promptClaimed(ctx, args.chat))) return null;
     } else {
       if (!session.config) acpError("ACP_INVALID_MODE");
       validateMode(session.config, args.modeId);
-      await enqueue(
-        ctx,
-        { workspace: session.workspace, worker: session.worker },
-        userId,
-        { kind: "set_mode", modeId: args.modeId },
-        args.chat,
-      );
     }
+    await enqueue(
+      ctx,
+      { workspace: session.workspace, worker: session.worker },
+      userId,
+      { kind: "set_mode", modeId: args.modeId },
+      args.chat,
+    );
     return null;
   },
 });
@@ -398,7 +432,10 @@ export const Answer = mutation({
   },
 });
 
-/** History pages are shared within a warm epoch, so duplicate page requests share a command. */
+/**
+ * History pages are shared within a warm epoch, so duplicate page requests share an unfinished
+ * command; a retry after it finished or failed asks the Worker again.
+ */
 export const RequestHistory = mutation({
   args: { chat: v.id("aisdk_chats"), epoch: v.number(), before: v.number(), limit: v.number() },
   returns: v.null(),
@@ -406,32 +443,28 @@ export const RequestHistory = mutation({
     const { session, userId } = await accessibleSession(ctx, args.chat);
     if (!session.warm || args.epoch !== session.epoch) return null;
     // Dedupe keys are Worker-scoped, so the chat must be part of the page's key.
-    const clientId = `history:${args.chat}:${args.epoch}:${args.before}`;
-    const existing = (
-      await ctx.db
+    const page = `history:${args.chat}:${args.epoch}:${args.before}`;
+    for (const status of ["pending", "claimed"] as const) {
+      const active = await ctx.db
         .query("acp_commands")
-        .withIndex("by_worker_and_clientId", (q) =>
-          q
-            .eq("workspace", session.workspace)
-            .eq("worker", session.worker)
-            .eq("clientId", clientId),
-        )
-        .take(1)
-    )[0];
-    if (!existing)
-      await enqueue(
-        ctx,
-        { workspace: session.workspace, worker: session.worker },
-        userId,
-        {
-          kind: "history",
-          epoch: args.epoch,
-          before: args.before,
-          limit: Math.min(ACP_HISTORY_REQUEST_ITEMS, Math.max(1, Math.floor(args.limit))),
-        },
-        args.chat,
-        clientId,
-      );
+        .withIndex("by_chat_and_status", (q) => q.eq("chat", args.chat).eq("status", status))
+        .filter((q) => q.eq(q.field("kind"), "history"))
+        .take(32);
+      if (active.some((row) => row.clientId.startsWith(`${page}:`))) return null;
+    }
+    await enqueue(
+      ctx,
+      { workspace: session.workspace, worker: session.worker },
+      userId,
+      {
+        kind: "history",
+        epoch: args.epoch,
+        before: args.before,
+        limit: Math.min(ACP_HISTORY_REQUEST_ITEMS, Math.max(1, Math.floor(args.limit))),
+      },
+      args.chat,
+      `${page}:${crypto.randomUUID()}`,
+    );
     return null;
   },
 });
@@ -509,7 +542,7 @@ export const ListAgentSessionIndex = ownedWorkspaceQuery({
     const folders = await projectFolders(ctx, ctx.workspace._id);
     return {
       ...page,
-      page: page.page.map((row) =>
+      page: (await visibleIndexRows(ctx, ctx.identity._id, page.page)).map((row) =>
         indexedSessionRow(row, folders.get(folderKey(row.worker, row.cwd)) ?? null),
       ),
     };
@@ -528,7 +561,7 @@ export const SearchAgentSessionIndex = ownedWorkspaceQuery({
       )
       .take(50);
     const folders = await projectFolders(ctx, ctx.workspace._id);
-    return rows.map((row) =>
+    return (await visibleIndexRows(ctx, ctx.identity._id, rows)).map((row) =>
       indexedSessionRow(row, folders.get(folderKey(row.worker, row.cwd)) ?? null),
     );
   },
@@ -687,14 +720,15 @@ export const OpenAgentSession = ownedWorkspaceMutation({
       acpError("ACP_UNSUPPORTED");
     const bound = await ctx.db
       .query("acp_sessions")
-      .withIndex("by_worker_and_sessionId", (q) =>
+      .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
         q
           .eq("workspace", ctx.workspace._id)
           .eq("worker", args.worker)
+          .eq("agentId", args.agentId)
           .eq("sessionId", args.sessionId),
       )
-      .take(8);
-    if (bound.some((session) => session.agentId === args.agentId)) acpError("ACP_SESSION_BOUND");
+      .first();
+    if (bound) acpError("ACP_SESSION_BOUND");
     const folders = await projectFolders(ctx, ctx.workspace._id);
     const chat = await insertAgentChat(ctx, {
       workspace: ctx.workspace._id,

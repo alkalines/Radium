@@ -4,6 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { exportJWK, generateKeyPair } from "jose";
 import { register } from "worker-component/test";
 import { api, components, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import schema from "./schema";
 import { normalizeWorkerKey, tokenDigest, workerIssuer } from "../src/worker/auth";
@@ -12,6 +13,7 @@ import {
   ACP_COMMAND_RETENTION_MS,
   ACP_COMMAND_EXPIRY_MS,
   ACP_INTERACTION_RETENTION_MS,
+  ACP_WARM_SESSIONS_MAX,
   acpAnswerError,
   type AcpAgentReport,
   type AcpInteractionRequest,
@@ -222,6 +224,36 @@ test("chat listings use agent definition names, fall back to IDs and mark built-
   );
 });
 
+test("Home rows let every viewer of a shared ACP chat act on it; manager-only stays gated", async () => {
+  const f = await fixture();
+  const builtin = await f.owner.mutation(api.aisdk.CreateChat, {
+    workspace: f.workspace,
+    messages_queue: { text: "", files: [], model: "test-model", webSearch: false },
+  });
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(f.chat, { scope: "workspace" });
+    await ctx.db.patch(builtin, { scope: "workspace" });
+  });
+  const rows = (
+    await f.member.query(api.aisdk.ListChats, {
+      workspace: f.workspace,
+      paginationOpts: { cursor: null, numItems: 50 },
+    })
+  ).page;
+  expect(rows.find((chat) => chat.id === f.chat)).toMatchObject({
+    canAct: true,
+    canManage: false,
+  });
+  expect(rows.find((chat) => chat.id === builtin)).toMatchObject({
+    canAct: false,
+    canManage: false,
+  });
+  await f.member.mutation(api.aisdk.SetChatPinned, { chatId: f.chat, pinned: true });
+  expect(
+    await f.member.query(api.aisdk.ListPinnedChats, { workspace: f.workspace }),
+  ).toMatchObject([{ id: f.chat, canAct: true, canManage: false }]);
+});
+
 test("ACP title generation authorizes viewers and skips titled or user-titled chats", async () => {
   const f = await fixture();
   await f.t.run((ctx) => ctx.db.patch(f.chat, { title: "Agent title", emoji: "💡" }));
@@ -327,6 +359,107 @@ test("opening an indexed agent session creates and links a personal chat while o
       paginationOpts: { cursor: null, numItems: 30 },
     }),
   ).rejects.toThrow();
+});
+
+test("an agent session binding is found among many other agents sharing its session id", async () => {
+  const f = await fixture();
+  const worker = f.first.identity.workerId;
+  const other = await f.owner.mutation(api.acp.CreateSession, {
+    workspace: f.workspace,
+    worker,
+    agentId: agent.agentId,
+    cwd: "/work",
+  });
+  await f.t.run(async (ctx) => {
+    const session = (chat: typeof f.chat, agentId: string) => ({
+      chat,
+      workspace: f.workspace,
+      worker,
+      agentId,
+      cwd: "/work",
+      sessionId: "shared",
+      status: "idle" as const,
+      epoch: 0,
+      warm: false,
+      updatedAt: 1,
+    });
+    for (let index = 0; index < 9; index++)
+      await ctx.db.insert("acp_sessions", session(other, `other-${index}`));
+    await ctx.db.insert("acp_sessions", session(other, agent.agentId));
+  });
+  await f.first.machine.mutation(api.acp.syncAgentSessions, {
+    agentId: agent.agentId,
+    upserts: [{ sessionId: "shared", cwd: "/work", updatedAt: 1 }],
+    removals: [],
+  });
+  const [row] = (
+    await f.owner.query(api.acp.ListAgentSessionIndex, {
+      workspace: f.workspace,
+      agentId: agent.agentId,
+      paginationOpts: { cursor: null, numItems: 30 },
+    })
+  ).page;
+  expect(row).toMatchObject({ sessionId: "shared", chat: other });
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(row!._id, { chat: undefined });
+  });
+  await expect(
+    f.owner.mutation(api.acp.OpenAgentSession, {
+      workspace: f.workspace,
+      worker,
+      agentId: agent.agentId,
+      sessionId: "shared",
+    }),
+  ).rejects.toThrow(/ACP_SESSION_BOUND/);
+  await expect(
+    f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { sessionId: "shared" },
+    }),
+  ).rejects.toThrow(/ACP_SESSION_BOUND/);
+});
+
+test("the agent session index hides sessions linked to another member's personal chat", async () => {
+  const f = await fixture();
+  const worker = f.first.identity.workerId;
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(f.chat, { userId: "member" });
+    for (const [sessionId, chat] of [
+      ["private-session", f.chat],
+      ["unopened-session", undefined],
+    ] as const)
+      await ctx.db.insert("acp_agent_sessions", {
+        workspace: f.workspace,
+        worker,
+        agentId: agent.agentId,
+        sessionId,
+        cwd: "/work",
+        title: `Indexed ${sessionId}`,
+        updatedAt: 1,
+        chat,
+      });
+  });
+  const sessions = async () => ({
+    list: (
+      await f.owner.query(api.acp.ListAgentSessionIndex, {
+        workspace: f.workspace,
+        agentId: agent.agentId,
+        paginationOpts: { cursor: null, numItems: 30 },
+      })
+    ).page.map((row) => row.sessionId),
+    search: (
+      await f.owner.query(api.acp.SearchAgentSessionIndex, {
+        workspace: f.workspace,
+        agentId: agent.agentId,
+        query: "Indexed",
+      })
+    ).map((row) => row.sessionId),
+  });
+  expect(await sessions()).toEqual({ list: ["unopened-session"], search: ["unopened-session"] });
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { scope: "workspace" }));
+  const shared = await sessions();
+  expect(shared.list.sort()).toEqual(["private-session", "unopened-session"]);
+  expect(shared.search.sort()).toEqual(["private-session", "unopened-session"]);
 });
 
 test("Home lists unopened agent sessions by Project folder, either spelling, until opened", async () => {
@@ -657,6 +790,97 @@ test("watch warms; cooling removes transient content after five minutes but reta
   ).toEqual({ accepted: false, bytes: 0 });
 });
 
+test("a re-warm during cooling cleanup opens a fresh epoch the cleanup never touches", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 });
+  await f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 1, frames: [frame] });
+  vi.setSystemTime(Date.now() + ACP_COLD_AFTER_MS + 1);
+  await f.t.mutation(internal.acp.coolSessions, {});
+  // Re-warmed before the scheduled cleanup ran; the Worker never saw the cold flag.
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  const next = { ...frame, seqFrom: 2, seqTo: 2 };
+  await expect(
+    f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 1, frames: [next] }),
+  ).rejects.toThrow("ACP_STALE_EPOCH");
+  await expect(
+    f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 }),
+  ).rejects.toThrow("ACP_STALE_EPOCH");
+  expect(await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 2 })).toEqual({
+    accepted: true,
+  });
+  await f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 2, frames: [frame] });
+  await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  expect(
+    await f.owner.query(api.chatroom.LiveFrames, { chat: f.chat, stream: "acp:2", fromSeq: 0 }),
+  ).toEqual([frame]);
+  expect(
+    await f.owner.query(api.chatroom.LiveFrames, { chat: f.chat, stream: "acp:1", fromSeq: 0 }),
+  ).toEqual([]);
+});
+
+test("a Worker admits at most the warm-session cap, so its warm subscription is complete", async () => {
+  const f = await fixture();
+  const worker = f.first.identity.workerId;
+  await f.t.run(async (ctx) => {
+    for (let index = 0; index < ACP_WARM_SESSIONS_MAX - 1; index++) {
+      const chat = await ctx.db.insert("aisdk_chats", {
+        workspace: f.workspace,
+        userId: "owner",
+        scope: "personal",
+        agent: {
+          kind: "acp",
+          profile: "native",
+          worker,
+          agentId: agent.agentId,
+          agentVersion: "1",
+          cwd: "/work",
+        },
+        activeStream: false,
+      });
+      await ctx.db.insert("acp_sessions", {
+        chat,
+        workspace: f.workspace,
+        worker,
+        agentId: agent.agentId,
+        cwd: "/work",
+        status: "idle",
+        epoch: 0,
+        warm: true,
+        updatedAt: 1,
+      });
+    }
+  });
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  expect(await f.first.machine.query(api.acp.warmSessions, {})).toHaveLength(
+    ACP_WARM_SESSIONS_MAX,
+  );
+  // An already warm Session keeps its heartbeat and prompts.
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "warm" });
+  const cold = await f.owner.mutation(api.acp.CreateSession, {
+    workspace: f.workspace,
+    worker,
+    agentId: agent.agentId,
+    cwd: "/work",
+  });
+  await expect(f.owner.mutation(api.chatroom.Watch, { chat: cold, tab: "tab" })).rejects.toThrow(
+    "ACP_WORKER_BUSY",
+  );
+  await expect(
+    f.owner.mutation(api.acp.Prompt, { chat: cold, prompt, clientId: "cold" }),
+  ).rejects.toThrow("ACP_WORKER_BUSY");
+  // Another Worker's warm Sessions are counted separately.
+  const other = await f.owner.mutation(api.acp.CreateSession, {
+    workspace: f.workspace,
+    worker: f.second.identity.workerId,
+    agentId: agent.agentId,
+    cwd: "/work",
+  });
+  await f.owner.mutation(api.chatroom.Watch, { chat: other, tab: "tab" });
+});
+
 test("answers validate offered choices and first answer wins; resolving resumes the turn", async () => {
   const f = await fixture();
   await f.first.machine.mutation(api.acp.updateSession, {
@@ -897,6 +1121,53 @@ test("draft config validates advertised choices; live commands and results remai
   });
   expect(await f.member.query(api.acp.GetCommand, { command })).toBeNull();
   await expect(f.member.query(api.acp.ListAgents, { workspace: f.workspace })).rejects.toThrow();
+});
+
+test("draft choices made after the first prompt is claimed but before binding reach the Worker", async () => {
+  const f = await fixture();
+  await f.owner.mutation(api.acp.SetMode, { chat: f.chat, modeId: "code" });
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId: "first" });
+  const [queued] = await f.first.machine.query(api.acp.assignedCommands, {});
+  await f.first.machine.mutation(api.acp.claimCommand, { command: queued!._id });
+  await f.owner.mutation(api.acp.SetConfig, { chat: f.chat, configId: "model", value: "b" });
+  await f.owner.mutation(api.acp.SetMode, { chat: f.chat, modeId: "code" });
+  const commands = await f.first.machine.query(api.acp.assignedCommands, {});
+  expect(commands.map((command) => command.kind)).toEqual(["set_config", "set_mode"]);
+  expect(
+    (await f.first.machine.mutation(api.acp.claimCommand, { command: commands[0]!._id }))
+      ?.payload,
+  ).toEqual({ kind: "set_config", configId: "model", value: "b" });
+  await f.first.machine.mutation(api.acp.updateSession, {
+    chat: f.chat,
+    patch: { sessionId: "bound", status: "running" },
+  });
+  expect((await f.owner.query(api.acp.GetSession, { chat: f.chat })).draft).toBeUndefined();
+});
+
+test("history requests share an unfinished command and a retry after it finished asks again", async () => {
+  const f = await fixture();
+  await f.t.run(async (ctx) => {
+    const session = await ctx.db
+      .query("acp_sessions")
+      .withIndex("by_chat", (q) => q.eq("chat", f.chat))
+      .unique();
+    await ctx.db.patch(session!._id, { warm: true });
+  });
+  const request = () =>
+    f.owner.mutation(api.acp.RequestHistory, { chat: f.chat, epoch: 0, before: 10, limit: 20 });
+  await request();
+  await request();
+  const [first] = await f.first.machine.query(api.acp.assignedCommands, {});
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toHaveLength(1);
+  await f.first.machine.mutation(api.acp.claimCommand, { command: first!._id });
+  await request();
+  expect(await f.first.machine.query(api.acp.assignedCommands, {})).toEqual([]);
+  await f.first.machine.mutation(api.acp.finishCommand, { command: first!._id, status: "failed" });
+  await request();
+  const retried = await f.first.machine.query(api.acp.assignedCommands, {});
+  expect(retried).toHaveLength(1);
+  expect(retried[0]!._id).not.toBe(first!._id);
 });
 
 test("agent session sync is online-only and debounces pending, claimed and fresh syncs", async () => {
@@ -1450,6 +1721,65 @@ test("turn usage is recorded once per prompt, priced from models.dev, and shown 
   expect(hidden.summary.agentTurns).toBe(0);
 });
 
+test("a model choice whose description changes is matched again, not priced from the old match", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  const model = (id: string, name: string, input: number) => ({
+    id,
+    name,
+    cost: { input, output: 0 },
+  });
+  const fetch = vi.fn().mockImplementation(
+    async () =>
+      new Response(
+        JSON.stringify({
+          anthropic: {
+            id: "anthropic",
+            name: "Anthropic",
+            models: {
+              "claude-sonnet-4-5": model("claude-sonnet-4-5", "Claude Sonnet 4.5", 3),
+              "claude-opus-4-1": model("claude-opus-4-1", "Claude Opus 4.1", 15),
+            },
+          },
+        }),
+      ),
+  );
+  vi.stubGlobal("fetch", fetch);
+
+  async function turn(clientId: string, description: string) {
+    const command = await f.owner.mutation(api.acp.Prompt, { chat: f.chat, prompt, clientId });
+    await f.first.machine.mutation(api.acp.claimCommand, { command });
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: { status: "running" },
+    });
+    await f.first.machine.mutation(api.acp.updateSession, {
+      chat: f.chat,
+      patch: {
+        status: "idle",
+        stopReason: "end_turn",
+        turnUsage: { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+        turn: {
+          command,
+          startedAt: Date.now(),
+          model: { id: "default", name: "Default", description },
+        },
+      },
+    });
+    await f.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  }
+  await turn("one", "Currently Claude Sonnet 4.5");
+  // The `default` alias now points at another model.
+  await turn("two", "Currently Claude Opus 4.1");
+
+  expect(fetch).toHaveBeenCalledTimes(2);
+  const rows = await f.t.run((ctx) => ctx.db.query("acp_usage").collect());
+  expect(rows.map((row) => [row.pricing.modelName, row.pricing.cost])).toEqual([
+    ["Claude Sonnet 4.5", 3],
+    ["Claude Opus 4.1", 15],
+  ]);
+});
+
 test("local ccusage rows replace the turns they cover, per session, and place terminal sessions", async () => {
   const f = await fixture();
   vi.useFakeTimers();
@@ -1586,6 +1916,21 @@ test("local ccusage rows replace the turns they cover, per session, and place te
 
   const sessionCost = await f.owner.query(api.agent_usage.GetChatCost, { chat: f.chat });
   expect(sessionCost?.cost).toBeCloseTo(0.5 + 4.5);
+
+  // A later read with the same totals still advances coverage: the second turn's tokens were
+  // already in these rows, so it stops counting on its own.
+  const second = (await f.t.run((ctx) => ctx.db.query("acp_usage").order("desc").first()))!;
+  await f.first.machine.mutation(api.agent_usage.reportLocalUsage, {
+    day: new Date(second.endedAt).toISOString().slice(0, 10),
+    syncedAt: second.endedAt + 1,
+    rows: [local("ses-chat", 0.5), local("ses-terminal", 2), local("ses-unknown")],
+  });
+  const reread = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  expect(reread.summary).toMatchObject({ agentTurns: 0, localSessions: 3 });
+  expect(reread.summary.agentCost).toBeCloseTo(0.5 + 2 + 0.003);
 });
 
 test("an agent's Gateway calls join its session and replace its local rows and turns that day", async () => {
@@ -1731,6 +2076,22 @@ test("an agent's Gateway calls join its session and replace its local rows and t
   const sessionCost = await f.owner.query(api.agent_usage.GetChatCost, { chat: f.chat });
   expect(sessionCost).toMatchObject({ steps: 1, unknown: 0, pending: 0 });
   expect(sessionCost?.cost).toBeCloseTo(0.25);
+
+  // Once the chat is another member's private chat, its session's Gateway calls leave Activity
+  // instead of falling back to plain API traffic.
+  await f.t.run((ctx) => ctx.db.patch(f.chat, { userId: "member" }));
+  const hidden = await f.owner.query(api.observability.usage.getActivity, {
+    workspace: f.workspace,
+    since: 0,
+  });
+  expect(hidden.summary.requests).toBe(2);
+  expect(hidden.summary.gatewayCost).toBeCloseTo(1.1);
+  expect(hidden.harnesses).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: "api", requests: 1 })]),
+  );
+  expect(hidden.harnesses).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: "acp:test-agent" })]),
+  );
 });
 
 test("Worker Gateway access lifecycle mints secrets only in the response and cascades revocation", async () => {

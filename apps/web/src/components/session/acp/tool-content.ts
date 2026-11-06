@@ -29,10 +29,18 @@ export function acpPermissionContent(raw: string | undefined): AcpToolContent[] 
 
 const diffFiles = new WeakMap<Extract<AcpToolContent, { type: "diff" }>, DiffFile>();
 
-/** Same bounded line-diff algorithm as Telemetry, adapted to the Session's per-file renderer. */
-export function acpDiffFile(content: Extract<AcpToolContent, { type: "diff" }>): DiffFile {
+/**
+ * Same bounded line-diff algorithm as Telemetry, adapted to the Session's per-file renderer.
+ * `partial` (the tool item was cut at its size cap) drops the removals after the last unchanged
+ * line, which the cut tail of `newText` would invent, and marks the file partial, so it shows no
+ * `+/−` counts.
+ */
+export function acpDiffFile(
+  content: Extract<AcpToolContent, { type: "diff" }>,
+  partial = false,
+): DiffFile {
   const cached = diffFiles.get(content);
-  if (cached) return cached;
+  if (cached && Boolean(cached.partial) === partial) return cached;
   const before = content.oldText ?? "";
   const after = content.newText;
   let oldLine = 1;
@@ -57,9 +65,14 @@ export function acpDiffFile(content: Extract<AcpToolContent, { type: "diff" }>):
           oldLine++;
           return { kind: "context", text: entry.text, line };
         });
+  if (partial) {
+    const tail = lines.findLastIndex((line) => line.kind === "context") + 1;
+    lines.splice(tail, Infinity, ...lines.slice(tail).filter((line) => line.kind !== "removed"));
+  }
   const file: DiffFile = {
     path: content.path,
     op: content.oldText === undefined ? "create" : "update",
+    ...(partial ? { partial } : {}),
     lines,
   };
   diffFiles.set(content, file);
@@ -145,22 +158,43 @@ export function acpToolSubject(
   return { text: item.title, isTitle: true };
 }
 
-const numberedLine = /^\s*(\d+)(?:[:→|]|\t)(.*)$/;
+const numberedLine = /^(\s*)(\d+)([:→|\t])(.*)$/;
 
 /**
  * File text an agent already numbered (`12:code`, `12→code`, `cat -n`), split into code and its
  * own line numbers so they show in the gutter instead of twice. Gaps (elided ranges) keep no
  * number. A leading `[path]` header line, which some agents print, is the step's own subject.
+ * Numbers must share one separator and increase, by exactly one between adjacent lines, so TSV
+ * columns and logs keep their text.
  */
 export function acpNumberedText(
   text: string,
 ): { code: string; numbers: (number | undefined)[] } | undefined {
   const lines = text.replace(/\n$/, "").split("\n");
   if (lines.length > 1 && /^\[[^\]\n]+\]$/.test(lines[0]!)) lines.shift();
-  const parsed = lines.map((line) => {
+  const parsed = lines.map((line): { number?: number; separator?: string; text: string } => {
     const match = numberedLine.exec(line);
-    return match ? { number: Number(match[1]), text: match[2]! } : { text: line };
+    if (!match) return { text: line };
+    const indent = match[1]!;
+    const digits = match[2]!;
+    const separator = match[3]!;
+    // `cat -n` right-aligns its numbers in six columns; a bare `12\t` is a TSV or log column.
+    if (separator === "\t" && indent.length + digits.length < 6) return { text: line };
+    return { number: Number(digits), separator, text: match[4]! };
   });
+  let previous: { number: number; separator?: string; index: number } | undefined;
+  for (const [index, line] of parsed.entries()) {
+    if (line.number === undefined) continue;
+    if (
+      previous &&
+      (line.separator !== previous.separator ||
+        (index === previous.index + 1
+          ? line.number !== previous.number + 1
+          : line.number <= previous.number))
+    )
+      return undefined;
+    previous = { number: line.number, separator: line.separator, index };
+  }
   const numbered = parsed.filter((line) => line.number !== undefined).length;
   // Elision markers and blank lines between numbered ranges do not count against the file shape.
   const other = parsed.filter(

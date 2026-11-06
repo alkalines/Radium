@@ -1,6 +1,11 @@
 import { describe, expect, test } from "vitest";
 import type { LocalUsageRow } from "backend/src/usage/local_contract";
-import { sessionRows, startLocalUsageSync, type LocalUsageTransport } from "./local-usage";
+import {
+  ccusageFailure,
+  sessionRows,
+  startLocalUsageSync,
+  type LocalUsageTransport,
+} from "./local-usage";
 
 const NOW = Date.parse("2026-11-05T12:00:00Z");
 
@@ -24,7 +29,7 @@ function session(id: string, tokens: number) {
 }
 
 function fakeTransport(cursor: string | null) {
-  const reports: Array<{ day: string; rows: LocalUsageRow[] }> = [];
+  const reports: Array<{ day: string; syncedAt: number; rows: LocalUsageRow[] }> = [];
   const finishes: Array<{ syncedThrough?: string; error?: string }> = [];
   const transport: LocalUsageTransport = {
     cursor: async () => cursor,
@@ -60,32 +65,27 @@ describe("startLocalUsageSync", () => {
     expect(finishes).toEqual([{ syncedThrough: "2026-11-05" }]);
   });
 
-  test("an unchanged day is not uploaded again, a changed one is", async () => {
-    let tokens = 10;
+  test("an unchanged day is reported again so its coverage advances", async () => {
+    let time = NOW;
     const { transport, reports } = fakeTransport("2026-11-05");
     const sync = startLocalUsageSync(
       transport,
       async (args) =>
         args[0] === "daily"
           ? { daily: [{ period: "2026-11-05" }] }
-          : { session: [session("s", tokens)] },
-      () => NOW,
+          : { session: [session("s", 10)] },
+      () => time,
     );
     sync.setAvailable(true);
     await sync.idle();
     // A reconnect starts a new sync, like the next interval would.
-    sync.setAvailable(false);
-    sync.setAvailable(true);
-    await sync.idle();
-    expect(reports).toHaveLength(1);
-
-    tokens = 20;
+    time += 60_000;
     sync.setAvailable(false);
     sync.setAvailable(true);
     await sync.idle();
     sync.close();
-    expect(reports).toHaveLength(2);
-    expect(reports[1]!.rows[0]!.totalTokens).toBe(20);
+    expect(reports.map((report) => report.syncedAt)).toEqual([NOW, NOW + 60_000]);
+    expect(reports[1]!.rows).toEqual(reports[0]!.rows);
   });
 
   test("a failed ccusage run records the error and keeps the cursor", async () => {
@@ -102,6 +102,53 @@ describe("startLocalUsageSync", () => {
     sync.close();
     expect(reports).toEqual([]);
     expect(finishes).toEqual([{ error: "ccusage failed: no binary" }]);
+  });
+
+  test("close stops a ccusage run in progress without recording a failure", async () => {
+    const { transport, reports, finishes } = fakeTransport("2026-11-05");
+    const started = Promise.withResolvers<AbortSignal>();
+    const sync = startLocalUsageSync(
+      transport,
+      (_args, signal) => {
+        const run = Promise.withResolvers<unknown>();
+        signal.addEventListener("abort", () => run.reject(new Error("ccusage was stopped")));
+        started.resolve(signal);
+        return run.promise;
+      },
+      () => NOW,
+    );
+    sync.setAvailable(true);
+    const signal = await started.promise;
+    sync.close();
+    await sync.idle();
+    expect(signal.aborted).toBe(true);
+    expect(reports).toEqual([]);
+    expect(finishes).toEqual([]);
+  });
+});
+
+describe("ccusageFailure", () => {
+  test("keeps a short stderr reason without the command line or paths", () => {
+    const error = Object.assign(
+      new Error(
+        "Command failed: /usr/bin/node /home/alice/radium/node_modules/ccusage/src/cli.js daily",
+      ),
+      {
+        code: 1,
+        stderr: "\n\x1b[31mERROR\x1b[0m No usage data in /home/alice/.claude/projects\nat main\n",
+      },
+    );
+    expect(ccusageFailure(error)).toBe("ccusage ERROR No usage data in <path>");
+  });
+
+  test("reports a timeout, an exit code, and truncates long reasons", () => {
+    expect(ccusageFailure({ killed: true, signal: "SIGTERM", stderr: "" })).toBe(
+      "ccusage timed out after 120s",
+    );
+    expect(ccusageFailure({ code: 2, stderr: "" })).toBe("ccusage exited with code 2");
+    const long = ccusageFailure({ code: 1, stderr: "x".repeat(500) });
+    expect(long).toHaveLength(200);
+    expect(long.endsWith("…")).toBe(true);
   });
 });
 

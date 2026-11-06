@@ -13,7 +13,7 @@ import type {
   AcpStopReason,
   AcpTurnReport,
 } from "./contract";
-import { validAcpToken } from "./contract";
+import { ACP_WARM_SESSIONS_MAX, validAcpToken } from "./contract";
 
 type ReadCtx = QueryCtx | MutationCtx;
 
@@ -91,6 +91,27 @@ export async function findAgent(
         .take(1)
     )[0] ?? null
   );
+}
+
+/**
+ * Session patch fields that warm a cold Session, refusing past the Worker's
+ * `ACP_WARM_SESSIONS_MAX` so its warm-session subscription (bounded by the same cap) never
+ * silently drops one.
+ */
+export async function admitWarm(ctx: MutationCtx, session: Doc<"acp_sessions">, now: number) {
+  if (session.warm) return {};
+  const warm = await ctx.db
+    .query("acp_sessions")
+    .withIndex("by_worker_and_warm", (q) =>
+      q.eq("workspace", session.workspace).eq("worker", session.worker).eq("warm", true),
+    )
+    .take(ACP_WARM_SESSIONS_MAX);
+  if (warm.length >= ACP_WARM_SESSIONS_MAX)
+    acpError(
+      "ACP_WORKER_BUSY",
+      `This Worker already has ${ACP_WARM_SESSIONS_MAX} open agent Sessions. Close some tabs and try again in a few minutes.`,
+    );
+  return { warm: true, warmSince: now };
 }
 
 /** Idempotency keys are scoped to a machine, but never grant access to another issuer's command. */
@@ -210,15 +231,15 @@ export async function applySessionPatch(
     if (!session.sessionId) {
       const bound = await ctx.db
         .query("acp_sessions")
-        .withIndex("by_worker_and_sessionId", (q) =>
+        .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
           q
             .eq("workspace", session.workspace)
             .eq("worker", session.worker)
+            .eq("agentId", session.agentId)
             .eq("sessionId", sessionId),
         )
-        .take(8);
-      if (bound.some((row) => row.agentId === session.agentId && row.chat !== session.chat))
-        acpError("ACP_SESSION_BOUND");
+        .first();
+      if (bound && bound.chat !== session.chat) acpError("ACP_SESSION_BOUND");
     }
     updates.sessionId = sessionId;
     chatPatch.agent = { ...chat.agent, sessionId };

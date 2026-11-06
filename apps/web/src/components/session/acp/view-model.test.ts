@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { UIMessage } from "ai";
 import type { AcpItem, AcpOp } from "backend/src/acp/contract";
 import {
   applyAcpFrames,
@@ -8,6 +9,7 @@ import {
 } from "backend/src/acp/fold";
 import { acpChatStatus, acpRunState, createAcpViewModel } from "./view-model";
 import { isAcpNoticePart, isAcpToolPart } from "./parts";
+import { getToolRunState } from "../tool-parts";
 
 function timeline(items: AcpItem[], ops: AcpOp[] = []): AcpTimeline {
   return applyAcpFrames(startAcpEpoch(emptyAcpTimeline, 1, { keepOlder: false }), [
@@ -99,7 +101,7 @@ describe("ACP message mapping", () => {
     );
     const view = build(state, "idle");
     const part = view.messages[1]!.parts[0];
-    expect(isAcpToolPart(part) && part.acp.turnCancelled).toBe(true);
+    expect(isAcpToolPart(part) && part.acp.turnEnded).toBe("cancelled");
     const next = applyAcpFrames(state, [
       {
         seqFrom: state.nextSeq,
@@ -115,6 +117,30 @@ describe("ACP message mapping", () => {
       },
     ]);
     expect(build(next, "running").messages[1]).toBe(view.messages[1]);
+  });
+
+  test("ends open tools from durable data, even when the next turn arrives in the same batch", () => {
+    const runState = (view: { messages: UIMessage[] }, index: number) => {
+      const part = view.messages[index]!.parts.find(isAcpToolPart);
+      return part && getToolRunState(part, true);
+    };
+    expect(runState(createAcpViewModel()(timeline([user, tool]), "running"), 1)).toBe("executing");
+    expect(runState(createAcpViewModel()(timeline([user, tool]), "idle"), 1)).toBe("cancelled");
+    expect(runState(createAcpViewModel()(timeline([user, tool]), "failed"), 1)).toBe("failed");
+    const errored = timeline(
+      [user, tool],
+      [{ op: "turn.end", turnId: "turn", stopReason: "end_turn", error: "Agent exited" }],
+    );
+    expect(runState(createAcpViewModel()(errored, "running"), 1)).toBe("failed");
+    // Reload / batched frames: `turn.end` and the next `turn.start` were never rendered apart.
+    const next = timeline(
+      [user, tool, { id: "u2", order: 4, kind: "user", text: "Next", turnId: "next" }],
+      [
+        { op: "turn.end", turnId: "turn", stopReason: "end_turn" },
+        { op: "turn.start", turnId: "next" },
+      ],
+    );
+    expect(runState(createAcpViewModel()(next, "running"), 1)).toBe("cancelled");
   });
 
   test("prepends shared history without changing existing user message identity", () => {

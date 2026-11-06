@@ -330,7 +330,10 @@ export const getActivity = query({
         const session =
           looked || local || lookups++ < SESSION_LOOKUP_LIMIT
             ? await resolveSession(completion.clientSession)
-            : null;
+            : undefined;
+        // The session's chat is another member's private chat: its calls are hidden like its
+        // turns, not shown as plain API traffic.
+        if (session === null) continue;
         const agentHarness =
           session && (session.agentId || local)
             ? await harnessOf(session, local?.agent)

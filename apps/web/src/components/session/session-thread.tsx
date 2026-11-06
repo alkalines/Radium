@@ -33,7 +33,8 @@ const PENDING_PROMPT_ID = "pending-prompt";
  *
  * Turns present when the thread first shows content (history, restored Tabs) render in place;
  * only turns and steps that arrive afterwards reveal. `pendingPrompt` shows the just-sent prompt
- * while `messages` is still empty (between creating the chat and the first send).
+ * until the real user turn arrives; callers pass it only until then (the built-in screen while
+ * `messages` is still empty, `AcpSessionScreen` until the timeline holds a user item).
  */
 export function SessionThread({
   messages,

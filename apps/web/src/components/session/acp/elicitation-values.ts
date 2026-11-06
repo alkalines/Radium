@@ -7,7 +7,41 @@ import type {
 export type FormRequest = Extract<AcpInteractionRequest, { kind: "elicitation"; mode: "form" }>;
 export type FormValues = Record<string, string | string[] | undefined>;
 
-export { choicesFor, initialValues, formContent, formatError };
+/**
+ * A URL-mode link as the reader checks it, read from the parsed `URL` rather than the raw text:
+ * `host` is where the link really goes, `userinfo` (which can pose as a host) stands apart.
+ */
+export type AcpLink = {
+  canOpen: boolean;
+  scheme: string;
+  userinfo: string;
+  host: string;
+  hostname: string;
+  rest: string;
+  punycode: boolean;
+};
+
+export { acpLink, choicesFor, initialValues, formContent, formatError };
+
+/** `undefined` when the agent's URL does not parse. */
+function acpLink(raw: string): AcpLink | undefined {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  return {
+    canOpen: url.protocol === "https:" || url.protocol === "http:",
+    scheme: `${url.protocol}//`,
+    userinfo: url.password ? `${url.username}:${url.password}` : url.username,
+    host: url.host,
+    hostname: url.hostname,
+    rest: `${url.pathname}${url.search}${url.hash}`,
+    punycode: url.hostname.split(".").some((label) => label.startsWith("xn--")),
+  };
+}
+
 function choicesFor(field: AcpElicitationField) {
   if (field.type === "boolean")
     return [

@@ -321,7 +321,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
     ),
   );
-  const { data: agentDefinitions } = useQuery(
+  const { data: agentDefinitions, isLoading: isAgentCatalogLoading } = useQuery(
     convexQuery(
       api.acp.ListAgentDefinitions,
       isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
@@ -1159,10 +1159,12 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         ? Boolean(
             settingsWorkspaceId && isOwner && acpAvailability === "ready" && draftWorker?.workerId,
           ) && !isCreating
-        : Boolean(settingsWorkspaceId && selectedModelData) &&
+        : // The resolved agent is built-in here; a restored ACP choice waits only while the catalog
+          // that can resolve it loads, never on a catalog this account cannot read or that failed.
+          Boolean(settingsWorkspaceId && selectedModelData) &&
           !isModelLoading &&
           !isCreating &&
-          (agentId === builtInAgent.id || agentDefinitions !== undefined)
+          (agentId === builtInAgent.id || !isAgentCatalogLoading)
       : chat !== undefined &&
         seededChatId === chatId &&
         status === "ready" &&

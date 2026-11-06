@@ -5,6 +5,7 @@ import { getLatestTodos, getToolKind, getToolRunState } from "../tool-parts";
 import { countDiffLines } from "../tool-diff";
 import { acpModelConfig, applyAcpDraft } from "./config-controls";
 import {
+  acpLink,
   choicesFor,
   formContent,
   formatError,
@@ -33,8 +34,8 @@ const tool: AcpToolItem = {
 describe("ACP tool mapping", () => {
   test("every kind branches before built-in tool names", () => {
     for (const kind of ACP_TOOL_KINDS)
-      expect(getToolKind(acpToolPart({ ...tool, toolKind: kind }, false))).toBe(kind);
-    expect(getToolKind(acpToolPart({ ...tool, toolKind: "unknown" }, false))).toBe("other");
+      expect(getToolKind(acpToolPart({ ...tool, toolKind: kind }, undefined))).toBe(kind);
+    expect(getToolKind(acpToolPart({ ...tool, toolKind: "unknown" }, undefined))).toBe("other");
   });
   test("reported states are independent of browser stream liveness", () => {
     const expected = {
@@ -45,19 +46,25 @@ describe("ACP tool mapping", () => {
     } as const;
     for (const status of ["pending", "in_progress", "completed", "failed"] as const) {
       for (const live of [true, false])
-        expect(getToolRunState(acpToolPart({ ...tool, status }, false), live)).toBe(
+        expect(getToolRunState(acpToolPart({ ...tool, status }, undefined), live)).toBe(
           expected[status],
         );
     }
-    expect(getToolRunState(acpToolPart(tool, false), false)).toBe("queued");
+    expect(getToolRunState(acpToolPart(tool, undefined), false)).toBe("queued");
   });
-  test("cancellation only overrides open statuses", () => {
-    for (const status of [undefined, "pending", "in_progress"] as const)
-      expect(getToolRunState(acpToolPart({ ...tool, status }, true), true)).toBe("cancelled");
-    expect(getToolRunState(acpToolPart({ ...tool, status: "completed" }, true), false)).toBe(
+  test("an ended turn only overrides open statuses", () => {
+    for (const status of [undefined, "pending", "in_progress"] as const) {
+      expect(getToolRunState(acpToolPart({ ...tool, status }, "cancelled"), true)).toBe(
+        "cancelled",
+      );
+      expect(getToolRunState(acpToolPart({ ...tool, status }, "failed"), true)).toBe("failed");
+    }
+    expect(getToolRunState(acpToolPart({ ...tool, status: "completed" }, "cancelled"), false)).toBe(
       "succeeded",
     );
-    expect(getToolRunState(acpToolPart({ ...tool, status: "failed" }, true), false)).toBe("failed");
+    expect(getToolRunState(acpToolPart({ ...tool, status: "failed" }, "cancelled"), false)).toBe(
+      "failed",
+    );
   });
   test("machine subjects use paths, command and URL input", () => {
     expect(
@@ -107,6 +114,16 @@ describe("ACP tool mapping", () => {
       numbers: [7, 8],
     });
     expect(acpNumberedText("plain output\n12:30 is not a file line")).toBeUndefined();
+    expect(acpNumberedText("     1\tconst a = 1;\n     2\tconst b = 2;")).toEqual({
+      code: "const a = 1;\nconst b = 2;",
+      numbers: [1, 2],
+    });
+  });
+  test("TSV columns and logs keep their numbers", () => {
+    expect(acpNumberedText("1\tAda\n2\tGrace\n3\tLinus")).toBeUndefined();
+    expect(acpNumberedText("200:GET /\n404:GET /x\n200:GET /y")).toBeUndefined();
+    expect(acpNumberedText("1:a\n2:b\n3→c")).toBeUndefined();
+    expect(acpNumberedText("10:a\n12:b\n13:c")).toBeUndefined();
   });
 });
 
@@ -147,6 +164,23 @@ describe("ACP content", () => {
     expect(
       countDiffLines(acpDiffFile({ type: "diff", path: "x", oldText: "a\n", newText: "" }).lines),
     ).toEqual({ added: 0, removed: 1 });
+  });
+  test("a truncated item's diff is partial, without counts or invented removals", () => {
+    const content = {
+      type: "diff" as const,
+      path: "x.ts",
+      oldText: "a\nb\nc\nd\n",
+      newText: "a\nB\nc\nd",
+    };
+    const cut = { ...content, newText: "a\nB" };
+    const file = acpDiffFile(cut, true);
+    expect(file.partial).toBe(true);
+    expect(file.lines.map((line) => `${line.kind}:${line.text}`)).toEqual([
+      "context:a",
+      "added:B",
+    ]);
+    expect(acpDiffFile({ ...content, newText: "" }, true).lines).toEqual([]);
+    expect(acpDiffFile(content).partial).toBeUndefined();
   });
 });
 
@@ -454,6 +488,23 @@ describe("ACP elicitation values", () => {
   });
 });
 
+test("URL elicitations highlight the parsed host, with userinfo apart", () => {
+  expect(acpLink("https://evil.example#@trusted.com")).toMatchObject({
+    host: "evil.example",
+    userinfo: "",
+    rest: "/#@trusted.com",
+  });
+  expect(acpLink("https://trusted.com@evil.example:8443/a?b")).toMatchObject({
+    canOpen: true,
+    userinfo: "trusted.com",
+    host: "evil.example:8443",
+    rest: "/a?b",
+  });
+  expect(acpLink("https://xn--80ak6aa92e.com/")).toMatchObject({ punycode: true });
+  expect(acpLink("javascript:alert(1)")).toMatchObject({ canOpen: false, host: "" });
+  expect(acpLink("not a url")).toBeUndefined();
+});
+
 test("built-in tool states, approvals and latest todos retain their existing path", () => {
   const bash: ToolUIPart = {
     type: "tool-worker_bash",
@@ -482,7 +533,7 @@ test("built-in tool states, approvals and latest todos retain their existing pat
           input: { todos: [{ content: "Keep built-in todos", status: "in_progress" }] },
           output: undefined,
         },
-        acpToolPart({ ...tool, toolKind: "other", status: "completed" }, false),
+        acpToolPart({ ...tool, toolKind: "other", status: "completed" }, undefined),
       ],
     },
   ];

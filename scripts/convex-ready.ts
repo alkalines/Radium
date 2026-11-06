@@ -16,8 +16,25 @@ if (mode === "reset") {
   writeFileSync(marker, "");
 } else if (mode === "wait") {
   if (!existsSync(marker)) {
+    const timeoutMs = 10 * 60_000;
+    const hintMs = 30_000;
+    const start = Date.now();
+    let lastHint = start;
     console.log("Waiting for Convex's first successful push...");
-    while (!existsSync(marker)) await Bun.sleep(250);
+    while (!existsSync(marker)) {
+      await Bun.sleep(250);
+      const now = Date.now();
+      if (now - start >= timeoutMs) {
+        console.error("Gave up waiting for Convex's first push; fix the error in the convex-dev pane and rerun `bun run dev`.");
+        process.exit(1);
+      }
+      if (now - lastHint >= hintMs) {
+        lastHint = now;
+        console.log(
+          `Still waiting for Convex's first successful push (${Math.round((now - start) / 1000)}s); the Worker starts after it. Check the convex-dev pane for errors.`,
+        );
+      }
+    }
   }
 } else {
   console.error("Usage: bun scripts/convex-ready.ts reset|mark|wait");

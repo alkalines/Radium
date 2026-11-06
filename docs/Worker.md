@@ -75,6 +75,11 @@ as well as foreground shell execution and planned background-job/PTY primitives.
 
 While connected, the Worker also uploads this machine's coding-CLI usage read by ccusage (every 15 minutes, totals only, never content) for Activity and Session cost estimates; see [Local CLI usage](observability.md#local-cli-usage-ccusage).
 
+The ACP host and relay are implemented: the Worker launches the agents defined in
+Settings → ACP (after checking each command on its `PATH`), speaks stdio ACP through `@agentclientprotocol/sdk`, and relays
+commands, permission/elicitation decisions, lifecycle and viewer-gated frames
+through Convex (`packages/worker/src/acp/`, `packages/backend/src/acp/`). Agents with a Gateway environment also run in [Gateway mode](ACP/Agents.md#gateway-mode) with a Gateway key the Worker mints itself.
+
 ## Proposed
 
 The [Bash tool reference](Worker/Bash_Tool.md) details shell execution,
@@ -88,10 +93,6 @@ connect outbound to Convex; Worker adapts a local stdio ACP agent. Local batchin
 bounded output chunks, separate control/output subscriptions and retention limit
 database load. Machine JWT authentication and identity-management wrappers are now
 implemented; file and foreground Bash request/result paths are implemented locally.
-The ACP host and relay are implemented: the Worker launches the agents defined in
-Settings → ACP (after checking each command on its `PATH`), speaks stdio ACP through `@agentclientprotocol/sdk`, and relays
-commands, permission/elicitation decisions, lifecycle and viewer-gated frames
-through Convex (`packages/worker/src/acp/`, `packages/backend/src/acp/`).
 
 The [ACP agents design](ACP.md) details the Worker as ACP client: agent
 install and launch, viewer-gated frames, commands and durable permission

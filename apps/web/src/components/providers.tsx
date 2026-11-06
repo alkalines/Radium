@@ -4,8 +4,9 @@ import { ConvexBetterAuthProvider } from "@convex-dev/better-auth/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConvexAuth, type ConvexReactClient } from "convex/react";
 import { ConvexQueryCacheProvider } from "convex-helpers/react/cache";
+import { ConvexQueryCacheContext } from "convex-helpers/react/cache/provider";
 import { ThemeProvider, useTheme } from "next-themes";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { authClient } from "@/lib/auth-client";
 import { useFrontendLogger } from "@/lib/logging";
@@ -72,8 +73,9 @@ function OperationalLogging({ children }: { children: ReactNode }) {
 /**
  * Convex query keys do not include the Better Auth identity, so discard the
  * client cache before a different user can reuse the previous user's data. The
- * convex-helpers subscription cache (Home's paginated lists) unmounts with the
- * hidden descendants, so it starts empty for the next identity too.
+ * convex-helpers subscription cache (Home's paginated lists) stays mounted with
+ * its descendants hidden, and `ReleaseCachedQueries` ends the subscriptions they
+ * left idle at once instead of after the cache's expiration.
  */
 function ConvexAuthQueryCache({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
@@ -101,7 +103,29 @@ function ConvexAuthQueryCache({ children }: { children: ReactNode }) {
     setCacheIdentity({ initialized: true, userId });
   }, [cacheIdentity.initialized, identityChanged, isPending, queryClient, userId]);
 
-  if (identityChanged) return null;
   // Unmounted subscriptions stay open five minutes, so a quick return to Home reuses its pages.
-  return <ConvexQueryCacheProvider expiration={5 * 60_000}>{children}</ConvexQueryCacheProvider>;
+  return (
+    <ConvexQueryCacheProvider expiration={5 * 60_000}>
+      {identityChanged ? <ReleaseCachedQueries /> : children}
+    </ConvexQueryCacheProvider>
+  );
+}
+
+/**
+ * Ends every idle cached subscription now. Rendered in place of the hidden descendants, so it runs
+ * after their unmount has left all of the previous identity's subscriptions idle.
+ */
+function ReleaseCachedQueries() {
+  const { registry } = useContext(ConvexQueryCacheContext);
+  useEffect(() => {
+    if (!registry) return;
+    for (const [key, entry] of registry.queries) {
+      if (entry.evictTimer === null) continue;
+      clearTimeout(entry.evictTimer);
+      entry.unsub();
+      registry.queries.delete(key);
+      registry.idle -= 1;
+    }
+  }, [registry]);
+  return null;
 }

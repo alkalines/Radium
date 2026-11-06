@@ -45,6 +45,10 @@ function errorCode(error: unknown): string | undefined {
   return undefined;
 }
 
+function backlog(entry: Queued): number {
+  return entry.kind === "history" ? 0 : entry.bytes;
+}
+
 /** Ordered warm-only frame writer; uncertain appends retry identical ranges before any later write. */
 export class AcpRelay {
   /** Current (or currently opening) epoch; increases on warm-up, repair and rollover. */
@@ -54,6 +58,10 @@ export class AcpRelay {
   private generation = 0;
   private nextSeq = 0;
   private bytes = 0;
+  /**
+   * Outage backlog of queued/in-flight non-history ops. History pages are bounded requests the
+   * host awaits page by page, so even a page with an oversized item never counts toward it.
+   */
   private queuedBytes = 0;
   private inFlightBytes = 0;
   private queue: Queued[] = [];
@@ -171,14 +179,14 @@ export class AcpRelay {
         last.op.id === op.id &&
         last.bytes + utf8Bytes(op.text) < ACP_FRAME_BYTES
       ) {
-        this.queuedBytes -= last.bytes;
+        this.queuedBytes -= backlog(last);
         last.op = { ...last.op, text: last.op.text + op.text };
         last.bytes = utf8Bytes(JSON.stringify(last.op));
-        this.queuedBytes += last.bytes;
+        this.queuedBytes += backlog(last);
       } else {
-        const bytes = utf8Bytes(JSON.stringify(op));
-        this.queue.push({ kind, op, bytes });
-        this.queuedBytes += bytes;
+        const entry = { kind, op, bytes: utf8Bytes(JSON.stringify(op)) };
+        this.queue.push(entry);
+        this.queuedBytes += backlog(entry);
       }
     }
   }
@@ -232,7 +240,10 @@ export class AcpRelay {
           turnEnd = frames.some((frame) =>
             (JSON.parse(frame.payload) as AcpOp[]).some((op) => op.op === "turn.end"),
           );
-          this.inFlightBytes = frames.reduce((sum, frame) => sum + utf8Bytes(frame.payload), 0);
+          this.inFlightBytes = frames.reduce(
+            (sum, frame) => sum + (frame.kind === "history" ? 0 : utf8Bytes(frame.payload)),
+            0,
+          );
         }
         const result = await this.transport.appendFrames({
           chat: this.chat,
@@ -272,7 +283,7 @@ export class AcpRelay {
       const first = this.queue[0]!;
       if (first.bytes + 2 > ACP_FRAME_BYTES) {
         this.queue.shift();
-        this.queuedBytes -= first.bytes;
+        this.queuedBytes -= backlog(first);
         const fragments = this.split(first.op);
         const entries = fragments.map((op) => ({
           kind: first.kind,
@@ -280,7 +291,7 @@ export class AcpRelay {
           bytes: utf8Bytes(JSON.stringify(op)),
         }));
         this.queue.unshift(...entries);
-        this.queuedBytes += entries.reduce((sum, entry) => sum + entry.bytes, 0);
+        this.queuedBytes += entries.reduce((sum, entry) => sum + backlog(entry), 0);
         continue;
       }
       const ops: AcpOp[] = [];
@@ -290,7 +301,7 @@ export class AcpRelay {
         if (next.kind !== first.kind || bytes + next.bytes + (ops.length ? 1 : 0) > ACP_FRAME_BYTES)
           break;
         this.queue.shift();
-        this.queuedBytes -= next.bytes;
+        this.queuedBytes -= backlog(next);
         bytes += next.bytes + (ops.length ? 1 : 0);
         ops.push(next.op);
       }

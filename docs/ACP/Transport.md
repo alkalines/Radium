@@ -64,8 +64,8 @@ a Tab that is open but not visible keeps only the metadata subscription
 ### Several clients at once
 
 - Convex serializes mutations, so concurrent actions resolve deterministically:
-  `acp.Prompt` is accepted only while the session is `idle`; a second client's
-  prompt during a turn is rejected with "already running".
+  `acp.Prompt` is accepted only while the session is `idle` or `failed`; a second
+  client's prompt during a turn is rejected with "already running".
 - An interaction is answered once: the first valid answer wins, later ones are
   rejected, and every client sees the prompt close.
 - Stop and config changes from any controlling client apply to everyone.
@@ -128,7 +128,10 @@ stateDiagram-v2
   The Worker sees the flag through its warm-sessions subscription, writes a
   **snapshot** (the current turn plus the latest items, up to 64 KiB) as the first
   frames of a new **epoch**, then streams live ops after it. If the Worker is
-  offline the flag waits, and the client shows metadata only.
+  offline the flag waits, and the client shows metadata only. A Worker holds at
+  most 64 warm Sessions (`ACP_WARM_SESSIONS_MAX`); `Watch` and `Prompt` refuse to
+  warm one more with `ACP_WORKER_BUSY` until others cool, so the Worker's
+  warm-sessions subscription is always complete.
 - **Warm.** Every client, whenever it joins, reads the current epoch from
   sequence 0: the same snapshot plus every op since. No client needs the Worker
   to resend anything. History pages requested by any viewer are shared and stay
@@ -138,7 +141,10 @@ stateDiagram-v2
   minutes, it deletes that chat's frames and viewer rows in bounded batches and
   sets `warm = false`; the Worker stops writing frames. A turn running
   unattended keeps writing only lifecycle and interactions, so an agent working
-  alone for an hour costs a handful of writes.
+  alone for an hour costs a handful of writes. Cooling records the cleared epoch
+  in `acp_sessions.cooledEpoch`; the Worker can never write to it again, so a
+  Session re-warmed while that cleanup runs always opens a newer epoch with a
+  fresh snapshot.
 - **Size bound.** At a turn boundary, when a warm epoch has passed 1 MiB, the
   Worker starts a new epoch with a fresh snapshot. Clients switch to it and keep
   pages they already hold; the old epoch is deleted a minute later.
@@ -202,7 +208,7 @@ error?, result?}`; the Worker subscribes through `acp.assignedCommands` (its
 | ------------------------ | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `prompt`                 | `session/new` (first), `session/prompt`         | Payload: text and `resource_link` blocks (attachments are a later slice)                                                                                                                              |
 | `cancel`                 | `session/cancel`                                | Also answers open permissions/elicitations as cancelled. An unclaimed prompt is cancelled in Convex without a command                                                                                 |
-| `set_config`, `set_mode` | `session/set_config_option`, `session/set_mode` | Response config replaces `acp_sessions.config`; before the ACP session exists the choice is stored in `acp_sessions.draft` and applied after `session/new`                                            |
+| `set_config`, `set_mode` | `session/set_config_option`, `session/set_mode` | Response config replaces `acp_sessions.config`; before the ACP session exists the choice is stored in `acp_sessions.draft` and applied after `session/new`; once the first prompt is claimed (but before the session id is bound) the choice is also sent as a live command, since the Worker has already read the draft |
 | `history`                | —                                               | Worker-local timeline read                                                                                                                                                                            |
 | `sync_sessions`          | `session/list` (all pages, no `cwd`)            | Refreshes the [agent session index](Sessions.md#agent-session-index) with diff writes through `acp.knownAgentSessions` / `acp.syncAgentSessions`; also run by the Worker after each definitions probe |
 | `authenticate`, `logout` | `authenticate`, `logout`                        | Agent-level, not session-level; the Worker re-initializes and reports the agent again                                                                                                                 |

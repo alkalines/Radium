@@ -253,7 +253,8 @@ export function Composer({
       }
       if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
         const command = matchingCommands[activeCommandIndex];
-        if (command) {
+        // Enter on a fully typed command sends it; Tab, or Enter on a partial query, completes.
+        if (command && !(event.key === "Enter" && command.name === commandQuery)) {
           event.preventDefault();
           selectCommand(command.name);
           return;

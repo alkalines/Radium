@@ -116,6 +116,8 @@ export default defineSchema({
     epoch: v.number(),
     warm: v.boolean(),
     warmSince: v.optional(v.number()),
+    /** Cooling cleared this epoch and every older one; the Worker must open a newer epoch. */
+    cooledEpoch: v.optional(v.number()),
     stopReason: v.optional(acpStopReasonValidator),
     error: v.optional(v.string()),
     config: v.optional(acpConfigValidator),
@@ -133,6 +135,8 @@ export default defineSchema({
     .index("by_worker_and_status", ["workspace", "worker", "status"])
     .index("by_warm", ["warm"])
     .index("by_worker_and_sessionId", ["workspace", "worker", "sessionId"])
+    // A binding is unique per agent: different agents may reuse the same session id.
+    .index("by_worker_and_agentId_and_sessionId", ["workspace", "worker", "agentId", "sessionId"])
     // Gateway calls carry an agent session id but no Worker.
     .index("by_sessionId", ["workspace", "sessionId"]),
   /**

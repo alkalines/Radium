@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/questionnaire";
 import { ApprovalPromptShell, approvalOverlaySelector } from "../approval-gate";
 import {
+  acpLink,
   choicesFor,
   initialValues,
   formContent,
@@ -47,6 +48,9 @@ export function AcpElicitationPrompt(props: {
     if (!props.shortcutsEnabled) return;
     function keydown(event: KeyboardEvent) {
       if (event.key !== "Escape" || event.defaultPrevented || event.repeat) return;
+      // Escape ends an IME composition or leaves a field; it must not dismiss the questions.
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.target instanceof Element && event.target.closest("input, textarea, select")) return;
       if (event.target instanceof Element && event.target.closest(approvalOverlaySelector)) return;
       event.preventDefault();
       props.onAnswer({ kind: "elicitation", action: "cancel" });
@@ -336,15 +340,9 @@ function UrlPrompt({
   onAnswer: (answer: Answer) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
-  let url: URL | undefined;
-  try {
-    url = new URL(request.url);
-  } catch {
-    /* An invalid agent URL remains visible but cannot be opened. */
-  }
-  const canOpen = url?.protocol === "https:" || url?.protocol === "http:";
-  const punycode = url?.hostname.split(".").some((label) => label.startsWith("xn--"));
-  const parts = /^([^:]+:\/\/(?:[^/@]*@)?)([^/?#]+)([\s\S]*)$/.exec(request.url);
+  // An invalid agent URL remains visible but cannot be opened.
+  const link = acpLink(request.url);
+  const canOpen = link?.canOpen ?? false;
   function open() {
     const answer: Answer = { kind: "elicitation", action: "accept", content: [] };
     const message = acpAnswerError(request, answer);
@@ -368,19 +366,28 @@ function UrlPrompt({
         </Marker>
         <p className="text-sm whitespace-pre-wrap">{request.message}</p>
         <p className="break-all rounded-xl bg-muted p-3 font-mono text-xs">
-          {parts ? (
+          {link?.host ? (
             <>
-              {parts[1]}
-              <strong className="font-semibold">{parts[2]}</strong>
-              {parts[3]}
+              {link.scheme}
+              {link.userinfo ? (
+                <span className="text-signal-awaiting">{link.userinfo}@</span>
+              ) : null}
+              <strong className="font-semibold">{link.host}</strong>
+              {link.rest}
             </>
           ) : (
             request.url
           )}
         </p>
-        {punycode ? (
+        {link?.userinfo ? (
           <p className="text-[13px] text-signal-awaiting">
-            This host uses Punycode ({url?.hostname}). Check its identity carefully before opening.
+            The text before “@” ({link.userinfo}) is a username, not the site. This link opens{" "}
+            {link.host}.
+          </p>
+        ) : null}
+        {link?.punycode ? (
+          <p className="text-[13px] text-signal-awaiting">
+            This host uses Punycode ({link.hostname}). Check its identity carefully before opening.
           </p>
         ) : null}
         {!canOpen ? (

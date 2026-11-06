@@ -93,14 +93,17 @@ export function AcpToolStep({
   useEffect(() => {
     if (autoClose) setOpen(false);
   }, [autoClose]);
+  // A truncated item's diffs miss their tail, so its counts would mislead.
   const counts = useMemo(
     () =>
-      countDiffLines(
-        (item.content ?? []).flatMap((content) =>
-          content.type === "diff" ? acpDiffFile(content).lines : [],
-        ),
-      ),
-    [item.content],
+      item.truncated
+        ? { added: 0, removed: 0 }
+        : countDiffLines(
+            (item.content ?? []).flatMap((content) =>
+              content.type === "diff" ? acpDiffFile(content).lines : [],
+            ),
+          ),
+    [item.content, item.truncated],
   );
   const { icon: Icon, verbs } = visuals[kind];
   const subject = acpToolSubject(item, cwd);
@@ -184,6 +187,7 @@ export function AcpToolStep({
           terminal={kind === "execute"}
           command={kind === "execute" ? acpCommand(item) : undefined}
           reasoning={kind === "think"}
+          partial={item.truncated}
         />
         {!item.content?.length ? (
           <>

@@ -36,9 +36,10 @@ export const localUsageCursor = workerQuery({
 });
 
 /**
- * Upsert one day's session rows from the calling Worker. Unchanged rows are not rewritten, so a
- * quiet machine costs no writes. `syncedAt` is when ccusage started reading the logs: turns that
- * ended before it are inside these rows (`isTurnCovered`).
+ * Upsert one day's session rows from the calling Worker. Unchanged rows keep their content and
+ * only advance `syncedAt`: when ccusage started reading the logs, so turns that ended before it
+ * are inside these rows (`isTurnCovered`). Every successful read moves it forward, so a turn whose
+ * tokens were already read but ended after that read is covered by the next one.
  */
 export const reportLocalUsage = workerMutation({
   args: {
@@ -84,6 +85,7 @@ export const reportLocalUsage = workerMutation({
             models,
           });
         } else {
+          if (syncedAt > existing.syncedAt) await ctx.db.patch(existing._id, { syncedAt });
           // Unchanged: price again only models never estimated (a failed or older pricing run).
           unpriced =
             !existing.priceKey &&

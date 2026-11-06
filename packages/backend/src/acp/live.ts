@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { mutation, query } from "../../convex/_generated/server";
 import { requireAccessibleChat } from "../../convex/workspaces";
-import { acpError, accessibleSession, findSession } from "./policy";
+import { acpError, accessibleSession, admitWarm, findSession } from "./policy";
 import { validAcpToken } from "./contract";
 
 /** Heartbeat only an authorized visible chat; non-ACP chats do not create presence rows. */
@@ -28,8 +28,10 @@ export const Watch = mutation({
         user: userId,
         lastSeenAt: Date.now(),
       });
-    if (!session.warm)
-      await ctx.db.patch(session._id, { warm: true, warmSince: Date.now(), updatedAt: Date.now() });
+    if (!session.warm) {
+      const now = Date.now();
+      await ctx.db.patch(session._id, { ...(await admitWarm(ctx, session, now)), updatedAt: now });
+    }
     return { warm: true };
   },
 });

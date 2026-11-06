@@ -132,6 +132,15 @@ describe("matchModelsDev", () => {
   test("leaves a versionless alias unmatched instead of guessing", () => {
     expect(matchModelsDev(api, { id: "opus", name: "Opus" }, "claude-agent")).toBeNull();
   });
+
+  test("needs the whole version: Sonnet 4.6 is not Sonnet 4", () => {
+    expect(
+      matchModelsDev(api, { id: "sonnet-latest", name: "Claude Sonnet 4.6" }, "claude-agent"),
+    ).toBeNull();
+    expect(
+      matchModelsDev(api, { id: "sonnet-old", name: "Claude Sonnet 4 (thinking)" }, "claude-agent"),
+    ).toMatchObject({ modelId: "claude-sonnet-4" });
+  });
 });
 
 describe("workspaceQuote", () => {

@@ -136,6 +136,26 @@ function quoteResolver(ctx: MutationCtx) {
         )
         .first());
 
+    // A choice whose name or description changed (a `default` alias now pointing elsewhere)
+    // drops its match, so neither the routing hint nor the price below comes from the old model,
+    // and is looked up again.
+    if (
+      price &&
+      (price.name !== model.name || (price.description ?? "") !== (model.description ?? ""))
+    ) {
+      const refreshed = {
+        name: model.name,
+        description: model.description || undefined,
+        match: undefined,
+        checkedAt: undefined,
+        queued: true,
+      };
+      await ctx.db.patch(price._id, refreshed);
+      price = { ...price, ...refreshed };
+      prices.set(cacheKey, price);
+      queuedLookup = true;
+    }
+
     let workspaceProviders = providers.get(workspace);
     if (!workspaceProviders) {
       const workspaceDoc = await ctx.db.get(workspace);

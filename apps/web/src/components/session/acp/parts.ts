@@ -32,12 +32,12 @@ export type AcpToolKind = (typeof ACP_TOOL_KINDS)[number];
 export const ACP_TOOL_NAME_PREFIX = "acp_";
 
 /**
- * A `dynamic-tool` part built from an ACP tool item. `turnCancelled` marks a call still open when
- * its turn ended as cancelled (ACP v1 has no cancelled tool status). Session renderers receive it
+ * A `dynamic-tool` part built from an ACP tool item. `turnEnded` is how a call still open renders
+ * once its turn is over (ACP v1 has no cancelled tool status). Session renderers receive it
  * through `isToolPart`, which narrows to `ToolUIPart`; `isAcpToolPart` recovers the ACP fields.
  */
 export type AcpToolPart = DynamicToolUIPart & {
-  acp: { item: AcpToolItem; turnCancelled: boolean };
+  acp: { item: AcpToolItem; turnEnded: "cancelled" | "failed" | undefined };
 };
 
 /** A notice (agent notice, compaction progress, turn error) inside an assistant turn. */
@@ -71,17 +71,20 @@ export function acpToolKind(item: AcpToolItem): AcpToolKind {
 /**
  * Builds the `dynamic-tool` part of one tool item. State: `completed` → `output-available`,
  * `failed` → `output-error`, otherwise `input-available`; `getToolRunState` reads the ACP status
- * (and `turnCancelled`) for the RunState, not this state. `input` and `output` hold the parsed raw
+ * (and `turnEnded`) for the RunState, not this state. `input` and `output` hold the parsed raw
  * input/output when they are JSON, else the raw text.
  */
-export function acpToolPart(item: AcpToolItem, turnCancelled: boolean): AcpToolPart {
+export function acpToolPart(
+  item: AcpToolItem,
+  turnEnded: AcpToolPart["acp"]["turnEnded"],
+): AcpToolPart {
   const base = {
     type: "dynamic-tool" as const,
     toolName: `${ACP_TOOL_NAME_PREFIX}${acpToolKind(item)}`,
     toolCallId: item.toolCallId,
     title: item.title,
     input: parseRaw(item.rawInput),
-    acp: { item, turnCancelled },
+    acp: { item, turnEnded },
   };
   if (item.status === "completed") {
     return { ...base, state: "output-available", output: parseRaw(item.rawOutput) } as AcpToolPart;

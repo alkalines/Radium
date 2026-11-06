@@ -26,6 +26,7 @@ export interface AcpProcessHandlers {
   permission(request: RequestPermissionRequest): Promise<RequestPermissionResponse>;
   elicitation(request: CreateElicitationRequest): Promise<CreateElicitationResponse>;
   elicitationComplete?(notification: unknown): void | Promise<void>;
+  /** The connection is gone (child exit or protocol close); the child may still be exiting. */
   exited(): void;
 }
 
@@ -36,8 +37,9 @@ export class AcpAgentProcess {
   readonly ready: Promise<InitializeResponse>;
   private stderr = Buffer.alloc(0);
   private stopping = false;
+  private childEnded = false;
   private readonly exited = Promise.withResolvers<void>();
-  private stopPromise?: Promise<void>;
+  private terminating?: Promise<void>;
 
   constructor(
     definition: AcpAgentDefinition,
@@ -71,25 +73,30 @@ export class AcpAgentProcess {
         this.stderr = Buffer.from(this.stderr.subarray(-64 * 1024));
     });
     const failed = Promise.withResolvers<never>();
-    let ended = false;
-    const onExit = (error?: Error) => {
-      if (ended) return;
-      ended = true;
-      this.exited.resolve();
-      failed.reject(error ?? new Error("Agent process exited"));
-      this.connection.close(new Error("Agent process exited"));
+    let disconnected = false;
+    const disconnect = (error: Error) => {
+      if (disconnected) return;
+      disconnected = true;
+      failed.reject(error);
       if (!this.stopping) handlers.exited();
+    };
+    const onExit = (error?: Error) => {
+      if (this.childEnded) return;
+      this.childEnded = true;
+      this.exited.resolve();
+      this.connection.close(new Error("Agent process exited"));
+      disconnect(error ?? new Error("Agent process exited"));
     };
     this.child.once("error", onExit);
     this.child.once("exit", () => onExit());
+    // A closed or failed connection makes the child unusable: terminate it, but `stop()` still
+    // waits for the real child exit (with SIGKILL escalation).
     void this.connection.closed
+      .catch(() => undefined)
       .then(() => {
-        if (!this.stopping && !ended) {
-          this.child.kill("SIGTERM");
-          onExit();
-        }
-      })
-      .catch(() => onExit());
+        disconnect(new Error("Agent connection closed"));
+        void this.terminate();
+      });
     const timeout = Promise.withResolvers<never>();
     const timer = setTimeout(
       () => timeout.reject(new Error("Agent initialization timed out")),
@@ -123,16 +130,26 @@ export class AcpAgentProcess {
 
   /** Terminate once, escalating to SIGKILL after five seconds. Sessions are closed by the host. */
   stop(): Promise<void> {
-    this.stopPromise ??= (async () => {
-      this.stopping = true;
-      this.connection.close();
-      if (this.child.exitCode !== null || this.child.signalCode !== null || !this.child.pid) return;
+    this.stopping = true;
+    this.connection.close();
+    return this.terminate();
+  }
+
+  private terminate(): Promise<void> {
+    this.terminating ??= (async () => {
+      if (
+        this.childEnded ||
+        this.child.exitCode !== null ||
+        this.child.signalCode !== null ||
+        !this.child.pid
+      )
+        return;
       this.child.kill("SIGTERM");
       const timer = setTimeout(() => this.child.kill("SIGKILL"), 5_000);
       await this.exited.promise;
       clearTimeout(timer);
     })();
-    return this.stopPromise;
+    return this.terminating;
   }
 }
 

@@ -3,12 +3,12 @@ import type { AcpItem, AcpSessionStatus, AcpStopReason } from "backend/src/acp/c
 import { acpItemsInOrder, type AcpTimeline } from "backend/src/acp/fold";
 import type { TodoItem } from "backend/src/chatroom/session-tools";
 import type { RunState } from "@/components/agentic/agent-status";
-import { acpToolPart, type AcpNoticePart } from "./parts";
+import { acpToolPart, type AcpNoticePart, type AcpToolItem, type AcpToolPart } from "./parts";
 
 type CachedMessage = {
   items: readonly AcpItem[];
   live: boolean;
-  cancelled: boolean;
+  turnEnded: string;
   message: UIMessage;
 };
 
@@ -17,16 +17,9 @@ export function createAcpViewModel() {
   let cache = new Map<string, CachedMessage>();
   let previousPlan: AcpItem | undefined;
   let todos: TodoItem[] | undefined;
-  const cancelledTurns = new Set<string>();
-  let epoch: number | undefined;
 
   /** `shownFrom` leaves out items older than that order (history still arriving). */
   return (timeline: AcpTimeline, status: AcpSessionStatus | undefined, shownFrom?: number) => {
-    if (epoch !== timeline.epoch && timeline.items.size === 0) cancelledTurns.clear();
-    epoch = timeline.epoch;
-    if (timeline.turn?.ended && timeline.turn.stopReason === "cancelled") {
-      cancelledTurns.add(timeline.turn.id);
-    }
     const groups: AcpItem[][] = [];
     let plan: AcpItem | undefined;
     for (const item of acpItemsInOrder(timeline)) {
@@ -44,21 +37,24 @@ export function createAcpViewModel() {
       const first = items[0]!;
       const user = first.kind === "user";
       const id = `${user ? "user" : "assistant"}:${first.id}`;
-      const live =
-        !user && status === "running" && !timeline.turn?.ended && groups.at(-1) === items;
-      const cancelled = items.some((item) => item.turnId && cancelledTurns.has(item.turnId));
+      const latest = groups.at(-1) === items;
+      const live = !user && status === "running" && !timeline.turn?.ended && latest;
+      const turnEnded = items.map((item) =>
+        item.kind === "tool" ? openToolTurnEnd(item, latest, timeline, status) : undefined,
+      );
+      const turnEndedKey = turnEnded.join();
       const cached = cache.get(id);
       if (
         cached &&
         cached.live === live &&
-        cached.cancelled === cancelled &&
+        cached.turnEnded === turnEndedKey &&
         cached.items.length === items.length &&
         items.every((item, index) => cached.items[index] === item)
       ) {
         nextCache.set(id, cached);
         return cached.message;
       }
-      const parts: UIMessage["parts"] = items.flatMap((item): UIMessage["parts"] => {
+      const parts: UIMessage["parts"] = items.flatMap((item, index): UIMessage["parts"] => {
         switch (item.kind) {
           case "user":
           case "agent":
@@ -80,7 +76,7 @@ export function createAcpViewModel() {
               },
             ];
           case "tool":
-            return [acpToolPart(item, cancelled)];
+            return [acpToolPart(item, turnEnded[index])];
           case "notice":
             return [{ type: "data-acp-notice", id: item.id, data: item } satisfies AcpNoticePart];
           case "plan":
@@ -88,7 +84,7 @@ export function createAcpViewModel() {
         }
       });
       const message: UIMessage = { id, role: user ? "user" : "assistant", parts };
-      nextCache.set(id, { items, live, cancelled, message });
+      nextCache.set(id, { items, live, turnEnded: turnEndedKey, message });
       return message;
     });
     cache = nextCache;
@@ -101,6 +97,26 @@ export function createAcpViewModel() {
     }
     return { messages, todos };
   };
+}
+
+/**
+ * How a tool call still open renders once its turn is over, from durable data only: a later
+ * prompt, the stream's `turn.end`, or a Session no longer busy each end the turn (ACP v1 has no
+ * cancelled tool status). `undefined` while the turn may still run.
+ */
+function openToolTurnEnd(
+  item: AcpToolItem,
+  latest: boolean,
+  timeline: AcpTimeline,
+  status: AcpSessionStatus | undefined,
+): AcpToolPart["acp"]["turnEnded"] {
+  if (item.status === "completed" || item.status === "failed") return undefined;
+  const turn = timeline.turn;
+  if (!latest || (turn && item.turnId && item.turnId !== turn.id)) return "cancelled";
+  if (turn?.ended) return turn.error ? "failed" : "cancelled";
+  if (status === "failed") return "failed";
+  if (status === "idle" || status === "ended") return "cancelled";
+  return undefined;
 }
 
 /** Durable status wins; live items refine only a running turn, never Worker presence. */

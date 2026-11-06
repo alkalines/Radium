@@ -435,7 +435,10 @@ async function projectFilterExists(
   return true;
 }
 
-/** Home row for a chat, with its ACP agent's configured name. */
+/**
+ * Home row for a chat, with its ACP agent's configured name. `canAct` mirrors `requireChatActor`
+ * (rename, pin, delete: everyone who can see an ACP chat); `canManage` gates manager-only actions.
+ */
 async function chatRows(
   ctx: QueryCtx,
   workspace: Doc<"workspaces">,
@@ -456,24 +459,28 @@ async function chatRows(
       }),
     ),
   );
-  return chats.map((chat) => ({
-    id: chat._id,
-    title: chat.title,
-    emoji: chat.emoji,
-    pinnedAt: chat.pinnedAt,
-    lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
-    activeStream: chat.activeStream ?? false,
-    agent: chat.agent
-      ? {
-          agentId: chat.agent.agentId,
-          profile: chat.agent.profile,
-          name: agentNames.get(chat.agent.agentId) ?? chat.agent.agentId,
-          worker: chat.agent.worker,
-        }
-      : null,
-    canManage: canManageChat(chat, workspace, userId),
-    project: chat.project,
-  }));
+  return chats.map((chat) => {
+    const canManage = canManageChat(chat, workspace, userId);
+    return {
+      id: chat._id,
+      title: chat.title,
+      emoji: chat.emoji,
+      pinnedAt: chat.pinnedAt,
+      lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
+      activeStream: chat.activeStream ?? false,
+      agent: chat.agent
+        ? {
+            agentId: chat.agent.agentId,
+            profile: chat.agent.profile,
+            name: agentNames.get(chat.agent.agentId) ?? chat.agent.agentId,
+            worker: chat.agent.worker,
+          }
+        : null,
+      canManage,
+      canAct: chat.agent !== undefined || canManage,
+      project: chat.project,
+    };
+  });
 }
 
 const projectFilterValidator = v.optional(v.union(v.id("projects"), v.null()));

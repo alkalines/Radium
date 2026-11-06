@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -52,6 +52,10 @@ describe("Worker Gateway key storage", () => {
     await symlink(target, path);
     await expect(store.get()).rejects.toThrow("private regular file");
     await expect(store.delete()).rejects.toThrow("private regular file");
+    await expect(store.set({ keyId: "next", key: "next-secret" })).rejects.toThrow(
+      "private regular file",
+    );
     expect(await readFile(target, "utf8")).toBe("do not touch");
+    expect((await readdir(root)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 });

@@ -105,13 +105,13 @@ listed in [Sessions](Sessions.md#unsupported-chatroom-actions).
 | `switch_mode`    | Title                                   | Marker only                                    |
 | `other`          | Title                                   | Content, else raw input/output as JSON         |
 
-| ACP status                       | RunState                                          |
-| -------------------------------- | ------------------------------------------------- |
-| `pending`                        | `queued`                                          |
-| `in_progress`                    | `executing`                                       |
-| `completed`                      | `succeeded`                                       |
-| `failed`                         | `failed`                                          |
-| open when the turn was cancelled | `cancelled` (ACP v1 has no cancelled tool status) |
+| ACP status                | RunState                                                     |
+| ------------------------- | ------------------------------------------------------------ |
+| `pending`                 | `queued`                                                     |
+| `in_progress`             | `executing`                                                  |
+| `completed`               | `succeeded`                                                  |
+| `failed`                  | `failed`                                                     |
+| open after its turn ended | `failed` on a turn error or failed Session, else `cancelled` |
 
 `locations` show as Machine text paths. `terminal` content only appears if Radium
 advertises the terminal capability, which it does not initially.
@@ -153,13 +153,15 @@ schema property per question:
 `title` is the header, `description` (or the request `message` for the first
 question) the question. Defaults are pre-selected, required properties cannot be
 skipped, and the user reviews answers before Submit. Submit → `accept` with
-content; Dismiss (Esc) → `cancel`; an explicit Decline → `decline`. The server
-validates content against the stored schema before the Worker relays it.
+content; Dismiss (Esc, unless typing in a field or composing with an IME) →
+`cancel`; an explicit Decline → `decline`. The server validates content against
+the stored schema before the Worker relays it.
 
 **URL mode** shows a Composer-shaped card with the message and the full URL,
-host emphasized and Punycode flagged. Open launches it in a new browsing context
-(`noopener`) and answers `accept`; nothing is prefetched. `elicitation/complete`
-closes the card if it is still open.
+the parsed host emphasized, userinfo (`user@`) flagged apart from it, and
+Punycode flagged. Open launches it in a new browsing context (`noopener`) and
+answers `accept`; nothing is prefetched. `elicitation/complete` closes the card
+if it is still open.
 
 Agents that never send elicitations (some ask in plain text instead) simply
 continue in text; Radium does not inject its own `question` tool into ACP
@@ -208,7 +210,9 @@ shown. Each `plan` update replaces the list, like `todo_write`.
   agents report 0, which is why the estimate always shows.
 - **Slash commands:** typing `/` lists `available_commands_update` entries with
   descriptions and input hints; the command is sent as ordinary prompt text.
-- **Attachments** follow `promptCapabilities`: images when `image`, audio when
+- **Attachments (planned, not implemented; the attach control is disabled for
+  ACP Sessions and prompts carry text and resource links only)** will follow
+  `promptCapabilities`: images when `image`, audio when
   `audio`, text files as embedded resources when `embeddedContext`; otherwise
   the attach control is disabled with the reason. Uploads use the existing
   `chat_files` upload URL as transient files deleted once the Worker has

@@ -72,6 +72,11 @@ interface LocalSession {
   /** Set by `session/new`: the agent's cumulative cost starts at zero in this process. */
   costFromZero?: boolean;
   gatewayFailure?: string;
+  /**
+   * Timeline rebuilt by the last `session/load`/`resume`. Reloading again replays the same
+   * conversation into the same memory cap, so it cannot recover items evicted from it.
+   */
+  reopened?: AcpTimeline;
 }
 interface AgentSlot {
   definition: AcpAgentDefinition;
@@ -745,7 +750,11 @@ export class AcpHost {
     return local.updates;
   }
 
-  private async ensureSession(local: LocalSession): Promise<LocalSession> {
+  /**
+   * Open (or reopen) the agent session. A memory-capped timeline is reloaded only when
+   * `reloadEvicted` asks for it (history requests), never under a running turn.
+   */
+  private async ensureSession(local: LocalSession, reloadEvicted = false): Promise<LocalSession> {
     const slot = this.slots.get(slotKey(local.binding.agentId, local.binding.profile));
     if (!slot) throw new Error("Agent removed");
     if (local.binding.profile === "gateway") {
@@ -753,10 +762,15 @@ export class AcpHost {
       this.activeGatewayKey();
     }
     if (local.setup) return local.setup;
+    // A running turn owns its process, timeline and relay; its prompt request settles the turn.
+    if (local.running) {
+      if (!local.process) throw new Error("Agent process exited");
+      return local;
+    }
     if (
       local.process &&
-      (local.running || local.process === slot.process) &&
-      !local.timeline.needsReload
+      local.process === slot.process &&
+      !(reloadEvicted && local.timeline.needsReload && local.reopened !== local.timeline)
     )
       return local;
     local.setup = (async () => {
@@ -817,6 +831,7 @@ export class AcpHost {
               void this.onUpdate(process, notification);
         }
         await local.updates;
+        if (previousId) local.reopened = local.timeline;
         const config = normalizeConfig(response, local.binding.config ?? undefined);
         await this.patch(local, { sessionId: local.binding.sessionId!, config, history });
         if (!previousId) {
@@ -972,7 +987,14 @@ export class AcpHost {
         await this.setMode(local, payload.modeId);
       } else if (payload.kind === "history") {
         if (local && payload.epoch === local.relay.epoch) {
-          await this.ensureSession(local);
+          await this.ensureSession(local, true);
+          if (local.warming) await local.warming;
+          // A reload replaced the relay: reopen the warm stream with a fresh snapshot epoch; the
+          // client requests history again against that epoch.
+          if (this.warm.has(local.chat) && !local.relay.active) {
+            await local.relay.start(Math.max(local.binding.epoch, payload.epoch));
+            local.binding.epoch = local.relay.epoch;
+          }
           // One request streams consecutive older pages up to its item limit; each page drains
           // before the next, so the relay's outage buffer never overflows and drops them.
           let before = payload.before;
@@ -1046,32 +1068,44 @@ export class AcpHost {
         );
       } else if (payload.kind === "close" || payload.kind === "delete") {
         const profile = payload.profile;
-        const process = await this.processFor(payload.agentId, profile);
-        const capability = this.reports.find((entry) => entry.agentId === payload.agentId)
-          ?.capabilities[payload.kind];
-        if (capability)
-          await process.connection.agent.request(
-            payload.kind === "close" ? methods.agent.session.close : methods.agent.session.delete,
-            { sessionId: payload.sessionId },
-          );
-        if (profile === "native" && capability && payload.kind === "delete")
-          await this.lifecycle.run(`agent-index:${payload.agentId}`, () =>
-            this.transport.syncAgentSessions({
-              agentId: payload.agentId,
-              upserts: [],
-              removals: [payload.sessionId],
-            }),
-          );
-        for (const [chat, session] of this.sessions)
-          if (
+        const sessions = [...this.sessions].filter(
+          ([, session]) =>
             session.binding.agentId === payload.agentId &&
             session.binding.profile === profile &&
-            session.binding.sessionId === payload.sessionId
-          ) {
+            session.binding.sessionId === payload.sessionId,
+        );
+        try {
+          // A running turn is cancelled before its session is closed and dropped locally.
+          for (const [chat, session] of sessions) {
+            if (session.running && session.process)
+              await session.process.connection.agent
+                .notify(methods.agent.session.cancel, { sessionId: payload.sessionId })
+                .catch(() => undefined);
             this.cancelInteractions(chat);
-            session.relay.stop();
-            this.sessions.delete(chat);
           }
+          const capability = this.reports.find((entry) => entry.agentId === payload.agentId)
+            ?.capabilities[payload.kind];
+          if (capability) {
+            const process = await this.processFor(payload.agentId, profile);
+            await process.connection.agent.request(
+              payload.kind === "close" ? methods.agent.session.close : methods.agent.session.delete,
+              { sessionId: payload.sessionId },
+            );
+          }
+          if (profile === "native" && capability && payload.kind === "delete")
+            await this.lifecycle.run(`agent-index:${payload.agentId}`, () =>
+              this.transport.syncAgentSessions({
+                agentId: payload.agentId,
+                upserts: [],
+                removals: [payload.sessionId],
+              }),
+            );
+        } finally {
+          for (const [chat, session] of sessions) {
+            session.relay.stop();
+            if (this.sessions.get(chat) === session) this.sessions.delete(chat);
+          }
+        }
       }
       await this.finish(claim, "done");
     } catch (error) {
@@ -1309,11 +1343,22 @@ export class AcpHost {
 
   private async stopIdleAgents(): Promise<void> {
     for (const slot of this.slots.values()) {
-      if (!slot.process || Date.now() - slot.lastUsed < 15 * 60_000) continue;
+      if (!slot.process || slot.starting || Date.now() - slot.lastUsed < 15 * 60_000) continue;
       const sessions = [...this.sessions.values()].filter(
         (local) => local.process === slot.process,
       );
-      if (sessions.some((local) => local.running)) continue;
+      // Same guard as retired agents: a session mid-setup or preparing a prompt is about to use
+      // this agent even before it is bound to the process.
+      if (
+        sessions.some((local) => local.running) ||
+        [...this.sessions.values()].some(
+          (local) =>
+            local.binding.agentId === slot.definition.agentId &&
+            local.binding.profile === slot.profile &&
+            (local.setup || local.preparing),
+        )
+      )
+        continue;
       await this.stopAgent(slot);
       for (const local of sessions)
         if (!this.warm.has(local.chat)) {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { acpAgentDefinitionError, type AcpAgentDefinition } from "backend/src/acp/contract";
-import { agentReport, probeAgent } from "./process.js";
+import { AcpAgentProcess, agentReport, probeAgent } from "./process.js";
 
 vi.mock("node:child_process", async (original) => {
   const module = await original<typeof ChildProcess>();
@@ -87,5 +87,24 @@ describe("ACP executable discovery", () => {
     });
     expect(spawn).not.toHaveBeenCalled();
     expect(Bun.which).not.toHaveBeenCalled();
+  });
+});
+
+describe("ACP agent process lifecycle", () => {
+  it("terminates a child whose connection closed and stops only once it really exits", async () => {
+    const exited = vi.fn();
+    // The child closes its protocol stdout but would otherwise stay alive (interval in the child).
+    const script = "require('node:fs').closeSync(1); setInterval(() => {}, 1000)";
+    const agent = new AcpAgentProcess({ ...definition, args: ["-e", script] }, bun, {
+      update: () => undefined,
+      exited,
+      permission: async () => ({ outcome: { outcome: "cancelled" } }),
+      elicitation: async () => ({ action: "cancel" }),
+    });
+    await expect(agent.ready).rejects.toThrow("connection closed");
+    expect(exited).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(agent.child.signalCode).toBe("SIGTERM"));
+    await agent.stop();
+    expect(exited).toHaveBeenCalledOnce();
   });
 });

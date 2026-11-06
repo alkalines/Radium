@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
+import { ConvexError } from "convex/values";
 import { usePaginatedQuery } from "convex-helpers/react/cache";
 import {
   FolderMinusIcon,
@@ -49,6 +50,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { newTabId } from "@/components/window/window-tabs";
+import { useFrontendLogger } from "@/lib/logging";
 import { SessionActionsMenu } from "./session-actions-menu";
 import { AgentSessions, useOpenAgentSession } from "./agent-sessions";
 import { HOME_PAGE_SIZE, useMergedPages, type PagedSource } from "./merged-pages";
@@ -110,6 +112,7 @@ export function HomeScreen() {
   const now = useMinuteClock();
   const presenceNow = useWorkerPresenceClock();
   const isOwner = workspace?.role === "owner";
+  const logEvent = useFrontendLogger();
   const ownerArgs = workspaceId && isOwner ? { workspace: workspaceId } : "skip";
   const { data: workers } = useQuery(convexQuery(api.workers.list, ownerArgs));
   const { data: definitions } = useQuery(convexQuery(api.acp.ListAgentDefinitions, ownerArgs));
@@ -245,7 +248,16 @@ export function HomeScreen() {
   } else {
     // Keyed by filter: a new filter starts over at one page.
     content = (
-      <SessionListBoundary key={filterKey}>
+      <SessionListBoundary
+        key={filterKey}
+        onError={(error) =>
+          logEvent({
+            level: "error",
+            event: "home.session_list.failed",
+            message: sessionListError(error).slice(0, 512),
+          })
+        }
+      >
         <SessionList
           workspaceId={workspaceId}
           projectFilter={projectFilter}
@@ -453,25 +465,53 @@ export function HomeScreen() {
 }
 
 /** A failed list query (the workspace or Project became unavailable) shows a notice, not a crash. */
-class SessionListBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
-  state = { failed: false };
+class SessionListBoundary extends Component<
+  { children: ReactNode; onError: (error: Error) => void },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
 
-  static getDerivedStateFromError() {
-    return { failed: true };
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error(error);
+    this.props.onError(error instanceof Error ? error : new Error(String(error)));
   }
 
   render() {
-    if (!this.state.failed) return this.props.children;
+    const { error } = this.state;
+    if (!error) return this.props.children;
     return (
       <Alert>
         <AlertTitle>Sessions unavailable</AlertTitle>
-        <AlertDescription>
-          This workspace is no longer available to your account. Choose another workspace from the
-          Tab strip.
-        </AlertDescription>
+        <AlertDescription>{sessionListError(error)}</AlertDescription>
+        <AlertAction>
+          <Button variant="outline" size="sm" onClick={() => this.setState({ error: null })}>
+            <RotateCcwIcon data-icon="inline-start" />
+            Try again
+          </Button>
+        </AlertAction>
       </Alert>
     );
   }
+}
+
+/** The reason a list query failed, without Convex's `[CONVEX Q(…)] [Request ID: …]` envelope. */
+function sessionListError(error: Error): string {
+  if (error instanceof ConvexError) {
+    const data: unknown = error.data;
+    if (typeof data === "string") return data;
+    if (typeof data === "object" && data !== null && "message" in data) {
+      if (typeof data.message === "string") return data.message;
+    }
+  }
+  const message = error.message
+    .replace(/^\[CONVEX [^\]]*\]\s*(?:\[Request ID: [^\]]*\]\s*)?/, "")
+    .split("\n")[0]
+    ?.trim();
+  return message || "The session list could not load.";
 }
 
 /**
@@ -669,7 +709,7 @@ function SessionRow({
         <span className="-ml-1.5 shrink-0 text-xs text-muted-foreground">· Gateway</span>
       ) : null}
       {offline ? <span className="shrink-0 text-xs text-muted-foreground">Offline</span> : null}
-      {session.canManage ? (
+      {session.canAct ? (
         <SessionActionsMenu session={session} projects={projects} />
       ) : (
         // Keeps the time aligned with Rows that have a menu.

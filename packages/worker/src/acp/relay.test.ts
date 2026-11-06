@@ -291,6 +291,39 @@ describe("AcpRelay", () => {
     expect(operations(repaired)).toContainEqual({ op: "turn.start", turnId: "turn" });
   });
 
+  it("delivers a history page with an item over the outage budget instead of a snapshot", async () => {
+    const { relay, timeline, calls, epochs } = fixture();
+    const text = "x".repeat(1024 * 1024 + 1);
+    timeline.update({
+      sessionUpdate: "agent_message_chunk",
+      messageId: "old",
+      content: { type: "text", text },
+    });
+    timeline.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "!" } });
+    const page = timeline.history(Number.MAX_SAFE_INTEGER, 2);
+    expect(utf8Bytes(JSON.stringify(page))).toBeGreaterThan(1024 * 1024);
+    await relay.start(0);
+    relay.push(page, "history");
+    await relay.flush();
+    expect(epochs).toEqual([1]);
+    const history = calls.flatMap((call) => call.frames).filter((frame) => frame.kind === "history");
+    expect(history.length).toBeGreaterThan(1);
+    const ops = history.flatMap((frame) => JSON.parse(frame.payload) as AcpOp[]);
+    const fragments = ops.filter((op) => op.op === "fragment");
+    const restored = [...new Set(fragments.map((op) => op.id))].map(
+      (id) =>
+        JSON.parse(
+          fragments
+            .filter((op) => op.id === id)
+            .map((op) => op.data)
+            .join(""),
+        ) as AcpOp,
+    );
+    expect([...ops.filter((op) => op.op !== "fragment"), ...restored]).toEqual(
+      expect.arrayContaining(page),
+    );
+  });
+
   it("rolls over only at the turn boundary after the epoch byte budget", async () => {
     const { relay, timeline, epochs, calls } = fixture({ rolloverBytes: 1000 });
     await relay.start(0);

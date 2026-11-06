@@ -171,7 +171,8 @@ function toMatch(providerId: string, model: ModelsDevModel): ModelsDevMatch {
  * `provider/model` route first (OpenCode uses models.dev ids); then, within the inferred lab's
  * own provider, an ID equal under `modelKey`; then the longest catalogue name found whole in the
  * choice's name and description (`Default (recommended)` described as "currently Sonnet 4.5").
- * Names need a version digit, so a bare alias such as `opus` stays unmatched rather than guessed.
+ * Names need a version digit, so a bare alias such as `opus` stays unmatched rather than guessed,
+ * and the whole version: `Sonnet 4.6` is not `Sonnet 4`.
  * Labs without a models.dev provider of the same id are matched by ID across all providers only.
  */
 export function matchModelsDev(
@@ -206,7 +207,8 @@ export function matchModelsDev(
   for (const candidate of Object.values(labProvider.models ?? {})) {
     // OpenRouter marks the current version `(latest)`; the name without it is the model's.
     const key = nameKey(candidate.name.replace(/\s*\(latest\)$/i, ""));
-    if (!/\d/.test(key) || !text.includes(`-${key}-`)) continue;
+    // A number right after the name continues its version (`sonnet-4` in `sonnet-4-6`).
+    if (!/\d/.test(key) || !new RegExp(`-${key}-(?!\\d)`).test(text)) continue;
     const newer = (candidate.release_date ?? "") > (best?.release_date ?? "");
     if (key.length > bestKey.length || (key.length === bestKey.length && newer)) {
       best = candidate;

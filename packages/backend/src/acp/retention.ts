@@ -37,7 +37,11 @@ export const deleteStream = internalMutation({
   },
 });
 
-/** Cooling cleanup captures the epoch and heartbeat cutoff so a concurrent re-warm is safe. */
+/**
+ * Cooling cleanup captures the epoch and heartbeat cutoff so a concurrent re-warm is safe: the
+ * session's `cooledEpoch` fence keeps the Worker from writing to a cleared epoch again, so a
+ * re-warm always opens a newer epoch with a fresh snapshot that this cleanup never touches.
+ */
 export const clearColdChat = internalMutation({
   args: { chat: v.id("aisdk_chats"), epoch: v.number(), cutoff: v.number() },
   returns: v.null(),
@@ -95,7 +99,11 @@ export const coolSessions = internalMutation({
         (newest && newest.lastSeenAt > cutoff)
       )
         continue;
-      await ctx.db.patch(session._id, { warm: false, updatedAt: Date.now() });
+      await ctx.db.patch(session._id, {
+        warm: false,
+        cooledEpoch: session.epoch,
+        updatedAt: Date.now(),
+      });
       await ctx.scheduler.runAfter(0, internal.acp.clearColdChat, {
         chat: session.chat,
         epoch: session.epoch,

@@ -128,10 +128,10 @@ export function getInputNumber(input: unknown, key: string) {
  */
 export function getToolRunState(part: ToolUIPart | AcpToolPart, isLive: boolean): RunState {
   if (isAcpToolPart(part)) {
-    const { item, turnCancelled } = part.acp;
+    const { item, turnEnded } = part.acp;
     if (item.status === "completed") return "succeeded";
     if (item.status === "failed") return "failed";
-    if (turnCancelled) return "cancelled";
+    if (turnEnded) return turnEnded;
     return item.status === "in_progress" ? "executing" : "queued";
   }
   const snapshot = getCodeModeOutput(part);

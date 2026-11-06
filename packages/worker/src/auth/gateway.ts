@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { link, lstat, open, readFile, unlink } from "node:fs/promises";
+import { lstat, open, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { WorkerProtocolError } from "../protocol.js";
 import {
@@ -61,6 +61,7 @@ export function createGatewayKeyStore(stateDirectory: string): GatewayKeyStore {
       await ensurePrivateDirectory(stateDirectory);
       const temporary = join(stateDirectory, `.worker-gateway-${randomUUID()}.tmp`);
       let handle;
+      let previous;
       try {
         handle = await open(temporary, "wx", 0o600);
         await handle.chmod(0o600);
@@ -68,15 +69,44 @@ export function createGatewayKeyStore(stateDirectory: string): GatewayKeyStore {
         await handle.sync();
         await handle.close();
         handle = undefined;
-        await store.delete();
-        await link(temporary, path);
-        await unlink(temporary);
+        const info = await lstat(path).catch((error: unknown) => {
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "ENOENT"
+          )
+            return null;
+          throw error;
+        });
+        if (info) {
+          validatePrivateFile(info, MAX_BYTES, SUBJECT, true);
+          // Keep the replaced inode open so its secret can be wiped after the atomic swap.
+          previous = await open(path, "r+");
+        }
+        await rename(temporary, path);
         await syncDirectory(stateDirectory);
-      } catch {
+      } catch (error) {
         await handle?.close();
+        await previous?.close();
         const info = await lstat(temporary).catch(() => null);
         if (info) await wipeAndUnlinkPrivateFile(temporary, info, MAX_BYTES, SUBJECT);
+        if (error instanceof WorkerProtocolError) throw error;
         throw new WorkerProtocolError(`${SUBJECT} could not be saved`);
+      }
+      if (!previous) return;
+      try {
+        const { size } = await previous.stat();
+        if (size > 0) {
+          const zeros = Buffer.alloc(Math.min(size, MAX_BYTES));
+          await previous.write(zeros, 0, zeros.byteLength, 0);
+        }
+        await previous.truncate(0);
+        await previous.sync();
+      } catch {
+        // The new key is already in place; wiping the unlinked old inode is best effort.
+      } finally {
+        await previous.close();
       }
     },
     async delete() {

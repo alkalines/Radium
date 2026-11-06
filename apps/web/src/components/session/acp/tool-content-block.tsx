@@ -8,7 +8,8 @@ import { acpDiffFile, acpNumberedText } from "./tool-content";
 /**
  * Normalized agent content, shared by tool steps and permission prompts. Never fetches resources.
  * Text is file content with a `path` (a read), an excerpt of `excerptPath` when the agent numbered
- * its lines (an edit's preview), and otherwise the tool's plain output.
+ * its lines (an edit's preview), and otherwise the tool's plain output. `partial` marks content
+ * cut at the item's size cap, so diffs show as partial.
  */
 export function AcpToolContentBlock({
   content,
@@ -18,6 +19,7 @@ export function AcpToolContentBlock({
   terminal,
   command,
   reasoning,
+  partial = false,
 }: {
   content: AcpToolContent[];
   path?: string;
@@ -26,6 +28,7 @@ export function AcpToolContentBlock({
   terminal?: boolean;
   command?: string;
   reasoning?: boolean;
+  partial?: boolean;
 }) {
   const terminalLines = useMemo(() => {
     if (!terminal) return [];
@@ -53,7 +56,8 @@ export function AcpToolContentBlock({
         </div>
       ) : null}
       {content.map((entry, index) => {
-        if (entry.type === "diff") return <AcpDiffBlock key={index} content={entry} />;
+        if (entry.type === "diff")
+          return <AcpDiffBlock key={index} content={entry} partial={partial} />;
         if (entry.type === "text") {
           if (terminal) return null;
           if (reasoning)
@@ -97,8 +101,14 @@ export function AcpToolContentBlock({
   );
 }
 
-function AcpDiffBlock({ content }: { content: Extract<AcpToolContent, { type: "diff" }> }) {
-  const file = useMemo(() => acpDiffFile(content), [content]);
+function AcpDiffBlock({
+  content,
+  partial,
+}: {
+  content: Extract<AcpToolContent, { type: "diff" }>;
+  partial: boolean;
+}) {
+  const file = useMemo(() => acpDiffFile(content, partial), [content, partial]);
   return <DiffCodeBlock file={file} />;
 }
 

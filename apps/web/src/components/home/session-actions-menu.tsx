@@ -66,12 +66,16 @@ export type SessionActionsTarget = {
   pinnedAt?: number;
   project?: Id<"projects">;
   agent: { agentId: string; name: string } | null;
+  /** Manager-only actions: Regenerate title and Move to project. */
+  canManage: boolean;
 };
 
 /**
  * The `…` menu of a Home session Row (`docs/Interface_Design.md` §5.1): Pin, Rename, Regenerate
- * title, Move to project, Delete. Only rendered for sessions the user can manage; the backend
- * re-checks every mutation and returns a string on refusal, which is shown as a toast.
+ * title, Move to project, Delete. Rendered for sessions the user can act on (`canAct`: managers,
+ * and everyone who sees an ACP session); Regenerate title and Move to project also need
+ * `canManage`. The backend re-checks every mutation and returns a string on refusal, which is
+ * shown as a toast.
  * Moving to a Project (or out of one) asks for confirmation first, since the session's next turns
  * run in the target's context; this menu is the only place a saved session changes Project.
  * `projects` is the workspace's Project list, passed in once by Home rather than queried per Row.
@@ -213,36 +217,38 @@ export function SessionActionsMenu({
               Rename
             </DropdownMenuItem>
             {/* ACP prompts are not stored in Radium, so there is no first message to title from. */}
-            {session.agent ? null : (
+            {session.agent || !session.canManage ? null : (
               <DropdownMenuItem disabled={isBusy} onSelect={() => void regenerate()}>
                 <SparklesIcon />
                 Regenerate title
               </DropdownMenuItem>
             )}
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger disabled={isBusy}>
-                <FolderInputIcon />
-                Move to project
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                <DropdownMenuRadioGroup
-                  value={session.project ?? noProject}
-                  onValueChange={requestMove}
-                >
-                  <DropdownMenuRadioItem value={noProject}>
-                    <FolderMinusIcon />
-                    No project
-                  </DropdownMenuRadioItem>
-                  {projects.length > 0 ? <DropdownMenuSeparator /> : null}
-                  {projects.map((project) => (
-                    <DropdownMenuRadioItem key={project._id} value={project._id}>
-                      <ProjectGlyph project={project} />
-                      <span className="truncate">{project.name}</span>
+            {session.canManage ? (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger disabled={isBusy}>
+                  <FolderInputIcon />
+                  Move to project
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                  <DropdownMenuRadioGroup
+                    value={session.project ?? noProject}
+                    onValueChange={requestMove}
+                  >
+                    <DropdownMenuRadioItem value={noProject}>
+                      <FolderMinusIcon />
+                      No project
                     </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
+                    {projects.length > 0 ? <DropdownMenuSeparator /> : null}
+                    {projects.map((project) => (
+                      <DropdownMenuRadioItem key={project._id} value={project._id}>
+                        <ProjectGlyph project={project} />
+                        <span className="truncate">{project.name}</span>
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            ) : null}
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuGroup>

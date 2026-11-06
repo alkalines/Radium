@@ -44,6 +44,8 @@ export const ACP_HISTORY_PAGE_BYTES = 256 * 1024;
 /** Maximum agent sessions indexed by one sync; writes are sent in bounded chunks. */
 export const ACP_AGENT_SESSIONS_MAX = 2000;
 export const ACP_AGENT_SESSIONS_SYNC_CHUNK = 200;
+/** Most warm (streaming) Sessions per Worker; Watch and Prompt refuse to warm one more. */
+export const ACP_WARM_SESSIONS_MAX = 64;
 
 /** A Tab showing a Session renews its viewer row this often. */
 export const ACP_VIEWER_HEARTBEAT_MS = 60_000;

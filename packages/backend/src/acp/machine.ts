@@ -3,6 +3,7 @@ import { internal } from "../../convex/_generated/api";
 import { workerMutation, workerQuery } from "../worker/machine";
 import { validChatWorkerDirectory } from "../worker/chat-config";
 import {
+  ACP_AGENT_DEFINITIONS_MAX,
   ACP_COMMAND_RESULT_BYTES,
   ACP_AGENT_SESSIONS_MAX,
   ACP_AGENT_SESSIONS_SYNC_CHUNK,
@@ -24,6 +25,7 @@ import {
   acpUsageValidator,
   acpStream,
   utf8Bytes,
+  ACP_WARM_SESSIONS_MAX,
   validAcpAgentId,
   validAcpToken,
   type AcpAgentReport,
@@ -131,7 +133,10 @@ export const finishCommand = workerMutation({
   },
 });
 
-/** Warm bindings only; appending frames never invalidates these session rows. */
+/**
+ * Warm bindings only; appending frames never invalidates these session rows. Watch and Prompt
+ * admit at most `ACP_WARM_SESSIONS_MAX` warm Sessions per Worker, so this read is complete.
+ */
 export const warmSessions = workerQuery({
   args: {},
   handler: async (ctx) => {
@@ -143,7 +148,7 @@ export const warmSessions = workerQuery({
           .eq("worker", ctx.worker.workerId)
           .eq("warm", true),
       )
-      .take(64);
+      .take(ACP_WARM_SESSIONS_MAX);
     return rows.map((row) => ({
       chat: row.chat,
       epoch: row.epoch,
@@ -273,7 +278,9 @@ export const startEpoch = workerMutation({
         .withIndex("by_chat_and_epoch", (q) => q.eq("chat", args.chat).eq("epoch", session.epoch))
         .take(1)
     )[0];
-    if (args.epoch === session.epoch && old) return { accepted: true };
+    // A cooled epoch is being cleared: its retries and appends restart on a fresh snapshot.
+    if (args.epoch === session.epoch && old && args.epoch > (session.cooledEpoch ?? -1))
+      return { accepted: true };
     if (!session.warm) return { accepted: false };
     if (args.epoch <= session.epoch) acpError("ACP_STALE_EPOCH");
     await ctx.db.insert("acp_streams", {
@@ -298,6 +305,7 @@ export const appendFrames = workerMutation({
   handler: async (ctx, args) => {
     const session = await machineSession(ctx, args.chat);
     if (!session.warm || session.epoch !== args.epoch) return { accepted: false, bytes: 0 };
+    if (args.epoch <= (session.cooledEpoch ?? -1)) acpError("ACP_STALE_EPOCH");
     if (args.frames.length < 1 || args.frames.length > ACP_FRAMES_PER_APPEND)
       acpError("ACP_INVALID_FRAMES");
     const stream = (
@@ -391,7 +399,7 @@ export const reportAgents = workerMutation({
   ),
   handler: async (ctx, { agents }) => {
     if (
-      agents.length > 32 ||
+      agents.length > ACP_AGENT_DEFINITIONS_MAX ||
       agents.some((agent) => !validAcpAgentId(agent.agentId)) ||
       new Set(agents.map((agent) => agent.agentId)).size !== agents.length
     )
@@ -401,7 +409,7 @@ export const reportAgents = workerMutation({
       .withIndex("by_worker_and_agentId", (q) =>
         q.eq("workspace", ctx.worker.workspaceId).eq("worker", ctx.worker.workerId),
       )
-      .take(33);
+      .take(ACP_AGENT_DEFINITIONS_MAX + 1);
     const defaults: Record<string, NonNullable<AcpAgentReport["defaults"]>> = {};
     for (const agent of agents) {
       const existing = rows.find((row) => row.agentId === agent.agentId);
@@ -504,19 +512,20 @@ export const syncAgentSessions = workerMutation({
       } else {
         const bound = await ctx.db
           .query("acp_sessions")
-          .withIndex("by_worker_and_sessionId", (q) =>
+          .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
             q
               .eq("workspace", ctx.worker.workspaceId)
               .eq("worker", ctx.worker.workerId)
+              .eq("agentId", args.agentId)
               .eq("sessionId", entry.sessionId),
           )
-          .take(8);
+          .first();
         await ctx.db.insert("acp_agent_sessions", {
           workspace: ctx.worker.workspaceId,
           worker: ctx.worker.workerId,
           agentId: args.agentId,
           ...entry,
-          chat: bound.find((session) => session.agentId === args.agentId)?.chat,
+          chat: bound?.chat,
         });
       }
     }

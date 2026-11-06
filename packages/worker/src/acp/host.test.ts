@@ -688,6 +688,39 @@ describe("ACP host with real stdio agent", () => {
     expect(transport.patches.some((patch) => patch.history === "full")).toBe(true);
   });
 
+  it("never reloads under a running turn and reloads an evicted timeline only for history", async () => {
+    const transport = new FakeTransport();
+    const host = await start(transport);
+    const slow = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "slow" }] });
+    await until(() => transport.binding.status === "running");
+    const local = host["sessions"].get("chat")!;
+    const { timeline, relay } = local;
+    timeline.needsReload = true;
+    const history = () =>
+      transport.add({ kind: "history", epoch: transport.epoch, before: 1, limit: 10 });
+    const reloads = () => transport.patches.filter((patch) => patch.history === "full").length;
+    const during = [history(), transport.add({ kind: "set_mode", modeId: "default" })];
+    await until(() => during.every((command) => transport.receipts.has(command)));
+    expect(local.timeline).toBe(timeline);
+    expect(local.relay).toBe(relay);
+    expect(reloads()).toBe(0);
+    transport.add({ kind: "cancel" });
+    await until(() => transport.receipts.has(slow));
+    // Over the memory cap, prompts keep using the open session instead of replaying it.
+    const prompt = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "hello" }] });
+    await until(() => transport.receipts.get(prompt)?.status === "done");
+    expect(local.timeline).toBe(timeline);
+    expect(reloads()).toBe(0);
+    const reload = history();
+    await until(() => transport.receipts.has(reload));
+    expect(reloads()).toBe(1);
+    // A reloaded timeline that is still over the cap cannot recover more by loading again.
+    local.timeline.needsReload = true;
+    const again = history();
+    await until(() => transport.receipts.has(again));
+    expect(reloads()).toBe(1);
+  });
+
   it("rebuilds warm history by loading the actual persistent agent store after host restart", async () => {
     const directory = await mkdtemp(join(tmpdir(), "radium-acp-load-"));
     directories.push(directory);
@@ -799,5 +832,26 @@ describe("ACP host with real stdio agent", () => {
     const sync = transport.add({ kind: "sync_sessions", agentId: "scripted" });
     await until(() => transport.receipts.has(sync));
     expect([...transport.indexed.values()]).toEqual([]);
+  });
+
+  it("cancels a running turn before closing its session and drops it locally", async () => {
+    const transport = new FakeTransport();
+    // A warm viewer would re-open the chat after the close; this test checks the local drop only.
+    transport.warm = false;
+    const host = await start(transport);
+    const slow = transport.add({ kind: "prompt", prompt: [{ type: "text", text: "slow" }] });
+    await until(() => transport.binding.status === "running");
+    const closed = transport.add({
+      kind: "close",
+      agentId: "scripted",
+      profile: "native",
+      cwd: tmpdir(),
+      sessionId: transport.binding.sessionId!,
+    });
+    await until(() => transport.receipts.has(closed) && transport.receipts.has(slow));
+    expect(transport.receipts.get(closed)?.status).toBe("done");
+    expect(transport.receipts.get(slow)?.status).toBe("done");
+    expect(transport.patches).toContainEqual(expect.objectContaining({ stopReason: "cancelled" }));
+    expect(host["sessions"].has("chat")).toBe(false);
   });
 });

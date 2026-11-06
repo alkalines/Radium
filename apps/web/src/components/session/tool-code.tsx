@@ -136,7 +136,8 @@ const opLabels: Record<DiffFile["op"], string | undefined> = {
 /**
  * One file of an edit as a diff: additions and removals tinted, hunk and operation lines muted,
  * file line numbers in a gutter when the source reports them (a Worker receipt), none for a patch
- * still being written. The header shows the path, a rename target, and `+/−` counts.
+ * still being written. The header shows the path, a rename target, and `+/−` counts (`partial`
+ * instead when the file was cut at a size cap).
  */
 export function DiffCodeBlock({
   file,
@@ -162,7 +163,11 @@ export function DiffCodeBlock({
           {title}
         </CodeBlockTitle>
         {opLabel ? <span className="shrink-0 text-xs">{opLabel}</span> : null}
-        <DiffStats added={added} removed={removed} />
+        {file.partial ? (
+          <span className="shrink-0 text-xs text-muted-foreground">partial</span>
+        ) : (
+          <DiffStats added={added} removed={removed} />
+        )}
         <CodeBlockActions>
           <CodeBlockCopyButton value={copyValue} />
         </CodeBlockActions>
