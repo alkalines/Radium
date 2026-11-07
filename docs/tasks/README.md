@@ -25,6 +25,8 @@ without approval. Use subagents only for bounded, non-overlapping work.
 | [08 Local observability](08_Local_Observability.md)      | Builds on logging foundation; coordinate with 01 and 03.                       |
 | [09 Workspace operations](09_Workspace_Operations.md)    | Independent; fixes existing docs/build/check drift.                            |
 | [10 Gateway protocols](10_Gateway_Protocols.md)          | Design after 04; implement one protocol per later session.                     |
+| [11 End-to-end encryption](11_E2EE.md)                   | Phased; starts with runtime spikes and the Better Auth 1.7 upgrade.            |
+| [12 Local models](12_Local_Models.md)                    | Implements 04's instance model for local runtimes; shares Worker keys with 11. |
 
 Every task includes documentation deliverables. Link product overviews and new
 subsystem guides from the [documentation index](../README.md); do not present

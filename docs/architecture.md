@@ -76,8 +76,9 @@ restores the local-configuration invariant above.
 
 Provider, Exa, and MCP credentials are scoped to a workspace and stored through
 the Convex Secret Store component. Regular Convex tables contain only non-secret
-metadata and masked previews. Broader application-level encryption is future
-work; this document does not claim encrypted workspace records or telemetry.
+metadata and masked previews. Broader application-level encryption is planned in
+[End-to-end encryption](E2EE.md); this document does not claim encrypted
+workspace records or telemetry.
 
 Provider endpoint configuration is owner-only. Deliberately configured local and
 private endpoints are a required self-hosted use case, but the complete

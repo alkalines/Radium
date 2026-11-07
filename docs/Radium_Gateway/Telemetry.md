@@ -170,7 +170,8 @@ migration has run:
 - Large first-time histories are ingested in several mutations; a crash between
   batches leaves unreferenced nodes that garbage collection does not see until a
   later request references and deletes them.
-- Application-level encryption of captured content is not implemented.
+- Application-level encryption of captured content is not implemented; the plan
+  is in [E2EE data § Telemetry](../E2EE/Data.md#telemetry).
 
 ## Verification
 
