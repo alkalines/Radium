@@ -53,9 +53,11 @@ work. Routing rotates across each provider's credential pool; quota-aware pacing
 is future work. Limit events notify the workspace owner ([Notifications](Notifications.md)); email and webhook delivery are future work. Better Auth organization
 ownership, organization invitations, organization-derived membership, and
 broader roles are future work; direct membership is not an invitation flow.
-Application-level encryption and an optional explicit owner-auditing mode are
-also future work. Any future audit view must preserve current workspace and chat
-authorization rather than bypass it.
+Application-level encryption is planned in [End-to-end encryption](E2EE.md); an
+optional explicit owner-auditing mode is future work. Any future audit view must
+preserve current workspace and chat authorization rather than bypass it.
+Worker-hosted models through Docker Model Runner are planned in
+[Local models](Local_Models.md).
 Provider and MCP endpoint configuration is owner-only. Deliberately configured
 local/private endpoints remain a required self-hosted use case, but the complete
 SSRF/private-network policy and configurable egress control are future work in

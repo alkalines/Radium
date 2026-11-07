@@ -12,6 +12,8 @@ start.
 - [Notifications](Notifications.md) — session and usage-limit notifications: toasts and sound in open tabs, system notifications, Web Push, preferences, and the planned phone channel
 - [Interface design](Interface_Design.md) — web UI spec: layout model, visual tokens, Run state, and Motion rules
 - [ACP agents](ACP.md) — external harnesses (Claude Agent, Codex, Gemini CLI, …) over the Agent Client Protocol on a Worker: Worker host, Convex transport and Chatroom implemented; with [agents](ACP/Agents.md), [sessions](ACP/Sessions.md), [transport](ACP/Transport.md), and [Chatroom mapping](ACP/Interactions.md)
+- [End-to-end encryption](E2EE.md) — planned: untrusted-backend design with OPAQUE login, client key hierarchy, sealed server writes and encrypted ACP/telemetry; with [authentication](E2EE/Authentication.md), [keys](E2EE/Keys.md) and [data classification](E2EE/Data.md)
+- [Local models](Local_Models.md) — planned: Docker Model Runner on a Worker, managed from Radium and routed through Gateway over an encrypted Convex relay; with [transport](Local_Models/Transport.md) and [management](Local_Models/Management.md)
 - [Worker](Worker.md) — machine authentication, identity persistence, task status coordination, and proposed execution transport
 - [Worker machine authentication](Worker/Machine_Authentication.md) — setup codes, key proofs, JWT refresh, owner management and configuration
 - [Worker identity component](Worker/Component.md) — workspace package, internal enrollment/recovery/revocation API, and integration boundary
@@ -31,18 +33,20 @@ start.
 - [Gateway credentials](Radium_Gateway/Credentials.md) — per-provider pools of API keys and OAuth/subscription accounts, OAuth flow adapters, and legacy secret names
 - [Gateway usage limits](Radium_Gateway/Limits.md) — per-credential limit and balance snapshots, adapters, polling, budgets, and limit events
 
-| Guide                                                             | Contents                                                                                        |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| [Architecture](architecture.md)                                   | Runtime boundaries, request flow, data ownership, and repository layout                         |
-| [API reference](api.md)                                           | OpenAI-compatible endpoints, authentication, requests, streaming, and errors                    |
-| [Deployment and configuration](deployment.md)                     | Environment variables, Convex Cloud, containers, and releases                                   |
-| [Operational logging](logging.md)                                 | Local structured logging, ingestion limits, privacy, and known gaps                             |
-| [Backend pre-rewrite handoff](Backend_Pre_Rewrite_Report.md)      | Source snapshot, persisted contracts, ownership bridge, and rewrite migration checklist         |
-| [Convex reuse research](research/Convex_Reuse.md)                 | Helper/component candidates and adoption caveats                                                |
-| [Gateway auto-routing research](research/Gateway_Auto_Routing.md) | Proposed cache-affine, quota-aware routing algorithm and prerequisites                          |
-| [Gateway usage limits research](research/Gateway_Usage_Limits.md) | Upstream limit signals per provider and the per-credential tracking design                      |
-| [OpenCode Code Mode research](research/OpenCode_Code_Mode.md)     | OpenCode v2 `execute` runtime, Code Mode tool split, catalog prompt, and captured system prompt |
-| [Future agent tasks](tasks/README.md)                             | Separate scoped sessions for architecture debt, rollout, and product work                       |
+| Guide                                                               | Contents                                                                                                 |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| [Architecture](architecture.md)                                     | Runtime boundaries, request flow, data ownership, and repository layout                                  |
+| [API reference](api.md)                                             | OpenAI-compatible endpoints, authentication, requests, streaming, and errors                             |
+| [Deployment and configuration](deployment.md)                       | Environment variables, Convex Cloud, containers, and releases                                            |
+| [Operational logging](logging.md)                                   | Local structured logging, ingestion limits, privacy, and known gaps                                      |
+| [Backend pre-rewrite handoff](Backend_Pre_Rewrite_Report.md)        | Source snapshot, persisted contracts, ownership bridge, and rewrite migration checklist                  |
+| [Convex reuse research](research/Convex_Reuse.md)                   | Helper/component candidates and adoption caveats                                                         |
+| [Gateway auto-routing research](research/Gateway_Auto_Routing.md)   | Proposed cache-affine, quota-aware routing algorithm and prerequisites                                   |
+| [Gateway usage limits research](research/Gateway_Usage_Limits.md)   | Upstream limit signals per provider and the per-credential tracking design                               |
+| [OpenCode Code Mode research](research/OpenCode_Code_Mode.md)       | OpenCode v2 `execute` runtime, Code Mode tool split, catalog prompt, and captured system prompt          |
+| [OPAQUE authentication research](research/OPAQUE_Authentication.md) | Better Auth OPAQUE plugin audit, OPAQUE vs SRP, Proton and other E2EE key designs, Argon2id, passkey PRF |
+| [Docker Model Runner research](research/Docker_Model_Runner.md)     | DMR platforms, engines, complete REST inventory, security, and version history                           |
+| [Future agent tasks](tasks/README.md)                               | Separate scoped sessions for architecture debt, rollout, and product work                                |
 
 ## Growing The Docs
 
