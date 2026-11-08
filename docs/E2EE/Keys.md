@@ -199,18 +199,20 @@ DASS's trust code sits in GPL-3.0-or-later plugin files. Radium reuses the desig
 
 Each device has one setting, **Require my password to read past chats** (off by default), offered at sign-in and in Settings → Security:
 
-| Setting       | Where the unlocked AMK lives                                    | Reload         | Other browser tabs                                     | Last Radium browser tab closed                |
-| ------------- | --------------------------------------------------------------- | -------------- | ------------------------------------------------------ | --------------------------------------------- |
-| Off (default) | A **non-extractable** WebCrypto key in IndexedDB, keyed by user | Stays unlocked | Unlocked                                               | Stays unlocked until sign-out or **Lock**     |
-| On            | Each browser tab's `sessionStorage`, **wrapped** (below)        | Stays unlocked | Unlocked as long as one Radium browser tab is unlocked | Forgotten; the next tab asks for the password |
+| Setting       | Where the unlocked AMK lives                                                            | Reload         | Other browser tabs                                     | Last Radium browser tab closed                |
+| ------------- | --------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------ | --------------------------------------------- |
+| Off (default) | IndexedDB, **wrapped** by a non-extractable device key (below), keyed by user           | Stays unlocked | Unlocked                                               | Stays unlocked until sign-out or **Lock**     |
+| On            | Each browser tab's `sessionStorage`, **wrapped** by the same kind of device key (below) | Stays unlocked | Unlocked as long as one Radium browser tab is unlocked | Forgotten; the next tab asks for the password |
 
 Chats opened as Radium Tabs (the Tab strip) all live in one browser tab and share its keys, so any number of open chats unlock together. The rules below are about separate **browser** tabs or windows.
 
-**Why wrapped.** `sessionStorage` holds only strings, so putting the key there directly would mean an extractable key written as plain bytes: readable by any script running on the origin, and written to disk by browsers that restore sessions. Instead, when the setting is on:
+**Why wrapped.** The AMK itself must stay available as bytes in memory while unlocked: changing the password, regenerating the recovery key and helping another device recover all wrap the **same** AMK again, which a non-extractable AMK `CryptoKey` could not do. What is stored between page loads is therefore always ciphertext:
 
-1. After unlock the client creates a random **device wrapping key** as a non-extractable `CryptoKey` and keeps it in IndexedDB, keyed by user. It is not tied to the Better Auth session, because unlocking is a new sign-in that replaces the session.
-2. It encrypts the AMK with that key and stores only the ciphertext in the browser tab's `sessionStorage`.
-3. On reload it decrypts the AMK again. Neither half is enough alone: the IndexedDB key decrypts nothing once every tab's `sessionStorage` is gone, and the blob is useless outside this browser profile.
+1. After unlock the client creates a random **device wrapping key** as a non-extractable AES-256-GCM `CryptoKey` and keeps it in IndexedDB, keyed by user. It is not tied to the Better Auth session, because unlocking is a new sign-in that replaces the session.
+2. It encrypts the AMK with that key. With the setting off, the ciphertext goes to IndexedDB next to the key; with the setting on, only to the browser tab's `sessionStorage` (a string, never an extractable key written as plain bytes).
+3. On reload it decrypts the AMK again. With the setting on, neither half is enough alone: the IndexedDB key decrypts nothing once every tab's `sessionStorage` is gone, and the blob is useless outside this browser profile.
+
+Both settings give page scripts the same power as a non-extractable AMK would: they can use the device key, not copy it out of the browser.
 
 **Several browser tabs.** `sessionStorage` is per browser tab, so the tabs coordinate over a same-origin `BroadcastChannel` (`radium-keys`). Only the wrapped blob, a plain string, is ever posted; the AMK and the wrapping key never are.
 
@@ -245,15 +247,15 @@ Workers keep their keys in the OS keyring (default) or the `0600` state file in 
 
 No private key is ever stored in plaintext, in Convex or in the browser:
 
-| Key                                | In Convex                                                                                 | In the browser                                                                                                       |
-| ---------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| AMK                                | Only wrapped under the password, recovery and passkey KEKs                                | Non-extractable `CryptoKey` in IndexedDB, or wrapped in the Tab's `sessionStorage` with the require-password setting |
-| Identity private keys, trust store | Encrypted under the AMK                                                                   | Memory, decrypted after unlock                                                                                       |
-| Workspace private keys             | Sealed to each holder's identity key (grants), and to the phrase if enabled               | Memory                                                                                                               |
-| Chat private keys                  | Sealed to the member key (workspace chats) or the creator's identity key (personal chats) | Memory                                                                                                               |
-| Public keys, signatures, roster    | Plaintext                                                                                 | Cached                                                                                                               |
+| Key                                | In Convex                                                                                 | In the browser                                                                                                                                                        |
+| ---------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AMK                                | Only wrapped under the password, recovery and passkey KEKs                                | Memory while unlocked; between page loads only wrapped by the non-extractable device key (IndexedDB, or the Tab's `sessionStorage` with the require-password setting) |
+| Identity private keys, trust store | Encrypted under the AMK                                                                   | Memory, decrypted after unlock                                                                                                                                        |
+| Workspace private keys             | Sealed to each holder's identity key (grants), and to the phrase if enabled               | Memory                                                                                                                                                                |
+| Chat private keys                  | Sealed to the member key (workspace chats) or the creator's identity key (personal chats) | Memory                                                                                                                                                                |
+| Public keys, signatures, roster    | Plaintext                                                                                 | Cached                                                                                                                                                                |
 
-"Non-extractable" means page JavaScript cannot read the key's bytes, so it cannot be copied out of the browser. Anyone who controls that signed-in browser profile can still **use** it, like an unlocked password manager; the require-password setting is for devices where that matters.
+"Non-extractable" means page JavaScript cannot read the device key's bytes, so the stored AMK cannot be copied out of the browser and opened elsewhere. Anyone who controls that signed-in browser profile can still **use** it, like an unlocked password manager; the require-password setting is for devices where that matters.
 
 Losing a browser therefore never loses data: sign in anywhere and the same keys come back from Convex. What can be lost is listed under [Rotation and recovery](#rotation-and-recovery).
 

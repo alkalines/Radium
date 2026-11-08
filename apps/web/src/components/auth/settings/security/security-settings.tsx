@@ -1,7 +1,8 @@
-import { useAuth } from "@better-auth-ui/react";
+import { useAuth, useListAccounts } from "@better-auth-ui/react";
 import { cn } from "@/lib/utils";
 import { ActiveSessions } from "./active-sessions";
 import { ChangePassword } from "./change-password";
+import { EncryptionSettings } from "./encryption-settings";
 import { LinkedAccounts } from "./linked-accounts";
 
 export type SecuritySettingsProps = {
@@ -11,18 +12,26 @@ export type SecuritySettingsProps = {
 /**
  * Renders the security settings layout including password management, linked accounts, and active sessions.
  *
- * ChangePassword is rendered when password authentication is enabled; LinkedAccounts is rendered when social providers are present.
+ * OPAQUE accounts use encryption-aware password management; classic accounts retain ChangePassword.
  * Each registered auth plugin may contribute `securityCards` (for example passkeys, delete-user).
  *
  * @param className - Optional additional CSS class names for the outer container.
  * @returns The security settings container as a JSX element.
  */
 export function SecuritySettings({ className }: SecuritySettingsProps) {
-  const { emailAndPassword, plugins, socialProviders } = useAuth();
+  const { authClient, emailAndPassword, plugins, socialProviders } = useAuth();
+  const { data: accounts, isPending: isAccountsPending } = useListAccounts(authClient);
+  const hasOpaqueAccount = accounts?.some((account) => account.providerId === "opaque");
 
   return (
     <div className={cn("flex w-full flex-col gap-8", className)}>
-      {emailAndPassword?.enabled && <ChangePassword />}
+      {!isAccountsPending &&
+        accounts &&
+        (hasOpaqueAccount ? (
+          <EncryptionSettings />
+        ) : (
+          emailAndPassword?.enabled && <ChangePassword />
+        ))}
       {!!socialProviders?.length && <LinkedAccounts />}
       <ActiveSessions />
       {plugins.flatMap(

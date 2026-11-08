@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    // Web APIs only: the package runs in browsers, Convex, Bun and Node without Node typings.
+    "lib": ["ESNext", "DOM"],
+    "types": [],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
+
+    // Bundler mode: consumers (Vite, Convex esbuild, Bun) compile the TypeScript sources directly.
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    // Best practices
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true
+  },
+  "include": ["src", "vitest.config.ts"]
+}

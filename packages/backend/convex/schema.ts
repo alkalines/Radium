@@ -71,6 +71,7 @@ import {
 } from "../src/acp/contract";
 import { agentTurnPricingValidator, modelsDevMatchValidator } from "../src/usage/agent_usage";
 import { storedLocalUsageModelValidator } from "../src/usage/local_contract";
+import { identityStatusValidator } from "../src/e2ee/contract";
 
 export default defineSchema({
   /** Owner-defined launch configuration, shared by every Worker in the workspace. */
@@ -490,6 +491,45 @@ export default defineSchema({
     /** Notification categories switched off or silenced; absent means defaults. */
     notifications: v.optional(notificationPreferencesValidator),
   }).index("by_userId", ["userId"]),
+  /**
+   * Account identities (`src/e2ee/`): public keys, the identity seeds sealed under the AMK, and
+   * the AMK wrapped under the recovery key. Never deleted; a replaced identity is `retired` so
+   * old personal data stays openable with a later recovery key.
+   */
+  e2ee_identities: defineTable({
+    userId: v.string(), // Better Auth ID
+    /** Unpadded base64url of the 16-byte key id (also the envelope keyRef). */
+    keyId: v.string(),
+    suite: v.number(),
+    encryptionPublicKey: v.bytes(),
+    signingPublicKey: v.bytes(),
+    secrets: v.bytes(),
+    selfSignature: v.bytes(),
+    recoveryWrapper: v.bytes(),
+    status: identityStatusValidator,
+    createdAt: v.number(),
+    retiredAt: v.optional(v.number()),
+  })
+    .index("by_userId_and_status", ["userId", "status"])
+    .index("by_keyId", ["keyId"]),
+  /** The AMK wrapped under one OPAQUE credential version's export key; see `src/e2ee/records.ts`. */
+  e2ee_key_bundles: defineTable({
+    userId: v.string(), // Better Auth ID
+    credentialVersion: v.string(),
+    identity: v.id("e2ee_identities"),
+    passwordWrapper: v.bytes(),
+    createdAt: v.number(),
+  }).index("by_userId_and_credentialVersion", ["userId", "credentialVersion"]),
+  /** Short-lived, single-use AMK hand-off to a device resetting its password. */
+  e2ee_device_recovery: defineTable({
+    userId: v.string(), // Better Auth ID of the offering user
+    /** Unpadded base64url of a 32-byte HKDF output only the two devices can derive. */
+    slotId: v.string(),
+    sealedAmk: v.bytes(),
+    expiresAt: v.number(),
+  })
+    .index("by_slotId", ["slotId"])
+    .index("by_expiresAt", ["expiresAt"]),
   /**
    * One notification for one user (`src/notifications/`): a Chatroom run outcome for the user who
    * sent it, or a limit event for the workspace owner. Open browser tabs claim it (`seenAt`);

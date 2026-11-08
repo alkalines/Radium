@@ -33,4 +33,10 @@ crons.interval(
   internal.observability.telemetryRetention.pruneExpired,
   {},
 );
+crons.interval(
+  "expired device recovery offers",
+  { minutes: 15 },
+  internal.e2ee.pruneDeviceRecovery,
+  {},
+);
 export default crons;

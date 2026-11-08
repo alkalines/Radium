@@ -15,6 +15,7 @@ import { SettingsLayout } from "@/components/settings/settings-layout";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WorkspaceSwitcher } from "@/components/workspaces/workspace-switcher";
+import { EncryptionNotice } from "@/components/auth/encryption-notice";
 import { spring, transitions } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import {
@@ -353,6 +354,7 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
         </div>
 
         <div className="ml-auto flex h-9 min-w-0 shrink items-center pr-1">
+          <EncryptionNotice />
           <WorkspaceSwitcher variant="chip" />
         </div>
 

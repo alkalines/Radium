@@ -13,7 +13,7 @@ const functionsRoot = join(backendRoot, "convex");
 const outputPath = join(functionsRoot, "_generated", "api.d.ts");
 const backendPackageJson = join(backendRoot, "package.json");
 const backendRequire = createRequire(backendPackageJson);
-const auditedConvexVersion = "1.46.0";
+const auditedConvexVersion = "1.49.0";
 const args = process.argv.slice(2);
 
 if (args.some((arg) => arg !== "--write")) {

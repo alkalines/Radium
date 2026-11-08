@@ -9,27 +9,30 @@ container and release paths are currently blocked and unverified pending the
 
 ### Application And Convex
 
-| Variable                     | Required          | Scope              | Purpose                                                                                    |
-| ---------------------------- | ----------------- | ------------------ | ------------------------------------------------------------------------------------------ |
-| `CONVEX_DEPLOYMENT`          | Cloud development | Local CLI          | Convex deployment selected by `convex dev`                                                 |
-| `VITE_CONVEX_URL`            | Yes               | Build/public       | Convex client URL, normally `https://<deployment>.convex.cloud`                            |
-| `VITE_CONVEX_SITE_URL`       | Yes               | Build/public       | Convex HTTP action origin, normally `https://<deployment>.convex.site`                     |
-| `SITE_URL`                   | Yes               | Convex             | Public web origin used by Better Auth, such as `http://localhost:3000`                     |
-| `SECRET_STORE_KEYS`          | Yes               | Deploy/Convex      | Versioned key material used by Convex Secret Store                                         |
-| `AISDK_MaxRetries`           | No                | Convex             | AI SDK retry count; defaults to `0`                                                        |
-| `LWC_SECRET`                 | Feature-specific  | Convex             | Signs ChatGPT Subscription sessions                                                        |
-| `WORKER_AUTH_PRIVATE_JWK`    | Worker auth       | Convex secret      | Private ES256 machine-token issuer JWK with `kid`                                          |
-| `WORKER_AUTH_JWKS`           | Worker auth       | Convex/auth config | Matching public JWKS for the optional custom JWT verifier                                  |
-| `WEB_PUSH_VAPID_PUBLIC_KEY`  | Web Push          | Convex             | VAPID public key browsers subscribe with ([Notifications](Notifications.md#configuration)) |
-| `WEB_PUSH_VAPID_PRIVATE_KEY` | Web Push          | Convex secret      | Matching VAPID private key that signs push requests                                        |
-| `WEB_PUSH_SUBJECT`           | No                | Convex             | VAPID contact (`mailto:` or `https:`); defaults to `SITE_URL`                              |
+| Variable                     | Required          | Scope                      | Purpose                                                                                                                  |
+| ---------------------------- | ----------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `CONVEX_DEPLOYMENT`          | Cloud development | Local CLI                  | Convex deployment selected by `convex dev`                                                                               |
+| `VITE_CONVEX_URL`            | Yes               | Build/public               | Convex client URL, normally `https://<deployment>.convex.cloud`                                                          |
+| `VITE_CONVEX_SITE_URL`       | Yes               | Build/public               | Convex HTTP action origin, normally `https://<deployment>.convex.site`                                                   |
+| `SITE_URL`                   | Yes               | Convex                     | Public web origin used by Better Auth, such as `http://localhost:3000`                                                   |
+| `SECRET_STORE_KEYS`          | Yes               | Deploy/Convex              | Versioned key material used by Convex Secret Store                                                                       |
+| `OPAQUE_SERVER_SETUP`        | Yes               | Convex secret              | OPAQUE server key pair and OPRF seed for password sign-in ([below](#opaque-server-setup))                                |
+| `AUTH_PROXY_SECRET`          | Recommended       | Convex + web server secret | Same value on both sides; lets Convex rate-limit auth per client IP behind the web proxy ([below](#opaque-server-setup)) |
+| `AUTH_TRUST_X_FORWARDED_FOR` | No                | Web server                 | `true` only when the web server sits behind a reverse proxy that overwrites `X-Forwarded-For`                            |
+| `AISDK_MaxRetries`           | No                | Convex                     | AI SDK retry count; defaults to `0`                                                                                      |
+| `LWC_SECRET`                 | Feature-specific  | Convex                     | Signs ChatGPT Subscription sessions                                                                                      |
+| `WORKER_AUTH_PRIVATE_JWK`    | Worker auth       | Convex secret              | Private ES256 machine-token issuer JWK with `kid`                                                                        |
+| `WORKER_AUTH_JWKS`           | Worker auth       | Convex/auth config         | Matching public JWKS for the optional custom JWT verifier                                                                |
+| `WEB_PUSH_VAPID_PUBLIC_KEY`  | Web Push          | Convex                     | VAPID public key browsers subscribe with ([Notifications](Notifications.md#configuration))                               |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | Web Push          | Convex secret              | Matching VAPID private key that signs push requests                                                                      |
+| `WEB_PUSH_SUBJECT`           | No                | Convex                     | VAPID contact (`mailto:` or `https:`); defaults to `SITE_URL`                                                            |
 
 `VITE_*` values are public and embedded at build time. Never put provider API
 keys or other secrets in a `VITE_*` variable.
 
 `packages/backend/convex/convex.config.ts` declares the custom backend runtime
-environment contract with Convex validators. `SITE_URL` and `SECRET_STORE_KEYS`
-are required; `AISDK_MaxRetries`, `LWC_SECRET`, the Worker issuer keys, and the
+environment contract with Convex validators. `SITE_URL`, `SECRET_STORE_KEYS` and
+`OPAQUE_SERVER_SETUP` are required; `AISDK_MaxRetries`, `LWC_SECRET`, the Worker issuer keys, and the
 Web Push keys are optional. `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` are
 Convex-provided system variables, not custom app settings. Declarations do not
 set values: configure deployment values through the dashboard or `convex env`.
@@ -78,6 +81,29 @@ Upstream provider credentials are normally added by the workspace owner in
 not public application environment variables. Broader application-level
 encryption is future work; `SECRET_STORE_KEYS` only configures the Secret Store
 component.
+
+### OPAQUE Server Setup
+
+Password sign-in uses OPAQUE ([E2EE authentication](E2EE/Authentication.md)); the server never sees passwords. `OPAQUE_SERVER_SETUP` holds the server's long-term private key and OPRF seed. Generate it **once per deployment** with the exact plugin version Radium pins, from `packages/backend` after `bun install`:
+
+```bash
+bunx better-auth-opaque create-setup
+bunx convex env set OPAQUE_SERVER_SETUP '<printed value>'
+```
+
+- **Back it up with the database** (secret manager plus an offline copy). Losing it invalidates every OPAQUE record: no user can sign in, every account needs a reset link, and personal data of users without a recovery key or another unlocked device becomes unreadable.
+- Never regenerate it for an existing deployment and never commit it. A leaked setup together with leaked `account` rows allows offline password guessing at Argon2id cost per guess.
+- Moving a deployment (for example cloud to local, below) must carry the same value, or imported accounts cannot sign in.
+
+Reset links: there is no email transport yet, so the operator issues one-hour, single-use links from the CLI and passes them to the user by any channel:
+
+```bash
+bunx convex run auth:issuePasswordResetLink '{"email": "user@example.com"}'
+```
+
+The link carries the token in the URL fragment (`/auth/reset-password#token=…`); treat it like a password until it expires.
+
+Auth rate limiting (OPAQUE sign-in and reset: 5 requests per minute per client) needs the real client address. Browsers reach Better Auth through the web server's `/api/auth/*` proxy, so set the same random `AUTH_PROXY_SECRET` on the Convex deployment (`bunx convex env set AUTH_PROXY_SECRET '<openssl rand -hex 32>'`) and in the web server's environment; the proxy then forwards the client address and Convex trusts it only with the secret. Set `AUTH_TRUST_X_FORWARDED_FOR=true` on the web server only behind a reverse proxy that overwrites `X-Forwarded-For`.
 
 ### Telemetry Export
 
@@ -142,8 +168,8 @@ bunx convex import --replace-all -y ~/cloud-dev-snapshot.zip
 
 Then set `VITE_CONVEX_URL=http://127.0.0.1:3210` and
 `VITE_CONVEX_SITE_URL=http://127.0.0.1:3211` in `apps/web/.env.local`. Keeping
-`BETTER_AUTH_SECRET` and the Worker issuer keys identical preserves imported
-sign-in sessions and Worker identities. An enrolled Worker stores its origins in
+`BETTER_AUTH_SECRET`, `OPAQUE_SERVER_SETUP` and the Worker issuer keys identical preserves imported
+sign-in sessions, OPAQUE password records and Worker identities. An enrolled Worker stores its origins in
 `setup.backendUrl`/`setup.convexUrl` of `~/.radium-worker/worker-state.json`;
 change them to `http://127.0.0.1:3211`/`http://127.0.0.1:3210`, then confirm with
 `bun run --cwd packages/worker cli refresh`. No re-enrollment is needed because
@@ -230,7 +256,7 @@ It uses the installed Convex `componentApiDTS` template and local static analysi
 of the root component mounts, then formats the result with the installed Convex
 formatter. The network guard is an additional check; it must remain enabled.
 
-The driver is checked against the installed Convex `1.46.0` template and
+The driver is checked against the installed Convex `1.49.0` template and
 uses an internal CLI export, not a stable public API. Review the generated diff
 after Convex or component dependency updates. It supports the current static
 `convex.config.ts` form and fails closed for dynamic imports, unsupported

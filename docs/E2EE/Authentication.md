@@ -1,6 +1,6 @@
 # E2EE Authentication
 
-Status: **planned.** Part of [End-to-end encryption](../E2EE.md). Research behind these choices: [OPAQUE research](../research/OPAQUE_Authentication.md). Keys derived here are used as described in [Keys](Keys.md).
+Status: **implemented except account migration** ([task 11 phase 4](../tasks/11_E2EE.md#phase-4-opaque-in-radium)); passkeys are a later phase. Part of [End-to-end encryption](../E2EE.md). Research behind these choices: [OPAQUE research](../research/OPAQUE_Authentication.md); open plugin findings: [plugin assessment](../research/OPAQUE_Plugin_Assessment.md). Keys derived here are used as described in [Keys](Keys.md).
 
 ## Why The Login Must Change
 
@@ -24,7 +24,7 @@ OPAQUE does not stop offline guessing by a server that keeps the records and its
 
 ### Upgrade first
 
-Radium pins `better-auth` 1.6.33 and `@convex-dev/better-auth` 0.12.5. The current Convex Better Auth release, 0.13.0, supports Better Auth 1.7 and requires `better-auth >=1.7.16 <1.8.0` (npm registry, checked 2026-11-05). Upgrading both, plus `@better-auth-ui/react`, is its own change with the existing email/password flow still working, planned as the next session ([task 11 phase 1](../tasks/11_E2EE.md#phase-1-better-auth-17)).
+Done in [task 11 phase 1](../tasks/11_E2EE.md#phase-1-better-auth-17): Radium runs `better-auth` 1.7.18 and `@convex-dev/better-auth` 0.13.0 as a [local install](https://labs.convex.dev/better-auth/features/local-install) (`packages/backend/convex/betterAuth/`), so plugins can add fields to the component schema.
 
 ### Plugin: `@alkalines/better-auth-opaque`
 
@@ -36,19 +36,21 @@ The only Better Auth OPAQUE plugin found, [`better-auth-opaque`](https://github.
 
 Radium uses a new plugin owned by the alkalines organization, so other alkalines projects can use it too: repository `alkalines/better-auth-opaque`, npm package `@alkalines/better-auth-opaque` (server plugin and `opaqueClient()` client plugin in one package), MIT like the code it starts from, crediting the original. Radium pins an exact version. The plugin knows nothing about Radium's keys; it offers generic hooks that Radium fills in.
 
-| Area            | Plugin behavior                                                                                                                                                                                     |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Library         | `@serenity-kit/opaque` pinned exactly (1.1.x), RFC-recommended Argon2id stretching, the same pin on client and server                                                                               |
-| Export key      | Returned to the client-side caller of sign-up, sign-in, password change and reset; never sent to the server                                                                                         |
-| Account payload | Sign-up, password change and reset accept an opaque `payload` and pass it to an app hook that commits it in the same transaction as the OPAQUE record (Radium: the key bundle)                      |
-| Reset tokens    | Server API `createPasswordResetToken({ email })` returning a one-use URL, and `/reset/opaque/*` endpoints that consume it; delivery is the app's job ([Forgot password](#forgot-password))          |
-| Login state     | Single use: a nonce stored in Better Auth `verification` and consumed by the finish step                                                                                                            |
-| Unknown users   | Login start answers with a fake record so responses do not reveal whether an email is registered **[INFERENCE: confirm serenity's API for this]**                                                   |
-| Server setup    | Passed in by the app (Radium: the `OPAQUE_SERVER_SETUP` deployment variable); missing or invalid setup fails closed                                                                                 |
-| Runtime         | Web APIs only, no Node `Buffer`; tested in the Convex default runtime and in Node                                                                                                                   |
-| Storage         | `registrationRecord` on the Better Auth `account` row (`providerId: "opaque"`); under Convex this needs the Better Auth [local install](https://labs.convex.dev/better-auth/features/local-install) |
+| Area            | Plugin behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Library         | `@serenity-kit/opaque` 1.1.0 pinned exactly by the plugin; Radium pins the plugin exactly (0.1.3). Client and server both use the `rfc-recommended` Argon2id profile, and the Radium client refuses any other profile a server advertises                                                                                                                                                                                                                                                   |
+| Export key      | Returned to the client-side caller of sign-up, sign-in, password change and reset; never sent to the server                                                                                                                                                                                                                                                                                                                                                                                 |
+| Account payload | Sign-up, password change and reset accept an opaque `payload` (Radium: the key bundle). Convex has no multi-write transactions, so the plugin orders writes instead: `commitPayload` stores the payload under the new credential version, a compare-and-set switches the account to it, then `activatePayload` drops only the replaced version ([plugin security notes](https://github.com/alkalines/better-auth-opaque/blob/main/docs/security.md#write-ordering-instead-of-transactions)) |
+| Reset tokens    | Server-only `createPasswordResetToken({ email })` (not HTTP-reachable) returning a one-use URL, and `/reset/opaque/*` endpoints that consume it; delivery is the app's job ([Forgot password](#forgot-password))                                                                                                                                                                                                                                                                            |
+| Login state     | Single use: a state row in Better Auth `verification`, consumed atomically (`consumeVerificationValue`) by the finish step, 5-minute expiry                                                                                                                                                                                                                                                                                                                                                 |
+| Unknown users   | Login start answers from serenity's built-in fake record (`registrationRecord: null`) under an HMAC-derived identifier, with the same response shape as a real account                                                                                                                                                                                                                                                                                                                      |
+| Server setup    | Passed in by the app (Radium: the `OPAQUE_SERVER_SETUP` deployment variable); missing or invalid setup fails closed                                                                                                                                                                                                                                                                                                                                                                         |
+| Runtime         | The plugin's own code uses Web APIs only; serenity compiles its inlined WASM at runtime. Tested by the plugin in the Convex default runtime (local backend) and Node                                                                                                                                                                                                                                                                                                                        |
+| Storage         | `registrationRecord`, `opaqueCredentialVersion` and `opaqueKeyStretching` on the Better Auth `account` row (`providerId: "opaque"`, `accountId` = a random credential ID, not the email); requires the Better Auth local install, done in phase 1                                                                                                                                                                                                                                           |
 
-Radium's side lives in `packages/backend/src/auth/` (hooks, key-bundle validation, the reset-link action) and `apps/web/src/lib/auth/` (flows calling the client plugin and the key manager).
+Open findings against 0.1.3 and the plugin capabilities Radium still needs are tracked in [the plugin assessment](../research/OPAQUE_Plugin_Assessment.md).
+
+Radium's side lives in `packages/backend/src/e2ee/` (hooks, key-bundle validation, device recovery) with registrations in `convex/e2ee.ts` and the reset-link action in `convex/auth.ts`, and in `apps/web/src/lib/auth/` and `apps/web/src/lib/crypto/` (flows calling the client plugin and the key manager).
 
 `OPAQUE_SERVER_SETUP` joins `SITE_URL` and `SECRET_STORE_KEYS` as a required backend value in [deployment](../deployment.md) once implemented. It must be backed up with the database: losing it invalidates every OPAQUE record, which forces every user through reset, which without recovery keys loses their personal data.
 
@@ -69,11 +71,11 @@ sequenceDiagram
     C->>C: create AMK, identity keys, recovery key; wrap AMK under HKDF(exportKey) and recovery KEK
     C->>C: show recovery key, require confirmation
     C->>S: POST /sign-up/opaque/complete {registrationRecord, keyBundle}
-    S->>S: one transaction: user, account, key records
+    S->>S: user, then key bundle (pending), then account; then activate
     S-->>C: session
 ```
 
-The key bundle contains public identity keys, private identity keys encrypted under the AMK, and the AMK wrappers. It is opaque to the server. Sign-up fails as a whole if any part is missing, so no account exists without keys.
+The key bundle contains public identity keys, private identity keys encrypted under the AMK, and the AMK wrappers. It is opaque to the server, which only checks its shape and exact sizes. Sign-up fails as a whole if any part is missing, so no account exists without keys: the plugin creates the user, Radium stores the bundle under the new credential version, the plugin creates the OPAQUE account pointing at that version, then Radium activates it; if a step fails the plugin deletes the user it created.
 
 The recovery key is shown before the account is committed and must be confirmed (re-entering four of the words). Skipping it is not offered.
 
@@ -82,9 +84,9 @@ The recovery key is shown before the account is committed and must be confirmed 
 1. Client `startLogin(password)`; server answers from the stored record.
 2. Client `finishLogin` yields `finishLoginRequest`, a session key and the `exportKey`. The export key is used only after the server's finish step succeeds ([RFC 9807 §10.4](https://www.rfc-editor.org/rfc/rfc9807.html#section-10.4)).
 3. Server verifies, consumes the login state and creates the Better Auth session; Convex auth then works unchanged (`ConvexBetterAuthProvider`, JWT).
-4. Client fetches its password wrapper, derives the KEK with HKDF and unwraps the AMK, then keeps it according to the device's **Require my password to read past chats** setting ([Keys § On the device](Keys.md#on-the-device)).
+4. The sign-in response carries the key bundle for exactly the credential just used (`loadPayload`); the client derives the KEK with HKDF and unwraps the AMK, then keeps it according to the device's **Require my password to read past chats** setting ([Keys § On the device](Keys.md#on-the-device)). Before deriving anything, the client checks that the challenge's key-stretching profile is `rfc-recommended` and refuses otherwise, so a compromised server cannot make the client register or derive with a weaker or abusive profile.
 
-Failed attempts go through Better Auth's rate limiter, as password sign-in does today.
+Failed attempts go through Better Auth's rate limiter, enabled explicitly for OPAQUE paths (the plugin's 5 per minute on sign-in and reset).
 
 ### Unlock
 
@@ -92,7 +94,7 @@ On a device where **Require my password to read past chats** is on, opening past
 
 ### Password change
 
-Requires an unlocked session. The client runs an OPAQUE login with the old password (proving it and yielding the old export key), registers the new password, and wraps the **same** AMK under the new export key. The server replaces the OPAQUE record and the password wrapper in one transaction and revokes the user's other sessions, which sign in again with the new password. No content is re-encrypted.
+Requires an unlocked session. The client runs an OPAQUE login with the old password (proving it), registers the new password, and wraps the **same** AMK under the new export key. The server stores the new wrapper under the new credential version, switches the account with a compare-and-set, drops the old wrapper and revokes the user's other sessions, which sign in again with the new password. No content is re-encrypted.
 
 ### Forgot password
 
@@ -103,13 +105,13 @@ npx convex run auth:issuePasswordResetLink '{"email": "user@example.com"}'
 ```
 
 1. `auth:issuePasswordResetLink` is an `internalAction`: browsers and API keys cannot call it; only someone with deployment access (CLI with a deploy key, or the dashboard) can. It is an action because generating the token needs real randomness.
-2. It calls the plugin's `createPasswordResetToken`, which stores a hash of a 256-bit token in Better Auth `verification` with a one-hour expiry and returns `<SITE_URL>/auth/reset-password?token=…`. The URL is printed to the operator's terminal only; it is not logged or stored in plaintext.
+2. It calls the plugin's `createPasswordResetToken`, which stores a hash of a 256-bit token in Better Auth `verification` with a one-hour expiry and returns `<SITE_URL>/auth/reset-password#token=…`. The token sits in the URL fragment, so browsers never send it to any server, log or `Referer`; the reset page removes it from the address bar. The URL is returned to the operator's terminal only; it is not logged or stored in plaintext.
 3. The operator gives the link to the user by any channel. A future email transport (Better Auth `sendResetPassword`) replaces this step without changing the rest.
 4. The user opens the link and picks how to get their **account master key** (AMK) back. The token lets the page fetch the user's encrypted key bundle; every part of it is useless without one of these:
    - **Recovery key.** The client derives the recovery KEK from the 24 words and unwraps the AMK.
-   - **Another device where I'm still unlocked.** The resetting page generates a 128-bit secret and shows it as a QR code and 12 words. The user scans or types it on the other device, which encrypts the AMK under `HKDF(secret, "radium/v1/device-recovery")` and uploads it for this reset token; the resetting page downloads and decrypts it. The secret moves only between the user's two screens, so Convex never sees it and cannot substitute anything that decrypts under it.
+   - **Another device where I'm still unlocked.** The resetting page generates a 128-bit secret and shows it as 12 words (and a QR code of them). The user types or scans it on the other device, which encrypts the AMK under `HKDF(secret, "radium/v1/device-recovery")` and uploads it to a single-use slot whose ID is also derived from the secret (`HKDF(secret, "radium/v1/device-recovery-id")`), expiring after 15 minutes; the resetting page downloads and decrypts it. The secret moves only between the user's two screens, so Convex never sees it and cannot substitute anything that decrypts under it.
    - **Neither.** The client creates a new AMK and identity keys. The UI states exactly what becomes unreadable and requires typing a confirmation.
-5. The client registers the new password with OPAQUE and wraps the AMK under the new password KEK. `/reset/opaque/complete` consumes the token, replaces the OPAQUE record and the key bundle in one transaction and revokes all sessions.
+5. The client registers the new password with OPAQUE and wraps the AMK under the new password KEK. `/reset/opaque/complete` consumes the reset state, stores the new key bundle version, switches the OPAQUE record with a compare-and-set and revokes all sessions.
 
 A wrong recovery key or secret fails to decrypt on the client before anything is committed; the server stores nothing that verifies either.
 

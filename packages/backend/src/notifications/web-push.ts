@@ -1,4 +1,4 @@
-import webpush, { WebPushError } from "web-push";
+import { sendNotification, WebPushError } from "web-push";
 import { v } from "convex/values";
 import { internal } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -31,7 +31,7 @@ export const send = internalAction({
     await Promise.all(
       target.subscriptions.map(async (subscription) => {
         try {
-          await webpush.sendNotification(
+          await sendNotification(
             {
               endpoint: subscription.endpoint,
               keys: { p256dh: subscription.p256dh, auth: subscription.auth },

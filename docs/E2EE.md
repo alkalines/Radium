@@ -1,6 +1,6 @@
 # End-to-End Encryption
 
-Status: **planned, not implemented.** Design snapshot: 2026-11-05. Implementation plan: [task 11](tasks/11_E2EE.md). Nothing in this guide describes current behavior; today Radium stores chats, ACP frames, telemetry content, notifications and project data in plaintext in Convex (see [data classification](E2EE/Data.md#current-state)).
+Status: **partly implemented.** Design snapshot: 2026-11-05. Implementation plan and progress: [task 11](tasks/11_E2EE.md). Implemented so far: OPAQUE password login with account keys (AMK, identity keys, recovery key, device recovery) and the browser key manager (phases 1, 3 and 4 of task 11, without account migration). No content is encrypted yet: chats, ACP frames, telemetry content, notifications and project data are still stored in plaintext in Convex (see [data classification](E2EE/Data.md#current-state)).
 
 Radium should treat its backend as **untrusted storage and an untrusted relay**. Content is encrypted by clients (browser, mobile app, Worker) to keys the backend never holds. The backend still sees plaintext **transiently** where it must process it, for example the prompt it forwards to an upstream model, but it does not keep that plaintext and it cannot read stored content afterwards.
 

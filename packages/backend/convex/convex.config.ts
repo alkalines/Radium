@@ -1,7 +1,7 @@
 import { defineApp } from "convex/server";
 import { v } from "convex/values";
 import rateLimiter from "@convex-dev/rate-limiter/convex.config.js";
-import betterAuth from "@convex-dev/better-auth/convex.config";
+import betterAuth from "./betterAuth/convex.config";
 import migrations from "@convex-dev/migrations/convex.config.js";
 import secretStore from "convex-secret-store/convex.config.js";
 import logging from "./components/logging/convex.config.js";
@@ -11,6 +11,10 @@ const app = defineApp({
   env: {
     SITE_URL: v.string(),
     SECRET_STORE_KEYS: v.string(),
+    /** OPAQUE server key and OPRF seed (`bunx better-auth-opaque create-setup`); never rotate. */
+    OPAQUE_SERVER_SETUP: v.string(),
+    /** Shared with the web server's auth proxy so it may name its client's address (rate limits). */
+    AUTH_PROXY_SECRET: v.optional(v.string()),
     AISDK_MaxRetries: v.optional(v.string()),
     LWC_SECRET: v.optional(v.string()),
     WORKER_AUTH_JWKS: v.optional(v.string()),
