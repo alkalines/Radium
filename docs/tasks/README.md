@@ -13,20 +13,21 @@ one coherent session, deliver its design or migration plan first and split the
 implementation into linked follow-ups. Do not deploy or migrate remote data
 without approval. Use subagents only for bounded, non-overlapping work.
 
-| Task                                                     | Dependencies / sequencing                                                      |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| [01 Telemetry boundaries](01_Telemetry_Boundaries.md)    | Can proceed independently; preserve current schema.                            |
-| [02 Convex auth reuse](02_Convex_Auth_Reuse.md)          | Start with research; coordinate changes to shared auth/data functions.         |
-| [03 Self-hosted ownership](03_Self_Hosted_Ownership.md)  | Design first; prerequisite for new persisted ownership contracts.              |
-| [04 Upstream instances](04_Upstream_Instances.md)        | Depends on 03's agreed ownership contract, not necessarily completed backfill. |
-| [05 Gateway load balancing](05_Gateway_Load_Balancer.md) | Depends on 04; do not build a second routing path.                             |
-| [06 Chatroom and Worker](06_Chatroom_Worker.md)          | Security/protocol design can proceed independently; persistence follows 03.    |
-| [07 Authors cleanup](07_Authors_Cleanup.md)              | Independent, but coordinate model/import changes with 04.                      |
-| [08 Local observability](08_Local_Observability.md)      | Builds on logging foundation; coordinate with 01 and 03.                       |
-| [09 Workspace operations](09_Workspace_Operations.md)    | Independent; fixes existing docs/build/check drift.                            |
-| [10 Gateway protocols](10_Gateway_Protocols.md)          | Design after 04; implement one protocol per later session.                     |
-| [11 End-to-end encryption](11_E2EE.md)                   | Phased; starts with runtime spikes and the Better Auth 1.7 upgrade.            |
-| [12 Local models](12_Local_Models.md)                    | Implements 04's instance model for local runtimes; shares Worker keys with 11. |
+| Task                                                     | Dependencies / sequencing                                                        |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| [01 Telemetry boundaries](01_Telemetry_Boundaries.md)    | Can proceed independently; preserve current schema.                              |
+| [02 Convex auth reuse](02_Convex_Auth_Reuse.md)          | Start with research; coordinate changes to shared auth/data functions.           |
+| [03 Self-hosted ownership](03_Self_Hosted_Ownership.md)  | Design first; prerequisite for new persisted ownership contracts.                |
+| [04 Upstream instances](04_Upstream_Instances.md)        | Depends on 03's agreed ownership contract, not necessarily completed backfill.   |
+| [05 Gateway load balancing](05_Gateway_Load_Balancer.md) | Depends on 04; do not build a second routing path.                               |
+| [06 Chatroom and Worker](06_Chatroom_Worker.md)          | Security/protocol design can proceed independently; persistence follows 03.      |
+| [07 Authors cleanup](07_Authors_Cleanup.md)              | Independent, but coordinate model/import changes with 04.                        |
+| [08 Local observability](08_Local_Observability.md)      | Builds on logging foundation; coordinate with 01 and 03.                         |
+| [09 Workspace operations](09_Workspace_Operations.md)    | Independent; fixes existing docs/build/check drift.                              |
+| [10 Gateway protocols](10_Gateway_Protocols.md)          | Design after 04; implement one protocol per later session.                       |
+| [11 End-to-end encryption](11_E2EE.md)                   | Phased; starts with runtime spikes and the Better Auth 1.7 upgrade.              |
+| [12 Local models](12_Local_Models.md)                    | Implements 04's instance model for local runtimes; shares Worker keys with 11.   |
+| [13 Better Auth OPAQUE plugin](13_Better_Auth_Opaque.md) | Separate repository; implements 11 phase 2. Independent of Radium's 1.7 upgrade. |
 
 Every task includes documentation deliverables. Link product overviews and new
 subsystem guides from the [documentation index](../README.md); do not present
