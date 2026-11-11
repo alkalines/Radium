@@ -22,7 +22,12 @@ import {
   type UnlockedAccount,
 } from "@/lib/crypto/account-keys";
 import { keyManager } from "@/lib/crypto/key-manager";
-import { KEY_STRETCHING_REJECTED } from "./opaque-guard";
+import {
+  CLASSIC_CREDENTIAL,
+  holdClassicPassword,
+  isKnownEncryptedAccount,
+  rememberEncryptedAccount,
+} from "./classic-migration";
 
 /** Outcome of a flow: success data, or a message safe to show. */
 export type FlowResult<T = undefined> = { ok: true; data: T } | { ok: false; message: string };
@@ -59,16 +64,27 @@ type PluginError = { code?: string; message?: string; status: number };
 function errorMessage(error: PluginError): string {
   switch (error.code) {
     case "INVALID_CREDENTIALS":
+    case "INVALID_EMAIL_OR_PASSWORD":
       return "Invalid email or password.";
     case "INVALID_PASSWORD":
       return "The current password is incorrect.";
-    case KEY_STRETCHING_REJECTED:
     case "KEY_STRETCHING_MISMATCH":
-      return "The server asked for an unsupported password hashing profile. Nothing was sent.";
+    case "INVALID_SERVER_RESPONSE":
+      return "The server sent an unexpected or unsupported password challenge. Nothing was sent.";
     case "INVALID_PAYLOAD":
       return "The server rejected the encryption keys. Nothing was changed.";
     case "INVALID_STATE":
       return "This step expired. Start again.";
+    case "PASSWORD_REUSED":
+      return "Choose a new password. The server has seen your old one, so it cannot protect your keys.";
+    case "CREDENTIAL_CHANGED":
+      return "Your password was changed elsewhere in the meantime. Sign in again.";
+    case "OPAQUE_ACCOUNT_EXISTS":
+      return "Encryption is already set up for this account. Sign in again.";
+    case "SIGN_UP_DISABLED":
+      return "Sign-up is closed on this Radium deployment.";
+    case "TOO_MANY_ATTEMPTS":
+      return "Too many password attempts for this account. Try again later.";
   }
   if (error.status === 429) return "Too many attempts. Wait a minute and try again.";
   return error.message || "Something went wrong. Try again.";
@@ -82,19 +98,39 @@ function bundleFailureMessage(error: unknown): string {
   return "Signed in, but the encryption keys could not be opened.";
 }
 
+/** Shown when the server claims "classic account" for an account this device knows is encrypted. */
+const UNEXPECTED_CLASSIC_MESSAGE =
+  "The server answered as if this account had no encryption, but it has. Your password was not sent.";
+
 /**
- * Signs in with OPAQUE and unlocks: opens the returned bundle with the export key, stores the
- * device policy chosen at sign-in, then unlocks. Also used by "Unlock" while locked (the new
- * session replaces the current one). A second-factor redirect is reported as an error: the
- * server runs no 2FA plugin in this release.
+ * Signs in from the password form. OPAQUE first: it opens the returned bundle with the export key
+ * and unlocks under the device policy the user set in Settings → Security. A second-factor
+ * redirect is reported as an error: the server runs no 2FA plugin in this release.
+ *
+ * When the server answers `CLASSIC_CREDENTIAL` (an account created before encryption) and
+ * `allowClassic` is set, the same password signs in through Better Auth's classic endpoint and is
+ * held for "Set up encryption" (`needsEncryptionSetup`). That sends the password to the server,
+ * which already stores its hash; it is refused for accounts this device has used with OPAQUE,
+ * because a compromised server could send the code to harvest an encrypted account's password.
+ *
+ * "Unlock" while locked passes `allowClassic: false`: a locked account has keys, so a classic
+ * answer can only be a lie. The new session replaces the current one.
  */
 export async function signInAndUnlock(input: {
   email: string;
   password: string;
-  requirePassword: boolean;
-}): Promise<FlowResult<{ userId: string }>> {
+  allowClassic: boolean;
+}): Promise<FlowResult<{ userId: string; needsEncryptionSetup: boolean }>> {
   const result = await authClient.signIn.opaque({ email: input.email, password: input.password });
-  if (result.error) return { ok: false, message: errorMessage(result.error) };
+  if (result.error) {
+    if (result.error.code !== CLASSIC_CREDENTIAL) {
+      return { ok: false, message: errorMessage(result.error) };
+    }
+    if (!input.allowClassic || (await isKnownEncryptedAccount(input.email))) {
+      return { ok: false, message: UNEXPECTED_CLASSIC_MESSAGE };
+    }
+    return signInClassic(input);
+  }
 
   const data = result.data;
   if (data.twoFactorRedirect) {
@@ -110,13 +146,29 @@ export async function signInAndUnlock(input: {
 
   const userId = data.user.id;
   try {
-    const policy = keyManager.getDevicePolicy(userId);
-    await keyManager.setDevicePolicy(userId, { ...policy, requirePassword: input.requirePassword });
     await keyManager.unlock({ userId, amk: account.amk, identity: account.identity });
   } finally {
     wipeAccount(account);
   }
-  return { ok: true, data: { userId } };
+  await rememberEncryptedAccount(input.email);
+  return { ok: true, data: { userId, needsEncryptionSetup: false } };
+}
+
+/** Classic sign-in of an account created before encryption; keeps the password for attach. */
+async function signInClassic(input: {
+  email: string;
+  password: string;
+}): Promise<FlowResult<{ userId: string; needsEncryptionSetup: boolean }>> {
+  const result = await authClient.signIn.email({ email: input.email, password: input.password });
+  if (result.error) {
+    return {
+      ok: false,
+      message: errorMessage({ ...result.error, status: result.error.status ?? 0 }),
+    };
+  }
+  const userId = result.data.user.id;
+  holdClassicPassword(userId, input.password);
+  return { ok: true, data: { userId, needsEncryptionSetup: true } };
 }
 
 /**
@@ -146,6 +198,7 @@ export async function signUpWithKeys(input: {
 
   const userId = result.data.user.id;
   const signedIn = result.data.token !== null;
+  await rememberEncryptedAccount(input.email);
   if (signedIn) {
     await keyManager.unlock({ userId, amk: input.account.amk, identity: input.account.identity });
   }
@@ -170,6 +223,48 @@ export async function changePasswordRewrap(input: {
     }),
   );
   if (result.error) return { ok: false, message: errorMessage(result.error) };
+  return { ok: true, data: undefined };
+}
+
+/**
+ * Migrates the signed-in classic (pre-encryption) account to OPAQUE with a fresh key bundle
+ * (Authentication.md "Migrating Existing Accounts"). The classic password proves the account and
+ * is sent to the server, which already knows it; the plugin refuses a new password equal to it,
+ * because the server could then derive the export key. On success the classic password is gone,
+ * every other session is revoked and this tab holds a new session; keys are unlocked only then.
+ *
+ * A 401 means another tab finished the migration first and revoked this session.
+ */
+export async function attachWithKeys(input: {
+  userId: string;
+  email: string;
+  currentPassword: string;
+  newPassword: string;
+  account: UnlockedAccount;
+  recoveryEntropy: Uint8Array;
+}): Promise<FlowResult> {
+  const result = await authClient.opaque.attachCredential({
+    currentPassword: input.currentPassword,
+    newPassword: input.newPassword,
+    payload: (exportKey: string) =>
+      buildNewKeysPayload({
+        exportKey,
+        account: input.account,
+        recoveryEntropy: input.recoveryEntropy,
+      }),
+  });
+  if (result.error) {
+    if (result.error.status === 401) {
+      return { ok: false, message: "Encryption was set up in another tab. Sign in again." };
+    }
+    return { ok: false, message: errorMessage(result.error) };
+  }
+  await rememberEncryptedAccount(input.email);
+  await keyManager.unlock({
+    userId: input.userId,
+    amk: input.account.amk,
+    identity: input.account.identity,
+  });
   return { ok: true, data: undefined };
 }
 

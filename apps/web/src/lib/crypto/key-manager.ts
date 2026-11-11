@@ -806,23 +806,3 @@ export const keyManager: KeyManager = {
   checkIdle: async () => browser()?.checkIdle(),
   dispose: () => browser()?.dispose(),
 };
-
-/** Device-level default for the sign-in checkbox (no user id, not secret). */
-const REQUIRE_PASSWORD_DEFAULT_KEY = "radium.keys.require-password.v1";
-
-/** The last "Require my password to read past chats" choice made on this device. */
-export function getRequirePasswordDefault(): boolean {
-  try {
-    return localStorage.getItem(REQUIRE_PASSWORD_DEFAULT_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-export function setRequirePasswordDefault(requirePassword: boolean) {
-  try {
-    localStorage.setItem(REQUIRE_PASSWORD_DEFAULT_KEY, String(requirePassword));
-  } catch {
-    // Not remembered.
-  }
-}

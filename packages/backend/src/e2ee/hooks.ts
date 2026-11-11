@@ -48,8 +48,11 @@ export function createOpaqueHooks(ctx: GenericCtx<DataModel>): OpaqueHooks {
 
     commitPayload: async ({ userId, credentialVersion, payload, flow }, endpoint) => {
       const { runMutation } = requireActionCtx(ctx);
+      // Sign-up and attach create the user's first OPAQUE credential: there is no current one.
       const currentCredentialVersion =
-        flow === "sign-up" ? null : await readCurrentCredentialVersion(endpoint, userId);
+        flow === "sign-up" || flow === "attach"
+          ? null
+          : await readCurrentCredentialVersion(endpoint, userId);
       await runMutation(internal.e2ee.commitBundle, {
         userId,
         credentialVersion,
@@ -69,6 +72,11 @@ export function createOpaqueHooks(ctx: GenericCtx<DataModel>): OpaqueHooks {
     },
 
     loadPayload: async ({ userId, credentialVersion, flow }) => {
+      // Reset verify of an enrolment link (classic account without an OPAQUE credential): there
+      // are no keys to recover, so the client creates new ones.
+      if (credentialVersion === null) {
+        return resetPayload(null);
+      }
       const { runMutation, runQuery } = requireActionCtx(ctx);
       const loaded = await runQuery(internal.e2ee.loadBundle, { userId, credentialVersion });
 

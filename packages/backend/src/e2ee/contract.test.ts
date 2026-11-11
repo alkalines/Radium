@@ -32,12 +32,15 @@ test("each flow accepts only its payload kinds and never an absent payload", () 
   expect(parseRegistrationPayload(rewrap(), "change-password").kind).toBe("rewrap");
   expect(parseRegistrationPayload(newKeys(), "reset-password").kind).toBe("new-keys");
   expect(parseRegistrationPayload(rewrap(), "reset-password").kind).toBe("rewrap");
+  // A classic account migrating has no keys to keep: attach must create them.
+  expect(parseRegistrationPayload(newKeys(), "attach").kind).toBe("new-keys");
 
   expect(() => parseRegistrationPayload(rewrap(), "sign-up")).toThrow(InvalidKeyBundleError);
+  expect(() => parseRegistrationPayload(rewrap(), "attach")).toThrow(InvalidKeyBundleError);
   expect(() => parseRegistrationPayload(newKeys(), "change-password")).toThrow(
     InvalidKeyBundleError,
   );
-  for (const flow of ["sign-up", "change-password", "reset-password"] as const) {
+  for (const flow of ["sign-up", "change-password", "reset-password", "attach"] as const) {
     expect(() => parseRegistrationPayload(undefined, flow)).toThrow(InvalidKeyBundleError);
     expect(() => parseRegistrationPayload(null, flow)).toThrow(InvalidKeyBundleError);
   }

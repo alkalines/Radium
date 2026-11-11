@@ -21,13 +21,14 @@ import * as z from "zod";
  */
 
 /** OPAQUE flows that register a new credential and therefore carry a key bundle. */
-export type RegistrationFlow = "sign-up" | "change-password" | "reset-password";
+export type RegistrationFlow = "sign-up" | "change-password" | "reset-password" | "attach";
 
 /** Convex validator of {@link RegistrationFlow}. */
 export const registrationFlowValidator = v.union(
   v.literal("sign-up"),
   v.literal("change-password"),
   v.literal("reset-password"),
+  v.literal("attach"),
 );
 
 /**
@@ -156,8 +157,9 @@ export type RewrapPayload = z.output<typeof rewrapPayloadSchema>;
 export type RegistrationPayload = NewKeysPayload | RewrapPayload;
 
 /**
- * Parses the payload of a registration flow. Sign-up must create keys; password change must keep
- * them; reset accepts either (recovery key or other device → `rewrap`, lost everything →
+ * Parses the payload of a registration flow. Sign-up and attach (a classic account migrating,
+ * which has no keys yet) must create keys; password change must keep them; reset accepts either
+ * (recovery key or other device → `rewrap`, lost everything or enrolment of a classic account →
  * `new-keys`). An absent payload is rejected, so no OPAQUE credential exists without a bundle.
  *
  * @throws InvalidKeyBundleError without details of the rejected input.
@@ -167,7 +169,7 @@ export function parseRegistrationPayload(
   flow: RegistrationFlow,
 ): RegistrationPayload {
   let schema: z.ZodType<RegistrationPayload>;
-  if (flow === "sign-up") {
+  if (flow === "sign-up" || flow === "attach") {
     schema = newKeysPayloadSchema;
   } else if (flow === "change-password") {
     schema = rewrapPayloadSchema;

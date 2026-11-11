@@ -6,7 +6,7 @@ import { AuthRedirect } from "./auth-redirect";
 import { AuthCallback, AuthError } from "./auth-result";
 import { ForgotPassword } from "./forgot-password";
 import type { SocialLayout } from "./provider-buttons";
-import { LEGACY_SIGN_IN_PATH, LegacySignIn } from "./legacy-sign-in";
+import { SETUP_ENCRYPTION_PATH, SetupEncryption } from "./setup-encryption";
 import { ResetLinkSent } from "./reset-link-sent";
 import { ResetPassword } from "./reset-password";
 import { SignIn } from "./sign-in";
@@ -87,10 +87,10 @@ export function Auth({ className, path, socialLayout, socialPosition, view }: Au
     return null;
   }
 
-  // Radium's own view, outside Better Auth UI's view map: classic sign-in for accounts created
-  // before encryption, reachable only through its explicit link.
-  if (path === LEGACY_SIGN_IN_PATH) {
-    return <LegacySignIn className={className} />;
+  // Radium's own view, outside Better Auth UI's view map: migration of an account created before
+  // encryption to OPAQUE, reached from sign-in or the Window's "Set up encryption" chip.
+  if (path === SETUP_ENCRYPTION_PATH) {
+    return <SetupEncryption className={className} />;
   }
 
   // 1. Plugin overrides (`views.auth[currentView]`) — first plugin wins,

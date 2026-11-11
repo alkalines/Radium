@@ -3,6 +3,7 @@
 import { useAuth, useSession, useSignOut } from "@better-auth-ui/react";
 import { useEffect, useRef } from "react";
 import { Spinner } from "@/components/ui/spinner";
+import { forgetClassicPassword } from "@/lib/auth/classic-migration";
 import { keyManager } from "@/lib/crypto/key-manager";
 import { cn } from "@/lib/utils";
 
@@ -43,6 +44,7 @@ export function SignOut({ className }: SignOutProps) {
     if (isSessionPending || hasSignedOut.current) return;
     hasSignedOut.current = true;
 
+    forgetClassicPassword();
     const forgetKeys = userId ? keyManager.forget(userId) : Promise.resolve();
     void forgetKeys.finally(() => signOut());
   }, [isSessionPending, signOut, userId]);

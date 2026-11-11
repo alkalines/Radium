@@ -101,7 +101,7 @@ Reset links: there is no email transport yet, so the operator issues one-hour, s
 bunx convex run auth:issuePasswordResetLink '{"email": "user@example.com"}'
 ```
 
-The link carries the token in the URL fragment (`/auth/reset-password#token=…`); treat it like a password until it expires.
+The link carries the token in the URL fragment (`/auth/reset-password#token=…`); treat it like a password until it expires. Issuing a new link invalidates the user's earlier ones. For accounts created before encryption the link sets up encryption with new keys and removes the classic password.
 
 Auth rate limiting (OPAQUE sign-in and reset: 5 requests per minute per client) needs the real client address. Browsers reach Better Auth through the web server's `/api/auth/*` proxy, so set the same random `AUTH_PROXY_SECRET` on the Convex deployment (`bunx convex env set AUTH_PROXY_SECRET '<openssl rand -hex 32>'`) and in the web server's environment; the proxy then forwards the client address and Convex trusts it only with the secret. Set `AUTH_TRUST_X_FORWARDED_FOR=true` on the web server only behind a reverse proxy that overwrites `X-Forwarded-For`.
 

@@ -1,6 +1,6 @@
 # E2EE Authentication
 
-Status: **implemented except account migration** ([task 11 phase 4](../tasks/11_E2EE.md#phase-4-opaque-in-radium)); passkeys are a later phase. Part of [End-to-end encryption](../E2EE.md). Research behind these choices: [OPAQUE research](../research/OPAQUE_Authentication.md); open plugin findings: [plugin assessment](../research/OPAQUE_Plugin_Assessment.md). Keys derived here are used as described in [Keys](Keys.md).
+Status: **implemented** ([task 11 phase 4](../tasks/11_E2EE.md#phase-4-opaque-in-radium)) with `@alkalines/better-auth-opaque` 0.2.0; passkeys are a later phase and the blocking migration screen arrives with the content cutover. Part of [End-to-end encryption](../E2EE.md). Research behind these choices: [OPAQUE research](../research/OPAQUE_Authentication.md); plugin findings: [plugin assessment](../research/OPAQUE_Plugin_Assessment.md). Keys derived here are used as described in [Keys](Keys.md).
 
 ## Why The Login Must Change
 
@@ -84,7 +84,7 @@ The recovery key is shown before the account is committed and must be confirmed 
 1. Client `startLogin(password)`; server answers from the stored record.
 2. Client `finishLogin` yields `finishLoginRequest`, a session key and the `exportKey`. The export key is used only after the server's finish step succeeds ([RFC 9807 §10.4](https://www.rfc-editor.org/rfc/rfc9807.html#section-10.4)).
 3. Server verifies, consumes the login state and creates the Better Auth session; Convex auth then works unchanged (`ConvexBetterAuthProvider`, JWT).
-4. The sign-in response carries the key bundle for exactly the credential just used (`loadPayload`); the client derives the KEK with HKDF and unwraps the AMK, then keeps it according to the device's **Require my password to read past chats** setting ([Keys § On the device](Keys.md#on-the-device)). Before deriving anything, the client checks that the challenge's key-stretching profile is `rfc-recommended` and refuses otherwise, so a compromised server cannot make the client register or derive with a weaker or abusive profile.
+4. The sign-in response carries the key bundle for exactly the credential just used (`loadPayload`); the client derives the KEK with HKDF and unwraps the AMK, then keeps it according to the device's **Require my password to read past chats** setting in Settings → Security ([Keys § On the device](Keys.md#on-the-device)). Before deriving anything, the client checks that the challenge's key-stretching profile is `rfc-recommended` and refuses otherwise, so a compromised server cannot make the client register or derive with a weaker or abusive profile.
 
 Failed attempts go through Better Auth's rate limiter, enabled explicitly for OPAQUE paths (the plugin's 5 per minute on sign-in and reset).
 
@@ -105,7 +105,7 @@ npx convex run auth:issuePasswordResetLink '{"email": "user@example.com"}'
 ```
 
 1. `auth:issuePasswordResetLink` is an `internalAction`: browsers and API keys cannot call it; only someone with deployment access (CLI with a deploy key, or the dashboard) can. It is an action because generating the token needs real randomness.
-2. It calls the plugin's `createPasswordResetToken`, which stores a hash of a 256-bit token in Better Auth `verification` with a one-hour expiry and returns `<SITE_URL>/auth/reset-password#token=…`. The token sits in the URL fragment, so browsers never send it to any server, log or `Referer`; the reset page removes it from the address bar. The URL is returned to the operator's terminal only; it is not logged or stored in plaintext.
+2. It calls the plugin's `createPasswordResetToken` with `revokePrevious` and `allowEnrolment`. The plugin stores a hash of a 256-bit token in Better Auth `verification`, bound to the account's current credential version, with a one-hour expiry, and returns `<SITE_URL>/auth/reset-password#token=…`. Issuing a link invalidates every earlier link of the user, and any password change or reset invalidates outstanding links. The token sits in the URL fragment, so browsers never send it to any server, log or `Referer`; the reset page removes it from the address bar. The URL is returned to the operator's terminal only; it is not logged or stored in plaintext. For a classic account (no OPAQUE credential yet) the link is an enrolment link: it has no keys to recover, so the page goes straight to creating new keys.
 3. The operator gives the link to the user by any channel. A future email transport (Better Auth `sendResetPassword`) replaces this step without changing the rest.
 4. The user opens the link and picks how to get their **account master key** (AMK) back. The token lets the page fetch the user's encrypted key bundle; every part of it is useless without one of these:
    - **Recovery key.** The client derives the recovery KEK from the 24 words and unwraps the AMK.
@@ -136,19 +136,22 @@ Social sign-in (OAuth) is not enabled today and cannot unlock data by itself for
 
 ## Migrating Existing Accounts
 
-The backend has seen every existing user's password. Because it also holds the OPRF key, it could compute the OPAQUE export key for any password it has seen. **Migration therefore requires a new password**:
+The backend has seen every existing user's password. Because it also holds the OPRF key, it could compute the OPAQUE export key for any password it has seen. **Migration therefore requires a new password**. Implemented with the plugin's attach flow (0.2.0):
 
-1. After the cutover deploy, a classic sign-in lands on a blocking "Set up encryption" screen.
-2. The user enters a new password; the client rejects one equal to the password just typed.
-3. The client performs OPAQUE registration and key setup as in sign-up, shows the recovery key, then calls a migration endpoint that stores the record and key bundle and deletes the classic `credential` account (and its password hash) in one transaction.
-4. The server re-seals the user's data from custody to the new public keys ([Data § Migration](Data.md#migration)).
+1. A classic account signs in from the normal sign-in form. The plugin answers the OPAQUE challenge with `CLASSIC_CREDENTIAL` for a user that has only a classic password (`opaque({ signIn: { revealClassicCredential: true } })` in `convex/auth.ts`; [change request](../research/OPAQUE_Plugin_Classic_Sign_In.md), implemented in the plugin after 0.2.0, not yet released). The client then signs in with Better Auth's `/sign-in/email` using the password just typed, keeps that password in memory only (`apps/web/src/lib/auth/classic-migration.ts`, 10 minutes, dropped after attach, "Not now" or sign-out) and opens "Set up encryption" (`/auth/setup-encryption`). The Window shows a "Set up encryption" chip until it is done; arriving from the chip or after a reload asks for the current password again.
+   - **Guard.** The answer is a hint, not proof: a compromised backend could send it for an encrypted account to receive the plaintext password. Each device remembers (SHA-256 of the email, `localStorage`) every account it has used with OPAQUE (sign-in, sign-up, attach) and never takes the classic path for them; the unlock dialog never takes it either, since a locked account has keys. The password is not sent in those cases and the user sees a warning. A device that has never used the account cannot tell, which is why the option should be switched off once no classic accounts remain.
+   - Any other OPAQUE failure (`INVALID_CREDENTIALS`) is never retried with `/sign-in/email`.
+2. The user enters a new password (and the current classic one when it is not held from sign-in); the client rejects a new password equal to the classic one, and the plugin refuses it too (`PASSWORD_REUSED`).
+3. The client creates account keys, shows the recovery key and requires its confirmation, then calls `attachCredential`. The server checks the classic password with Better Auth's hasher, stores the key bundle under the new credential version, creates the OPAQUE account, deletes the classic `credential` account and its hash, revokes every session and signs the caller in again. Under concurrency the first credential wins; a classic password changed meanwhile fails the attach.
+4. Users who forgot the classic password get an operator reset link instead ([Forgot password](#forgot-password)): for an account without an OPAQUE credential it is an **enrolment** link that creates new keys and an OPAQUE password and removes the classic one.
+5. Later, the server re-seals the user's data from custody to the new public keys ([Data § Migration](Data.md#migration)).
 
-Nothing is deleted and there is no deadline. Content of accounts that have not migrated yet is sealed to a temporary, deployment-held **custody key** so the plaintext fields can be removed for everyone. A classic credential then only opens the "Set up encryption" screen; it gives no other access. Those accounts can also use [Forgot password](#forgot-password).
+Nothing is deleted and there is no deadline. Until the content migration ([task 11 phase 9](../tasks/11_E2EE.md#phase-9-migration)), "Set up encryption" can be skipped ("Not now") and a classic session keeps full access; after the cutover, content of accounts that have not migrated is sealed to a temporary, deployment-held **custody key** and a classic credential only opens the "Set up encryption" screen. Attaching without the classic password (`attach.requireCurrentPassword: false`) stays off: a fresh session alone could be a stolen cookie.
 
 ## UI
 
 - `apps/web/src/components/auth/auth.tsx` and the forgot/reset views call the OPAQUE client methods instead of Better Auth UI's built-in email/password mutations; Better Auth UI's generic mutation hooks do not drive OPAQUE flows ([research](../research/OPAQUE_Authentication.md#better-auth-ui-integration)).
-- Sign-in has a **Require my password to read past chats** checkbox, off by default and remembered per device ([Keys § On the device](Keys.md#on-the-device)).
+- Sign-in has no extra controls: no legacy-account form and no require-password checkbox. The device's **Require my password to read past chats** setting (off by default) is changed only in Settings → Security ([Keys § On the device](Keys.md#on-the-device)).
 - Settings → Security (`apps/web/src/app/settings/$path.tsx`): change password, regenerate recovery key, passkeys with PRF status, identity fingerprint and safety numbers, trusted keys with their state, the device's require-password setting and auto-lock time, workspace key phrase (owners), "Lock this device", and signed-in devices.
 - A locked state for the Window: signed in, lists and new chats work, past content shows an "Unlock to read" prompt instead of errors.
 - The reset page (`/auth/reset-password?token=…`) runs the recovery-key and new-keys paths above.

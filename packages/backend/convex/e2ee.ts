@@ -1,4 +1,5 @@
 /** Registered account key entry points; policy and storage are owned by src/e2ee/. */
+export { takeAccountAttempt } from "../src/e2ee/account-attempts";
 export { myKeyStatus, setRecoveryWrapper } from "../src/e2ee/account";
 export {
   offerDeviceRecovery,

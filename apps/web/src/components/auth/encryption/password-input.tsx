@@ -19,6 +19,7 @@ export function PasswordInput({
   name,
   autoComplete,
   disabled,
+  placeholder,
   invalid,
   onChange,
 }: {
@@ -26,6 +27,7 @@ export function PasswordInput({
   name: string;
   autoComplete: "current-password" | "new-password";
   disabled?: boolean;
+  placeholder?: string;
   invalid?: boolean;
   onChange?: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
@@ -42,6 +44,7 @@ export function PasswordInput({
         autoComplete={autoComplete}
         required
         disabled={disabled}
+        placeholder={placeholder}
         onChange={onChange}
         aria-invalid={invalid}
       />

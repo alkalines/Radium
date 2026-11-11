@@ -197,7 +197,7 @@ DASS's trust code sits in GPL-3.0-or-later plugin files. Radium reuses the desig
 
 ### Remember or require the password
 
-Each device has one setting, **Require my password to read past chats** (off by default), offered at sign-in and in Settings → Security:
+Each device has one setting, **Require my password to read past chats** (off by default), changed in Settings → Security; sign-in and unlock use it without asking:
 
 | Setting       | Where the unlocked AMK lives                                                            | Reload         | Other browser tabs                                     | Last Radium browser tab closed                |
 | ------------- | --------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------ | --------------------------------------------- |
