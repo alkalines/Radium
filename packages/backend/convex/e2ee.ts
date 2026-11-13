@@ -7,3 +7,38 @@ export {
   takeDeviceRecovery,
 } from "../src/e2ee/device-recovery";
 export { activateBundle, commitBundle, loadBundle } from "../src/e2ee/records";
+export {
+  getTrustStore,
+  saveTrustStore,
+  identityKeys,
+  identityKeysByKeyId,
+  identityNames,
+} from "../src/e2ee/trust-store";
+export {
+  workspaceKeyState,
+  bootstrapWorkspaceKeys,
+  addGrants,
+  publishRoster,
+  rotateWorkspaceEpoch,
+} from "../src/e2ee/workspace-keys";
+export {
+  createInvite,
+  getInvite,
+  acceptInvite,
+  revokeInvite,
+  pruneExpiredInvites,
+  setPhrase,
+  removePhrase,
+  acceptPhrase,
+  requestKeys,
+  dismissJoinRequest,
+} from "../src/e2ee/invites";
+export {
+  chatKeys,
+  setupChatKeys,
+  rotateChatKey,
+  addChatKeyWraps,
+  signChatKey,
+  staleWorkspaceWraps,
+  replaceWorkspaceWraps,
+} from "../src/e2ee/chat-keys";

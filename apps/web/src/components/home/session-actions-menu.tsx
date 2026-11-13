@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { useMutation } from "convex/react";
+import { useAction, useConvex, useMutation } from "convex/react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -53,6 +53,10 @@ import {
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
+import { openMessages, sealTitle } from "@/lib/crypto/chat-content";
+import { writableChatKey } from "@/lib/crypto/chat-keys";
+import { getMessageText } from "@/components/session/message-parts";
+import { useKeyStatus } from "@/lib/crypto/use-key-status";
 /** Matches the backend's title length limit for user-chosen titles. */
 const maxTitleLength = 32;
 
@@ -62,6 +66,8 @@ const noProject = "none";
 /** What the actions need to know about one session; `ListChats` items satisfy it. */
 export type SessionActionsTarget = {
   id: Id<"aisdk_chats">;
+  workspace: Id<"workspaces">;
+  e2ee?: { e2eeId: string } | null;
   title?: string;
   pinnedAt?: number;
   project?: Id<"projects">;
@@ -88,6 +94,9 @@ export function SessionActionsMenu({
   session: SessionActionsTarget;
   projects: ProjectSummary[];
 }) {
+  const client = useConvex();
+  const keyStatus = useKeyStatus();
+  const regenerateEncryptedTitle = useAction(api.aisdk.regenerateTitle);
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [deleteInAgentStep, setDeleteInAgentStep] = useState(false);
@@ -112,6 +121,12 @@ export function SessionActionsMenu({
   useEffect(() => {
     if (!isRenameOpen) setTitle(session.title?.trim() ?? "");
   }, [session.title, isRenameOpen]);
+  useEffect(() => {
+    if (session.e2ee && keyStatus.state !== "unlocked") {
+      setTitle("");
+      setIsRenameOpen(false);
+    }
+  }, [session.e2ee, keyStatus]);
 
   const isBusy = pendingAction !== null;
   const displayTitle = session.title?.trim() || "Untitled session";
@@ -142,7 +157,25 @@ export function SessionActionsMenu({
   }
 
   async function regenerate() {
-    const succeeded = await run("regenerate", () => regenerateTitle({ chatId: session.id }));
+    const succeeded = await run("regenerate", async () => {
+      if (!session.e2ee) {
+        return regenerateTitle({ chatId: session.id });
+      }
+      const content = await client.query(api.aisdk.GetChatMessages, { chatId: session.id });
+      const { messages } = await openMessages(content.entries, content.capsules, {
+        workspaceId: session.workspace,
+        e2eeId: session.e2ee.e2eeId,
+        chatId: session.id,
+      });
+      const firstUser = messages.find((message) => message.role === "user");
+      if (!firstUser) {
+        throw new Error("No user message to generate a title from.");
+      }
+      return regenerateEncryptedTitle({
+        chatId: session.id,
+        prompt: getMessageText(firstUser).slice(0, 8000),
+      });
+    });
     if (succeeded) toast.success("Regenerating the session title.");
   }
 
@@ -173,7 +206,16 @@ export function SessionActionsMenu({
     const trimmed = title.trim();
     if (!trimmed) return;
 
-    const succeeded = await run("rename", () => renameChat({ chatId: session.id, title: trimmed }));
+    const succeeded = await run("rename", async () => {
+      if (!session.e2ee) {
+        return renameChat({ chatId: session.id, title: trimmed });
+      }
+      const chatKey = await writableChatKey(session.id);
+      return renameChat({
+        chatId: session.id,
+        sealedTitle: await sealTitle({ title: trimmed }, chatKey),
+      });
+    });
     if (succeeded) {
       toast.success("Session renamed.");
       setIsRenameOpen(false);
@@ -212,13 +254,19 @@ export function SessionActionsMenu({
               {session.pinnedAt ? <PinOffIcon /> : <PinIcon />}
               {session.pinnedAt ? "Unpin" : "Pin"}
             </DropdownMenuItem>
-            <DropdownMenuItem disabled={isBusy} onSelect={() => setIsRenameOpen(true)}>
+            <DropdownMenuItem
+              disabled={isBusy || Boolean(session.e2ee && keyStatus.state !== "unlocked")}
+              onSelect={() => setIsRenameOpen(true)}
+            >
               <PencilIcon />
               Rename
             </DropdownMenuItem>
             {/* ACP prompts are not stored in Radium, so there is no first message to title from. */}
             {session.agent || !session.canManage ? null : (
-              <DropdownMenuItem disabled={isBusy} onSelect={() => void regenerate()}>
+              <DropdownMenuItem
+                disabled={isBusy || Boolean(session.e2ee && keyStatus.state !== "unlocked")}
+                onSelect={() => void regenerate()}
+              >
                 <SparklesIcon />
                 Regenerate title
               </DropdownMenuItem>

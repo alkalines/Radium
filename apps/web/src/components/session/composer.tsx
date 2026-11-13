@@ -38,6 +38,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuCheckboxItem,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
@@ -57,6 +58,7 @@ import {
 import { transitions } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { VoiceInputButton } from "./voice-input-button";
+import { encryptFile, fileUrlWithKey, type ChatContentKey } from "@/lib/crypto/chat-content";
 
 /** What the Composer submits: trimmed text plus AI SDK file parts backed by Convex File Storage. */
 export type ComposerMessage = { text: string; files: FileUIPart[] };
@@ -65,9 +67,9 @@ export type ComposerMessage = { text: string; files: FileUIPart[] };
 type PendingAttachment = { id: string; file: File; url: string };
 
 /**
- * Where the Composer keeps its text beyond the component (the per-Tab snapshot). `read` runs once
- * after mount, so server and client render the same empty textarea; `write` runs on every text
- * change, including the clear on submit and the restore after a failed submit.
+ * Optional plaintext draft persistence for callers whose content policy permits it. `read` runs
+ * once after a store becomes available; `write` runs on text changes, including failed submits.
+ * Encrypted Chatroom sessions omit this store so decrypted prompts never reach localStorage.
  */
 export type ComposerTextStore = { read: () => string; write: (text: string) => void };
 
@@ -97,6 +99,7 @@ export function Composer({
   ref,
   layoutId,
   workspace,
+  encryptionKey,
   autoFocus,
   canSend,
   isRunning,
@@ -113,6 +116,8 @@ export function Composer({
   layoutId: string;
   /** The saved chat's workspace, or the draft's settings workspace; required to upload files. */
   workspace?: Id<"workspaces">;
+  /** Resolved once before uploading, so all files and the queued turn share the same chat key. */
+  encryptionKey?: () => Promise<ChatContentKey | undefined>;
   autoFocus: boolean;
   /** False while a model is not chosen yet or a turn cannot start; typing stays enabled. */
   canSend: boolean;
@@ -180,14 +185,20 @@ export function Composer({
     setCommandIndex(0);
   }
 
-  // Restore after mount (not in the initial state) so server and client markup match.
-  const readStoredText = useRef(textStore?.read);
+  // Restore once when the caller opts into a store; encryption policy can arrive after mount.
+  const restoredStoredText = useRef(false);
   useEffect(() => {
-    const stored = readStoredText.current?.();
-    if (!stored) return;
+    if (restoredStoredText.current || !textStore) {
+      return;
+    }
+    restoredStoredText.current = true;
+    const stored = textStore.read();
+    if (!stored || valueRef.current) {
+      return;
+    }
     valueRef.current = stored;
     setValue(stored);
-  }, []);
+  }, [textStore]);
 
   useImperativeHandle(ref, () => ({
     swapDraft(next) {
@@ -211,7 +222,10 @@ export function Composer({
     updateValue("");
 
     try {
-      const files = await Promise.all(submitted.map(uploadAttachment));
+      const chatKey = await encryptionKey?.();
+      const files = await Promise.all(
+        submitted.map((attachment) => uploadAttachment(attachment, chatKey)),
+      );
       await onSubmit({ text, files });
       for (const attachment of submitted) URL.revokeObjectURL(attachment.url);
     } catch (error) {
@@ -567,24 +581,60 @@ function useAttachmentUpload(workspace: Id<"workspaces"> | undefined) {
   const generateUploadUrl = useMutation(api.chat_files.generateUploadUrl);
   const registerFile = useMutation(api.chat_files.register);
 
-  return async ({ file }: PendingAttachment): Promise<FileUIPart> => {
-    if (file.size > MAX_ATTACHMENT_SIZE_BYTES) throw new Error("File is too large.");
-    if (!workspace) throw new Error("Choose a workspace before uploading files.");
-    const uploadUrl = await generateUploadUrl({ workspace });
-    const response = await fetch(uploadUrl, {
-      method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream" },
-      body: file,
-    });
-    if (!response.ok) throw new Error(`Unable to upload ${file.name} (${response.status}).`);
-    const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
-    const part = await registerFile({ workspace, storageId, filename: file.name });
-    if (!part) throw new Error("File could not be attached.");
-    return part;
+  return async ({ file }: PendingAttachment, chatKey?: ChatContentKey): Promise<FileUIPart> => {
+    if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
+      throw new Error("File is too large.");
+    }
+    if (!workspace) {
+      throw new Error("Choose a workspace before uploading files.");
+    }
+    const encrypted = chatKey ? await encryptFile(file, chatKey) : undefined;
+    try {
+      const uploadUrl = await generateUploadUrl({ workspace });
+      const response = await fetch(uploadUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": encrypted
+            ? "application/octet-stream"
+            : file.type || "application/octet-stream",
+        },
+        body: encrypted?.body ?? file,
+      });
+      if (!response.ok) {
+        throw new Error(`Unable to upload ${file.name} (${response.status}).`);
+      }
+      const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
+      const part = await registerFile({
+        workspace,
+        storageId,
+        ...(encrypted
+          ? {
+              e2ee: encrypted.register,
+              // The stored bytes are ciphertext; the declared type is what the model needs.
+              ...(file.type ? { mediaType: file.type } : {}),
+            }
+          : { filename: file.name }),
+      });
+      if (!part) {
+        throw new Error("File could not be attached.");
+      }
+      if (!encrypted || !chatKey) {
+        return part;
+      }
+      return {
+        type: "file",
+        url: fileUrlWithKey(part.url, encrypted.fileId, chatKey.e2eeId, encrypted.objectKey),
+        mediaType: file.type || "application/octet-stream",
+        filename: file.name,
+      };
+    } finally {
+      encrypted?.objectKey.fill(0);
+    }
   };
 }
 
-export type ChatScope = "personal" | "workspace";
+/** Conversation authorization scopes; shared grants only the explicitly picked members access. */
+export type ChatScope = "personal" | "shared" | "workspace";
 
 /**
  * `+` menu submenu for who can access the conversation. Drafts edit the scope the chat will be
@@ -596,11 +646,19 @@ export function ConversationVisibilityMenu({
   isDraft,
   canChange,
   onChange,
+  members = [],
+  availableMembers = [],
+  onMembersChange,
+  allowShared = true,
 }: {
   scope: ChatScope;
   isDraft: boolean;
   canChange: boolean;
   onChange: (scope: ChatScope) => void;
+  members?: string[];
+  availableMembers?: { id: string; name: string }[];
+  onMembersChange?: (members: string[]) => void;
+  allowShared?: boolean;
 }) {
   const isPersonal = scope === "personal";
 
@@ -612,7 +670,7 @@ export function ConversationVisibilityMenu({
           {isPersonal ? <LockKeyholeIcon /> : <UsersIcon />}
           Conversation visibility
           <span className="ml-auto text-xs text-muted-foreground">
-            {isPersonal ? "Personal" : "Workspace"}
+            {isPersonal ? "Personal" : scope === "shared" ? "Shared" : "Workspace"}
           </span>
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className="w-72">
@@ -622,7 +680,8 @@ export function ConversationVisibilityMenu({
           <DropdownMenuRadioGroup
             value={scope}
             onValueChange={(value) => {
-              if (value === "personal" || value === "workspace") onChange(value);
+              if (value === "personal" || value === "shared" || value === "workspace")
+                onChange(value);
             }}
           >
             <DropdownMenuRadioItem value="personal" disabled={!canChange}>
@@ -633,6 +692,16 @@ export function ConversationVisibilityMenu({
                 </span>
               </span>
             </DropdownMenuRadioItem>
+            {allowShared ? (
+              <DropdownMenuRadioItem value="shared" disabled={!canChange}>
+                <span className="flex flex-col gap-0.5">
+                  <span>Shared</span>
+                  <span className="text-xs text-muted-foreground">
+                    Only you and selected members.
+                  </span>
+                </span>
+              </DropdownMenuRadioItem>
+            ) : null}
             <DropdownMenuRadioItem value="workspace" disabled={!canChange}>
               <span className="flex flex-col gap-0.5">
                 <span>Workspace</span>
@@ -642,10 +711,34 @@ export function ConversationVisibilityMenu({
               </span>
             </DropdownMenuRadioItem>
           </DropdownMenuRadioGroup>
+          {scope === "shared" ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Members</DropdownMenuLabel>
+              {availableMembers.map((member) => (
+                <DropdownMenuCheckboxItem
+                  key={member.id}
+                  checked={members.includes(member.id)}
+                  disabled={!canChange}
+                  onSelect={(event) => event.preventDefault()}
+                  onCheckedChange={(checked) =>
+                    onMembersChange?.(
+                      checked ? [...members, member.id] : members.filter((id) => id !== member.id),
+                    )
+                  }
+                >
+                  {member.name}
+                </DropdownMenuCheckboxItem>
+              ))}
+              {availableMembers.length === 0 ? (
+                <DropdownMenuLabel>No other members</DropdownMenuLabel>
+              ) : null}
+            </>
+          ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuLabel className="font-normal whitespace-normal text-muted-foreground">
             {canChange
-              ? "Personal chat encryption and audit controls are planned. This setting only controls who can access the conversation."
+              ? "Changing visibility grants access to existing history. Removing access rotates the key for future messages."
               : "Only the creator can change visibility."}
           </DropdownMenuLabel>
         </DropdownMenuSubContent>

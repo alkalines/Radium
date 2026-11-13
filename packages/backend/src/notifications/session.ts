@@ -66,13 +66,13 @@ export const notifySession = internalMutation({
     const chat = await ctx.db.get("aisdk_chats", args.chat);
     if (!chat) return null;
 
-    const title = chat.title?.trim() || "Untitled session";
+    const title = chat.e2eeId ? "Session" : chat.title?.trim() || "Untitled session";
     await notify(ctx, {
       userId: args.userId,
       ...(chat.workspace ? { workspace: chat.workspace } : {}),
       kind: args.kind,
       title: notificationTitle(args.kind),
-      body: args.detail ? `${title} · ${args.detail}` : title,
+      body: !chat.e2eeId && args.detail ? `${title} · ${args.detail}` : title,
       chat: args.chat,
       createdAt: Date.now(),
     });

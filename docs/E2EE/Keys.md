@@ -1,6 +1,6 @@
 # E2EE Keys
 
-Status: **planned.** Part of [End-to-end encryption](../E2EE.md). Authentication and the export key are in [Authentication](Authentication.md); which fields use which key is in [Data](Data.md).
+Status: **partly implemented.** Part of [End-to-end encryption](../E2EE.md). Authentication and the export key are in [Authentication](Authentication.md); which fields use which key is in [Data](Data.md). Implemented: crypto suite 1, envelopes and capsules, account keys and device handling, workspace keys, grants, roster, access links, workspace phrase, key requests, the trust store and chat keys ([task 11](../tasks/11_E2EE.md) phases 3–5). Planned: Workers, request keys, suite upgrades.
 
 ## Crypto Suite
 
@@ -105,9 +105,11 @@ The owner's browser creates two key pairs when a workspace is created, and a new
 - **Member key:** granted to every member and owner. Protects workspace chats' keys, projects and the workspace name.
 - **Owner key:** granted to owners only. Protects telemetry content and the ACP session index.
 
-A **grant** is the key's private half sealed to a person's identity key. Because identity keys unlock with the account password, a member's workspace keys unlock at the same moment: there is no second password for workspaces.
+A **grant** is the key's private half sealed to a person's identity key (a box: one capsule plus one envelope), signed by the granter's identity signing key. Because identity keys unlock with the account password, a member's workspace keys unlock at the same moment: there is no second password for workspaces. A client accepts a granted key only when the grant signature is from the owner, from a member listed in the roster (re-grants) or from itself (a self-grant from a link or the phrase), **and** the key's public half matches the epoch listed in the owner-signed roster.
 
-**Creation is atomic.** The workspace row, both public keys, the owner's grants of both private keys and the first signed roster are written by one mutation; it rejects a workspace without them. No workspace key ever exists only in a browser, so losing the owner's browser right after creating a workspace loses nothing ([Where keys live](#where-keys-live)).
+**Roster.** The owner's client signs a versioned roster per workspace: the current epoch, the hash of every epoch's member and owner public keys, the owner's identity and each member's identity fingerprint. Members verify it against their pin of the owner; each device remembers the highest roster version it has seen and treats a lower one as a rollback.
+
+**Creation.** A workspace row gets its Convex ID first; the owner's browser then creates epoch 1 (both key pairs), its own grants of both private keys and roster version 1, and stores them in one mutation (`e2ee.bootstrapWorkspaceKeys`). Keys exist only after the ID does (the AAD and signatures bind it), so no workspace key ever exists only in a browser, and losing the owner's browser loses nothing ([Where keys live](#where-keys-live)). Workspaces without keys (created before keys existed, or by an interrupted client) are bootstrapped the same way the next time the owner is unlocked; their members' clients then ask for keys (below).
 
 #### Adding a member: access links
 
@@ -116,11 +118,11 @@ The backend cannot hand out a workspace key it does not have, and it must not be
 1. The owner adds an existing user as today (`workspace_members`). The owner's browser generates a 256-bit secret `s` and uploads an invite row: the member key sealed under `HKDF(s, "radium/v1/invite")`, bound to the invited user and workspace, single use, expiring after 7 days.
 2. The link is `<SITE_URL>/join/<inviteId>#<s>`. The part after `#` (the URL fragment) is never sent to any server by browsers, so Convex never sees `s`.
 3. The invited user opens the link while signed in and unlocked. Their client decrypts the member key, grants it to their own identity key, and posts `HMAC(s, their identity public key)`. The invite row is deleted.
-4. The next time an owner client is unlocked, it checks the HMAC, pins the member's identity key as **verified** (the secret proves the key came from whoever received the link), adds it to the signed roster and replaces the self-grant with an owner-signed grant.
+4. The next time an owner client is unlocked, it checks the HMAC (the owner's copy of `s` is stored sealed to the owner key), pins the member's identity key as **verified** (the secret proves the key came from whoever received the link), adds it to a new roster version and replaces the self-grant with an owner-signed grant.
 
 The owner does not need to be online when the member joins. Treat a link like a Worker setup code: anyone holding it during its lifetime, together with a backend willing to accept them as the invited account, could obtain the member key.
 
-**Without a link** (owner prefers not to share one), the member's join creates a pending request. The owner client shows the [trust prompt](#trust-system) for the member's key (first contact, safety number to compare) and grants only after the owner approves.
+**Without a link** (owner prefers not to share one), the member's client creates a key request when it finds no grant for the current epoch. The owner client shows the [trust prompt](#trust-system) for the member's key (first contact, safety number to compare) and grants only after the owner approves. After a member resets their keys, the same request can also be answered by any member listed in the roster, for the member key only.
 
 #### Workspace key phrase (optional)
 
@@ -144,13 +146,16 @@ A memorable, human-chosen workspace password could only be made safe by moving t
 
 #### Removing a member
 
-Both keys move to a new epoch. New writes use it immediately; the next owner client re-wraps existing chat keys to the new member key, and each workspace chat gets a new chat key epoch at its next write, so later messages are unreadable to the removed member. Content they already could read is not protected retroactively.
+Both keys move to a new epoch in the same mutation that removes the membership; the owner's client grants the new keys to every remaining member whose key it trusts and signs a new roster. Invites and pending requests of the old epoch are deleted. New writes use the new epoch immediately; the owner's client re-wraps existing workspace chat keys to the new member key (deleting the old-epoch wraps), and each workspace chat gets a new chat key epoch at its next client write, so later messages are unreadable to the removed member. Content they already could read is not protected retroactively.
 
 ### Chats
 
-- Every chat has its own key pair, created by the client that creates the chat. **Workspace** chats wrap the chat private key to the member key; **personal** chats wrap it to the creator's identity key only, so they stay private from the workspace owner by cryptography, not only by query policy (`AGENTS.md`, [ownership](../Radium_Gateway/Ownership.md)).
-- Scope changes: personal → workspace re-wraps the chat key to the member key. Workspace → personal starts a new chat key epoch wrapped only to the creator; members keep what they could already read.
+- Every chat has its own key pair, created by the client that creates the chat and signed by its identity key (a chat key **epoch**). Clients seal their own writes only to epochs signed by the creator, a roster member or themselves.
+- Three visibilities: **personal** chats wrap the chat private key to the creator's identity key only, so they stay private from the workspace owner by cryptography, not only by query policy (`AGENTS.md`, [ownership](../Radium_Gateway/Ownership.md)); **shared** chats wrap it to the creator and to each member the creator picked (after a trust check), and the server's access check reads the same list (`chat_members`); **workspace** chats wrap it to the member key.
+- Scope changes (creator only): widening (personal → shared/workspace, adding shared members) wraps every existing epoch to the new recipients, so they read the history. Narrowing (workspace → personal/shared, shared → personal, removing shared members) starts a new chat key epoch wrapped only to the remaining recipients; removed recipients keep what they could already read. Removing someone from the workspace also marks the shared chats they were on for a new epoch at the next write.
+- Existing chats created before keys get a chat key the next time their creator opens them while unlocked; nothing is re-encrypted (old messages stay as they are until the [migration](Data.md#migration)).
 - Anyone holding only the chat **public** key (backend, Worker, a locked client) can write to the chat through capsules; only holders of the private key can read.
+- **Locked devices** create new chats from public keys verified while unlocked and cached on the device (the user's own identity key and each workspace's current member key; public data the server cannot write). The new epoch cannot be signed while locked; the device remembers it and signs it at its next unlock. Other clients do not seal their own writes to an unsigned epoch they did not create: they start a signed one.
 
 ### Workers
 

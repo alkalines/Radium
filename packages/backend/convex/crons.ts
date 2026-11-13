@@ -39,4 +39,5 @@ crons.interval(
   internal.e2ee.pruneDeviceRecovery,
   {},
 );
+crons.interval("expired workspace invites", { hours: 1 }, internal.e2ee.pruneExpiredInvites, {});
 export default crons;

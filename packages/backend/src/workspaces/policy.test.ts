@@ -16,6 +16,13 @@ const workspace = {
 
 const member: WorkspaceMember = { userId: "bob", role: "member" };
 
+test("shared visibility requires both workspace access and explicit chat membership", () => {
+  const chat = { userId: "alice", workspaceId: "workspace_1", scope: "shared" as const };
+  expect(canAccessChat(chat, workspace, "workspace_1", "bob", [member])).toBe(false);
+  expect(canAccessChat(chat, workspace, "workspace_1", "bob", [member], ["bob"])).toBe(true);
+  expect(canAccessChat(chat, workspace, "workspace_1", "carol", [member], ["carol"])).toBe(false);
+});
+
 describe("workspace access policy", () => {
   test("allows the owner and explicit members, but not outsiders or archived users", () => {
     expect(canAccessWorkspace(workspace, "alice")).toBe(true);

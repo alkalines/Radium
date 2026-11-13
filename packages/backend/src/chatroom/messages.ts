@@ -5,6 +5,13 @@ import { internal } from "../../convex/_generated/api";
 import type { messageSchema } from "../../convex/aisdk_schemas";
 import { canonicalJson } from "../telemetry/canonical";
 import { deleteChatFileBatch, linkChatFiles, storedFileUrls } from "./files";
+import {
+  invalidSealedContent,
+  validateChatCapsule,
+  validateMessageEnvelope,
+  validatePlaintextAttachments,
+  type SealedWrites,
+} from "./sealing";
 
 /**
  * Chat history is stored one message per `chat_messages` row so chat documents stay small:
@@ -36,7 +43,7 @@ export async function loadChatMessages(
     .query("chat_messages")
     .withIndex("by_chat_and_position", (q) => q.eq("chat", chat._id))
     .collect();
-  return rows.map((row) => row.message);
+  return rows.flatMap((row) => (row.message ? [row.message] : []));
 }
 
 /** First user message, for title generation, without reading the rest of the history. */
@@ -52,7 +59,7 @@ export async function loadFirstUserMessage(
   for await (const row of ctx.db
     .query("chat_messages")
     .withIndex("by_chat_and_position", (q) => q.eq("chat", chat._id))) {
-    if (row.message.role === "user") return row.message;
+    if (row.message?.role === "user") return row.message;
   }
   return undefined;
 }
@@ -69,6 +76,9 @@ export async function saveChatMessages(
   workspace: Id<"workspaces">,
   messages: StoredMessage[],
 ) {
+  for (const message of messages) {
+    validatePlaintextAttachments(message.parts);
+  }
   const rows = await ctx.db
     .query("chat_messages")
     .withIndex("by_chat_and_position", (q) => q.eq("chat", chat._id))
@@ -80,8 +90,8 @@ export async function saveChatMessages(
     if (!row) {
       await ctx.db.insert("chat_messages", { chat: chat._id, position, message });
       written.push(message);
-    } else if (!isSameMessage(row.message, message)) {
-      await ctx.db.patch("chat_messages", row._id, { message });
+    } else if (!row.message || !isSameMessage(row.message, message)) {
+      await ctx.db.patch("chat_messages", row._id, { message, sealed: undefined });
       written.push(message);
     }
   }
@@ -100,9 +110,87 @@ export async function insertChatMessages(
   messages: StoredMessage[],
 ) {
   for (const [position, message] of messages.entries()) {
+    validatePlaintextAttachments(message.parts);
     await ctx.db.insert("chat_messages", { chat, position, message });
   }
   await linkChatFiles(ctx, workspace, chat, storedFileUrls(messages));
+}
+
+/** Apply an action-sealed batch atomically; revisions are checked against the current row heads. */
+export async function saveSealedChatMessages(
+  ctx: MutationCtx,
+  chat: Doc<"aisdk_chats">,
+  workspace: Id<"workspaces">,
+  writes: SealedWrites,
+) {
+  if (
+    !chat.e2eeId ||
+    chat.rekey ||
+    writes.capsule.chatEpoch !== chat.keyEpoch ||
+    !Number.isSafeInteger(writes.length) ||
+    writes.length < 0
+  ) {
+    invalidSealedContent();
+  }
+  validateChatCapsule(writes.capsule);
+  const rows = await ctx.db
+    .query("chat_messages")
+    .withIndex("by_chat_and_position", (q) => q.eq("chat", chat._id))
+    .collect();
+  const existing = new Map(rows.map((row) => [row.position, row]));
+  const positions = new Set<number>();
+  const messageIds = new Set<string>();
+  for (const write of writes.rows) {
+    if (
+      !Number.isSafeInteger(write.position) ||
+      write.position < 0 ||
+      write.position >= writes.length ||
+      positions.has(write.position) ||
+      !write.messageId ||
+      messageIds.has(write.messageId) ||
+      write.revision !== (existing.get(write.position)?.revision ?? 0) + 1
+    ) {
+      // Reject stale action snapshots rather than overwriting a concurrent turn's revision.
+      invalidSealedContent();
+    }
+    validateMessageEnvelope(write.envelope, writes.capsule.capsuleId);
+    positions.add(write.position);
+    messageIds.add(write.messageId);
+  }
+  for (let position = 0; position < writes.length; position++) {
+    if (!positions.has(position) && !existing.has(position)) {
+      invalidSealedContent();
+    }
+  }
+  const capsule = await ctx.db
+    .query("e2ee_capsules")
+    .withIndex("by_chat_and_capsuleId", (q) =>
+      q.eq("chat", chat._id).eq("capsuleId", writes.capsule.capsuleId),
+    )
+    .first();
+  if (capsule) {
+    invalidSealedContent();
+  }
+  await ctx.db.insert("e2ee_capsules", { chat: chat._id, ...writes.capsule });
+  for (const write of writes.rows) {
+    const value = {
+      messageId: write.messageId,
+      revision: write.revision,
+      sealed: { capsuleId: writes.capsule.capsuleId, envelope: write.envelope },
+    };
+    const row = existing.get(write.position);
+    if (row) {
+      await ctx.db.patch("chat_messages", row._id, { ...value, message: undefined });
+    } else {
+      await ctx.db.insert("chat_messages", { chat: chat._id, position: write.position, ...value });
+    }
+  }
+  for (const row of rows) {
+    if (row.position >= writes.length) {
+      await ctx.db.delete("chat_messages", row._id);
+    }
+  }
+  await linkChatFiles(ctx, workspace, chat._id, writes.fileUrls, { sealed: true });
 }
 
 // Positions are rewritten only when content differs; key order and omitted `undefined` members
@@ -131,7 +219,32 @@ export const cleanupChatContent = internalMutation({
     for (const row of rows) await ctx.db.delete("chat_messages", row._id);
 
     const moreFiles = await deleteChatFileBatch(ctx, args.chatId);
-    if (rows.length === DELETE_BATCH_SIZE || moreFiles) {
+    let moreKeys = false;
+    const batches = await Promise.all([
+      ctx.db
+        .query("e2ee_capsules")
+        .withIndex("by_chat_and_capsuleId", (q) => q.eq("chat", args.chatId))
+        .take(DELETE_BATCH_SIZE),
+      ctx.db
+        .query("e2ee_chat_keys")
+        .withIndex("by_chat_and_epoch", (q) => q.eq("chat", args.chatId))
+        .take(DELETE_BATCH_SIZE),
+      ctx.db
+        .query("e2ee_chat_key_wraps")
+        .withIndex("by_chat_and_chatEpoch_and_recipientKeyId", (q) => q.eq("chat", args.chatId))
+        .take(DELETE_BATCH_SIZE),
+      ctx.db
+        .query("chat_members")
+        .withIndex("by_chat_and_userId", (q) => q.eq("chat", args.chatId))
+        .take(DELETE_BATCH_SIZE),
+    ]);
+    for (const batch of batches) {
+      for (const row of batch) {
+        await ctx.db.delete(row._id);
+      }
+      moreKeys ||= batch.length === DELETE_BATCH_SIZE;
+    }
+    if (rows.length === DELETE_BATCH_SIZE || moreFiles || moreKeys) {
       await ctx.scheduler.runAfter(0, internal.aisdk.cleanupChatContent, { chatId: args.chatId });
     }
     return null;

@@ -17,6 +17,7 @@ import { MotionProvider } from "@/lib/motion";
 import { themePlugin } from "@/lib/auth/theme-plugin";
 import { AuthProvider } from "./auth/auth-provider";
 import { WorkspaceProvider } from "./workspaces/workspace-provider";
+import { WorkspaceKeySync } from "./workspaces/workspace-key-sync";
 import { TooltipProvider } from "./ui/tooltip";
 
 export function Providers({
@@ -48,7 +49,10 @@ export function Providers({
             <OperationalLogging>
               <WorkspaceProvider>
                 <MotionProvider>
-                  <TooltipProvider>{children}</TooltipProvider>
+                  <TooltipProvider>
+                    <WorkspaceKeySync />
+                    {children}
+                  </TooltipProvider>
                 </MotionProvider>
               </WorkspaceProvider>
             </OperationalLogging>

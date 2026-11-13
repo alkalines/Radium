@@ -2,6 +2,7 @@ import { ConvexError, v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { mergedStream, stream } from "convex-helpers/server/stream";
 import {
+  action,
   internalMutation,
   internalQuery,
   mutation,
@@ -19,7 +20,7 @@ import { firstUserMessageText } from "@/chatroom/titles";
 import {
   cleanupChatContent,
   insertChatMessages,
-  loadChatMessages,
+  saveSealedChatMessages,
   loadFirstUserMessage,
   saveChatMessages,
 } from "../src/chatroom/messages";
@@ -35,8 +36,40 @@ import { storedSelection, toolSelectionValidator } from "../src/chatroom/tool-se
 import { chatInterruptionValidator } from "../src/chatroom/interruption";
 import { findSession, requireChatActor } from "../src/acp/policy";
 import { queueChatDeletion } from "../src/acp/retention";
+import {
+  activeIdentityFor,
+  chatKeyInputValidator,
+  chatKeysSetupValidator,
+  wrapInputValidator,
+} from "../src/e2ee/workspace-contract";
+import {
+  chatKeyIsStale,
+  currentChatPublicKey,
+  insertChatKeysSetup,
+  newestWorkspaceWrap,
+  requireChatKeysForCreate,
+} from "../src/e2ee/chat-keys";
+import { setChatMembers, touchChatMembers } from "../src/chatroom/members";
+import {
+  chatCapsuleValidator,
+  invalidSealedContent,
+  sealedBoxValidator,
+  sealedWritesValidator,
+  sealChatTitle,
+  validateChatBox,
+  validateChatCapsule,
+  validateMessageEnvelope,
+  validatePlaintextAttachments,
+} from "../src/chatroom/sealing";
+import { generateChatTitle } from "../src/chatroom/titles";
+import { createInternalGatewayProvider } from "./ai_gateway";
+import { changeChatScope } from "../src/e2ee/chat-scope";
 
-const chatScopeValidator = v.union(v.literal("personal"), v.literal("workspace"));
+const chatScopeValidator = v.union(
+  v.literal("personal"),
+  v.literal("shared"),
+  v.literal("workspace"),
+);
 // A Home page never scans more than this many chats, whatever its filters skip.
 const CHAT_PAGE_MAX_ROWS_READ = 400;
 // Pinned chats sort first however old they are, so they are read apart from the pages.
@@ -58,13 +91,41 @@ export { cleanupChatContent };
 export const CreateChat = workspaceMutation({
   args: {
     scope: v.optional(chatScopeValidator),
-    messages_queue: queuedMessageSchema,
+    messages_queue: v.optional(queuedMessageSchema),
+    members: v.optional(v.array(v.string())),
+    e2ee: v.optional(
+      v.object({
+        keys: chatKeysSetupValidator,
+        sealedQueue: sealedBoxValidator,
+        fileUrls: v.array(v.string()),
+      }),
+    ),
     worker: v.optional(chatWorkerSelectionValidator),
     project: v.optional(v.id("projects")),
     tools: v.optional(toolSelectionValidator),
   },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args): Promise<Id<"aisdk_chats">> => {
+    const scope = args.scope ?? "personal";
+    await requireChatKeysForCreate(ctx, {
+      userId: ctx.identity._id,
+      workspace: ctx.workspace,
+      scope,
+      hasKeys: !!args.e2ee,
+    });
+    // A keyed chat's queued prompt must never take the plaintext storage/scheduler path.
+    if (args.e2ee ? args.messages_queue !== undefined : !args.messages_queue) {
+      invalidSealedContent();
+    }
+    if (scope !== "shared" && args.members !== undefined) {
+      invalidSealedContent();
+    }
+    if (args.e2ee) {
+      validateChatBox(args.e2ee.sealedQueue, 1, 64 * 1024);
+    }
+    if (args.messages_queue) {
+      validatePlaintextAttachments(args.messages_queue.files);
+    }
     if (args.project) {
       await requireWorkspaceProject(ctx, args.project, ctx.workspace._id);
     }
@@ -83,6 +144,7 @@ export const CreateChat = workspaceMutation({
 
     const chatId = await ctx.db.insert("aisdk_chats", {
       messages_queue: args.messages_queue,
+      sealedQueue: args.e2ee?.sealedQueue,
       workspace: args.workspace,
       scope: args.scope ?? "personal",
       worker,
@@ -92,14 +154,26 @@ export const CreateChat = workspaceMutation({
       activeStream: false,
       lastInteractionAt: Date.now(),
     });
+    const chat = (await ctx.db.get("aisdk_chats", chatId))!;
+    await setChatMembers(ctx, chat, args.members ?? []);
+    if (args.e2ee) {
+      await insertChatKeysSetup(ctx, {
+        chat,
+        workspace: ctx.workspace,
+        members: args.members ?? [],
+        keys: args.e2ee.keys,
+      });
+    }
     await linkChatFiles(
       ctx,
       args.workspace,
       chatId,
-      storedFileUrls([{ parts: args.messages_queue.files }]),
+      args.e2ee?.fileUrls ?? storedFileUrls([{ parts: args.messages_queue!.files }]),
+      { sealed: !!args.e2ee },
     );
-
-    await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, { chatId });
+    if (!args.e2ee) {
+      await ctx.scheduler.runAfter(0, internal.chatroom.generateForChat, { chatId });
+    }
     return chatId;
   },
 });
@@ -116,18 +190,54 @@ export const CreateChat = workspaceMutation({
 export const ForkChat = workspaceMutation({
   args: {
     scope: v.optional(chatScopeValidator),
-    messages: v.array(messageSchema),
+    messages: v.optional(v.array(messageSchema)),
+    members: v.optional(v.array(v.string())),
+    e2ee: v.optional(
+      v.object({
+        keys: chatKeysSetupValidator,
+        capsules: v.array(chatCapsuleValidator),
+        messages: v.array(
+          v.object({ messageId: v.string(), capsuleId: v.string(), envelope: v.bytes() }),
+        ),
+        sealedQueue: v.optional(sealedBoxValidator),
+        fileUrls: v.array(v.string()),
+      }),
+    ),
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
     project: v.optional(v.id("projects")),
   },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args): Promise<Id<"aisdk_chats">> => {
+    const scope = args.scope ?? "personal";
+    await requireChatKeysForCreate(ctx, {
+      userId: ctx.identity._id,
+      workspace: ctx.workspace,
+      scope,
+      hasKeys: !!args.e2ee,
+    });
+    if (
+      args.e2ee
+        ? args.messages !== undefined || args.messages_queue != null
+        : args.messages === undefined
+    ) {
+      invalidSealedContent();
+    }
+    if (scope !== "shared" && args.members !== undefined) {
+      invalidSealedContent();
+    }
+    if (args.e2ee?.sealedQueue) {
+      validateChatBox(args.e2ee.sealedQueue, 1, 64 * 1024);
+    }
+    if (args.messages_queue) {
+      validatePlaintextAttachments(args.messages_queue.files);
+    }
     if (args.project) {
       await requireWorkspaceProject(ctx, args.project, ctx.workspace._id);
     }
 
     const chatId = await ctx.db.insert("aisdk_chats", {
       messages_queue: args.messages_queue ?? undefined,
+      sealedQueue: args.e2ee?.sealedQueue,
       workspace: args.workspace,
       scope: args.scope ?? "personal",
       project: args.project,
@@ -135,7 +245,47 @@ export const ForkChat = workspaceMutation({
       activeStream: false,
       lastInteractionAt: Date.now(),
     });
-    await insertChatMessages(ctx, chatId, args.workspace, args.messages);
+    const chat = (await ctx.db.get("aisdk_chats", chatId))!;
+    await setChatMembers(ctx, chat, args.members ?? []);
+    if (args.e2ee) {
+      await insertChatKeysSetup(ctx, {
+        chat,
+        workspace: ctx.workspace,
+        members: args.members ?? [],
+        keys: args.e2ee.keys,
+      });
+      const capsuleIds = new Set<string>();
+      for (const capsule of args.e2ee.capsules) {
+        validateChatCapsule(capsule);
+        if (capsule.chatEpoch !== 1 || capsuleIds.has(capsule.capsuleId)) {
+          invalidSealedContent();
+        }
+        capsuleIds.add(capsule.capsuleId);
+        await ctx.db.insert("e2ee_capsules", { chat: chatId, ...capsule });
+      }
+      const messageIds = new Set<string>();
+      for (const [position, message] of args.e2ee.messages.entries()) {
+        if (
+          !message.messageId ||
+          messageIds.has(message.messageId) ||
+          !capsuleIds.has(message.capsuleId)
+        ) {
+          invalidSealedContent();
+        }
+        validateMessageEnvelope(message.envelope, message.capsuleId);
+        messageIds.add(message.messageId);
+        await ctx.db.insert("chat_messages", {
+          chat: chatId,
+          position,
+          messageId: message.messageId,
+          revision: 1,
+          sealed: { capsuleId: message.capsuleId, envelope: message.envelope },
+        });
+      }
+      await linkChatFiles(ctx, args.workspace, chatId, args.e2ee.fileUrls, { sealed: true });
+    } else {
+      await insertChatMessages(ctx, chatId, args.workspace, args.messages!);
+    }
     if (args.messages_queue) {
       await linkChatFiles(
         ctx,
@@ -162,14 +312,40 @@ export const ForkChat = workspaceMutation({
 export const EditChat = internalMutation({
   args: {
     messages: v.optional(v.array(messageSchema)),
+    sealedWrites: v.optional(sealedWritesValidator),
+    sealedTitle: v.optional(sealedBoxValidator),
     activeStream: v.optional(v.boolean()),
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
     interruption: v.optional(chatInterruptionValidator),
     chatId: v.id("aisdk_chats"),
   },
+  returns: v.union(v.string(), v.null()),
   handler: async (ctx, args) => {
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat) return "Chat not Found.";
+    if (!chat) {
+      return "Chat not Found.";
+    }
+    if (
+      (args.messages && chat.e2eeId) ||
+      (args.sealedWrites && !chat.e2eeId) ||
+      (args.messages && args.sealedWrites)
+    ) {
+      invalidSealedContent();
+    }
+    if (chat.e2eeId && args.messages_queue) {
+      invalidSealedContent();
+    }
+    if (args.sealedTitle) {
+      if (!chat.e2eeId || chat.rekey) {
+        invalidSealedContent();
+      }
+      validateChatBox(args.sealedTitle, chat.keyEpoch!, 2048);
+    }
+    if (args.sealedWrites) {
+      const workspace = await resolveWorkspaceForChat(ctx, chat);
+      if (!workspace) return "Chat not Found.";
+      await saveSealedChatMessages(ctx, chat, workspace._id, args.sealedWrites);
+    }
 
     if (args.messages) {
       const workspace = await resolveWorkspaceForChat(ctx, chat);
@@ -177,13 +353,26 @@ export const EditChat = internalMutation({
       await saveChatMessages(ctx, chat, workspace._id, args.messages);
     }
 
+    const at = Date.now();
     await ctx.db.patch("aisdk_chats", args.chatId, {
-      ...(args.messages ? { messages: undefined, chat_completions: undefined } : {}),
-      messages_queue: args.messages_queue,
-      activeStream: args.activeStream,
-      interruption: args.interruption,
-      lastInteractionAt: Date.now(),
+      ...(args.messages || args.sealedWrites
+        ? { messages: undefined, chat_completions: undefined }
+        : {}),
+      ...(args.sealedTitle
+        ? { sealedTitle: args.sealedTitle, title: undefined, emoji: undefined }
+        : {}),
+      ...(args.activeStream !== undefined || args.messages || args.sealedWrites
+        ? {
+            activeStream: args.activeStream,
+            interruption: args.interruption,
+            messages_queue: args.messages_queue,
+            sealedQueue: undefined,
+          }
+        : {}),
+      lastInteractionAt: at,
     });
+    await touchChatMembers(ctx, args.chatId, at);
+    return null;
   },
 });
 
@@ -195,6 +384,28 @@ export const GetChat = query({
   args: {
     chatId: v.id("aisdk_chats"),
   },
+  returns: v.union(
+    v.literal("Not logged in!"),
+    v.object({
+      id: v.id("aisdk_chats"),
+      workspace: v.id("workspaces"),
+      scope: chatScopeValidator,
+      canManage: v.boolean(),
+      canManageScope: v.boolean(),
+      title: v.optional(v.string()),
+      e2eeId: v.union(v.string(), v.null()),
+      keyEpoch: v.union(v.number(), v.null()),
+      rekey: v.boolean(),
+      sealedTitle: v.union(sealedBoxValidator, v.null()),
+      sealedQueue: v.union(sealedBoxValidator, v.null()),
+      activeStream: v.optional(v.boolean()),
+      interruption: v.union(chatInterruptionValidator, v.null()),
+      messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
+      worker: v.optional(chatWorkerSelectionValidator),
+      agent: schema.tables.aisdk_chats.validator.fields.agent,
+      project: v.union(v.id("projects"), v.null()),
+    }),
+  ),
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
@@ -207,6 +418,11 @@ export const GetChat = query({
       canManage,
       canManageScope: chat.userId === identity._id,
       title: chat.title,
+      e2eeId: chat.e2eeId ?? null,
+      keyEpoch: chat.keyEpoch ?? null,
+      rekey: chat.rekey ?? false,
+      sealedTitle: chat.sealedTitle ?? null,
+      sealedQueue: chat.sealedQueue ?? null,
       activeStream: chat.activeStream,
       interruption: chat.interruption ?? null,
       messages_queue: chat.messages_queue,
@@ -223,13 +439,138 @@ export const GetChat = query({
  */
 export const GetChatMessages = query({
   args: { chatId: v.id("aisdk_chats") },
-  returns: v.object({ messages: v.array(messageSchema), activeStream: v.boolean() }),
+  returns: v.object({
+    entries: v.array(
+      v.object({
+        position: v.number(),
+        messageId: v.optional(v.string()),
+        revision: v.optional(v.number()),
+        message: v.optional(messageSchema),
+        sealed: v.optional(v.object({ capsuleId: v.string(), envelope: v.bytes() })),
+      }),
+    ),
+    capsules: v.array(chatCapsuleValidator),
+    activeStream: v.boolean(),
+  }),
   handler: async (ctx, args) => {
     const { chat } = await requireAccessibleChat(ctx, args.chatId);
+    const entries =
+      chat.messages !== undefined
+        ? chat.messages.map((message, position) => ({ position, message, messageId: message.id }))
+        : (
+            await ctx.db
+              .query("chat_messages")
+              .withIndex("by_chat_and_position", (q) => q.eq("chat", chat._id))
+              .collect()
+          ).map(({ position, messageId, revision, message, sealed }) => ({
+            position,
+            messageId,
+            revision,
+            message,
+            sealed,
+          }));
+    const capsules = (
+      await ctx.db
+        .query("e2ee_capsules")
+        .withIndex("by_chat_and_capsuleId", (q) => q.eq("chat", chat._id))
+        .collect()
+    ).map(({ capsuleId, chatEpoch, capsule }) => ({ capsuleId, chatEpoch, capsule }));
     return {
-      messages: await loadChatMessages(ctx, chat),
+      entries,
+      capsules,
       activeStream: chat.activeStream ?? false,
     };
+  },
+});
+
+/** Stored row IDs/revisions only; the turn action never reads stored message plaintext. */
+export const chatMessageHeads = internalQuery({
+  args: { chatId: v.id("aisdk_chats") },
+  returns: v.array(
+    v.object({
+      position: v.number(),
+      messageId: v.optional(v.string()),
+      revision: v.optional(v.number()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("chat_messages")
+      .withIndex("by_chat_and_position", (q) => q.eq("chat", args.chatId))
+      .collect();
+    return rows.map(({ position, messageId, revision }) => ({ position, messageId, revision }));
+  },
+});
+
+/** Resolve the current public sealing key, optionally requiring authenticated chat management. */
+export const chatSealingInfo = internalQuery({
+  args: { chatId: v.id("aisdk_chats"), manager: v.optional(v.boolean()) },
+  returns: v.union(
+    v.null(),
+    v.object({
+      e2eeId: v.string(),
+      workspace: v.id("workspaces"),
+      epoch: v.number(),
+      keyId: v.string(),
+      publicKey: v.bytes(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    // HTTP callers already authorized the turn; public title regeneration must recheck management.
+    const chat = args.manager
+      ? (await requireChatManager(ctx, args.chatId)).chat
+      : await ctx.db.get("aisdk_chats", args.chatId);
+    if (!chat?.e2eeId) {
+      return null;
+    }
+    const workspace = await resolveWorkspaceForChat(ctx, chat);
+    if (!workspace || (await chatKeyIsStale(ctx, chat, workspace))) {
+      return null;
+    }
+    const key = await currentChatPublicKey(ctx, chat);
+    return key ? { e2eeId: chat.e2eeId, workspace: workspace._id, ...key } : null;
+  },
+});
+
+/** Generate and store only a sealed title; the supplied first prompt lives only in this action. */
+export const regenerateTitle = action({
+  args: { chatId: v.id("aisdk_chats"), prompt: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (args.prompt.length > 8000 || !args.prompt.trim()) {
+      invalidSealedContent();
+    }
+    const target = await ctx.runQuery(internal.aisdk.chatSealingInfo, {
+      chatId: args.chatId,
+      manager: true,
+    });
+    if (!target) {
+      invalidSealedContent();
+    }
+    const info = await ctx.runQuery(internal.chatroom.titleModelForChat, { chatId: args.chatId });
+    if (!info) {
+      throw new ConvexError({ code: "TITLE_MODEL_UNAVAILABLE" });
+    }
+    const provider = createInternalGatewayProvider(ctx, info.workspace, {}, undefined, undefined, {
+      userId: info.userId,
+      chatId: args.chatId,
+    });
+    let title;
+    try {
+      title = await generateChatTitle({
+        model: provider(info.model),
+        initialUserMessage: args.prompt,
+      });
+    } catch {
+      // Provider errors can echo the prompt; surface only a generic code.
+      throw new ConvexError({ code: "TITLE_GENERATION_FAILED" });
+    }
+    const sealedTitle = await sealChatTitle(
+      { ...target, publicKey: new Uint8Array(target.publicKey) },
+      title,
+    );
+    await ctx.runMutation(internal.aisdk.EditChat, { chatId: args.chatId, sealedTitle });
+    return null;
   },
 });
 
@@ -305,34 +646,51 @@ export const SetChatScope = mutation({
   args: {
     chatId: v.id("aisdk_chats"),
     scope: chatScopeValidator,
+    members: v.optional(v.array(v.string())),
+    keys: v.optional(
+      v.object({ rotate: v.optional(chatKeyInputValidator), wraps: v.array(wrapInputValidator) }),
+    ),
   },
   returns: v.object({ scope: chatScopeValidator }),
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) throw new Error("Not logged in.");
 
-    const { chat } = await requireAccessibleChat(ctx, args.chatId);
-    if (chat.userId !== identity._id) {
-      throw new Error("Only the chat creator can change its scope.");
-    }
-
-    await ctx.db.patch("aisdk_chats", args.chatId, { scope: args.scope });
+    const { chat, workspace } = await requireAccessibleChat(ctx, args.chatId);
+    await changeChatScope(ctx, chat, workspace, identity._id, args);
     return { scope: args.scope };
   },
 });
 
+/** Rename through a sealed box for keyed chats, preserving the legacy plaintext path otherwise. */
 export const RenameChat = mutation({
   args: {
     chatId: v.id("aisdk_chats"),
-    title: v.string(),
+    title: v.optional(v.string()),
+    sealedTitle: v.optional(sealedBoxValidator),
   },
+  returns: v.union(v.string(), v.null()),
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
-    await requireChatActor(ctx, args.chatId);
-
-    const title = args.title
+    const { chat } = await requireChatActor(ctx, args.chatId);
+    if (chat.e2eeId) {
+      if (args.title !== undefined || !args.sealedTitle || chat.rekey) {
+        invalidSealedContent();
+      }
+      validateChatBox(args.sealedTitle, chat.keyEpoch!, 2048);
+      await ctx.db.patch("aisdk_chats", args.chatId, {
+        sealedTitle: args.sealedTitle,
+        title: undefined,
+        emoji: undefined,
+      });
+      return null;
+    }
+    if (args.sealedTitle) {
+      invalidSealedContent();
+    }
+    const title = (args.title ?? "")
       .replace(/[\r\n]+/g, " ")
       .replace(/\s+/g, " ")
       .trim()
@@ -364,13 +722,18 @@ export const SetChatPinned = mutation({
   },
 });
 
+/** Schedule a legacy plaintext title; encrypted callers must supply a prompt to regenerateTitle. */
 export const RegenerateChatTitle = mutation({
   args: { chatId: v.id("aisdk_chats") },
+  returns: v.union(v.string(), v.null()),
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
     const { chat } = await requireChatManager(ctx, args.chatId);
+    if (chat.e2eeId) {
+      invalidSealedContent();
+    }
     const firstUserMessage = await loadFirstUserMessage(ctx, chat);
     const prompt = firstUserMessageText({
       messages_queue: chat.messages_queue,
@@ -436,6 +799,33 @@ async function projectFilterExists(
 }
 
 /**
+ * The one wrap a Home row needs to open a chat's title: the caller's identity wrap, else the
+ * newest workspace wrap for workspace chats. Point lookups; no other wrap is read.
+ */
+async function callerWrap(
+  ctx: QueryCtx,
+  chat: Doc<"aisdk_chats">,
+  chatEpoch: number,
+  userId: string,
+  identityKeyId: string | undefined,
+) {
+  const own = identityKeyId
+    ? await ctx.db
+        .query("e2ee_chat_key_wraps")
+        .withIndex("by_chat_and_chatEpoch_and_recipientKeyId", (q) =>
+          q.eq("chat", chat._id).eq("chatEpoch", chatEpoch).eq("recipientKeyId", identityKeyId),
+        )
+        .first()
+    : null;
+  if (own?.recipient === "identity" && own.userId === userId) {
+    return own;
+  }
+  return chat.scope === "workspace"
+    ? ((await newestWorkspaceWrap(ctx, chat._id, chatEpoch)) ?? undefined)
+    : undefined;
+}
+
+/**
  * Home row for a chat, with its ACP agent's configured name. `canAct` mirrors `requireChatActor`
  * (rename, pin, delete: everyone who can see an ACP chat); `canManage` gates manager-only actions.
  */
@@ -459,28 +849,38 @@ async function chatRows(
       }),
     ),
   );
-  return chats.map((chat) => {
-    const canManage = canManageChat(chat, workspace, userId);
-    return {
-      id: chat._id,
-      title: chat.title,
-      emoji: chat.emoji,
-      pinnedAt: chat.pinnedAt,
-      lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
-      activeStream: chat.activeStream ?? false,
-      agent: chat.agent
-        ? {
-            agentId: chat.agent.agentId,
-            profile: chat.agent.profile,
-            name: agentNames.get(chat.agent.agentId) ?? chat.agent.agentId,
-            worker: chat.agent.worker,
-          }
-        : null,
-      canManage,
-      canAct: chat.agent !== undefined || canManage,
-      project: chat.project,
-    };
-  });
+  const identity = chats.some((chat) => chat.e2eeId) ? await activeIdentityFor(ctx, userId) : null;
+  return await Promise.all(
+    chats.map(async (chat) => {
+      const canManage = canManageChat(chat, workspace, userId);
+      const titleEpoch = chat.sealedTitle?.epoch ?? chat.keyEpoch;
+      const wrap =
+        chat.e2eeId && titleEpoch
+          ? await callerWrap(ctx, chat, titleEpoch, userId, identity?.keyId)
+          : undefined;
+      return {
+        id: chat._id,
+        title: chat.title,
+        emoji: chat.emoji,
+        scope: chat.scope ?? "personal",
+        e2ee: chat.e2eeId ? { e2eeId: chat.e2eeId, title: chat.sealedTitle, wrap } : null,
+        pinnedAt: chat.pinnedAt,
+        lastInteractionAt: chat.lastInteractionAt ?? chat._creationTime,
+        activeStream: chat.activeStream ?? false,
+        agent: chat.agent
+          ? {
+              agentId: chat.agent.agentId,
+              profile: chat.agent.profile,
+              name: agentNames.get(chat.agent.agentId) ?? chat.agent.agentId,
+              worker: chat.agent.worker,
+            }
+          : null,
+        canManage,
+        canAct: chat.agent !== undefined || canManage,
+        project: chat.project,
+      };
+    }),
+  );
 }
 
 const projectFilterValidator = v.optional(v.union(v.id("projects"), v.null()));
@@ -532,6 +932,22 @@ export const ListChats = workspaceQuery({
         .filterWith(
           async (chat) => chat.userId !== userId && chatBelongsToWorkspace(chat, workspace),
         ),
+      stream(ctx.db, schema)
+        .query("chat_members")
+        .withIndex("by_workspace_and_userId_and_lastInteractionAt", (q) =>
+          q.eq("workspace", workspace._id).eq("userId", userId),
+        )
+        .order("desc")
+        .map(async (row) => {
+          const chat = await ctx.db.get("aisdk_chats", row.chat);
+          return chat &&
+            chat.scope === "shared" &&
+            chat.userId !== userId &&
+            chatBelongsToWorkspace(chat, workspace) &&
+            (args.project === undefined || chat.project === project)
+            ? chat
+            : null;
+        }),
     ];
     if (workspace.legacyBalance) {
       streams.push(
@@ -595,12 +1011,30 @@ export const ListPinnedChats = workspaceQuery({
             .take(MAX_LEGACY_CANDIDATES)
         : Promise.resolve([]),
     ]);
+    const explicitRows = await ctx.db
+      .query("chat_members")
+      .withIndex("by_workspace_and_userId_and_lastInteractionAt", (q) =>
+        q.eq("workspace", workspace._id).eq("userId", userId),
+      )
+      .order("desc")
+      .take(CHAT_PAGE_MAX_ROWS_READ);
+    const explicit = await Promise.all(
+      explicitRows.map((row) => ctx.db.get("aisdk_chats", row.chat)),
+    );
     const pinned = new Map<Id<"aisdk_chats">, Doc<"aisdk_chats">>();
     for (const chat of [...own, ...shared]) {
       if (chatBelongsToWorkspace(chat, workspace) && matchesProject(chat)) {
         pinned.set(chat._id, chat);
       }
     }
+    for (const chat of explicit)
+      if (
+        chat?.pinnedAt &&
+        chat.scope === "shared" &&
+        chatBelongsToWorkspace(chat, workspace) &&
+        matchesProject(chat)
+      )
+        pinned.set(chat._id, chat);
     for (const chat of legacy) {
       if (chat.pinnedAt && isLegacyChatOf(chat, userId) && matchesProject(chat)) {
         pinned.set(chat._id, chat);

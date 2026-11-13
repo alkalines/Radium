@@ -37,6 +37,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { WorkspaceIcon } from "./workspace-icon";
 import { useWorkspace, type WorkspaceSummary } from "./workspace-provider";
+import { WorkspaceKeys } from "./workspace-keys";
+import { createKeyedWorkspace, removeMemberWithRotation } from "@/lib/crypto/workspace-keys";
 
 type WorkspaceMemberList = Exclude<FunctionReturnType<typeof api.workspaces.listMembers>, string>;
 type ArchivedWorkspaceList = Exclude<
@@ -54,14 +56,12 @@ type ArchivedWorkspaceList = Exclude<
 export function WorkspaceManagement() {
   const { workspaces, workspace, workspaceId, isLoading, error, isProvisioning, setWorkspace } =
     useWorkspace();
-  const createWorkspace = useMutation(api.workspaces.create);
   const renameWorkspace = useMutation(api.workspaces.rename);
   const setWorkspaceIcon = useMutation(api.workspaces.setIcon);
   const setWorkspaceColor = useMutation(api.workspaces.setColor);
   const archiveWorkspace = useMutation(api.workspaces.archive);
   const restoreWorkspace = useMutation(api.workspaces.restore);
   const addMember = useMutation(api.workspaces.addMember);
-  const removeMember = useMutation(api.workspaces.removeMember);
   const ownedWorkspaceCount = workspaces.filter((item) => item.role === "owner").length;
   const isOwner = workspace?.role === "owner";
 
@@ -112,7 +112,7 @@ export function WorkspaceManagement() {
     setPendingAction("name");
     try {
       if (nameDialog === "create") {
-        const created = await createWorkspace({ name: trimmed });
+        const created = await createKeyedWorkspace(trimmed);
         setWorkspace(created);
         toast.success("Workspace created.");
       } else if (renameTarget) {
@@ -196,7 +196,9 @@ export function WorkspaceManagement() {
     if (!workspaceId || !isOwner || pendingAction) return;
     setPendingAction(email);
     try {
-      await removeMember({ workspace: workspaceId, email });
+      const member = members.find((item) => item.email === email);
+      if (!member) throw new Error("Member unavailable");
+      await removeMemberWithRotation(workspaceId, email, member.userId);
       toast.success("Member removed.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to remove member.");
@@ -355,6 +357,7 @@ export function WorkspaceManagement() {
           )}
         </GroupList>
       ) : null}
+      {workspaceId ? <WorkspaceKeys workspaceId={workspaceId} /> : null}
 
       {archivedData === undefined || archivedError || archived.length > 0 ? (
         <GroupList

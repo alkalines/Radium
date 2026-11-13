@@ -87,7 +87,8 @@ test("history saves replace only the stored positions and stay private to the ch
   const first = [textMessage("u1", "user", "Hi"), textMessage("a1", "assistant", "Hello")];
   await t.mutation(internal.aisdk.EditChat, { chatId: chat, messages: first, activeStream: false });
   await expect(member.query(api.aisdk.GetChatMessages, { chatId: chat })).resolves.toEqual({
-    messages: first,
+    entries: first.map((message, position) => ({ position, message })),
+    capsules: [],
     activeStream: false,
   });
   // Metadata subscriptions never carry history.
@@ -97,7 +98,7 @@ test("history saves replace only the stored positions and stay private to the ch
   const reverted = [textMessage("u1", "user", "Hi again")];
   await t.mutation(internal.aisdk.EditChat, { chatId: chat, messages: reverted });
   await expect(member.query(api.aisdk.GetChatMessages, { chatId: chat })).resolves.toMatchObject({
-    messages: reverted,
+    entries: reverted.map((message, position) => ({ position, message })),
   });
   const rows = await t.run((ctx) =>
     ctx.db
@@ -129,7 +130,7 @@ test("an unmigrated chat serves its embedded history until a save moves it", asy
   );
   const member = asUser(t, "member");
   await expect(member.query(api.aisdk.GetChatMessages, { chatId: chat })).resolves.toMatchObject({
-    messages: legacy,
+    entries: legacy.map((message, position) => ({ position, message, messageId: message.id })),
   });
 
   const next = [...legacy, textMessage("a1", "assistant", "Reply")];
@@ -138,7 +139,7 @@ test("an unmigrated chat serves its embedded history until a save moves it", asy
   expect(stored?.messages).toBeUndefined();
   expect(stored?.chat_completions).toBeUndefined();
   await expect(member.query(api.aisdk.GetChatMessages, { chatId: chat })).resolves.toMatchObject({
-    messages: next,
+    entries: next.map((message, position) => ({ position, message })),
   });
 });
 
@@ -168,7 +169,7 @@ test("attachments are linked per chat and deleted with their last referencing ch
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect(await isStored(t, storageId)).toBe(true);
   await expect(member.query(api.aisdk.GetChatMessages, { chatId: fork })).resolves.toMatchObject({
-    messages: [fileMessage("u1", part.url)],
+    entries: [{ position: 0, message: fileMessage("u1", part.url) }],
   });
 
   await member.mutation(api.aisdk.DeleteChat, { chatId: fork });

@@ -43,6 +43,9 @@ describe("hkdf", () => {
       response: "radium/v1/response",
       invite: "radium/v1/invite",
       workspacePhrase: "radium/v1/workspace-phrase",
+      workspacePhraseMac: "radium/v1/workspace-phrase-mac",
+      inviteMac: "radium/v1/invite-mac",
+      trustStore: "radium/v1/trust-store",
       deviceWrap: "radium/v1/device-wrap",
     });
   });

@@ -53,6 +53,8 @@ import { AcpElicitationPrompt } from "./elicitation-prompt";
 import { AcpPermissionPrompt } from "./permission-prompt";
 import { useAcpSession } from "./use-acp-session";
 import { AcpSessionFolder } from "./session-folder";
+import { changeChatScope, ensureChatKeys } from "@/lib/crypto/chat-keys";
+import { useKeyStatus } from "@/lib/crypto/use-key-status";
 
 function subscribeVisibility(onChange: () => void) {
   document.addEventListener("visibilitychange", onChange);
@@ -92,6 +94,13 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     convexQuery(api.aisdk.GetChat, { chatId }),
   );
   const chat = typeof chatResult === "string" ? undefined : chatResult;
+  const keyStatus = useKeyStatus();
+  useEffect(() => {
+    if (!isVisible || keyStatus.state !== "unlocked") return;
+    void ensureChatKeys(chatId).catch(() => {
+      toast.error("Could not verify this Session's encryption keys.");
+    });
+  }, [chatId, isVisible, keyStatus]);
   const unavailable = Boolean(chatError || acp.sessionError) || typeof chatResult === "string";
   const { data: projects } = useQuery(
     convexQuery(api.projects.list, chat ? { workspace: chat.workspace } : "skip"),
@@ -226,7 +235,11 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     if (!chat?.canManageScope || scopeSaving) return;
     setScopeSaving(true);
     try {
-      await setChatScope({ chatId, scope });
+      if (chat.e2eeId) {
+        await changeChatScope({ chatId, scope });
+      } else {
+        await setChatScope({ chatId, scope });
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to update Session visibility.");
     } finally {
@@ -521,6 +534,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
                   <ConversationVisibilityMenu
                     scope={chat?.scope ?? "personal"}
                     isDraft={false}
+                    allowShared={false}
                     canChange={chat?.canManageScope === true && !scopeSaving}
                     onChange={(scope) => void changeScope(scope)}
                   />

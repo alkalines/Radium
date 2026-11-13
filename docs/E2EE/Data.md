@@ -1,6 +1,6 @@
 # E2EE Data
 
-Status: **planned.** Part of [End-to-end encryption](../E2EE.md). Keys and the envelope format are in [Keys](Keys.md). Table references are `packages/backend/convex/schema.ts` unless stated.
+Status: **partly implemented.** Part of [End-to-end encryption](../E2EE.md). Keys and the envelope format are in [Keys](Keys.md). Table references are `packages/backend/convex/schema.ts` unless stated. Built-in Chatroom content (messages, titles, queued prompts, attachments) is encrypted for chats created by accounts with keys ([task 11 phases 5–6](../tasks/11_E2EE.md#phase-6-chatroom-content)); everything else below is planned.
 
 ## Classes
 
@@ -13,7 +13,9 @@ Status: **planned.** Part of [End-to-end encryption](../E2EE.md). Keys and the e
 
 ## Current State
 
-Everything user-authored is plaintext today: `chat_messages.message`, `aisdk_chats.title` and queued prompts, `chat_frames.payload` (ACP transcripts while warm), `acp_commands.payload`, `acp_interactions`, `worker_tasks` requests and results, `worker_chat_calls` receipts, project names and folders, `notifications.title`/`body`, `telemetry_blobs.content` and Convex File Storage (attachments, large telemetry blobs). Secret Store encrypts credentials with a deployment-held KEK, which protects ciphertext at rest but not from the backend.
+Encrypted today, for Chatroom chats created by an account with keys (`aisdk_chats.e2eeId` set): `chat_messages.sealed` (per-turn capsules in `e2ee_capsules`), `aisdk_chats.sealedTitle` and `sealedQueue`, and attachment bytes in File Storage (`chat_files.capsule`). Workspace-scope chats are encrypted only once their workspace has keys. Telemetry never records content of encrypted chats.
+
+Still plaintext: chats created before keys existed or by accounts without keys (`chat_messages.message`, `aisdk_chats.title`, `messages_queue`, their attachments), `chat_frames.payload` (ACP transcripts while warm), `acp_commands.payload`, `acp_interactions`, ACP session titles, `worker_tasks` requests and results, `worker_chat_calls` receipts, workspace and project names and folders, `notifications.title`/`body` (encrypted chats send no title), `telemetry_blobs.content` and large telemetry blobs. Secret Store encrypts credentials with a deployment-held KEK, which protects ciphertext at rest but not from the backend.
 
 ## Classification
 
@@ -49,15 +51,17 @@ Everything user-authored is plaintext today: `chat_messages.message`, `aisdk_cha
 The built-in agent loop runs in `POST /api/aisdk/chat` (`src/http/aisdk.chat.ts`) inside Convex, so the backend must see the conversation during a turn. The request keeps the AI SDK shape it has today: the client sends the whole message history with every turn.
 
 1. The browser already holds the decrypted history it displays. It sends it, plus the new user message, as plaintext AI SDK messages, exactly as `useChat` does now. The server does not read stored messages to build the context.
-2. Attachments keep today's flow: the browser uploads them to Convex File Storage, never into a table (`src/chatroom/files.ts`), and the message's file part references the stored file; `inlineStoredFiles` then gives the provider the bytes, since providers cannot fetch the deployment's storage URL. Under E2EE the browser encrypts the file before uploading, the file part also carries that file's 32-byte object key ([Keys § Envelope format](Keys.md#envelope-format)), and `inlineStoredFiles` decrypts before inlining. As a side effect, a leaked storage URL (an unguessable capability URL today) no longer exposes the file.
-3. The action runs the turn as today, then creates one key capsule to the chat public key and seals what it persists: the new user message and the assistant output with its tool parts. Creating the capsule needs randomness, which the HTTP action has. The action then drops all keys and plaintext.
-4. `saveChatMessages` (`src/chatroom/messages.ts`) stops comparing canonical plaintext to detect changed positions, because stored content is no longer readable; it uses client-assigned message IDs plus revisions.
+2. Attachments keep today's flow: the browser uploads them to Convex File Storage, never into a table (`src/chatroom/files.ts`), and the message's file part references the stored file; `inlineStoredFiles` then gives the provider the bytes, since providers cannot fetch the deployment's storage URL. Under E2EE the browser creates one capsule per file to the chat key (stored on the `chat_files` row) and encrypts the file under the derived object key before uploading. The file part carries that 32-byte object key ([Keys § Envelope format](Keys.md#envelope-format)) in the URL fragment (`#rf1.<fileId>.<chat>.<key>`), so the key exists only inside sealed messages and in the turn request; `inlineStoredFiles` decrypts before inlining and every other server path strips the fragment. Forks reuse the file without re-encrypting it. As a side effect, a leaked storage URL (an unguessable capability URL today) no longer exposes the file.
+3. The action runs the turn as today, then creates one key capsule to the chat public key and seals what it persists: the new user message and the assistant output with its tool parts, and the title on the first turn. Creating the capsule needs randomness, which the HTTP action has. The action then drops all keys and plaintext.
+4. `saveChatMessages` (`src/chatroom/messages.ts`) no longer compares canonical plaintext to detect changed positions, because stored content is not readable; each row has the AI SDK message ID and a revision. The request carries the revision the client loaded for each message, and the action seals only positions whose ID or revision differs, new positions and the response message.
+
+The browser writes the rest itself: the queued first prompt and renamed titles are boxes sealed to the chat key, and forks re-seal the decrypted history for the new chat's key. Chats without keys (accounts or workspaces that have not set up encryption) keep the plaintext path until the [migration](#migration); rows of one chat may mix both forms.
 
 The chat private key never leaves the client. The server sees the conversation for the duration of the turn, as it must to call the provider; it keeps none of it.
 
 ### Titles
 
-Title generation (`src/chatroom/titles.ts`) runs inside the first turn, from the first user message in that request; the result is sealed with the turn's capsule (class S). Regenerating a title (`convex/aisdk.ts`) becomes a request in which the client sends the first user message. The ACP fallback title (`src/acp/browser.ts`) already receives first-prompt text from the browser.
+Title generation (`src/chatroom/titles.ts`) runs inside the first turn of an encrypted chat, concurrently with the response, from the first user message in that request; the result is stored as a title box sealed to the chat key (class S). Regenerating a title is the `aisdk.regenerateTitle` action, to which the client sends the decrypted first user message; renaming is done by the client, which seals the new title itself. The ACP fallback title (`src/acp/browser.ts`) already receives first-prompt text from the browser; ACP titles stay plaintext until ACP becomes end-to-end ([task 11](../tasks/11_E2EE.md#phase-7-workers-and-acp)).
 
 ### Search
 

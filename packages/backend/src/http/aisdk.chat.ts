@@ -3,6 +3,7 @@ import { webSearch } from "@exalabs/ai-sdk";
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  generateId,
   isStepCount,
   streamText,
   toUIMessageStream,
@@ -47,7 +48,9 @@ import { formatInferenceError } from "../chatroom/inference-errors";
 import { chatInterruption } from "../chatroom/interruption";
 import { logger } from "../logging/server";
 import { sessionNotificationKind } from "../notifications/session";
-import { inlineStoredFiles } from "../chatroom/files";
+import { inlineStoredFiles, storedFileUrls } from "../chatroom/files";
+import { sealChatMessages, sealChatTitle } from "../chatroom/sealing";
+import { firstUserMessageText, generateChatTitle } from "../chatroom/titles";
 
 /**
  * Model calls one chat request may make before it stops. A request still calling tools at the cap
@@ -57,6 +60,7 @@ const MAX_CHAT_STEPS = 50;
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
+  revisions?: Record<string, number>;
   model: string;
   provider?: string;
   serviceTier?: string;
@@ -118,16 +122,32 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     );
   }
   const workspaceId = workspace._id;
+  // A stale chat key must be rotated by a client before this turn: failing here avoids a billed
+  // generation whose result can no longer be sealed.
+  if (chat.e2eeId && !(await ctx.runQuery(internal.aisdk.chatSealingInfo, { chatId }))) {
+    return Response.json(
+      { error: { message: "This chat's key must be rotated before sending.", code: 409 } },
+      { status: 409 },
+    );
+  }
+  if (chat.e2eeId) {
+    for (const message of body.messages) {
+      if (!message.id) {
+        message.id = generateId();
+      }
+    }
+  }
 
   const previousPerformance = getLastAssistantPerformance(body.messages);
   const telemetrySettings = await ctx.runQuery(
     internal.observability.telemetry.getSettingsForWorkspace,
     { workspace: workspaceId },
   );
-  // Workspace owners can read owner-managed telemetry, so member-owned personal
-  // chats must not contribute prompt or response content to that channel.
+  // Workspace owners can read telemetry, but another creator's personal/shared conversation must
+  // never contribute content to that owner-managed channel. Keyed chats never record content
+  // until telemetry content is sealed: captured text would be plaintext of an encrypted chat.
   const telemetrySettingsForRequest =
-    (chat.scope ?? "personal") === "personal" && chat.userId !== workspace.ownerId
+    chat.e2eeId || ((chat.scope ?? "personal") !== "workspace" && chat.userId !== workspace.ownerId)
       ? { ...telemetrySettings, recordInputs: false, recordOutputs: false }
       : telemetrySettings;
   const generations: Array<{ completionTokens: number; generationTimeMs: number }> = [];
@@ -243,6 +263,33 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     activeStream: true,
     messages_queue: null,
   });
+  // Title work shares the first request's in-memory prompt, never scheduler arguments.
+  const titlePromise =
+    chat.e2eeId && !chat.sealedTitle && !chat.title
+      ? (async () => {
+          try {
+            const info = await ctx.runQuery(internal.chatroom.titleModelForChat, { chatId });
+            const prompt = firstUserMessageText({ messages: body.messages });
+            if (!info || !prompt) {
+              return undefined;
+            }
+            const titleProvider = createInternalGatewayProvider(
+              ctx,
+              workspaceId,
+              {},
+              undefined,
+              undefined,
+              { userId, chatId },
+            );
+            return await generateChatTitle({
+              model: titleProvider(info.model),
+              initialUserMessage: prompt.slice(0, 8000),
+            });
+          } catch {
+            return undefined;
+          }
+        })()
+      : Promise.resolve(undefined);
 
   let inferenceError: GatewayErrorPayload | undefined;
   let stepCount = 0;
@@ -339,13 +386,54 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         responseMessage,
       };
       const interruption = chatInterruption(end, streamFailure, stepLimitReached);
-      await ctx.runMutation(internal.aisdk.EditChat, {
-        chatId,
-        messages: messagesWithDuration,
-        activeStream: false,
-        ...(interruption ? { interruption } : {}),
-      });
-      await closeTools();
+      try {
+        if (chat.e2eeId) {
+          const target = await ctx.runQuery(internal.aisdk.chatSealingInfo, { chatId });
+          if (!target) {
+            throw new Error("Chat sealing key unavailable");
+          }
+          const heads = await ctx.runQuery(internal.aisdk.chatMessageHeads, { chatId });
+          const sealedWrites = await sealChatMessages({
+            ...target,
+            publicKey: new Uint8Array(target.publicKey),
+            messages: messagesWithDuration,
+            heads,
+            revisions: body.revisions,
+            responseMessageId: responseMessage.id,
+            fileUrls: [...storedFileUrls(messagesWithDuration)],
+          });
+          await ctx.runMutation(internal.aisdk.EditChat, {
+            chatId,
+            sealedWrites,
+            activeStream: false,
+            ...(interruption ? { interruption } : {}),
+          });
+          try {
+            const title = await titlePromise;
+            if (title) {
+              const sealedTitle = await sealChatTitle(
+                { ...target, publicKey: new Uint8Array(target.publicKey) },
+                title,
+              );
+              await ctx.runMutation(internal.aisdk.EditChat, { chatId, sealedTitle });
+            }
+          } catch {
+            logger.warn("chat.title_generation_failed");
+          }
+        } else {
+          await ctx.runMutation(internal.aisdk.EditChat, {
+            chatId,
+            messages: messagesWithDuration,
+            activeStream: false,
+            ...(interruption ? { interruption } : {}),
+          });
+        }
+      } catch {
+        await ctx.runMutation(internal.aisdk.EditChat, { chatId, activeStream: false });
+        throw new Error("The chat response could not be saved securely.");
+      } finally {
+        await closeTools();
+      }
 
       // Notifications are a side channel: a failure here must not fail the saved request.
       const kind = sessionNotificationKind(end);

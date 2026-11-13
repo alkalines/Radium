@@ -43,6 +43,25 @@ export {
 export { fingerprint, safetyNumber } from "./fingerprints";
 export { generateRecoveryKey, generateShortSecret, phraseToEntropy } from "./phrases";
 export {
+  CAPSULE_BYTES,
+  decimal,
+  decodeCapsule,
+  encodeCapsule,
+  hmacSha256,
+  objectKeyFor,
+  openBox,
+  openWithCapsule,
+  sealBox,
+  sealWithCapsule,
+  sha256,
+} from "./box";
+export {
+  chatKeyStatement,
+  grantStatement,
+  rosterStatement,
+  type WorkspaceKeyPurpose,
+} from "./statements";
+export {
   createAccountKeys,
   deriveKek,
   identitySelfSignature,

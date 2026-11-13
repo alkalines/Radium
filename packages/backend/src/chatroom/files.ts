@@ -1,6 +1,6 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { ModelMessage } from "ai";
-import type { Id } from "../../convex/_generated/dataModel";
+import type { Doc, Id } from "../../convex/_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
@@ -9,6 +9,14 @@ import {
 } from "../../convex/_generated/server";
 import { internal } from "../../convex/_generated/api";
 import { workspaceMutation } from "../../convex/helpers";
+import { decodeExactBytes } from "../e2ee/contract";
+import { CAPSULE_BYTES, decodeCapsule } from "radium-crypto";
+import {
+  invalidSealedContent,
+  openFileBytes,
+  parseFileFragment,
+  stripFileFragment,
+} from "./sealing";
 
 /**
  * Chat attachments live in Convex File Storage, never inline in chat documents. The browser
@@ -23,9 +31,13 @@ import { workspaceMutation } from "../../convex/helpers";
 
 /** Largest accepted attachment; the web Composer enforces the same limit before uploading. */
 export const MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024;
+// Content padding adds at most one 4 KiB page; the envelope adds a 31-byte header and 16-byte tag.
+const MAX_ENCRYPTED_CHAT_FILE_BYTES = MAX_CHAT_FILE_BYTES + 4096 + 47;
 // Uploads never sent in a message (removed attachment, closed Tab) are deleted after this.
 const PENDING_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 const CLEANUP_BATCH_SIZE = 64;
+// A bare `type/subtype` token pair; encrypted uploads declare it, so it must stay short and inert.
+const MEDIA_TYPE_PATTERN = /^[\w!#$&^.+-]{1,64}\/[\w!#$&^.+-]{1,64}$/;
 
 const fileUIPartValidator = v.object({
   type: v.literal("file"),
@@ -48,9 +60,43 @@ export const generateUploadUrl = workspaceMutation({
  * throwing would roll the deletion back.
  */
 export const register = workspaceMutation({
-  args: { storageId: v.id("_storage"), filename: v.optional(v.string()) },
+  args: {
+    storageId: v.id("_storage"),
+    filename: v.optional(v.string()),
+    /** Declared media type of an encrypted upload, e.g. `image/png`; plaintext uploads use storage's. */
+    mediaType: v.optional(v.string()),
+    e2ee: v.optional(
+      v.object({
+        fileId: v.string(),
+        capsule: v.bytes(),
+        chatEpoch: v.number(),
+        e2eeParent: v.string(),
+      }),
+    ),
+  },
   returns: v.union(fileUIPartValidator, v.null()),
   handler: async (ctx, args) => {
+    if (args.mediaType !== undefined && (!args.e2ee || !MEDIA_TYPE_PATTERN.test(args.mediaType))) {
+      throw new ConvexError({ code: "E2EE_CONTENT_INVALID" });
+    }
+    if (args.e2ee) {
+      if (
+        args.filename !== undefined ||
+        !decodeExactBytes(args.e2ee.fileId, 16) ||
+        !decodeExactBytes(args.e2ee.e2eeParent, 16) ||
+        !Number.isSafeInteger(args.e2ee.chatEpoch) ||
+        args.e2ee.chatEpoch < 1 ||
+        args.e2ee.capsule.byteLength !== CAPSULE_BYTES
+      ) {
+        // File names belong inside the sealed message, never beside encrypted storage metadata.
+        throw new ConvexError({ code: "E2EE_CONTENT_INVALID" });
+      }
+      try {
+        decodeCapsule(new Uint8Array(args.e2ee.capsule));
+      } catch {
+        throw new ConvexError({ code: "E2EE_CONTENT_INVALID" });
+      }
+    }
     const stored = await ctx.db.system.get("_storage", args.storageId);
     if (!stored) return null;
 
@@ -61,13 +107,18 @@ export const register = workspaceMutation({
     if (claimed) return null;
 
     const url = await ctx.storage.getUrl(args.storageId);
-    if (!url || stored.size > MAX_CHAT_FILE_BYTES) {
+    const maxBytes = args.e2ee ? MAX_ENCRYPTED_CHAT_FILE_BYTES : MAX_CHAT_FILE_BYTES;
+    if (!url || stored.size > maxBytes) {
       await ctx.storage.delete(args.storageId);
       return null;
     }
 
-    const mediaType = stored.contentType || "application/octet-stream";
-    const filename = args.filename?.trim().slice(0, 255) || undefined;
+    // Encrypted uploads are stored as opaque bytes: the storage row's content type is the
+    // uploader's HTTP header and never trusted; the declared media type is only metadata.
+    const mediaType = args.e2ee
+      ? (args.mediaType ?? "application/octet-stream")
+      : stored.contentType || "application/octet-stream";
+    const filename = args.e2ee ? undefined : args.filename?.trim().slice(0, 255) || undefined;
     await ctx.db.insert("chat_files", {
       workspace: ctx.workspace._id,
       userId: ctx.identity._id,
@@ -76,6 +127,7 @@ export const register = workspaceMutation({
       mediaType,
       filename,
       size: stored.size,
+      ...(args.e2ee ?? {}),
     });
     return { type: "file" as const, mediaType, url, ...(filename ? { filename } : {}) };
   },
@@ -90,25 +142,41 @@ export function storedFileUrls(messages: ReadonlyArray<{ parts: readonly unknown
       const record = part as Record<string, unknown>;
       if (record.type !== "file" || typeof record.url !== "string") continue;
       if (record.url.startsWith("http://") || record.url.startsWith("https://")) {
-        urls.add(record.url);
+        urls.add(stripFileFragment(record.url));
       }
     }
   }
   return urls;
 }
 
+/** A reference row that carries everything needed to open its bytes with the chat's key. */
+function isSealedFile(file: Doc<"chat_files">) {
+  return (
+    file.fileId !== undefined &&
+    file.capsule !== undefined &&
+    file.e2eeParent !== undefined &&
+    file.chatEpoch !== undefined
+  );
+}
+
 /**
  * Give `chat` a reference to each workspace file in `urls`: a pending upload is attached, a file
  * another chat already references (a fork, a reused attachment) gets its own row. URLs that are
  * not this workspace's files are ignored, so a client cannot attach another workspace's upload.
+ * With `sealed`, every new upload linked must be encrypted (a plaintext one would silently
+ * downgrade the attachment of a keyed chat). Files another chat already references are linked as
+ * they are: a legacy plaintext attachment carried into a fork was stored in plaintext before and
+ * gains no new exposure; the content migration seals it later.
  */
 export async function linkChatFiles(
   ctx: MutationCtx,
   workspace: Id<"workspaces">,
   chat: Id<"aisdk_chats">,
   urls: Iterable<string>,
+  options: { sealed?: boolean } = {},
 ) {
-  for (const url of urls) {
+  for (const originalUrl of urls) {
+    const url = stripFileFragment(originalUrl);
     const fileReference = (reference: Id<"aisdk_chats"> | undefined) =>
       ctx.db
         .query("chat_files")
@@ -120,6 +188,7 @@ export async function linkChatFiles(
 
     const pending = await fileReference(undefined);
     if (pending) {
+      if (options.sealed && !isSealedFile(pending)) invalidSealedContent();
       await ctx.db.patch("chat_files", pending._id, { chat });
       continue;
     }
@@ -139,6 +208,10 @@ export async function linkChatFiles(
       mediaType: source.mediaType,
       filename: source.filename,
       size: source.size,
+      fileId: source.fileId,
+      capsule: source.capsule,
+      chatEpoch: source.chatEpoch,
+      e2eeParent: source.e2eeParent,
       chat,
     });
   }
@@ -238,7 +311,7 @@ export const resolveStoredFiles = internalQuery({
   returns: v.array(v.object({ url: v.string(), storageId: v.id("_storage") })),
   handler: async (ctx, args) => {
     const resolved: Array<{ url: string; storageId: Id<"_storage"> }> = [];
-    for (const url of new Set(args.urls)) {
+    for (const url of new Set(args.urls.map(stripFileFragment))) {
       const file = await ctx.db
         .query("chat_files")
         .withIndex("by_workspace_and_url_and_chat", (q) =>
@@ -272,11 +345,34 @@ export async function inlineStoredFiles(
   }
   if (urls.length === 0) return messages;
 
-  const resolved = await ctx.runQuery(internal.chat_files.resolveStoredFiles, { workspace, urls });
+  // Never pass object-key fragments across the action/query boundary.
+  const resolved = await ctx.runQuery(internal.chat_files.resolveStoredFiles, {
+    workspace,
+    urls: urls.map(stripFileFragment),
+  });
+  const storageIds = new Map(resolved.map(({ url, storageId }) => [url, storageId]));
   const bytesByUrl = new Map<string, Uint8Array>();
-  for (const { url, storageId } of resolved) {
+  for (const url of new Set(urls)) {
+    const fragment = parseFileFragment(url);
+    fragment?.objectKey.fill(0);
+    const storageId = storageIds.get(stripFileFragment(url));
+    if (!storageId) {
+      if (fragment) {
+        throw new Error("Encrypted attachment unavailable");
+      }
+      continue;
+    }
     const blob = await ctx.storage.get(storageId);
-    if (blob) bytesByUrl.set(url, new Uint8Array(await blob.arrayBuffer()));
+    if (!blob) {
+      if (fragment) {
+        throw new Error("Encrypted attachment unavailable");
+      }
+      continue;
+    }
+    bytesByUrl.set(
+      url,
+      await openFileBytes(workspace, url, new Uint8Array(await blob.arrayBuffer())),
+    );
   }
 
   return messages.map((message) => {
@@ -284,7 +380,13 @@ export async function inlineStoredFiles(
     const content = message.content.map((part) => {
       const url = storageUrlOf(part);
       const bytes = url ? bytesByUrl.get(url) : undefined;
-      if (!bytes) return part;
+      if (!bytes) {
+        if (!url || part.type !== "file") return part;
+        const data = part.data;
+        if (!data || typeof data !== "object" || !("type" in data) || data.type !== "url")
+          return part;
+        return { ...part, data: { ...data, url: new URL(stripFileFragment(url)) } };
+      }
       return { ...part, data: { type: "data" as const, data: bytes } };
     });
     return { ...message, content } as ModelMessage;

@@ -12,6 +12,7 @@ export type DraftTabSnapshot = {
   /** Workspace the choices belong to; a draft restored into another workspace discards them. */
   workspaceId: string;
   scope: ChatScope;
+  members?: string[];
   worker: ChatWorkerSelection | null;
   project: string | null;
   /** Built-in/MCP override; `null` inherits the workspace defaults at creation. */
@@ -159,7 +160,10 @@ function parseSnapshot(value: object): SessionTabSnapshot {
 function parseDraft(value: unknown): DraftTabSnapshot | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   if (!("workspaceId" in value) || typeof value.workspaceId !== "string") return undefined;
-  if (!("scope" in value) || (value.scope !== "personal" && value.scope !== "workspace")) {
+  if (
+    !("scope" in value) ||
+    (value.scope !== "personal" && value.scope !== "shared" && value.scope !== "workspace")
+  ) {
     return undefined;
   }
   if (!("worker" in value) || !("project" in value) || !("tools" in value)) return undefined;
@@ -183,6 +187,10 @@ function parseDraft(value: unknown): DraftTabSnapshot | undefined {
   return {
     workspaceId: value.workspaceId,
     scope: value.scope,
+    members:
+      "members" in value && Array.isArray(value.members)
+        ? value.members.filter((member): member is string => typeof member === "string")
+        : undefined,
     worker,
     project: value.project,
     tools,

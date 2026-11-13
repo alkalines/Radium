@@ -33,9 +33,15 @@ Auth organization. This is direct membership, not an invitation flow.
   provider deletion keeps a `deletedAt` tombstone and removes workspace and
   legacy credentials so migration fallback cannot resurrect the provider.
 - Chats carry an explicit `scope`: `personal` chats are private to their creator;
+  `shared` chats are visible to their creator and the members listed in
+  `chat_members` (picked by the creator; only the creator changes the list);
   `workspace` chats are visible to the workspace owner and explicit members.
-  `ListChats` returns a member's own personal chats plus shared workspace chats;
-  it does not expose another user's personal chats.
+  `ListChats` returns a member's own chats, shared chats listing them and
+  workspace chats; it does not expose another user's personal chats or shared
+  chats that do not list them. Usage, logs and telemetry treat `shared` chats
+  like personal ones: owners see their content only as the creator or a listed
+  member. With end-to-end encryption the same lists decide who receives the
+  chat key ([E2EE keys](../E2EE/Keys.md#chats)).
 - Chat history lives in `chat_messages` (one row per message) and attachments in
   Convex File Storage referenced by `chat_files`. Neither table carries access
   data: every read authorizes the parent chat first (`aisdk.GetChatMessages`),
