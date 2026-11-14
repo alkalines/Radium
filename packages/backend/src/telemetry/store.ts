@@ -25,6 +25,13 @@ export type LoadedBlob = {
   content?: string;
   /** Signed file URL for content above the inline limit. */
   storageUrl?: string;
+  sealed?: {
+    epoch: number;
+    requestId: string;
+    capsule: ArrayBuffer;
+    envelope?: ArrayBuffer;
+    storageUrl?: string;
+  };
   /** True when only the fingerprint and metadata were captured. */
   redacted: boolean;
 };
@@ -61,8 +68,9 @@ async function toLoadedBlob(
     meta: blob.meta,
     truncated: blob.truncated,
     content: blob.content,
-    storageUrl,
-    redacted: blob.content === undefined && blob.storage === undefined,
+    storageUrl: blob.sealed ? undefined : storageUrl,
+    sealed: blob.sealed ? { ...blob.sealed, storageUrl } : undefined,
+    redacted: blob.content === undefined && blob.storage === undefined && blob.sealed === undefined,
   };
 }
 

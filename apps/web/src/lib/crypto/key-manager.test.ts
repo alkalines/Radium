@@ -66,7 +66,7 @@ function createProfile() {
     return { manager, sessionStorage };
   }
 
-  return { devices, clock, openTab };
+  return { devices, deviceStore, clock, openTab };
 }
 
 /** Resolves once the manager reaches `state` (cross-tab messages are handled asynchronously). */
@@ -112,6 +112,7 @@ describe("key manager", () => {
     const record = profile.devices.get(USER);
     expect(record?.wrappingKey.extractable).toBe(false);
     expect(record?.blob).toBeDefined();
+    expect(record?.autoLockMinutes).toBeNull();
     expect(record?.blob).not.toContain(toBase64Url(keys.amk));
 
     const reloaded = profile.openTab();
@@ -133,6 +134,55 @@ describe("key manager", () => {
     await second.manager.attachSession({ id: USER }, true);
     expect(second.manager.getSnapshot().state).toBe("unlocked");
     expect(second.sessionStorage.get(USER)).toBeDefined();
+  });
+
+  test("a locked tab changing the policy revokes the remembered blob", async () => {
+    const keys = await newKeys();
+    const first = profile.openTab();
+    await first.manager.unlock({ userId: USER, ...keys });
+    const locked = profile.openTab();
+    await locked.manager.setDevicePolicy(USER, { requirePassword: true, autoLockMinutes: 5 });
+    expect(profile.devices.get(USER)?.blob).toBeUndefined();
+  });
+
+  test("activity awaiting device storage cannot restore a key after lock", async () => {
+    const keys = await newKeys();
+    const tab = profile.openTab();
+    await tab.manager.unlock({ userId: USER, ...keys });
+    const get = profile.deviceStore.get;
+    const gate = Promise.withResolvers<void>();
+    profile.deviceStore.get = async (userId) => {
+      const record = await get(userId);
+      await gate.promise;
+      return record;
+    };
+    const activity = tab.manager.noteActivity();
+    await tab.manager.lock();
+    gate.resolve();
+    await activity;
+    expect(profile.devices.has(USER)).toBe(false);
+    expect(tab.manager.getSnapshot()).toEqual({ state: "locked", userId: USER });
+  });
+
+  test("activity awaiting storage cannot restore a remembered blob after policy changes", async () => {
+    const keys = await newKeys();
+    const tab = profile.openTab();
+    await tab.manager.unlock({ userId: USER, ...keys });
+    const get = profile.deviceStore.get;
+    const gate = Promise.withResolvers<void>();
+    let block = true;
+    profile.deviceStore.get = async (userId) => {
+      const shouldBlock = block;
+      const record = await get(userId);
+      if (shouldBlock) await gate.promise;
+      return record;
+    };
+    const activity = tab.manager.noteActivity();
+    block = false;
+    await tab.manager.setDevicePolicy(USER, { requirePassword: true, autoLockMinutes: null });
+    gate.resolve();
+    await activity;
+    expect(profile.devices.get(USER)?.blob).toBeUndefined();
   });
 
   test("require-password with no other tab open comes back locked", async () => {

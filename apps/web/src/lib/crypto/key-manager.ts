@@ -45,7 +45,13 @@ export class KeysLockedError extends Error {
 }
 
 /** IndexedDB row: the device wrapping key, plus the blob in "remember" mode. */
-export type DeviceRecord = { userId: string; wrappingKey: CryptoKey; blob?: string };
+export type DeviceRecord = {
+  userId: string;
+  wrappingKey: CryptoKey;
+  blob?: string;
+  /** Stored beside remembered blobs so service workers enforce the same idle deadline. */
+  autoLockMinutes?: number | null;
+};
 
 /** Persistent per-user device key storage (IndexedDB in the browser). */
 export interface DeviceKeyStore {
@@ -309,7 +315,7 @@ export function createKeyManager(deps: KeyManagerDeps): KeyManager {
       await deps.devices.put({ userId: record.userId, wrappingKey: record.wrappingKey });
       deps.tabBlobs.set(record.userId, blob);
     } else {
-      await deps.devices.put({ userId: record.userId, wrappingKey: record.wrappingKey, blob });
+      await deps.devices.put({ userId: record.userId, wrappingKey: record.wrappingKey, blob, autoLockMinutes: policy.autoLockMinutes });
       deps.tabBlobs.delete(record.userId);
     }
   }
@@ -577,9 +583,17 @@ export function createKeyManager(deps: KeyManagerDeps): KeyManager {
 
     async setDevicePolicy(userId, policy) {
       deps.policies.set(userId, policy);
-      if (unlocked?.userId !== userId) return;
       const record = await deps.devices.get(userId);
       if (!record) return;
+      if (unlocked?.userId !== userId) {
+        // A policy change while this tab is locked must also revoke SW access immediately.
+        if (policy.requirePassword) {
+          await deps.devices.put({ userId, wrappingKey: record.wrappingKey });
+        } else if (record.blob) {
+          await deps.devices.put({ ...record, autoLockMinutes: policy.autoLockMinutes });
+        }
+        return;
+      }
       unlocked.blob = withActivity(unlocked.blob, lastActivity);
       await persist(record, unlocked.blob, policy);
       deps.channel?.post({ type: "blob", userId, blob: unlocked.blob });
@@ -591,15 +605,20 @@ export function createKeyManager(deps: KeyManagerDeps): KeyManager {
       if (!unlocked || now - lastActivityShared < ACTIVITY_THROTTLE_MS) return;
       lastActivityShared = now;
 
-      const { userId } = unlocked;
+      const current = unlocked;
+      const currentGeneration = generation;
+      const { userId } = current;
       deps.channel?.post({ type: "heartbeat", userId, at: now });
-      unlocked.blob = withActivity(unlocked.blob, now);
+      current.blob = withActivity(current.blob, now);
       if (getDevicePolicy(userId).requirePassword) {
-        deps.tabBlobs.set(userId, unlocked.blob);
+        deps.tabBlobs.set(userId, current.blob);
         return;
       }
       const record = await deps.devices.get(userId);
-      if (record) await deps.devices.put({ ...record, blob: unlocked.blob });
+      const policy = getDevicePolicy(userId);
+      if (record && unlocked === current && generation === currentGeneration && !policy.requirePassword) {
+        await deps.devices.put({ ...record, blob: current.blob, autoLockMinutes: policy.autoLockMinutes });
+      }
     },
 
     async checkIdle() {
@@ -665,6 +684,38 @@ function indexedDbDeviceStore(): DeviceKeyStore {
       }
     },
   };
+}
+
+/**
+ * Opens an identity only from the remembered IndexedDB blob. A worker never reads tab-only blobs.
+ * Rechecks the record after the callback so lock, account switch and policy changes win races.
+ */
+export async function useRememberedIdentity<T>(
+  userId: string,
+  keyId: string,
+  fn: (identity: IdentityKeys) => Promise<T>,
+): Promise<T> {
+  const devices = indexedDbDeviceStore();
+  const record = await devices.get(userId);
+  if (!record?.blob || record.autoLockMinutes === undefined) throw new KeysLockedError();
+  const blob = parseBlob(record.blob);
+  if (!blob || blob.userId !== userId || blob.keyId !== keyId ||
+      (record.autoLockMinutes !== null &&
+        Date.now() - blob.lastActivity > record.autoLockMinutes * 60_000)) {
+    throw new KeysLockedError();
+  }
+  const keys = await openBlob(record.wrappingKey, blob);
+  try {
+    const result = await fn(keys.identity);
+    const current = await devices.get(userId);
+    if (!current || current.blob !== record.blob ||
+        current.autoLockMinutes !== record.autoLockMinutes) {
+      throw new KeysLockedError();
+    }
+    return result;
+  } finally {
+    wipeAccount(keys);
+  }
 }
 
 /** Prefixed JSON values in Web Storage; failures (disabled, full) behave as "not stored". */
@@ -759,6 +810,15 @@ function createBrowserKeyManager(): KeyManager {
     channel: browserChannel(),
     now: () => Date.now(),
     handOffTimeoutMs: 400,
+  });
+
+  // Previously displayed OS notifications must not retain decrypted text after lock or sign-out.
+  manager.subscribe(() => {
+    if (manager.getSnapshot().state === "unlocked" || !("serviceWorker" in navigator)) return;
+    void navigator.serviceWorker.getRegistration("/").then(async (registration) => {
+      const notifications = await registration?.getNotifications();
+      for (const notification of notifications ?? []) notification.close();
+    }).catch(() => {});
   });
 
   // Any input counts as activity for auto-lock; the idle check runs every 15 seconds.

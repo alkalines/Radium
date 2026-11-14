@@ -1,7 +1,6 @@
 import { v, type Infer } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx } from "../../convex/_generated/server";
-import { notificationTitle } from "../notifications/contract";
 import { notify } from "../notifications/notify";
 import { meterFraction, type LimitSettings, type Meter } from "./meters";
 
@@ -74,9 +73,12 @@ export async function recordLimitEvent(
       userId: workspace.ownerId,
       workspace: event.workspace,
       kind: event.kind,
-      title: notificationTitle(event.kind),
-      body: `${workspace.name} · ${message}`,
       limitEvent: id,
+      limitMetadata: {
+        provider: event.provider.name.slice(0, 80),
+        credential: event.credential.name.slice(0, 80),
+        ...(event.meter ? { meter: event.meter.label.slice(0, 80) } : {}),
+      },
       createdAt: event.occurredAt,
     });
   }

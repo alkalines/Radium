@@ -15,6 +15,8 @@ const app = defineApp({
     OPAQUE_SERVER_SETUP: v.string(),
     /** Shared with the web server's auth proxy so it may name its client's address (rate limits). */
     AUTH_PROXY_SECRET: v.optional(v.string()),
+    /** Base64url 32-byte deployment secret for workspace-keyed telemetry/session hashes. */
+    TELEMETRY_HASH_SECRET: v.optional(v.string()),
     AISDK_MaxRetries: v.optional(v.string()),
     LWC_SECRET: v.optional(v.string()),
     WORKER_AUTH_JWKS: v.optional(v.string()),

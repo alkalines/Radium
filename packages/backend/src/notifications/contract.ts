@@ -127,6 +127,17 @@ export function notificationTitle(kind: NotificationKind): string {
   }
 }
 
+/** Authenticates a sealed notification to its recipient, workspace and database row. */
+export function notificationAad(userId: string, workspace: string | undefined, id: string) {
+  return {
+    table: "notifications",
+    workspace: workspace ?? "",
+    parent: userId,
+    record: id,
+    field: "content",
+  };
+}
+
 /**
  * App-relative path a notification opens: its session, or Gateway > Limits for limit events.
  * The client switches to the notification's workspace before opening a workspace page.

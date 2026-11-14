@@ -74,7 +74,7 @@ legacy-balance workspace with no local provider configuration rows. Any existing
 local row, including a disabled or tombstoned row, disables this fallback and
 restores the local-configuration invariant above.
 
-Provider, Exa, and MCP credentials are workspace-scoped and write-only through the Convex Secret Store component; ordinary configuration contains masked previews, not credentials. [End-to-end encryption](E2EE.md) additionally protects keyed Chatroom persistence and paired Worker/ACP traffic: owner-pinned Workers verify signed executable definitions, commands and approvals, and persist only sealed content. Built-in turns still expose plaintext to the active backend action to call models and tools. Legacy content, workspace/project metadata, telemetry and notifications have not completed the planned encryption migration.
+Provider, Exa, and MCP credentials are workspace-scoped and write-only through the Convex Secret Store component; ordinary configuration contains masked previews, not credentials. [End-to-end encryption](E2EE.md) additionally protects keyed Chatroom persistence, paired Worker/ACP traffic, new telemetry content and notifications. Owner-pinned Workers verify signed executable definitions, commands and approvals. Active actions still see plaintext needed to call models/tools and seal captures; long-term content decryption keys stay with clients. Legacy content and workspace/project metadata await phase 9.
 
 Provider endpoint configuration is owner-only. Deliberately configured local and
 private endpoints are a required self-hosted use case, but the complete
@@ -124,7 +124,7 @@ content-addressed storage, session lineage, retention, and export.
 Telemetry is opt-in per workspace. Input and output recording are separate
 settings. Telemetry reads are owner-only and hide requests from other users'
 personal chats. Requests are stored in Convex and may also be exported to
-owner-configured OTLP/HTTP or webhook destinations.
+owner-configured OTLP/HTTP or webhook destinations. New content and errors are sealed to workspace owner keys; hashes use a deployment-secret-derived workspace HMAC. Browsers decrypt and compute content diffs. Scheduled exports contain metadata only; explicitly enabled plaintext content exports run from capture memory. Notifications are sealed in actions to recipient identity keys; the bundled service worker decrypts only with valid remembered device keys and otherwise shows generic text.
 
 ## Migration And Generated State
 

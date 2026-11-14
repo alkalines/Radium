@@ -18,6 +18,7 @@ container and release paths are currently blocked and unverified pending the
 | `SECRET_STORE_KEYS`          | Yes               | Deploy/Convex              | Versioned key material used by Convex Secret Store                                                                       |
 | `OPAQUE_SERVER_SETUP`        | Yes               | Convex secret              | OPAQUE server key pair and OPRF seed for password sign-in ([below](#opaque-server-setup))                                |
 | `AUTH_PROXY_SECRET`          | Recommended       | Convex + web server secret | Same value on both sides; lets Convex rate-limit auth per client IP behind the web proxy ([below](#opaque-server-setup)) |
+| `TELEMETRY_HASH_SECRET`       | Telemetry/routing | Convex secret              | Base64url-encoded 32-byte secret for workspace-keyed content, chain and message-derived routing hashes; back up with deployment configuration |
 | `AUTH_TRUST_X_FORWARDED_FOR` | No                | Web server                 | `true` only when the web server sits behind a reverse proxy that overwrites `X-Forwarded-For`                            |
 | `AISDK_MaxRetries`           | No                | Convex                     | AI SDK retry count; defaults to `0`                                                                                      |
 | `LWC_SECRET`                 | Feature-specific  | Convex                     | Signs ChatGPT Subscription sessions                                                                                      |
@@ -32,8 +33,8 @@ keys or other secrets in a `VITE_*` variable.
 
 `packages/backend/convex/convex.config.ts` declares the custom backend runtime
 environment contract with Convex validators. `SITE_URL`, `SECRET_STORE_KEYS` and
-`OPAQUE_SERVER_SETUP` are required; `AISDK_MaxRetries`, `LWC_SECRET`, the Worker issuer keys, and the
-Web Push keys are optional. `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` are
+`OPAQUE_SERVER_SETUP` are required; `TELEMETRY_HASH_SECRET` is required for telemetry capture and message-derived routing sessions. The retry, subscription, Worker issuer, and
+Web Push settings are optional. `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` are
 Convex-provided system variables, not custom app settings. Declarations do not
 set values: configure deployment values through the dashboard or `convex env`.
 The app passes `SECRET_STORE_KEYS` to the Secret Store component by typed env
@@ -78,9 +79,15 @@ bunx convex env set AISDK_MaxRetries 0
 
 Upstream provider credentials are normally added by the workspace owner in
 **Gateway > Credentials**. They are stored through Convex Secret Store and are
-not public application environment variables. Broader application-level
-encryption is future work; `SECRET_STORE_KEYS` only configures the Secret Store
-component.
+not public application environment variables. `SECRET_STORE_KEYS` protects the credential store; it is not a content decryption key.
+
+### Telemetry Encryption
+
+Provision `TELEMETRY_HASH_SECRET` once per deployment: generate 32 random bytes and encode as unpadded base64url (43 characters). See `packages/backend/.env.example`. Missing or invalid values suppress capture and message-derived routing fallback; explicit routing session IDs still work. Back it up with configuration. Rotation changes fingerprints, so old and new requests no longer deduplicate or share hash-derived lineage.
+
+New telemetry content, blob metadata and upstream error text are sealed to the workspace owner key. Workspaces without an owner key keep metadata only; no plaintext fallback is written. Historical plaintext is retained for phase 9, not silently migrated. Owners unlock in the browser to read content and compute diffs.
+
+New export destinations default to metadata only. Disabling privacy mode explicitly sends captured plaintext to that destination from the active request's memory after completion; it is best-effort and cannot be replayed from stored ciphertext. Scheduled exports never send content. Deploy matching browser/backend versions together.
 
 ### OPAQUE Server Setup
 

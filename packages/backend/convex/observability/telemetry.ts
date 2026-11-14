@@ -12,17 +12,14 @@ import {
 } from "../chatroom";
 import {
   buildBranchLanes,
-  diffTools,
   sharedPrefixDepth,
   summarizeRequests,
   type LineageParent,
 } from "../../src/telemetry/reads";
 import {
-  blobValue,
   loadBlob,
   loadChain,
   loadToolset,
-  type LoadedBlob,
 } from "../../src/telemetry/store";
 import {
   telemetryRequestStatusSchema,
@@ -304,21 +301,7 @@ export const listRequests = ownedWorkspaceQuery({
   },
 });
 
-function toolName(tool: LoadedBlob): string {
-  if (tool.meta?.names?.[0]) return tool.meta.names[0];
-  const value = blobValue(tool) as { function?: { name?: unknown }; name?: unknown } | undefined;
-  const name = value?.function?.name ?? value?.name;
-  return typeof name === "string" ? name : tool.hash.slice(0, 12);
-}
 
-async function loadNamedToolset(
-  ctx: QueryCtx,
-  workspace: Id<"workspaces">,
-  toolset: Id<"telemetry_blobs"> | undefined,
-) {
-  const tools = await loadToolset(ctx, workspace, toolset);
-  return tools.map((blob) => ({ name: toolName(blob), blob }));
-}
 
 async function loadNode(
   ctx: QueryCtx,
@@ -350,23 +333,9 @@ async function resolveToolChange(
   change: { from?: Id<"telemetry_blobs">; to?: Id<"telemetry_blobs"> } | undefined,
 ) {
   if (!change) return undefined;
-  const before = await loadNamedToolset(ctx, workspace, change.from);
-  const after = await loadNamedToolset(ctx, workspace, change.to);
-  const diff = diffTools(
-    before.map((tool) => ({ name: tool.name, hash: tool.blob.hash })),
-    after.map((tool) => ({ name: tool.name, hash: tool.blob.hash })),
-  );
-  const beforeByName = new Map(before.map((tool) => [tool.name, tool.blob]));
-  const afterByName = new Map(after.map((tool) => [tool.name, tool.blob]));
   return {
-    reordered: diff.reordered,
-    added: diff.added.map((tool) => ({ name: tool.name, blob: afterByName.get(tool.name)! })),
-    removed: diff.removed.map((tool) => ({ name: tool.name, blob: beforeByName.get(tool.name)! })),
-    changed: diff.changed.map((tool) => ({
-      name: tool.name,
-      before: beforeByName.get(tool.name)!,
-      after: afterByName.get(tool.name)!,
-    })),
+    from: await loadToolset(ctx, workspace, change.from),
+    to: await loadToolset(ctx, workspace, change.to),
   };
 }
 
@@ -424,7 +393,7 @@ export const getRequest = query({
       system: await loadBlob(ctx, workspace._id, request.system),
       params: await loadBlob(ctx, workspace._id, request.params),
       headers: await loadBlob(ctx, workspace._id, request.headers),
-      tools: await loadNamedToolset(ctx, workspace._id, request.toolset),
+      tools: await loadToolset(ctx, workspace._id, request.toolset),
       output: await loadNode(ctx, workspace._id, request.output),
       changes,
       legacy,

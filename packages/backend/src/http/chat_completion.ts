@@ -303,7 +303,7 @@ const createCompletion = async (
     serviceTier: reqData.service_tier ?? undefined,
     inferenceMode: reqData.inference_mode,
     preferences: routingPreferencesFromRequest(reqData.provider),
-    session: extractRoutingSession(reqData, info.headers, info.chatContext?.chatId),
+    session: await extractRoutingSession(reqData, info.headers, info.chatContext?.chatId, info.workspaceId),
     signal: info.abortSignal,
   };
   const capture = info.telemetry

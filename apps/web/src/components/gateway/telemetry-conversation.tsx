@@ -13,7 +13,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "backend/convex/_generated/api";
 import { DataSection } from "./data-section";
 import { MessageView, ToolItem, type TelemetryBlob, type ToolResultView } from "./telemetry-parts";
-import { asRecord, messageToolCalls } from "./telemetry-utils";
+import { asRecord, messageToolCalls, telemetryToolChanges, telemetryToolName } from "./telemetry-utils";
+import { TelemetryContentNotice, useTelemetryContent } from "./telemetry-content";
 
 type RequestResult = FunctionReturnType<typeof api.observability.telemetry.getRequest>;
 type MessagePage = FunctionReturnType<typeof api.observability.telemetry.getRequestMessages>;
@@ -21,12 +22,24 @@ type ConversationNode = MessagePage["nodes"][number];
 
 const PAGE_SIZE = 20;
 
+/** Unlocks the owner-only content without putting decrypted payloads in the query cache. */
+export function RequestConversation(props: {
+  data: RequestResult;
+  title?: React.ReactNode;
+  description?: React.ReactNode;
+}) {
+  const content = useTelemetryContent(props.data, props.data.request.workspace);
+  return content.data
+    ? <OpenedRequestConversation {...props} data={content.data} />
+    : <TelemetryContentNotice state={content.state} />;
+}
+
 /**
  * Everything the model received, in the order it saw it: tool definitions, system
  * instructions, the conversation, then its output. A tool result is shown inside the tool call
  * that requested it rather than as its own message.
  */
-export function RequestConversation({
+function OpenedRequestConversation({
   data,
   title = "Conversation",
   description,
@@ -36,7 +49,9 @@ export function RequestConversation({
   description?: React.ReactNode;
 }) {
   const { request, summary, tools, system, output } = data;
-  const changedTools = data.changes?.tools;
+  const changedTools = data.changes?.tools
+    ? telemetryToolChanges(data.changes.tools.from, data.changes.tools.to)
+    : undefined;
   const toolBadges = new Map<string, "added" | "changed">([
     ...(changedTools?.added.map((tool) => [tool.name, "added"] as const) ?? []),
     ...(changedTools?.changed.map((tool) => [tool.name, "changed"] as const) ?? []),
@@ -62,10 +77,10 @@ export function RequestConversation({
       >
         {tools.map((tool) => (
           <ToolItem
-            key={tool.blob.id}
-            name={tool.name}
-            blob={tool.blob}
-            badge={toolBadges.get(tool.name)}
+            key={tool.id}
+            name={telemetryToolName(tool)}
+            blob={tool}
+            badge={toolBadges.get(telemetryToolName(tool))}
           />
         ))}
       </Part>
@@ -92,7 +107,7 @@ export function RequestConversation({
         }
         empty="This request carried no conversation messages."
       >
-        {summary.inputDepth > 0 && <ConversationMessages requestId={request._id} />}
+        {summary.inputDepth > 0 && <ConversationMessages key={request._id} requestId={request._id} workspace={request.workspace} />}
       </Part>
 
       <Part label="Output" empty={outputNote(data)}>
@@ -147,10 +162,13 @@ function Part({
  * The request's message chain, newest page first, with earlier pages loaded on demand. Pages are
  * merged before rendering so a tool result pairs with its call even across a page boundary.
  */
-function ConversationMessages({ requestId }: { requestId: Id<"telemetry_requests"> }) {
+function ConversationMessages({ requestId, workspace }: {
+  requestId: Id<"telemetry_requests">;
+  workspace: Id<"workspaces">;
+}) {
   // Cursors of the loaded pages, newest page first.
   const [cursors, setCursors] = useState<(Id<"telemetry_nodes"> | undefined)[]>([undefined]);
-  const { error, loaded, oldest, nodes } = useQueries({
+  const { error, loaded, oldest, nodes: sealedNodes } = useQueries({
     queries: cursors.map((cursor) =>
       convexQuery(api.observability.telemetry.getRequestMessages, {
         request: requestId,
@@ -170,7 +188,9 @@ function ConversationMessages({ requestId }: { requestId: Id<"telemetry_requests
       };
     },
   });
-  const { items, results } = useMemo(() => pairToolResults(nodes), [nodes]);
+  const content = useTelemetryContent(sealedNodes, workspace);
+  const nodes = content.data;
+  const { items, results } = useMemo(() => pairToolResults(nodes ?? []), [nodes]);
 
   if (error) {
     return (
@@ -187,6 +207,7 @@ function ConversationMessages({ requestId }: { requestId: Id<"telemetry_requests
       </>
     );
   }
+  if (!nodes) return <TelemetryContentNotice state={content.state} />;
 
   const total = oldest?.total ?? 0;
   // Everything before the first item this request added (a new message, or an earlier call whose

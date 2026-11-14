@@ -99,7 +99,7 @@ export function TelemetryDestinations({ workspaceId }: { workspaceId: Id<"worksp
     <>
       <GroupList
         title="Export destinations"
-        description="Send captured requests to an OpenTelemetry collector or a webhook."
+        description="Send metadata on the scheduled export path, or explicitly send plaintext content to a destination during capture."
         action={
           <Button variant="outline" size="sm" onClick={() => setEditing("new")}>
             <PlusIcon data-icon="inline-start" />
@@ -207,7 +207,7 @@ function DestinationDialog({
   const [name, setName] = useState(existing?.name ?? "");
   const [endpoint, setEndpoint] = useState(existing?.endpoint ?? "");
   const [enabled, setEnabled] = useState(existing?.enabled ?? true);
-  const [privacyMode, setPrivacyMode] = useState(existing?.privacyMode ?? false);
+  const [privacyMode, setPrivacyMode] = useState(existing?.privacyMode ?? true);
   const [sampling, setSampling] = useState(String(Math.round((existing?.samplingRate ?? 1) * 100)));
   const [include, setInclude] = useState<Id<"api_keys">[]>(existing?.includeApiKeys ?? []);
   const [exclude, setExclude] = useState<Id<"api_keys">[]>(existing?.excludeApiKeys ?? []);
@@ -283,8 +283,9 @@ function DestinationDialog({
           <DialogHeader>
             <DialogTitle>{existing ? "Edit destination" : "Add destination"}</DialogTitle>
             <DialogDescription>
-              Requests are sent as OTLP/JSON traces after they are captured. Telemetry capture and
-              content recording are configured separately.
+              Metadata-only exports run on the scheduled delivery path. Turning metadata-only off
+              sends captured plaintext content to this destination inside the capturing request,
+              after the response finishes. Content delivery is best-effort, with no scheduled replay.
             </DialogDescription>
           </DialogHeader>
 
@@ -424,9 +425,11 @@ function DestinationDialog({
                 onCheckedChange={setPrivacyMode}
               />
               <div className="flex flex-col gap-0.5">
-                <FieldLabel htmlFor={`${fieldId}-privacy`}>Privacy mode</FieldLabel>
+                <FieldLabel htmlFor={`${fieldId}-privacy`}>Metadata only</FieldLabel>
                 <FieldDescription>
-                  Leave out messages, system instructions, tool definitions, and output.
+                  Keep messages, system instructions, tool definitions, output and error text out of
+                  scheduled exports. Turn off only if you trust this destination to receive
+                  plaintext captured content. Encrypted private-chat content is never exported.
                 </FieldDescription>
               </div>
             </Field>

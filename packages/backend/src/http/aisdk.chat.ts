@@ -333,7 +333,7 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
 
   const reasoningStarts = new Map<string, { startedAt: number; index: number }>();
   const reasoningDurations: number[] = [];
-  // Formatted message of the error chunk the client was sent, for the failure notification.
+  // Keep the error in memory for the response and interruption state.
   let streamFailure: string | undefined;
 
   const uiStream = toUIMessageStream({
@@ -455,7 +455,6 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
             userId,
             chat: chatId,
             kind,
-            ...(kind === "session_failed" && streamFailure ? { detail: streamFailure } : {}),
           });
         } catch {
           logger.warn("notifications.session_notify_failed");

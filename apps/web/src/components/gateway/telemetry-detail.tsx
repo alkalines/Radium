@@ -26,6 +26,7 @@ import {
   type TelemetryBlob,
 } from "./telemetry-parts";
 import { RequestConversation } from "./telemetry-conversation";
+import { TelemetryContentNotice, useTelemetryContent } from "./telemetry-content";
 import {
   diffLines,
   diffParams,
@@ -35,6 +36,7 @@ import {
   formatTokenCount,
   systemText,
   type DiffLine,
+  telemetryToolChanges,
 } from "./telemetry-utils";
 
 type RequestResult = FunctionReturnType<typeof api.observability.telemetry.getRequest>;
@@ -43,6 +45,7 @@ export function TelemetryDetail({ requestId }: { requestId: Id<"telemetry_reques
   const { data, error } = useQuery(
     convexQuery(api.observability.telemetry.getRequest, { request: requestId }),
   );
+  const content = useTelemetryContent(data, data?.request.workspace);
 
   if (error) {
     return (
@@ -87,21 +90,30 @@ export function TelemetryDetail({ requestId }: { requestId: Id<"telemetry_reques
 
       <Lineage data={data} />
       <Overview data={data} cost={summary.cost} />
-      {request.error && (
+      {content.data?.request.error && (
         <Alert variant="destructive">
           <CircleAlertIcon />
           <AlertTitle>
-            Request failed{request.error.status ? ` (${request.error.status})` : ""}
+            Request failed{content.data.request.error.status ? ` (${content.data.request.error.status})` : ""}
           </AlertTitle>
           <AlertDescription className="whitespace-pre-wrap">
-            {request.error.message}
+            {content.data.request.error.message}
           </AlertDescription>
         </Alert>
       )}
-      {data.changes && <Changes data={data} />}
-      {data.legacy ? <LegacyPayloads data={data} /> : <RequestConversation data={data} />}
-      <ParamsSection params={data.params} headers={data.headers} />
-      <Attempts data={data} />
+      {content.data ? (
+        <>
+          {content.data.changes && <Changes data={content.data} />}
+          {content.data.legacy ? <LegacyPayloads data={content.data} /> : <RequestConversation data={content.data} />}
+          <ParamsSection params={content.data.params} headers={content.data.headers} />
+        </>
+      ) : <TelemetryContentNotice state={content.state} />}
+      <Attempts request={content.data?.request ?? {
+        ...request,
+        attempts: request.sealedError
+          ? request.attempts.map((attempt) => ({ ...attempt, message: undefined }))
+          : request.attempts,
+      }} />
     </>
   );
 }
@@ -350,7 +362,7 @@ function DiffView({ lines }: { lines: DiffLine[] }) {
 type ToolChangeData = NonNullable<NonNullable<RequestResult["changes"]>["tools"]>;
 
 function ToolChanges({ tools }: { tools: ToolChangeData }) {
-  const { added, removed, changed, reordered } = tools;
+  const { added, removed, changed, reordered } = telemetryToolChanges(tools.from, tools.to);
   return (
     <div className="flex flex-col gap-2">
       {added.map((tool) => (
@@ -374,6 +386,9 @@ function ToolChanges({ tools }: { tools: ToolChangeData }) {
 }
 
 function ParamsDiff({ from, to }: { from: TelemetryBlob | null; to: TelemetryBlob | null }) {
+  if ([from, to].some((blob) => blob && blob.content === undefined)) {
+    return <p className="text-sm text-muted-foreground">Parameters were not recorded, so no diff is available.</p>;
+  }
   const changes = diffParams(blobValue(from), blobValue(to));
   if (changes.length === 0) {
     return <p className="text-sm text-muted-foreground">Only the parameter fingerprint changed.</p>;
@@ -447,8 +462,7 @@ const attemptStates: Record<"ok" | "error" | "aborted", RunState> = {
   aborted: "cancelled",
 };
 
-function Attempts({ data }: { data: RequestResult }) {
-  const { request } = data;
+function Attempts({ request }: { request: RequestResult["request"] }) {
   if (request.attempts.length === 0) return null;
 
   return (

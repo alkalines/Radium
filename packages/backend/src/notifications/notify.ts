@@ -3,6 +3,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
 import {
   notificationCategory,
+  notificationTitle,
   resolveNotificationPreferences,
   type NotificationKind,
   type NotificationPreferences,
@@ -14,17 +15,13 @@ import {
  */
 export const BROWSER_CLAIM_GRACE_MS = 10_000;
 
-const MAX_TITLE_LENGTH = 120;
-const MAX_BODY_LENGTH = 400;
-
 export type NotificationInput = {
   userId: string;
   workspace?: Id<"workspaces">;
   kind: NotificationKind;
-  title: string;
-  body: string;
   chat?: Id<"aisdk_chats">;
   limitEvent?: Id<"limit_events">;
+  limitMetadata?: { provider: string; credential: string; meter?: string };
   createdAt: number;
 };
 
@@ -38,10 +35,6 @@ export async function loadNotificationPreferences(
     .withIndex("by_userId", (q) => q.eq("userId", userId))
     .unique();
   return resolveNotificationPreferences(row?.notifications);
-}
-
-function bounded(text: string, max: number) {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 /**
@@ -65,16 +58,27 @@ export async function notify(
   const preferences = await loadNotificationPreferences(ctx, input.userId);
   if (!preferences[notificationCategory(input.kind)].enabled) return null;
 
+  const identity = await ctx.db
+    .query("e2ee_identities")
+    .withIndex("by_userId_and_status", (q) => q.eq("userId", input.userId).eq("status", "active"))
+    .first();
+
   const id = await ctx.db.insert("notifications", {
     userId: input.userId,
     ...(input.workspace ? { workspace: input.workspace } : {}),
     kind: input.kind,
-    title: bounded(input.title, MAX_TITLE_LENGTH),
-    body: bounded(input.body, MAX_BODY_LENGTH),
+    title: notificationTitle(input.kind),
+    body: input.chat ? "Session" : "Workspace",
     ...(input.chat ? { chat: input.chat } : {}),
     ...(input.limitEvent ? { limitEvent: input.limitEvent } : {}),
+    ...(input.limitMetadata ? { limitMetadata: input.limitMetadata } : {}),
     createdAt: input.createdAt,
+    ...(identity ? { sealingPending: true } : {}),
   });
+
+  if (identity) {
+    await ctx.scheduler.runAfter(0, internal.notifications.sealNotification, { notification: id });
+  }
 
   await ctx.scheduler.runAfter(BROWSER_CLAIM_GRACE_MS, internal.notifications.deliverFallback, {
     notification: id,

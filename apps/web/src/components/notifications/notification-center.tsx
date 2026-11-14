@@ -7,6 +7,10 @@ import type { FunctionReturnType } from "convex/server";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import { keyManager } from "@/lib/crypto/key-manager";
+import { openNotification } from "@/lib/crypto/notification-content";
+import { useKeyStatus } from "@/lib/crypto/use-key-status";
+import { toast } from "sonner";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import {
   NOTIFICATION_OPEN_MESSAGE,
@@ -48,9 +52,10 @@ function isViewing(notification: NotificationView, activeChatId: string | undefi
  * Mounted once by the Window; renders the notifications Toaster.
  */
 export function NotificationCenter({ activeChatId }: { activeChatId?: string }) {
+  const keyStatus = useKeyStatus();
   const { isAuthenticated } = useConvexAuth();
   const navigate = useNavigate();
-  const { setWorkspace } = useWorkspace();
+  const { setWorkspace, workspaces } = useWorkspace();
   const { data: notifications } = useQuery(
     convexQuery(api.notifications.recent, isAuthenticated ? {} : "skip"),
   );
@@ -62,6 +67,12 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
 
   // Rows present at load are history; only rows that arrive afterwards notify.
   const known = useRef<Set<string> | null>(null);
+  const displayed = useRef(new Set<string>());
+
+  useEffect(() => {
+    for (const id of displayed.current) toast.dismiss(id);
+    displayed.current.clear();
+  }, [keyStatus.state, keyStatus.state === "unlocked" ? keyStatus.userId : null]);
 
   function open(target: { path: string; workspace?: string; chat?: string }) {
     // Limit events belong to a workspace; Gateway pages show the current one.
@@ -72,9 +83,9 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
   }
 
   // Read when a delayed claim settles or a click arrives, not when the notification arrived.
-  const latest = useRef({ activeChatId, preferences, open });
+  const latest = useRef({ activeChatId, preferences, open, isAuthenticated, workspaces });
   useLayoutEffect(() => {
-    latest.current = { activeChatId, preferences, open };
+    latest.current = { activeChatId, preferences, open, isAuthenticated, workspaces };
   });
 
   useEffect(() => primeNotificationAudio(), []);
@@ -137,31 +148,49 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
       // Pushed while this tab was asleep or disconnected: the device already showed it.
       if (notification.pushed) continue;
 
-      if (!isViewing(notification, latest.current.activeChatId)) {
-        showNotificationToast(notification, () => latest.current.open(notification));
-      }
-      if (notification.claimed) continue;
+      void openNotification(notification).then((content) => {
+        if (!latest.current.isAuthenticated) return;
+        const status = keyManager.getSnapshot();
+        const canShow = status.state === "unlocked" && status.userId === notification.userId &&
+          status.keyId === notification.sealed?.keyId;
+        let display = canShow && content ? { ...notification, ...content } : notification;
+        if (status.state === "unlocked" && status.userId === notification.userId &&
+            notification.category === "limits" && notification.workspace) {
+          const workspace = latest.current.workspaces.find((item) => item._id === notification.workspace);
+          if (workspace) {
+            display = { ...display, body: display.body === "Workspace" ? workspace.name : `${workspace.name} · ${display.body}` };
+          }
+        }
+        if (!isViewing(notification, latest.current.activeChatId)) {
+          displayed.current.add(notification._id);
+          showNotificationToast(display, () => latest.current.open(notification));
+        }
+        if (notification.claimed) return;
 
-      const delay = document.hasFocus() ? 0 : BACKGROUND_CLAIM_DELAY_MS;
-      window.setTimeout(() => {
-        void claim({ notification: notification._id })
-          .then((won) => {
-            const { activeChatId: chatId, preferences: current } = latest.current;
-            if (!won || isViewing(notification, chatId)) return;
-
-            if (current?.[notification.category].sound)
-              playNotificationSound(notification.category);
-            const isForeground = document.visibilityState === "visible" && document.hasFocus();
-            if (!isForeground) {
-              void showSystemNotification({ ...notification, id: notification._id }, () =>
-                latest.current.open(notification),
-              );
-            }
-          })
-          .catch(() => {
-            // A failed claim leaves the notification to the push fallback.
-          });
-      }, delay);
+        const delay = document.hasFocus() ? 0 : BACKGROUND_CLAIM_DELAY_MS;
+        window.setTimeout(() => {
+          void claim({ notification: notification._id })
+            .then((won) => {
+              if (!latest.current.isAuthenticated) return;
+              const { activeChatId: chatId, preferences: current } = latest.current;
+              if (!won || isViewing(notification, chatId)) return;
+              if (current?.[notification.category].sound)
+                playNotificationSound(notification.category);
+              const isForeground = document.visibilityState === "visible" && document.hasFocus();
+              if (!isForeground) {
+                const now = keyManager.getSnapshot();
+                const safe = now.state === "unlocked" && now.userId === notification.userId &&
+                  now.keyId === notification.sealed?.keyId ? display : notification;
+                void showSystemNotification({ ...safe, id: notification._id }, () =>
+                  latest.current.open(notification),
+                );
+              }
+            })
+            .catch(() => {
+              // A failed claim leaves the notification to the push fallback.
+            });
+        }, delay);
+      });
     }
   }, [notifications, claim]);
 

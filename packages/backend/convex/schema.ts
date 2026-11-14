@@ -741,8 +741,16 @@ export default defineSchema({
     kind: v.union(sessionNotificationKindValidator, limitEventKindValidator),
     title: v.string(),
     body: v.string(),
+    /** Identity-bound notification content; plaintext fields above are legacy or generic. */
+    sealed: v.optional(v.object({ keyId: v.string(), box: v.bytes() })),
+    sealingPending: v.optional(v.boolean()),
     chat: v.optional(v.id("aisdk_chats")),
     limitEvent: v.optional(v.id("limit_events")),
+    limitMetadata: v.optional(v.object({
+      provider: v.string(),
+      credential: v.string(),
+      meter: v.optional(v.string()),
+    })),
     createdAt: v.number(),
     /** Set by the first open tab that claimed it; push fallback is skipped once set. */
     seenAt: v.optional(v.number()),
@@ -1283,6 +1291,12 @@ export default defineSchema({
     content: v.optional(v.string()),
     storage: v.optional(v.id("_storage")),
     meta: v.optional(telemetryBlobMetaSchema),
+    sealed: v.optional(v.object({
+      epoch: v.number(),
+      requestId: v.string(),
+      capsule: v.bytes(),
+      envelope: v.optional(v.bytes()),
+    })),
     /** Set for migrated legacy payloads that were cut at the old 32,000-character limit. */
     truncated: v.optional(v.boolean()),
   })
@@ -1360,6 +1374,12 @@ export default defineSchema({
     providerGenerationId: v.optional(v.string()),
     chatCompletion: v.optional(v.id("chat_completions")),
     error: v.optional(v.object({ message: v.string(), status: v.optional(v.number()) })),
+    sealedError: v.optional(v.object({
+      epoch: v.number(),
+      requestId: v.string(),
+      capsule: v.bytes(),
+      envelope: v.bytes(),
+    })),
     canceled: v.optional(v.boolean()),
     attempts: v.array(telemetryAttemptSchema),
     /** Last client message node; absent when the request had no non-system messages. */

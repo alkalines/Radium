@@ -19,6 +19,26 @@ import {
   type TelemetryLineage,
 } from "../../src/telemetry/validators";
 
+const sealedBlob = v.object({
+  epoch: v.number(),
+  requestId: v.string(),
+  capsule: v.bytes(),
+  envelope: v.optional(v.bytes()),
+});
+
+/** Current public owner key; capture never receives private key material. */
+export const ownerKey = internalQuery({
+  args: { workspace: v.id("workspaces") },
+  handler: async (ctx, { workspace }) => {
+    const row = await ctx.db.get("workspaces", workspace);
+    if (!row?.keyEpoch) return null;
+    const key = await ctx.db.query("e2ee_workspace_epochs")
+      .withIndex("by_workspace_and_epoch", (q) => q.eq("workspace", workspace).eq("epoch", row.keyEpoch!))
+      .unique();
+    return key ? { epoch: key.epoch, publicKey: key.ownerPublicKey } : null;
+  },
+});
+
 // Capture writes arrive from `src/telemetry/capture.ts` in bounded batches. Every function here
 // is internal: arguments are server-derived, but ownership claims (API key, chat) are still
 // re-checked against app-owned records before anything is attributed to a workspace.
@@ -82,7 +102,7 @@ export const existingBlobs = internalQuery({
       found.push({
         hash,
         id: blob._id,
-        recorded: blob.content !== undefined || blob.storage !== undefined,
+        recorded: blob.content !== undefined || blob.storage !== undefined || blob.sealed !== undefined,
       });
     }
     return found;
@@ -94,10 +114,8 @@ const blobInput = v.object({
   kind: telemetryBlobKindSchema,
   /** UTF-8 byte length of the canonical JSON, even when the content is not stored. */
   size: v.number(),
-  content: v.optional(v.string()),
-  /** File-storage copy of content above the inline limit, uploaded by the caller. */
   storage: v.optional(v.id("_storage")),
-  meta: v.optional(telemetryBlobMetaSchema),
+  sealed: v.optional(sealedBlob),
   /** Tool blobs of a `toolset`, in request order; they must already exist. */
   members: v.optional(v.array(v.id("telemetry_blobs"))),
 });
@@ -114,13 +132,13 @@ export const ingestBlobs = internalMutation({
     const ids: Array<{ hash: string; id: Id<"telemetry_blobs"> }> = [];
     for (const blob of args.blobs) {
       const existing = await blobByHash(ctx, args.workspace, blob.hash);
-      const hasContent = blob.content !== undefined || blob.storage !== undefined;
+      const hasContent = blob.sealed !== undefined;
 
       if (existing) {
-        const existingRecorded = existing.content !== undefined || existing.storage !== undefined;
+        const existingRecorded = existing.content !== undefined || existing.storage !== undefined || existing.sealed !== undefined;
         if (!existingRecorded && hasContent) {
           await ctx.db.patch("telemetry_blobs", existing._id, {
-            content: blob.content,
+            sealed: blob.sealed,
             storage: blob.storage,
           });
         } else if (blob.storage) {
@@ -135,9 +153,8 @@ export const ingestBlobs = internalMutation({
         hash: blob.hash,
         kind: blob.kind,
         size: blob.size,
-        content: blob.content,
+        sealed: blob.sealed,
         storage: blob.storage,
-        meta: blob.meta,
       });
       for (const [position, tool] of (blob.members ?? []).entries()) {
         await ctx.db.insert("telemetry_toolset_tools", {
@@ -364,7 +381,12 @@ export const finishRequest = internalMutation({
     upstreamInferenceCost: v.optional(v.number()),
     providerGenerationId: v.optional(v.string()),
     chatCompletion: v.optional(v.id("chat_completions")),
-    error: v.optional(v.object({ message: v.string(), status: v.optional(v.number()) })),
+    sealedError: v.optional(v.object({
+      epoch: v.number(),
+      requestId: v.string(),
+      capsule: v.bytes(),
+      envelope: v.bytes(),
+    })),
     canceled: v.optional(v.boolean()),
     attempts: v.array(telemetryAttemptSchema),
     input: v.optional(v.id("telemetry_nodes")),
@@ -460,6 +482,7 @@ export const finishRequest = internalMutation({
     const { session: _session, prefix: _prefix, forked: _forked, ...fields } = args;
     const request = await ctx.db.insert("telemetry_requests", {
       ...fields,
+      attempts: fields.attempts.map(({ message: _message, ...attempt }) => attempt),
       session,
       lineage,
       changes,

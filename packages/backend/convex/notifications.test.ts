@@ -2,6 +2,7 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { generateEncryptionKeyPair, openBox, toBase64Url } from "radium-crypto";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -9,6 +10,7 @@ import { recordLimitEvent } from "../src/limits/events";
 import { resolveLimitSettings, type Meter } from "../src/limits/meters";
 import { sessionNotificationKind, type ChatRequestEnd } from "../src/notifications/session";
 import { chatInterruption } from "../src/chatroom/interruption";
+import { notificationAad } from "../src/notifications/contract";
 
 type AuthContext = {
   auth: { getUserIdentity: () => Promise<{ tokenIdentifier?: string } | null> };
@@ -83,7 +85,6 @@ async function notifySession(
     userId: "member",
     chat: harness.chat,
     kind,
-    ...(kind === "session_failed" ? { detail: "429 rate limited" } : {}),
   });
   const [latest] = await harness.member.query(api.notifications.recent, {});
   return latest!;
@@ -183,7 +184,7 @@ describe("browser claim and push fallback", () => {
       kind: "session_failed",
       category: "failed",
       title: "Session failed",
-      body: "Refactor routing · 429 rate limited",
+      body: "Session",
       path: `/chat/${harness.chat}`,
       claimed: false,
       pushed: false,
@@ -199,6 +200,66 @@ describe("browser claim and push fallback", () => {
     await expect(
       harness.member.mutation(api.notifications.claim, { notification: notification._id }),
     ).resolves.toBe(false);
+  });
+
+  test("new notifications and push do not disclose a legacy chat title", async () => {
+    const harness = await setup();
+    await subscribeDevice(harness);
+    const notification = await notifySession(harness);
+    const stored = await harness.t.run((ctx) => ctx.db.get("notifications", notification._id));
+    expect(stored).toMatchObject({ title: "Session finished", body: "Session" });
+    expect(JSON.stringify(stored)).not.toContain("Refactor routing");
+    const target = await harness.t.query(internal.notifications.pushTargets, {
+      notification: notification._id,
+    });
+    expect(target?.payload).not.toContain("Refactor routing");
+
+    await harness.t.run((ctx) =>
+      ctx.db.patch("notifications", notification._id, {
+        title: "Private legacy title",
+        body: "Private legacy body",
+      }),
+    );
+    const [view] = await harness.member.query(api.notifications.recent, {});
+    expect(JSON.stringify(view)).not.toContain("Private legacy");
+    const legacyTarget = await harness.t.query(internal.notifications.pushTargets, {
+      notification: notification._id,
+    });
+    expect(legacyTarget?.payload).not.toContain("Private legacy");
+  });
+
+  test("identity-backed content is sealed and bound to the recipient and row", async () => {
+    const harness = await setup();
+    const identity = await generateEncryptionKeyPair();
+    const other = await generateEncryptionKeyPair();
+    const keyId = toBase64Url(new Uint8Array(16).fill(7));
+    await harness.t.run((ctx) => ctx.db.insert("e2ee_identities", {
+      userId: "member", keyId, suite: 1,
+      encryptionPublicKey: identity.publicKey.slice().buffer,
+      signingPublicKey: new ArrayBuffer(32),
+      secrets: new ArrayBuffer(1), selfSignature: new ArrayBuffer(1),
+      recoveryWrapper: new ArrayBuffer(1), status: "active", createdAt: Date.now(),
+    }));
+    await harness.t.mutation(internal.notifications.notifySession, {
+      userId: "member", chat: harness.chat, kind: "session_finished",
+    });
+    const row = await harness.t.run(async (ctx) => (await ctx.db.query("notifications").collect())[0]!);
+    expect(row.sealingPending).toBe(true);
+    expect(JSON.stringify(row)).not.toContain("Refactor routing");
+    await harness.t.action(internal.notifications.sealNotification, { notification: row._id });
+    const [view] = await harness.member.query(api.notifications.recent, {});
+    expect(view?.sealed?.keyId).toBe(keyId);
+    const aad = notificationAad("member", harness.workspace, row._id);
+    const box = new Uint8Array(view!.sealed!.box);
+    const plaintext = await openBox({ seed: identity.seed, box, aad, pad: "short" });
+    expect(JSON.parse(new TextDecoder().decode(plaintext))).toEqual({
+      title: "Session finished", body: "Refactor routing",
+    });
+    await expect(openBox({ seed: other.seed, box, aad, pad: "short" })).rejects.toThrow();
+    await expect(openBox({ seed: identity.seed, box, aad: { ...aad, parent: "owner" }, pad: "short" })).rejects.toThrow();
+    const target = await harness.t.query(internal.notifications.pushTargets, { notification: row._id });
+    expect(target?.payload).not.toContain("Refactor routing");
+    expect(new TextEncoder().encode(target!.payload).byteLength).toBeLessThan(4096);
   });
 
   test("a claimed notification is never pushed", async () => {
@@ -345,7 +406,7 @@ describe("limit events", () => {
         kind: "limit_low",
         category: "limits",
         title: "Usage limit low",
-        body: "Team · Work account: Weekly limit at 82%",
+        body: "Workspace",
         path: "/gateway/limits",
         workspace: harness.workspace,
       }),

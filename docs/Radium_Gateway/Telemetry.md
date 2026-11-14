@@ -16,8 +16,8 @@ Paths below are relative to `packages/backend/`.
 | Field           | Default | Effect                                                                                         |
 | --------------- | ------- | ---------------------------------------------------------------------------------------------- |
 | `enabled`       | `false` | Nothing is captured while off. Disabling also clears the two recording flags.                  |
-| `recordInputs`  | `false` | Store message, system-instruction, and tool-definition content. Off keeps fingerprints + meta. |
-| `recordOutputs` | `false` | Store model output content. Off keeps fingerprints + meta.                                     |
+| `recordInputs`  | `false` | Seal message, system, tool, parameter and allowlisted-header content to the owner key; off keeps keyed fingerprints and sizes. |
+| `recordOutputs` | `false` | Seal model output to the owner key; off keeps keyed fingerprints and sizes. |
 | `retentionDays` | absent  | Delete requests older than this many days. Absent keeps requests until deleted.                |
 
 Requests from a member's personal chat never record content, and are hidden from
@@ -42,19 +42,8 @@ graph LR
   R -->|session| S[telemetry_sessions]
 ```
 
-- **Fingerprints.** Content is serialized with RFC 8785 JSON canonicalization
-  (`src/telemetry/canonical.ts`: sorted keys, no whitespace, one number/string
-  spelling) and hashed with SHA-256 over `workspaceId + canonical JSON`
-  (`src/telemetry/hash.ts`). Equal content in one workspace has one row; the same
-  content in another workspace has a different hash and its own row. Dedup never
-  crosses workspaces.
-- **Blobs** (`telemetry_blobs`, unique per `(workspace, hash)`): message, leading
-  system/developer messages, each tool definition, the ordered toolset, params
-  (the raw body minus `messages`/`tools`, so `temperature`, `top_k`, `reasoning`,
-  `metadata`, `trace`, and unknown fields survive), and allowlisted headers
-  (never credentials). Content above 900,000 bytes goes to Convex file storage.
-  With recording off, a blob keeps only its hash, size, and meta (role, tool or
-  tool-call names).
+- **Fingerprints.** RFC 8785 canonical JSON is hashed with HMAC-SHA-256 under a per-workspace key derived from `TELEMETRY_HASH_SECRET` (`src/telemetry/hash.ts`). Equality and deduplication never cross workspaces. Node chains and message-derived routing sessions use separate hash domains. Missing/invalid secrets disable capture and that fallback, not explicit routing session IDs.
+- **Blobs** (`telemetry_blobs`, unique per `(workspace, hash)`): messages, system/developer messages, tool definitions, ordered toolsets, raw parameters and allowlisted headers. New content and descriptive metadata (roles and tool names) are sealed to the workspace owner public key. Each capturing request generates one capsule; its descriptor is carried by each referring sealed object so deduplicated content survives deletion of the originating request. Large envelopes go to File Storage. Without keys, content is suppressed rather than stored plaintext. Legacy plaintext remains for phase 9.
 - **Conversation tree** (`telemetry_nodes`): one immutable node per message
   position; `hash = H(workspace, parent hash, message hash)`. A request points at
   its last input node and its output node. Shared prefixes are stored once. A
@@ -99,9 +88,9 @@ param key diffs.
    is recorded. The committed output is assembled from the stream or JSON body.
 4. After the response finishes, `finishRequest` inserts the request row once per
    `(workspace, requestId)`, computes lineage and changes, links the
-   `chat_completions` usage record, and schedules export.
+   `chat_completions` usage record, and schedules metadata export. Explicit content destinations are sent from the active capture's memory, never scheduler arguments.
 
-Capture failures are logged and never fail or delay the client response.
+Capture failures log only fixed messages and never fail the client response. Content export is best-effort in the completion path; there is no durable plaintext replay.
 Concurrent ingestion is safe: Convex mutations are serializable, so two requests
 inserting the same hash cannot both succeed; the loser re-runs and reuses the row.
 
@@ -118,7 +107,7 @@ accordion, and each tool call shares a card with its result. A session page
 draws its requests as a left-to-right Mermaid flowchart (rendered with the
 `@streamdown/mermaid` plugin at its strict security level): clicking a request
 opens it, and clicking a grouped run of unchanged requests expands it. It also
-shows the latest request's conversation as "General messages".
+shows the latest request's conversation as "General messages". Sealed fields are opened locally with verified owner-key grants, including historical epochs. Decrypted views live only in memory and are cleared on lock, sign-out and trust changes; failures never fall back to plaintext siblings. System, parameter and tool diffs use decrypted content in the browser.
 
 ## Retention And Deletion
 
@@ -131,11 +120,9 @@ request, child node, or toolset still references it, then walks up the tree.
 
 `convex/observability/telemetryExport.ts`: owner-managed destinations per
 workspace, `otlp` (OTLP/HTTP JSON to `<endpoint>/v1/traces`) or `webhook` (same
-payload to the endpoint). Each destination has privacy mode (strips messages,
-system instructions, tool definitions, and output), a sampling rate decided per
-session so sessions stay whole, and API-key include/exclude filters (exclude
-wins). Header values are stored in Secret Store and never returned. Export runs
-in a scheduled action after the request is stored, so it adds no latency.
+payload to the endpoint). New destinations default to privacy mode (metadata only), with session-stable sampling and API-key include/exclude filters (exclude wins). Header values are stored in Secret Store and never returned.
+
+Scheduled delivery is metadata-only and cannot open stored ciphertext. Turning privacy mode off explicitly authorizes plaintext content delivery from the capturing request's memory after the response completes, subject to input/output recording settings and private-chat visibility. A crash can lose content delivery; it cannot be replayed later from storage. The destination is a plaintext recipient by owner choice.
 
 Spans use the OpenTelemetry GenAI semantic conventions
 (`gen_ai.request.*`, `gen_ai.usage.*`, `gen_ai.conversation.id`,
@@ -170,8 +157,8 @@ migration has run:
 - Large first-time histories are ingested in several mutations; a crash between
   batches leaves unreferenced nodes that garbage collection does not see until a
   later request references and deletes them.
-- Application-level encryption of captured content is not implemented; the plan
-  is in [E2EE data § Telemetry](../E2EE/Data.md#telemetry).
+- Legacy rows are not re-encrypted by this change. Owner-key loss makes new captured content unreadable without another grant/recovery path; metadata remains usable.
+- Keyed Chatroom chats retain content-capture suppression. Gateway capture can seal content when configured and owner keys exist.
 
 ## Verification
 

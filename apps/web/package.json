@@ -5,8 +5,9 @@
   "author": "alkalines",
   "scripts": {
     "dev": "bun run vite:dev",
-    "vite:dev": "vite dev",
-    "vite:build": "vite build",
+    "vite:dev": "bun run build:notifications-sw && vite dev",
+    "vite:build": "bun run build:notifications-sw && vite build",
+    "build:notifications-sw": "bun build src/notifications-sw.ts --target browser --outfile public/notifications-sw.js",
     "vite:start": "bun .output/server/index.mjs",
     "start": "bun .output/server/index.mjs",
     "lint": "eslint",

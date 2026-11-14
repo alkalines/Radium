@@ -1,6 +1,6 @@
 # E2EE Data
 
-Status: **partly implemented.** Part of [End-to-end encryption](../E2EE.md). Keys and the envelope format are in [Keys](Keys.md). Table references are `packages/backend/convex/schema.ts` unless stated. Built-in Chatroom content is encrypted for chats created by accounts with keys; paired Workers encrypt ACP content and built-in tool persistence ([task 11 phases 5–7](../tasks/11_E2EE.md)). Telemetry, notifications and legacy-data migration remain planned.
+Status: **phases 1–8 substantially implemented; legacy-data migration remains planned.** Part of [End-to-end encryption](../E2EE.md). Keys and envelopes: [Keys](Keys.md). Table references are `packages/backend/convex/schema.ts` unless stated. Keyed Chatroom content, paired Worker/ACP traffic, new telemetry content and notifications are encrypted; verification and limitations are in [task 11](../tasks/11_E2EE.md).
 
 ## Classes
 
@@ -17,7 +17,9 @@ Encrypted today, for Chatroom chats created by an account with keys (`aisdk_chat
 
 Paired Workers persist ACP frames, commands, interactions, titles and session errors as ciphertext; built-in tool requests, request-key results and durable receipts are sealed. Session-specific config and available commands travel inside encrypted frames, not plaintext session patches. Keyless workspaces with unpaired Workers retain legacy plaintext behavior and trust their backend.
 
-Still plaintext: legacy chats and attachments awaiting migration; workspace/project names and folders; Worker/ACP directories, installation reports and availability; routing, audience, status and usage metadata; notifications and telemetry (encrypted chats suppress content capture and notification titles). Secret Store encrypts credentials with a deployment-held KEK, which protects ciphertext at rest but not from the backend.
+New telemetry content and descriptive blob metadata are sealed to workspace owner keys; errors share the capturing request's capsule. New notification content is sealed to recipient identities in an action scheduled with only the notification ID. Missing keys suppress content, never write a plaintext fallback.
+
+Still plaintext: legacy rows awaiting migration; workspace/project names and folders; Worker/ACP directories, installation reports and availability; routing, audience, status and usage metadata. Keyed Chatroom chats retain content-capture suppression. Secret Store protects credentials with a deployment-held KEK, not from the backend.
 
 ## Classification
 
@@ -91,9 +93,9 @@ Edit and Bash tool calls are decided by the agent loop in Convex, so the backend
 
 ### Notifications
 
-`src/notifications/session.ts` builds bodies from chat titles, which the backend can no longer read. Notifications store a kind, chat ID and sealed `title`/`body` written by the client or Worker that caused them (for example the Worker seals "agent is waiting for you" with the session title it knows). Limit notifications built by the backend (`src/limits/events.ts`) only contain P data (provider, credential label, meters) plus the workspace name, which the client fills in.
+`notify` writes routing metadata and schedules sealing with only the notification ID. `src/notifications/sealing.ts` resolves the recipient's active public identity in an action and seals bounded title/body with AAD binding recipient, workspace and notification ID; the storage mutation rechecks identity rotation. Keyed session titles are unavailable to this action, so their sealed body says “Session”; legacy titles may be sealed without copying plaintext into scheduler arguments or notification rows. Failure details are never forwarded. Limit producers pass only bounded operational metadata; the client fills in the workspace name.
 
-Web Push payloads carry the notification ID and the sealed fields (well under the ~4 KiB payload limit). The service worker opens them with the key in IndexedDB; when the device is locked it shows a generic "Session finished" text.
+Web Push payloads carry the notification ID, routing fields and sealed box, bounded below the push payload limit. `apps/web/src/notifications-sw.ts` is bundled for deployment. It opens remembered IndexedDB keys only for the matching recipient/key ID and unexpired idle policy; Lock, require-password, sign-out, account changes, malformed ciphertext and unavailable keys yield generic text.
 
 ### Telemetry
 

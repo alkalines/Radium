@@ -7,6 +7,7 @@ import {
   notificationCategory,
   notificationCategoryValidator,
   notificationPath,
+  notificationTitle,
   resolvedNotificationPreferencesValidator,
   resolveNotificationPreferences,
 } from "./contract";
@@ -35,6 +36,8 @@ const notificationViewValidator = v.object({
   _id: v.id("notifications"),
   kind: schema.tables.notifications.validator.fields.kind,
   category: notificationCategoryValidator,
+  userId: v.string(),
+  sealed: v.optional(v.object({ keyId: v.string(), box: v.bytes() })),
   title: v.string(),
   body: v.string(),
   /** App-relative path the notification opens. */
@@ -61,12 +64,15 @@ export const recent = query({
       .withIndex("by_userId_and_createdAt", (q) => q.eq("userId", user._id))
       .order("desc")
       .take(RECENT_LIMIT);
-    return rows.map((row) => ({
+    return rows.filter((row) => !row.sealingPending).map((row) => ({
       _id: row._id,
       kind: row.kind,
       category: notificationCategory(row.kind),
-      title: row.title,
-      body: row.body,
+      userId: row.userId,
+      ...(row.sealed ? { sealed: row.sealed } : {}),
+      // Legacy rows may contain plaintext. Never expose them to a locked device.
+      title: notificationTitle(row.kind),
+      body: row.chat ? "Session" : "Workspace",
       path: notificationPath(row),
       ...(row.workspace ? { workspace: row.workspace } : {}),
       ...(row.chat ? { chat: row.chat } : {}),
@@ -112,6 +118,7 @@ export const deliverFallback = internalMutation({
   handler: async (ctx, args) => {
     const row = await ctx.db.get("notifications", args.notification);
     if (!row || row.seenAt !== undefined || row.delivery !== undefined) return null;
+    if (row.sealingPending) await ctx.db.patch("notifications", row._id, { sealingPending: false });
 
     // @todo(expo): Phone before desktop. Once the Expo app exists, look up the user's Expo push
     // tokens here (registered by the app and stored by `@convex-dev/expo-push-notifications`,
