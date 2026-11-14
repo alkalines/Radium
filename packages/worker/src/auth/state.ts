@@ -4,8 +4,16 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { exportJWK, generateKeyPair } from "jose";
 import {
+  encryptionPublicKeyFromSeed,
+  equalBytes,
+  fromBase64Url,
+  signingPublicKeyFromSeed,
+  toBase64Url,
+} from "radium-crypto";
+import {
   configuredWorkerCredentialStoreMode,
   createWorkerCredentialStore,
+  e2eeCredentialAccount,
   type KeyringEntryFactory,
   type WorkerCredentialStore,
   type WorkerCredentialStoreMode,
@@ -19,15 +27,18 @@ import {
   validatePrivateFile,
   wipeAndUnlinkPrivateFile,
 } from "./private-files.js";
+import { deleteTrustMarks, TrustMarks } from "../e2ee/marks.js";
 import {
   type PrivateP256Jwk,
   type PublicP256Jwk,
   type StoredWorkerSetup,
   type WorkerIdentity,
+  type WorkerOwnerPin,
   type WorkerSetup,
   WorkerProtocolError,
   storedSetup,
   validateOrigin,
+  validateOwnerPin,
 } from "../protocol.js";
 
 const STATE_FILE_NAME = "worker-state.json";
@@ -37,23 +48,43 @@ const PRIVATE_KEY_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
+ * Public half of a paired Worker's E2EE key set (Keys.md "Workers") and the owner it pinned from the
+ * setup or pairing code. Persisted in the state file; byte fields are unpadded base64url.
+ */
+export interface WorkerE2eeState {
+  keyId: string;
+  suite: 1;
+  encryptionPublicKey: string;
+  signingPublicKey: string;
+  owner: WorkerOwnerPin;
+}
+
+/** A paired Worker's E2EE keys with their private seeds, hydrated from the credential store. */
+export interface WorkerE2eeKeys extends WorkerE2eeState {
+  encryptionSeed: Uint8Array;
+  signingSeed: Uint8Array;
+}
+
+/**
  * Crash-recovery state kept outside future agent workloads.
- * `setup` retains only URLs, selector and expiry, never the one-time token.
+ * `setup` retains only URLs, selector and expiry, never the one-time token or pairing secret.
  * The private key is hydrated in memory from the selected credential store;
- * version-2 state files contain its public key and store mode, never the private
+ * state files since version 2 contain its public key and store mode, never the private
  * JWK. The key and requestId are made durable before networking, so a lost
  * completion response can be recovered without creating a second Worker.
  * `identity` is added only after enrollment or recovery succeeds. Machine JWTs
- * are short-lived and are not part of this durable state.
+ * are short-lived and are not part of this durable state. Version 3 adds `e2ee` once the Worker
+ * is paired; its seeds live in the credential store next to the machine key.
  */
 export interface WorkerState {
-  version: 2;
+  version: 3;
   credentialStoreMode: WorkerCredentialStoreMode;
   setup: StoredWorkerSetup;
   requestId: string;
   privateKey: PrivateP256Jwk;
   publicKey: PublicP256Jwk;
   identity?: WorkerIdentity;
+  e2ee?: WorkerE2eeKeys;
 }
 
 /** Storage configuration and deterministic credential/durability test seams. */
@@ -62,6 +93,11 @@ export interface WorkerStateOptions {
   credentialStore?: WorkerCredentialStore;
   keyringEntryFactory?: KeyringEntryFactory;
   stateDirectorySync?: (path: string) => Promise<void>;
+  /**
+   * Read the state without hydrating E2EE seeds (`pair` replaces them, so it must work even
+   * when they were lost). Never use the result to act as a paired Worker.
+   */
+  skipE2eeKeys?: boolean;
 }
 
 /** Return the conventional per-user directory for Worker identity state. */
@@ -85,7 +121,7 @@ export async function createPendingState(
 
   // Automatic storage selection settles only after the key has been saved.
   const state: WorkerState = {
-    version: 2,
+    version: 3,
     credentialStoreMode: credentialStore.mode,
     setup: storedSetup(setup),
     requestId,
@@ -159,24 +195,96 @@ export async function readWorkerState(
       credentialStoreMode: credentialStore.mode,
       privateKey: validated.privateKey,
     };
-    await replaceLegacyState(stateDirectory, raw, persistedState(migrated));
+    await replaceStateContents(stateDirectory, raw, persistedState(migrated));
     return migrated;
   }
 
+  const { e2ee: persistedE2ee, ...persisted } = validated.state;
   const credentialStore = getCredentialStore(
     stateDirectory,
     options,
-    validated.state.credentialStoreMode,
+    persisted.credentialStoreMode,
   );
-  const storedKey = await credentialStore.get(validated.state.requestId);
+  const storedKey = await credentialStore.get(persisted.requestId);
   if (storedKey === null) {
     throw new WorkerProtocolError(
       "Worker private key is missing from its configured credential store",
     );
   }
   const privateKey = parseStoredPrivateKey(storedKey);
-  assertKeyPair(privateKey, validated.state.publicKey);
-  return { ...validated.state, privateKey };
+  assertKeyPair(privateKey, persisted.publicKey);
+  const state: WorkerState = { ...persisted, privateKey };
+  // Version 2 differs only by lacking E2EE keys; rewrite it as version 3 like the v1 migration.
+  if (validated.migrate) {
+    await replaceStateContents(stateDirectory, raw, persistedState(state));
+  }
+  if (persistedE2ee && !options.skipE2eeKeys) {
+    state.e2ee = await loadE2eeKeys(credentialStore, persisted.requestId, persistedE2ee);
+  }
+  return state;
+}
+
+/**
+ * Durably replaces the Worker's E2EE keys and owner pin (`setup` with a v2 code, or `pair`). The
+ * new seeds are saved under their own credential entry before the state names them, and the
+ * previous entry is removed only afterwards, so a crash never leaves the state pointing at
+ * missing seeds.
+ */
+export async function saveWorkerE2ee(
+  stateDirectory: string,
+  state: WorkerState,
+  keys: WorkerE2eeKeys,
+  options: WorkerStateOptions = {},
+): Promise<WorkerState> {
+  const credentialStore = getCredentialStore(stateDirectory, options, state.credentialStoreMode);
+  const account = e2eeCredentialAccount(state.requestId, keys.keyId);
+  // Record the account before writing its secret so forget can clean up after a crash or failed
+  // replacement, even when the state file never came to reference this key.
+  const marks = await TrustMarks.open(stateDirectory);
+  await marks.pin(`credential:${keys.keyId}`, keys.keyId);
+  await credentialStore.set(
+    account,
+    JSON.stringify({
+      v: 1,
+      encryptionSeed: toBase64Url(keys.encryptionSeed),
+      signingSeed: toBase64Url(keys.signingSeed),
+    }),
+  );
+
+  const path = join(stateDirectory, STATE_FILE_NAME);
+  const next: WorkerState = { ...state, e2ee: keys };
+  let previousKeyId: string | undefined;
+  try {
+    const raw = await readFile(path);
+    const current = validatePersistedState(JSON.parse(raw.toString("utf8")));
+    if (
+      current.kind !== "external" ||
+      current.state.requestId !== state.requestId ||
+      current.state.credentialStoreMode !== state.credentialStoreMode ||
+      current.state.publicKey.x !== state.publicKey.x ||
+      current.state.publicKey.y !== state.publicKey.y ||
+      !current.state.identity ||
+      !state.identity ||
+      !sameIdentity(current.state.identity, state.identity)
+    ) {
+      throw new WorkerProtocolError("Worker state changed while pairing; refusing to replace it");
+    }
+    previousKeyId = current.state.e2ee?.keyId;
+    await replaceStateContents(stateDirectory, raw, persistedState(next));
+  } catch (error) {
+    // A failed directory sync can follow a successful rename; never orphan the state's seeds.
+    if (!(await stateNamesE2eeKey(path, keys.keyId))) {
+      await credentialStore.delete(account).catch(() => undefined);
+    }
+    if (error instanceof WorkerProtocolError) throw error;
+    throw new WorkerProtocolError("Worker state could not be updated");
+  }
+  if (previousKeyId && previousKeyId !== keys.keyId) {
+    await credentialStore
+      .delete(e2eeCredentialAccount(state.requestId, previousKeyId))
+      .catch(() => undefined);
+  }
+  return next;
 }
 
 /** Save the completed identity while preserving the original key and request ID. */
@@ -222,13 +330,17 @@ export async function forgetWorkerState(
     throw error;
   }
   await createGatewayKeyStore(stateDirectory).delete();
+  const marks = await TrustMarks.open(stateDirectory);
 
   const path = join(stateDirectory, STATE_FILE_NAME);
   let info;
   try {
     info = await lstat(path);
   } catch (error) {
-    if (isMissing(error)) return;
+    if (isMissing(error)) {
+      await deleteTrustMarks(stateDirectory);
+      return;
+    }
     throw new WorkerProtocolError("Worker state could not be opened for removal");
   }
   validatePrivateFile(info, MAX_STATE_BYTES, "Worker state", true);
@@ -248,7 +360,7 @@ export async function forgetWorkerState(
   }
   if (
     !isRecord(parsed) ||
-    (parsed.version !== 1 && parsed.version !== 2) ||
+    (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3) ||
     typeof parsed.requestId !== "string" ||
     !PRIVATE_KEY_ID_PATTERN.test(parsed.requestId)
   ) {
@@ -256,7 +368,9 @@ export async function forgetWorkerState(
   }
 
   const mode = storedCredentialStoreMode(parsed);
-  if (parsed.version === 2 && !mode) throw new WorkerProtocolError("Worker state is invalid");
+  if (parsed.version !== 1 && !mode) throw new WorkerProtocolError("Worker state is invalid");
+  const e2eeKeyId =
+    isRecord(parsed.e2ee) && typeof parsed.e2ee.keyId === "string" ? parsed.e2ee.keyId : undefined;
   if ((Number(info.mode) & 0o777) !== STATE_FILE_MODE) {
     await ensurePrivateFileMode(path, "Worker state");
   }
@@ -266,15 +380,21 @@ export async function forgetWorkerState(
         mode: mode ?? options.credentialStoreMode ?? configuredWorkerCredentialStoreMode(),
         keyringEntryFactory: options.keyringEntryFactory,
       });
+  const keyIds = new Set(marks.credentialKeyIds());
+  if (e2eeKeyId) keyIds.add(e2eeKeyId);
+  for (const keyId of keyIds) {
+    await credentialStore.delete(e2eeCredentialAccount(parsed.requestId, keyId));
+  }
   await credentialStore.delete(parsed.requestId);
   await wipeAndUnlinkPrivateFile(path, info, MAX_STATE_BYTES, "Worker state");
+  await deleteTrustMarks(stateDirectory);
   await syncDirectory(stateDirectory);
 }
 
 /** Refuse a different setup code when a pending or completed identity already exists. */
 export function assertSetupMatches(state: WorkerState, setup: WorkerSetup): void {
   if (
-    state.setup.version !== 1 ||
+    state.setup.version !== setup.version ||
     state.setup.backendUrl !== setup.backendUrl ||
     state.setup.convexUrl !== setup.convexUrl ||
     state.setup.enrollmentId !== setup.enrollmentId ||
@@ -374,7 +494,8 @@ async function replaceState(
   }
 }
 
-async function replaceLegacyState(
+/** Atomically replace the state file only if it still holds `expectedContents`. */
+async function replaceStateContents(
   stateDirectory: string,
   expectedContents: Buffer,
   nextState: PersistedWorkerState,
@@ -390,7 +511,7 @@ async function replaceLegacyState(
     handle = undefined;
     const current = await readFile(path);
     if (!current.equals(expectedContents)) {
-      throw new WorkerProtocolError("Worker state changed while migrating its private key");
+      throw new WorkerProtocolError("Worker state changed while it was being updated");
     }
     await rename(temporaryPath, path);
     await syncDirectory(stateDirectory);
@@ -398,29 +519,48 @@ async function replaceLegacyState(
     await handle?.close();
     await unlink(temporaryPath).catch(() => undefined);
     if (error instanceof WorkerProtocolError) throw error;
-    throw new WorkerProtocolError("Legacy Worker state could not be migrated");
+    throw new WorkerProtocolError("Worker state could not be updated");
+  }
+}
+
+async function stateNamesE2eeKey(path: string, keyId: string): Promise<boolean> {
+  try {
+    const current = validatePersistedState(JSON.parse((await readFile(path)).toString("utf8")));
+    return current.kind === "external" && current.state.e2ee?.keyId === keyId;
+  } catch {
+    return false;
   }
 }
 
 interface PersistedWorkerState {
-  version: 2;
+  version: 3;
   credentialStoreMode: WorkerCredentialStoreMode;
   setup: StoredWorkerSetup;
   requestId: string;
   publicKey: PublicP256Jwk;
   identity?: WorkerIdentity;
+  e2ee?: WorkerE2eeState;
 }
 
 type ValidatedPersistedState =
   | {
       kind: "legacy";
-      state: Omit<WorkerState, "credentialStoreMode" | "privateKey">;
+      state: Omit<WorkerState, "credentialStoreMode" | "privateKey" | "e2ee">;
       privateKey: PrivateP256Jwk;
     }
-  | { kind: "external"; state: Omit<WorkerState, "privateKey"> };
+  | {
+      kind: "external";
+      state: PersistedWorkerState;
+      /** Version 2 file: rewrite as version 3. */
+      migrate: boolean;
+    };
 
 function validatePersistedState(value: unknown): ValidatedPersistedState {
-  if (!isRecord(value) || !isRecord(value.setup) || (value.version !== 1 && value.version !== 2)) {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.setup) ||
+    (value.version !== 1 && value.version !== 2 && value.version !== 3)
+  ) {
     throw new WorkerProtocolError("Worker state is invalid");
   }
 
@@ -434,8 +574,8 @@ function validatePersistedState(value: unknown): ValidatedPersistedState {
   if (value.version === 1) {
     const privateKey = validatePrivateKey(value.privateKey);
     assertKeyPair(privateKey, publicKey);
-    const state: Omit<WorkerState, "credentialStoreMode" | "privateKey"> = {
-      version: 2,
+    const state: Omit<WorkerState, "credentialStoreMode" | "privateKey" | "e2ee"> = {
+      version: 3,
       setup,
       requestId: value.requestId,
       publicKey,
@@ -446,25 +586,107 @@ function validatePersistedState(value: unknown): ValidatedPersistedState {
 
   if (
     "privateKey" in value ||
-    (value.credentialStoreMode !== "keyring" && value.credentialStoreMode !== "file")
+    (value.credentialStoreMode !== "keyring" && value.credentialStoreMode !== "file") ||
+    (value.version === 2 && value.e2ee !== undefined)
   ) {
     throw new WorkerProtocolError("Worker state is invalid");
   }
-  const state: Omit<WorkerState, "privateKey"> = {
-    version: 2,
-    credentialStoreMode: value.credentialStoreMode,
-    setup,
-    requestId: value.requestId,
-    publicKey,
-    ...(identity ? { identity } : {}),
+  // E2EE keys belong to an enrolled identity; a pending enrollment cannot be paired.
+  const e2ee = value.e2ee === undefined ? undefined : validateE2eeState(value.e2ee);
+  if (e2ee && !identity) throw new WorkerProtocolError("Worker state is invalid");
+  return {
+    kind: "external",
+    state: {
+      version: 3,
+      credentialStoreMode: value.credentialStoreMode,
+      setup,
+      requestId: value.requestId,
+      publicKey,
+      ...(identity ? { identity } : {}),
+      ...(e2ee ? { e2ee } : {}),
+    },
+    migrate: value.version === 2,
   };
-  return { kind: "external", state };
+}
+
+function validateE2eeState(value: unknown): WorkerE2eeState {
+  const invalid = "Worker E2EE state is invalid";
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 5 ||
+    value.suite !== 1 ||
+    typeof value.keyId !== "string" ||
+    typeof value.encryptionPublicKey !== "string" ||
+    typeof value.signingPublicKey !== "string"
+  ) {
+    throw new WorkerProtocolError(invalid);
+  }
+  try {
+    if (
+      fromBase64Url(value.keyId).length !== 16 ||
+      fromBase64Url(value.encryptionPublicKey).length !== 1216 ||
+      fromBase64Url(value.signingPublicKey).length !== 32
+    ) {
+      throw new Error();
+    }
+  } catch {
+    throw new WorkerProtocolError(invalid);
+  }
+  return {
+    keyId: value.keyId,
+    suite: 1,
+    encryptionPublicKey: value.encryptionPublicKey,
+    signingPublicKey: value.signingPublicKey,
+    owner: validateOwnerPin(value.owner, invalid),
+  };
+}
+
+/** Hydrate E2EE seeds and check they derive the persisted public keys. */
+async function loadE2eeKeys(
+  credentialStore: WorkerCredentialStore,
+  requestId: string,
+  e2ee: WorkerE2eeState,
+): Promise<WorkerE2eeKeys> {
+  const stored = await credentialStore.get(e2eeCredentialAccount(requestId, e2ee.keyId));
+  if (stored === null) {
+    throw new WorkerProtocolError(
+      "Worker E2EE keys are missing from the credential store; run `pair` with a new pairing code",
+    );
+  }
+  let encryptionSeed: Uint8Array;
+  let signingSeed: Uint8Array;
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    if (
+      !isRecord(parsed) ||
+      parsed.v !== 1 ||
+      typeof parsed.encryptionSeed !== "string" ||
+      typeof parsed.signingSeed !== "string"
+    ) {
+      throw new Error();
+    }
+    encryptionSeed = fromBase64Url(parsed.encryptionSeed);
+    signingSeed = fromBase64Url(parsed.signingSeed);
+    if (encryptionSeed.length !== 32 || signingSeed.length !== 32) throw new Error();
+  } catch {
+    throw new WorkerProtocolError("Worker E2EE key credential is invalid");
+  }
+  if (
+    !equalBytes(
+      await encryptionPublicKeyFromSeed(encryptionSeed),
+      fromBase64Url(e2ee.encryptionPublicKey),
+    ) ||
+    !equalBytes(await signingPublicKeyFromSeed(signingSeed), fromBase64Url(e2ee.signingPublicKey))
+  ) {
+    throw new WorkerProtocolError("Worker E2EE keys do not match the saved state");
+  }
+  return { ...e2ee, encryptionSeed, signingSeed };
 }
 
 function validateStoredSetup(value: Record<string, unknown>): StoredWorkerSetup {
   if (
     Object.keys(value).length !== 5 ||
-    value.version !== 1 ||
+    (value.version !== 1 && value.version !== 2) ||
     typeof value.backendUrl !== "string" ||
     typeof value.convexUrl !== "string" ||
     typeof value.enrollmentId !== "string" ||
@@ -477,7 +699,7 @@ function validateStoredSetup(value: Record<string, unknown>): StoredWorkerSetup 
     throw new WorkerProtocolError("Worker state is invalid");
   }
   return {
-    version: 1,
+    version: value.version === 2 ? 2 : 1,
     backendUrl: validateOrigin(value.backendUrl, "backendUrl"),
     convexUrl: validateOrigin(value.convexUrl, "convexUrl"),
     enrollmentId: value.enrollmentId,
@@ -488,7 +710,7 @@ function validateStoredSetup(value: Record<string, unknown>): StoredWorkerSetup 
 function storedCredentialStoreMode(
   value: Record<string, unknown>,
 ): WorkerCredentialStoreMode | undefined {
-  return value.version === 2 &&
+  return (value.version === 2 || value.version === 3) &&
     (value.credentialStoreMode === "keyring" || value.credentialStoreMode === "file")
     ? value.credentialStoreMode
     : undefined;
@@ -496,12 +718,23 @@ function storedCredentialStoreMode(
 
 function persistedState(state: WorkerState): PersistedWorkerState {
   return {
-    version: 2,
+    version: 3,
     credentialStoreMode: state.credentialStoreMode,
     setup: state.setup,
     requestId: state.requestId,
     publicKey: state.publicKey,
     ...(state.identity ? { identity: state.identity } : {}),
+    ...(state.e2ee
+      ? {
+          e2ee: {
+            keyId: state.e2ee.keyId,
+            suite: state.e2ee.suite,
+            encryptionPublicKey: state.e2ee.encryptionPublicKey,
+            signingPublicKey: state.e2ee.signingPublicKey,
+            owner: state.e2ee.owner,
+          },
+        }
+      : {}),
   };
 }
 

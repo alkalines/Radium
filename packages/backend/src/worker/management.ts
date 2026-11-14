@@ -9,6 +9,7 @@ import { validChatWorkerDirectory } from "./chat-config";
 import { findWorkerPresence } from "./chat-selection";
 import { acpGatewayAccessValidator, keyTelemetryValidator } from "../acp/gateway";
 import { findWorkerGateway } from "./gateway";
+import { deleteWorkerKeys } from "../e2ee/worker-keys";
 
 /**
  * Parent-app policy around the isolated workerIdentity persistence component.
@@ -79,6 +80,8 @@ export const revoke = ownedWorkspaceMutation({
     const gateway = await findWorkerGateway(ctx, ctx.workspace._id, args.workerId);
     if (gateway?.key) await ctx.db.patch(gateway.key, { revokedAt: Date.now() });
     if (gateway) await ctx.db.delete(gateway._id);
+    // Nothing is sealed to a revoked Worker even before the owner signs a roster without it.
+    await deleteWorkerKeys(ctx, ctx.workspace._id, args.workerId);
     return null;
   },
 });
@@ -103,19 +106,48 @@ export const revokeEnrollment = ownedWorkspaceMutation({
   },
 });
 
+/** Server half of a setup code: what the browser needs to build a v1 or v2 code. */
+type EnrollmentBundle = {
+  version: 1;
+  backendUrl: string;
+  convexUrl: string;
+  enrollmentId: string;
+  token: string;
+  expiresAt: number;
+};
+
 /**
  * Return the one-time setup bundle displayed by the owner's frontend.
  * An action creates cryptographic randomness; the internal mutation verifies the
  * owner's session and persists only the token hash. The encoded bundle contains
- * the raw token, so base64url encoding makes it portable, not encrypted.
+ * the raw token, so base64url encoding makes it portable, not encrypted. `code` is the
+ * `radium-worker-v1.` code for keyless workspaces; for keyed workspaces the browser builds a
+ * `radium-worker-v2.` code from `bundle` plus a pairing secret the backend never sees.
  */
 export const createEnrollment = action({
   args: { workspace: v.id("workspaces"), name: v.string() },
-  returns: v.object({ code: v.string(), expiresAt: v.number(), enrollmentId: v.string() }),
+  returns: v.object({
+    code: v.string(),
+    expiresAt: v.number(),
+    enrollmentId: v.string(),
+    bundle: v.object({
+      version: v.literal(1),
+      backendUrl: v.string(),
+      convexUrl: v.string(),
+      enrollmentId: v.string(),
+      token: v.string(),
+      expiresAt: v.number(),
+    }),
+  }),
   handler: async (
     ctx,
     args,
-  ): Promise<{ code: string; expiresAt: number; enrollmentId: string }> => {
+  ): Promise<{
+    code: string;
+    expiresAt: number;
+    enrollmentId: string;
+    bundle: EnrollmentBundle;
+  }> => {
     const backendUrl = backendOrigin(process.env.CONVEX_SITE_URL);
     const convexUrl = backendOrigin(process.env.CONVEX_CLOUD_URL);
     await machineSigningKey();
@@ -128,12 +160,19 @@ export const createEnrollment = action({
       expiresAt,
     });
 
-    const bundle = { version: 1, backendUrl, convexUrl, enrollmentId, token, expiresAt };
+    const bundle: EnrollmentBundle = {
+      version: 1,
+      backendUrl,
+      convexUrl,
+      enrollmentId,
+      token,
+      expiresAt,
+    };
     const code =
       "radium-worker-v1." +
       btoa(JSON.stringify(bundle)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 
-    return { code, expiresAt, enrollmentId };
+    return { code, expiresAt, enrollmentId, bundle };
   },
 });
 

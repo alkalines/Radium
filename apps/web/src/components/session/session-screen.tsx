@@ -1,5 +1,13 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { DefaultChatTransport, type ChatStatus, type FileUIPart, type UIMessage } from "ai";
+import {
+  DefaultChatTransport,
+  getToolName,
+  isToolUIPart,
+  type ChatStatus,
+  type FileUIPart,
+  type ToolUIPart,
+  type UIMessage,
+} from "ai";
 import { useChat } from "@ai-sdk/react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
@@ -13,10 +21,11 @@ import { toast } from "sonner";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { CodeModeInteractionResponse } from "backend/src/chatroom/code-mode";
-import type { AcpDraftConfig } from "backend/src/acp/contract";
+import type { AcpCommandPayload, AcpDraftConfig } from "backend/src/acp/contract";
 import type { ChatInterruption } from "backend/src/chatroom/interruption";
 import type { ToolSelection } from "backend/src/chatroom/tools";
 import type { ChatWorkerSelection } from "backend/src/worker/chat-config";
+import type { WorkerApprovalSignature } from "backend/src/worker/chat-tools";
 import { isWorkerOnline } from "backend/src/worker/presence";
 import type { RunState } from "@/components/agentic/agent-status";
 import { RadiumWordmark } from "@/components/agentic/radium-wordmark";
@@ -78,6 +87,7 @@ import { ToolsDialog } from "./tools-dialog";
 import { AcpSessionScreen } from "./acp/acp-session-screen";
 import { AcpConfigControls, applyAcpDraft } from "./acp/config-controls";
 import { acpActionError } from "./acp/use-acp-session";
+import { acpFallbackTitle, publishAcpBinding, signAcpCommand } from "./acp/acp-crypto";
 import { EncryptionNotice } from "@/components/auth/encryption-notice";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { keyManager, KeysLockedError } from "@/lib/crypto/key-manager";
@@ -95,11 +105,13 @@ import {
   openQueue,
   openTitle,
   sealQueue,
+  sealTitle,
   sealMessagesForFork,
   decryptFileUrl,
   type ChatContentKey,
   type ChatQueue,
 } from "@/lib/crypto/chat-content";
+import { signToolApproval, signToolGrant } from "./worker-authorization";
 
 /**
  * A user turn the Session reverted to: the messages as they were before (restorable until the next
@@ -266,11 +278,15 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const forkChat = useMutation(api.aisdk.ForkChat);
   const { data: keyState } = useQuery(convexQuery(api.e2ee.chatKeys, chatId ? { chatId } : "skip"));
   const setChatWorker = useMutation(api.aisdk.SetChatWorker);
+  const setChatWorkerGrant = useMutation(api.aisdk.SetChatWorkerGrant);
   const answerCodeModeInteraction = useMutation(api.code_mode.answerInteraction);
+  // Approval signatures by tool call ID; the continuation request carries those it answers.
+  const approvalSignatures = useRef(new Map<string, WorkerApprovalSignature>());
   const createAcpSession = useMutation(api.acp.CreateSession);
   const setAcpConfig = useMutation(api.acp.SetConfig);
   const setAcpMode = useMutation(api.acp.SetMode);
   const promptAcp = useMutation(api.acp.Prompt);
+  const setAcpFallbackTitle = useMutation(api.acp.SetFallbackTitle);
   const generateAcpTitle = useAction(api.acp.GenerateTitle);
 
   // An existing chat's settings belong to its own workspace; a draft uses the current one.
@@ -448,11 +464,12 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const agent = chatId ? builtInAgent : sessionAgentById(agentId, agents);
   const isAcpDraft = chatId === undefined && agent.protocol === "acp";
   useEffect(() => {
-    if (isAcpDraft && draftScope === "shared") {
+    // Shared Sessions need chat keys, which only a keyed workspace has.
+    if (isAcpDraft && draftScope === "shared" && workspaceKeyState?.keyEpoch === null) {
       setDraftScope("personal");
       setSharedMembers([]);
     }
-  }, [isAcpDraft, draftScope]);
+  }, [isAcpDraft, draftScope, workspaceKeyState?.keyEpoch]);
   // The Worker reports only the native profile; a Gateway session lists the Gateway models instead.
   const acpDefaults =
     agent.protocol === "acp" && agent.profile === "native"
@@ -762,6 +779,18 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           if (chatId && chat?.e2eeId) {
             await writableChatKey(chatId);
           }
+          // A paired Worker runs an approved call only with the user's signature over its input.
+          const lastParts = messages.at(-1)?.parts ?? [];
+          const answered = new Set(
+            lastParts.flatMap((part) =>
+              isToolUIPart(part) && part.state === "approval-responded" && part.approval.approved
+                ? [part.toolCallId]
+                : [],
+            ),
+          );
+          const approvals = Object.fromEntries(
+            [...approvalSignatures.current].filter(([toolCallId]) => answered.has(toolCallId)),
+          );
           return {
             api: requestApi,
             body: {
@@ -770,6 +799,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
               id,
               messages,
               revisions: revisions.current,
+              approvals,
               model: body?.model ?? getLastMessageModel(messages),
               provider: body?.provider ?? getLastMessageProvider(messages),
             },
@@ -840,6 +870,126 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     if (changed) setHiddenInteractions(new Set(submittedInteractions.current));
   }, [messages]);
 
+  const workerTarget =
+    chatId && chat?.worker?.workerId && chat.worker.directory
+      ? {
+          workspaceId: chat.workspace,
+          chatId,
+          workerId: chat.worker.workerId,
+          directory: chat.worker.directory,
+        }
+      : undefined;
+
+  /**
+   * Sign an approved Worker call. `null`: nothing to sign (not a Worker tool, or a keyless
+   * workspace and unencrypted chat, whose unpaired Worker runs unsigned). `false`: refused.
+   */
+  async function signApproval(part: ToolUIPart): Promise<WorkerApprovalSignature | null | false> {
+    if (!workerTarget) return null;
+    try {
+      return await signToolApproval(workerTarget, {
+        toolName: getToolName(part),
+        toolCallId: part.toolCallId,
+        input: part.input,
+      });
+    } catch (error) {
+      if (workspaceKeyState?.keyEpoch === null && !chat?.e2eeId) return null;
+      toast.error(
+        error instanceof KeysLockedError
+          ? "Unlock this device to approve Worker tools."
+          : "Could not sign this approval.",
+      );
+      return false;
+    }
+  }
+
+  async function answerApproval(
+    part: ToolUIPart,
+    response: { id: string; approved: boolean; reason?: string },
+  ) {
+    if (response.approved) {
+      const signed = await signApproval(part);
+      if (signed === false) return;
+      if (signed) approvalSignatures.current.set(part.toolCallId, signed);
+    }
+    await addToolApprovalResponse(response);
+  }
+
+  async function answerCodeModeApproval(
+    id: string,
+    part: ToolUIPart,
+    response: { approved: boolean; reason?: string },
+  ) {
+    let signature: Omit<WorkerApprovalSignature, "input"> | undefined;
+    if (response.approved) {
+      const signed = await signApproval(part);
+      if (signed === false) return;
+      // The action recorded the input text this prompt shows; only the signature travels.
+      if (signed) {
+        signature = {
+          signature: signed.signature,
+          signerKeyId: signed.signerKeyId,
+          approvedAt: signed.approvedAt,
+        };
+      }
+    }
+    await respondToCodeMode(id, {
+      kind: "approval",
+      approved: response.approved,
+      ...(response.reason ? { reason: response.reason } : {}),
+      ...(signature ? { signature } : {}),
+    });
+  }
+
+  // Refresh standing Read authority when the owner opens or unlocks the visible chat, and when its
+  // selection or verified workspace roster changes. Hidden Tabs do not sign or write grants.
+  const grantedSelection = useRef<{ key: string } | undefined>(undefined);
+  useEffect(() => {
+    const selection = chat?.worker;
+    if (!chatId || !chat || !isActive || !isOwner || keyStatus.state !== "unlocked") {
+      grantedSelection.current = undefined;
+      return;
+    }
+    if (!selection?.workerId || !selection.directory || !selection.tools.includes("read")) {
+      grantedSelection.current = undefined;
+      return;
+    }
+    const key = JSON.stringify([
+      chatId,
+      selection.workerId,
+      selection.directory,
+      selection.tools,
+      keyStatus.keyId,
+      workspaceKeyState?.roster?.version,
+    ]);
+    if (grantedSelection.current?.key === key) return;
+    const attempt = { key };
+    grantedSelection.current = attempt;
+    const target = {
+      workspaceId: chat.workspace,
+      chatId,
+      workerId: selection.workerId,
+      directory: selection.directory,
+    };
+    void (async () => {
+      try {
+        const grant = await signToolGrant(target, selection);
+        if (grantedSelection.current !== attempt || keyManager.getSnapshot() !== keyStatus) return;
+        await setChatWorkerGrant({
+          chatId,
+          workerId: target.workerId,
+          directory: target.directory,
+          grant,
+        });
+      } catch {
+        if (grantedSelection.current === attempt) {
+          grantedSelection.current = undefined;
+          toast.error("Could not authorize Worker reads. Reopen this session to try again.");
+        }
+      }
+    })();
+  }, [chat, chatId, isActive, isOwner, keyStatus, workspaceKeyState?.roster?.version, setChatWorkerGrant]);
+
   async function respondToCodeMode(id: string, response: CodeModeInteractionResponse) {
     if (submittedInteractions.current.has(id)) return;
     submittedInteractions.current.add(id);
@@ -887,6 +1037,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           return;
         }
         draftKeys.current = undefined;
+        approvalSignatures.current.clear();
         if (!chat?.e2eeId) {
           return;
         }
@@ -1057,22 +1208,88 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       setPendingPrompt(text);
       let created: Id<"aisdk_chats"> | undefined;
       try {
+        // A keyed workspace takes only keyed Sessions: chat keys, then the creator's signed binding
+        // and sealed, signed commands. A keyless workspace keeps the plaintext path unchanged.
+        const keyed = workspaceKeyState?.keyEpoch != null;
+        if (!workspaceKeyState) throw new Error("Waiting for workspace encryption keys.");
+        const keys = keyed ? await getDraftKeys() : undefined;
+        if (keyed && !keys) throw new Error("Unlock to create encryption keys.");
+        const members = draftScope === "shared" ? sharedMembers : [];
         created = await createAcpSession({
           workspace: settingsWorkspaceId,
-          scope: draftScope === "workspace" ? "workspace" : "personal",
+          scope: keyed ? draftScope : draftScope === "workspace" ? "workspace" : "personal",
+          ...(keyed && draftScope === "shared" ? { members } : {}),
           project: selectedProject?._id,
           worker: draftWorker.workerId,
           agentId: agent.agentId,
           profile: agent.profile,
+          ...(keys ? { e2ee: { keys: keys.keys } } : {}),
         });
-        for (const option of acpDraft.config) await setAcpConfig({ chat: created, ...option });
-        if (acpDraft.modeId) await setAcpMode({ chat: created, modeId: acpDraft.modeId });
-        await promptAcp({
-          chat: created,
-          prompt: [{ type: "text", text }],
-          clientId: crypto.randomUUID(),
-        });
-        void generateAcpTitle({ chat: created, text }).catch(() => {});
+        const createdChat = created;
+        const workerId = draftWorker.workerId;
+        const signCommand = (command: AcpCommandPayload, clientId?: string) =>
+          signAcpCommand({
+            workspaceId: settingsWorkspaceId,
+            workerId,
+            chatId: createdChat,
+            command,
+            clientId,
+          });
+        if (keys) {
+          rememberChatSeed(created, keys.e2eeId, keys.epoch, keys.seed);
+          draftKeys.current = undefined;
+          await publishAcpBinding({
+            chatId: created,
+            e2eeId: keys.e2eeId,
+            scope: draftScope,
+            members,
+            version: 1,
+          });
+        }
+        for (const option of acpDraft.config) {
+          await setAcpConfig({
+            chat: created,
+            ...(keys
+              ? {
+                  signed: await signCommand({
+                    kind: "set_config",
+                    configId: option.configId,
+                    value: option.value,
+                  }),
+                }
+              : option),
+          });
+        }
+        if (acpDraft.modeId) {
+          await setAcpMode({
+            chat: created,
+            ...(keys
+              ? { signed: await signCommand({ kind: "set_mode", modeId: acpDraft.modeId }) }
+              : { modeId: acpDraft.modeId }),
+          });
+        }
+        const prompt = [{ type: "text" as const, text }];
+        const clientId = crypto.randomUUID();
+        if (keys) {
+          await promptAcp({
+            chat: created,
+            clientId,
+            signed: await signCommand({ kind: "prompt", prompt }, clientId),
+          });
+          // Keyed Sessions never send the prompt to a title action: the fallback title is sealed here.
+          const fallbackTitle = {
+            workspaceId: settingsWorkspaceId,
+            e2eeId: keys.e2eeId,
+            epoch: keys.epoch,
+            publicKey: keys.publicKey,
+          };
+          void sealTitle({ title: acpFallbackTitle(text) }, fallbackTitle)
+            .then((sealedTitle) => setAcpFallbackTitle({ chat: createdChat, sealedTitle }))
+            .catch(() => {});
+        } else {
+          await promptAcp({ chat: created, prompt, clientId });
+          void generateAcpTitle({ chat: created, text }).catch(() => {});
+        }
         setCreatedChatId(created);
         onAcpCreated(created, text);
       } catch (error) {
@@ -1653,11 +1870,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                     shortcutsEnabled={isActive && index === 0}
                     expiresAt={interaction.expiresAt}
                     onApprovalResponse={(response) => {
-                      void respondToCodeMode(interaction.id, {
-                        kind: "approval",
-                        approved: response.approved,
-                        ...(response.reason ? { reason: response.reason } : {}),
-                      });
+                      void answerCodeModeApproval(interaction.id, part, response);
                     }}
                   />
                 </m.div>
@@ -1698,7 +1911,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                     part={currentApproval}
                     total={nativeApprovals.length}
                     shortcutsEnabled={isActive}
-                    onApprovalResponse={(response) => void addToolApprovalResponse(response)}
+                    onApprovalResponse={(response) => void answerApproval(currentApproval, response)}
                   />
                 </m.div>
               ) : null}
@@ -1795,7 +2008,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                   <ConversationVisibilityMenu
                     scope={chat?.scope ?? draftScope}
                     isDraft={chatId === undefined}
-                    allowShared={!isAcpDraft}
+                    allowShared={!isAcpDraft || workspaceKeyState?.keyEpoch != null}
                     members={chatId ? (keyState?.members ?? []) : sharedMembers}
                     availableMembers={(workspaceKeyState?.members ?? [])
                       .filter((member) => member.userId !== authSession?.user.id)

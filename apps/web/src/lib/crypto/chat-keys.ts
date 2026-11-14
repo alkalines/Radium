@@ -1,4 +1,5 @@
 import type { Id } from "backend/convex/_generated/dataModel";
+import type { AcpSignedBinding } from "backend/src/acp/contract";
 import { api } from "backend/convex/_generated/api";
 import {
   chatKeyStatement,
@@ -505,11 +506,16 @@ export async function ensureChatKeys(chatId: Id<"aisdk_chats">): Promise<boolean
   return true;
 }
 
-/** Changes audience, rotating on removals and wrapping every historical epoch on additions. */
+/**
+ * Changes audience, rotating on removals and wrapping every historical epoch on additions. An ACP
+ * chat with keys passes `acpBinding`: the creator's re-signed binding (version + 1) for the new
+ * scope and members, stored in the same mutation so the Worker never sees keys without it.
+ */
 export async function changeChatScope(input: {
   chatId: Id<"aisdk_chats">;
   scope: ChatScope;
   members?: string[];
+  acpBinding?: AcpSignedBinding;
 }): Promise<void> {
   const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId: input.chatId });
   if (state.creatorId !== currentUserId())

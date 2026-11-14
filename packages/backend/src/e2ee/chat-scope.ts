@@ -1,6 +1,9 @@
 import type { Doc } from "../../convex/_generated/dataModel";
 import type { MutationCtx } from "../../convex/_generated/server";
 import { chatMemberIds, setChatMembers } from "../chatroom/members";
+import type { AcpSignedBinding } from "../acp/contract";
+import { findSession } from "../acp/policy";
+import { verifyNextBinding } from "../acp/sealed";
 import {
   insertChatEpoch,
   insertChatWraps,
@@ -9,7 +12,11 @@ import {
   validateChatWraps,
 } from "./chat-keys";
 import { invalidKeys, type ChatKeyInput, type WrapInput } from "./workspace-contract";
-/** Creator-only scope transition; narrowing rotates, widening covers every historical epoch. */
+/**
+ * Creator-only scope transition; narrowing rotates, widening covers every historical epoch. An ACP
+ * chat whose binding was published must come with the creator's next binding version for exactly
+ * the new audience, so its Worker authorizes the new members (or stops authorizing removed ones).
+ */
 export async function changeChatScope(
   ctx: MutationCtx,
   chat: Doc<"aisdk_chats">,
@@ -22,6 +29,7 @@ export async function changeChatScope(
       rotate?: ChatKeyInput;
       wraps: WrapInput[];
     };
+    acpBinding?: AcpSignedBinding;
   },
 ): Promise<void> {
   if (chat.userId !== userId) {
@@ -32,7 +40,8 @@ export async function changeChatScope(
   }
   const oldScope = chat.scope ?? "personal";
   const oldMembers = await chatMemberIds(ctx, chat._id);
-  if (chat.agent && input.scope === "shared") {
+  const session = chat.agent ? await findSession(ctx, chat._id) : null;
+  if (!session?.binding && input.acpBinding) {
     invalidKeys();
   }
   const members =
@@ -40,6 +49,19 @@ export async function changeChatScope(
   const next = { ...chat, workspace: workspace._id, scope: input.scope };
   // Membership validation and key changes share the mutation transaction and roll back together.
   await setChatMembers(ctx, next, members);
+  if (session?.binding) {
+    if (!input.acpBinding) {
+      invalidKeys();
+    }
+    await verifyNextBinding(ctx, {
+      session,
+      chat: next,
+      scope: input.scope,
+      members,
+      binding: input.acpBinding,
+    });
+    await ctx.db.patch("acp_sessions", session._id, { binding: input.acpBinding });
+  }
   if (!chat.e2eeId) {
     if (input.keys) {
       invalidKeys();

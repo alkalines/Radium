@@ -40,8 +40,15 @@ export type TrustPin = {
   state: "tofu" | "verified";
   updatedAt: number;
 };
-/** Authenticated versioned pin map. */
+/**
+ * Authenticated versioned pin map, keyed by user ID, or by `workerPinKey(workerId)` for a Worker's
+ * E2EE key set (its `keyId` and the fingerprint of its two public keys).
+ */
 export type TrustStore = { v: 1; version: number; pins: Record<string, TrustPin> };
+/** Pin key of a Worker; the prefix keeps Worker pins apart from user IDs. */
+export function workerPinKey(workerId: string): string {
+  return `worker:${workerId}`;
+}
 /** Rollback is blocking and cannot be dismissed by replacing a pin. */
 export type TrustStatus = "locked" | "ready" | "rollback";
 const listeners = new Set<() => void>();

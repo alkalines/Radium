@@ -21,9 +21,6 @@ import {
   openInvitePayload,
   openWorkspaceGrant,
   sealInvitePayload,
-  signRoster,
-  verifyRoster,
-  type WorkspaceRoster,
 } from "./workspace-proofs";
 import { verifyChatEpoch } from "./chat-keys";
 
@@ -70,39 +67,6 @@ describe("workspace trust boundaries", () => {
     };
     expect(await openTrustStore(input)).toEqual(store);
     expect(openTrustStore({ ...input, highWater: 3 })).rejects.toThrow("rollback");
-  });
-
-  test("roster verifies only its original body and owner signer", async () => {
-    const own = await account("owner");
-    const stranger = await account("stranger");
-    const body: WorkspaceRoster = {
-      v: 1,
-      workspace: "workspace",
-      version: 1,
-      epoch: 1,
-      owner: {
-        userId: own.public.userId,
-        keyId: own.public.keyId,
-        fingerprint: own.public.fingerprint,
-      },
-      epochs: [
-        {
-          epoch: 1,
-          memberKeyId: id(),
-          memberKeyHash: toBase64Url(randomBytes(32)),
-          ownerKeyId: id(),
-          ownerKeyHash: toBase64Url(randomBytes(32)),
-        },
-      ],
-      members: [],
-    };
-    const signed = await signRoster(body, own.identity.signing.seed);
-    const input = { ...signed, workspaceId: "workspace", owner: own.public, highWater: 0 };
-    expect(await verifyRoster(input)).toEqual(body);
-    const tampered = signed.body.slice();
-    tampered[10] ^= 1;
-    expect(verifyRoster({ ...input, body: tampered })).rejects.toThrow();
-    expect(verifyRoster({ ...input, owner: stranger.public })).rejects.toThrow();
   });
 
   test("a correctly signed grant cannot substitute a seed outside the owner roster", async () => {

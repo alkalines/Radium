@@ -68,6 +68,14 @@ import {
   acpAgentDefinitionValidator,
   acpAgentSessionEntryValidator,
   acpTurnModelValidator,
+  acpSignedBindingValidator,
+  acpSessionProofValidator,
+  acpSealedBoxValidator,
+  acpStreamCapsuleValidator,
+  acpSignedCommandValidator,
+  acpDeletedTargetValidator,
+  acpSealedRequestValidator,
+  acpSealedAnswerValidator,
 } from "../src/acp/contract";
 import { agentTurnPricingValidator, modelsDevMatchValidator } from "../src/usage/agent_usage";
 import { storedLocalUsageModelValidator } from "../src/usage/local_contract";
@@ -102,8 +110,7 @@ export default defineSchema({
     .index("by_chat", ["chat"])
     // Local usage rows and Gateway calls carry a session id (and maybe a Worker); this finds
     // the agent and folder.
-    .index("by_sessionId_and_worker", ["workspace", "sessionId", "worker"])
-    .searchIndex("search_title", { searchField: "title", filterFields: ["workspace", "agentId"] }),
+    .index("by_sessionId_and_worker", ["workspace", "sessionId", "worker"]),
   /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
   acp_sessions: defineTable({
     profile: v.optional(acpProfileValidator),
@@ -129,6 +136,12 @@ export default defineSchema({
     draft: v.optional(acpDraftConfigValidator),
     turnBy: v.optional(v.string()),
     userTitled: v.optional(v.boolean()),
+    /** Creator-signed binding (keyed workspaces); Workers execute nothing for a chat without it. */
+    binding: v.optional(acpSignedBindingValidator),
+    /** Who bound `sessionId` to this chat; a paired Worker refuses an unproven session id. */
+    sessionProof: v.optional(acpSessionProofValidator),
+    /** Keyed chats: the error text sealed to the chat key; `error` then holds generic text only. */
+    sealedError: v.optional(acpSealedBoxValidator),
     updatedAt: v.number(),
   })
     .index("by_chat", ["chat"])
@@ -217,6 +230,8 @@ export default defineSchema({
     epoch: v.number(),
     nextSeq: v.number(),
     bytes: v.number(),
+    /** Keyed chats: the Worker-signed capsule every frame of this epoch is sealed under. */
+    capsule: v.optional(acpStreamCapsuleValidator),
   }).index("by_chat_and_epoch", ["chat", "epoch"]),
   /** Command payloads exist only until the assigned Worker claims them. */
   acp_commands: defineTable({
@@ -227,6 +242,10 @@ export default defineSchema({
     /** Agent-level target survives payload erasure, so sync admission can debounce claimed work. */
     agentId: v.optional(v.string()),
     payload: v.optional(acpCommandPayloadValidator),
+    /** Keyed workspaces: the sealed, user-signed command; erased on claim like `payload`. */
+    signed: v.optional(acpSignedCommandValidator),
+    /** `close`/`delete` in keyed workspaces: the deleted chat's binding snapshot. */
+    target: v.optional(acpDeletedTargetValidator),
     clientId: v.string(),
     by: v.string(),
     status: acpCommandStatusValidator,
@@ -247,9 +266,12 @@ export default defineSchema({
     worker: v.string(),
     requestKey: v.string(),
     kind: v.union(v.literal("permission"), v.literal("elicitation")),
-    request: acpInteractionRequestValidator,
+    /** Plaintext request (keyless workspaces) or the Worker-sealed, Worker-signed one. */
+    request: v.optional(acpInteractionRequestValidator),
+    sealedRequest: v.optional(acpSealedRequestValidator),
     status: acpInteractionStatusValidator,
     answer: v.optional(acpInteractionAnswerValidator),
+    sealedAnswer: v.optional(acpSealedAnswerValidator),
     answeredBy: v.optional(v.string()),
     answeredAt: v.optional(v.number()),
     resolvedAt: v.optional(v.number()),
@@ -267,7 +289,8 @@ export default defineSchema({
     seqTo: v.number(),
     format: v.literal("acp"),
     kind: acpFrameKindValidator,
-    payload: v.string(),
+    /** JSON ops, or sealed bytes under the epoch capsule in keyed workspaces. */
+    payload: v.union(v.string(), v.bytes()),
   })
     .index("by_chat_and_stream_and_seqFrom", ["chat", "stream", "seqFrom"])
     .index("by_chat", ["chat"]),
@@ -581,6 +604,38 @@ export default defineSchema({
     signerKeyId: v.string(),
     createdAt: v.number(),
   }).index("by_workspace_and_version", ["workspace", "version"]),
+  /**
+   * A Worker's current E2EE key set (`src/e2ee/worker-keys.ts`): public keys, the Worker's
+   * self-signature and the pairing-secret MAC. One row per Worker; re-pairing replaces it and
+   * revocation deletes it. Certified only while the newest roster lists this `keyId`.
+   */
+  e2ee_worker_keys: defineTable({
+    workspace: v.id("workspaces"),
+    workerId: v.string(),
+    keyId: v.string(),
+    suite: v.number(),
+    encryptionPublicKey: v.bytes(),
+    signingPublicKey: v.bytes(),
+    selfSignature: v.bytes(),
+    pairingMac: v.bytes(),
+    pairingId: v.string(),
+    createdAt: v.number(),
+  }).index("by_workspace_and_workerId", ["workspace", "workerId"]),
+  /**
+   * The owner's copy of one Worker pairing secret, sealed to the owner's own identity key. Bound to
+   * a setup enrollment or an enrolled Worker; deleted once the Worker is certified or after expiry.
+   */
+  e2ee_worker_pairings: defineTable({
+    workspace: v.id("workspaces"),
+    pairingId: v.string(),
+    ownerUserId: v.string(),
+    workerId: v.optional(v.string()),
+    enrollment: v.optional(v.id("worker_enrollments")),
+    sealedSecret: v.bytes(),
+    expiresAt: v.number(),
+  })
+    .index("by_workspace_and_pairingId", ["workspace", "pairingId"])
+    .index("by_expiresAt", ["expiresAt"]),
   /** Single-use access link payloads; the link secret stays in the URL fragment. */
   e2ee_invites: defineTable({
     workspace: v.id("workspaces"),

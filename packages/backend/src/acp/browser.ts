@@ -28,49 +28,90 @@ import {
   ACP_BUSY_STATUSES,
   ACP_HISTORY_REQUEST_ITEMS,
   ACP_PROMPT_BYTES,
+  ACP_SEALED_INTERACTION_BYTES,
   acpAnswerError,
+  acpChatScopeValidator,
   acpInteractionAnswerValidator,
   acpPromptBlockValidator,
+  acpSealedAnswerValidator,
+  acpSealedBoxValidator,
+  acpSignedBindingValidator,
+  acpSignedCommandValidator,
   utf8Bytes,
   validAcpToken,
+  type AcpCommandKind,
+  type AcpCommandPayload,
+  type AcpSignedCommand,
 } from "./contract";
 import {
   accessibleSession,
   acpError,
   admitWarm,
   enqueue,
+  enqueueSigned,
   existingCommand,
   findAgent,
   findSession,
   validateConfig,
   validateMode,
 } from "./policy";
+import {
+  chatAudience,
+  requireSealedBox,
+  signedDispatch,
+  verifyImportProof,
+  verifyNextBinding,
+  verifySignedCommand,
+  verifyUserSignature,
+  workspaceHasKeys,
+} from "./sealed";
+import { acpAnswerStatement } from "radium-crypto";
+import { requireChatKeysForCreate, insertChatKeysSetup } from "../e2ee/chat-keys";
+import { chatKeysSetupValidator, type ChatKeysSetup } from "../e2ee/workspace-contract";
+import { certifiedWorkerKeys } from "../e2ee/worker-keys";
+import { setChatMembers } from "../chatroom/members";
+import { validateChatBox } from "../chatroom/sealing";
 
-/** Shared atomic chat + lifecycle creation for new and indexed agent sessions. */
+/**
+ * Shared atomic chat + lifecycle creation for new, forked and indexed agent sessions. With `keys`
+ * the chat is encrypted from the start (its title can only be `sealedTitle`), like
+ * `aisdk.CreateChat`'s `e2ee`; `members` are the picked recipients of a `shared` chat.
+ */
 async function insertAgentChat(
   ctx: MutationCtx,
   args: {
-    workspace: Id<"workspaces">;
+    workspace: Doc<"workspaces">;
     userId: string;
     worker: string;
     agentId: string;
     cwd: string;
     version: string;
     profile?: AcpProfile;
-    scope?: "personal" | "workspace";
+    scope?: "personal" | "shared" | "workspace";
+    members?: string[];
+    keys?: ChatKeysSetup;
     project?: Id<"projects">;
     sessionId?: string;
     title?: string;
+    sealedTitle?: { epoch: number; box: ArrayBuffer };
     updatedAt?: number;
+    status?: "idle" | "starting";
   },
 ) {
   const now = Date.now();
+  const scope = args.scope ?? "personal";
+  if (scope !== "shared" && args.members?.length) acpError("ACP_INVALID_SCOPE");
+  if (args.sealedTitle) {
+    if (!args.keys) acpError("ACP_E2EE_MODE");
+    validateChatBox(args.sealedTitle, 1, 2048);
+  }
   const chat = await ctx.db.insert("aisdk_chats", {
-    workspace: args.workspace,
+    workspace: args.workspace._id,
     userId: args.userId,
-    scope: args.scope ?? "personal",
+    scope,
     project: args.project,
-    title: args.title,
+    title: args.keys ? undefined : args.title,
+    sealedTitle: args.sealedTitle,
     agent: {
       kind: "acp",
       profile: args.profile ?? "native",
@@ -83,21 +124,75 @@ async function insertAgentChat(
     activeStream: false,
     lastInteractionAt: args.updatedAt ?? now,
   });
+  const row = (await ctx.db.get(chat))!;
+  await setChatMembers(ctx, row, args.members ?? []);
+  if (args.keys) {
+    await insertChatKeysSetup(ctx, {
+      chat: row,
+      workspace: args.workspace,
+      members: args.members ?? [],
+      keys: args.keys,
+    });
+  }
   await ctx.db.insert("acp_sessions", {
     chat,
-    workspace: args.workspace,
+    workspace: args.workspace._id,
     worker: args.worker,
     agentId: args.agentId,
     profile: args.profile ?? "native",
     cwd: args.cwd,
     sessionId: args.sessionId,
-    status: "idle",
+    status: args.status ?? "idle",
     epoch: 0,
     warm: false,
     history: "none",
     updatedAt: now,
   });
   return chat;
+}
+
+/**
+ * Queue one session-level command in the chat's dispatch mode. Signed mode (keyed workspace,
+ * certified Worker) needs the creator's binding and a command its caller sealed and signed; the
+ * plaintext `payload` is the keyless-workspace path. `clientId`, when given, must be the signed one.
+ */
+async function dispatchCommand(
+  ctx: MutationCtx,
+  input: {
+    signedMode: boolean;
+    session: Doc<"acp_sessions">;
+    chat: Doc<"aisdk_chats">;
+    userId: string;
+    kind: AcpCommandKind;
+    payload?: AcpCommandPayload;
+    signed?: AcpSignedCommand;
+    clientId?: string;
+  },
+) {
+  const { session } = input;
+  const binding = { workspace: session.workspace, worker: session.worker };
+  if (input.signedMode) {
+    if (!input.signed || (input.clientId !== undefined && input.signed.clientId !== input.clientId))
+      acpError("ACP_SIGNATURE_REQUIRED");
+    // A paired Worker executes nothing for a chat its creator has not bound and signed.
+    if (!input.chat.e2eeId || !session.binding) acpError("ACP_BINDING_REQUIRED");
+    await verifySignedCommand(ctx, {
+      ...binding,
+      chat: session.chat,
+      kind: input.kind,
+      userId: input.userId,
+      signed: input.signed,
+    });
+    return enqueueSigned(
+      ctx,
+      binding,
+      input.userId,
+      { kind: input.kind, signed: input.signed },
+      session.chat,
+    );
+  }
+  if (input.signed || !input.payload) acpError("ACP_E2EE_MODE");
+  return enqueue(ctx, binding, input.userId, input.payload, session.chat, input.clientId);
 }
 
 /** A directory without trailing separators; the root keeps its own. */
@@ -147,6 +242,7 @@ function indexedSessionRow(row: Doc<"acp_agent_sessions">, project: Id<"projects
     sessionId: row.sessionId,
     cwd: row.cwd,
     title: row.title,
+    sealedTitle: row.sealedTitle,
     updatedAt: row.updatedAt,
     chat: row.chat ?? null,
     project,
@@ -154,11 +250,7 @@ function indexedSessionRow(row: Doc<"acp_agent_sessions">, project: Id<"projects
 }
 
 /** Index rows linked to a chat the caller cannot see (another member's personal chat) are hidden. */
-async function visibleIndexRows(
-  ctx: QueryCtx,
-  userId: string,
-  rows: Doc<"acp_agent_sessions">[],
-) {
+async function visibleIndexRows(ctx: QueryCtx, userId: string, rows: Doc<"acp_agent_sessions">[]) {
   const visible = await Promise.all(
     rows.map(
       async (row) =>
@@ -170,15 +262,22 @@ async function visibleIndexRows(
   return rows.filter((_, index) => visible[index]);
 }
 
-/** Owner-selected immutable binding; every creation starts a new agent session. */
+/**
+ * Owner-selected immutable binding; every creation starts a new agent session. In a keyed workspace
+ * (`requireDispatchableWorker`) the chat must be created with chat keys (`e2ee`, as
+ * `aisdk.CreateChat`); the creator then signs and publishes its binding (`PublishBinding`) before
+ * any command. `shared` chats name their `members`.
+ */
 export const CreateSession = ownedWorkspaceMutation({
   args: {
-    scope: v.optional(v.union(v.literal("personal"), v.literal("workspace"))),
+    scope: v.optional(acpChatScopeValidator),
+    members: v.optional(v.array(v.string())),
     project: v.optional(v.id("projects")),
     worker: v.string(),
     agentId: v.string(),
     cwd: v.optional(v.string()),
     profile: v.optional(acpProfileValidator),
+    e2ee: v.optional(v.object({ keys: chatKeysSetupValidator })),
   },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args) => {
@@ -187,6 +286,15 @@ export const CreateSession = ownedWorkspaceMutation({
       ctx.workspace._id,
       workspaceWorkerMetadata(ctx, ctx.workspace._id),
     );
+    const scope = args.scope ?? "personal";
+    await requireChatKeysForCreate(ctx, {
+      userId: ctx.identity._id,
+      workspace: ctx.workspace,
+      scope,
+      hasKeys: !!args.e2ee,
+    });
+    if ((await signedDispatch(ctx, ctx.workspace._id, args.worker)) && !args.e2ee)
+      acpError("ACP_E2EE_REQUIRED");
     if (args.project) await requireWorkspaceProject(ctx, args.project, ctx.workspace._id);
     if (args.profile === "gateway") {
       const definition = await ctx.db
@@ -215,25 +323,68 @@ export const CreateSession = ownedWorkspaceMutation({
       (await deriveChatWorkerDirectory(ctx, ctx.workspace._id, args.worker, args.project));
     if (!cwd || !validChatWorkerDirectory(cwd)) acpError("ACP_INVALID_CWD");
     return insertAgentChat(ctx, {
-      workspace: ctx.workspace._id,
+      workspace: ctx.workspace,
       userId: ctx.identity._id,
       worker: args.worker,
       agentId: args.agentId,
       cwd,
       version: agent.version,
       profile: args.profile ?? "native",
-      scope: args.scope,
+      scope,
+      members: args.members,
+      keys: args.e2ee?.keys,
       project: args.project,
     });
   },
 });
 
-/** Admit exactly one prompt at a time, with worker-scoped retry keys. */
+/**
+ * The creator signs the chat's binding (`acpBindingStatement`): at creation, to repair a legacy
+ * chat once it has keys, and again with a higher version on every audience change
+ * (`aisdk.SetChatScope`). A session id bound without a Worker proof (an imported or legacy session)
+ * needs the workspace owner's `importProof`.
+ */
+export const PublishBinding = mutation({
+  args: {
+    chat: v.id("aisdk_chats"),
+    binding: acpSignedBindingValidator,
+    importProof: v.optional(v.object({ signerKeyId: v.string(), signature: v.bytes() })),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { chat, session, userId, workspace } = await accessibleSession(ctx, args.chat);
+    if (chat.userId !== userId) acpError("ACP_DENIED");
+    await verifyNextBinding(ctx, {
+      session,
+      chat,
+      ...(await chatAudience(ctx, chat)),
+      binding: args.binding,
+    });
+    const patch: Partial<Doc<"acp_sessions">> = { binding: args.binding, updatedAt: Date.now() };
+    if (session.sessionId && !session.sessionProof) {
+      if (!args.importProof) acpError("ACP_SESSION_PROOF_REQUIRED");
+      await verifyImportProof(ctx, {
+        session,
+        ownerId: workspace.ownerId,
+        proof: args.importProof,
+      });
+      patch.sessionProof = { kind: "import", ...args.importProof };
+    }
+    await ctx.db.patch(session._id, patch);
+    return null;
+  },
+});
+
+/**
+ * Admit exactly one prompt at a time, with worker-scoped retry keys. Signed mode sends only the
+ * sealed command (`signed`, whose clientId is `clientId`); the prompt text never reaches Convex.
+ */
 export const Prompt = mutation({
   args: {
     chat: v.id("aisdk_chats"),
-    prompt: v.array(acpPromptBlockValidator),
+    prompt: v.optional(v.array(acpPromptBlockValidator)),
     clientId: v.string(),
+    signed: v.optional(acpSignedCommandValidator),
   },
   returns: v.id("acp_commands"),
   handler: async (ctx, args) => {
@@ -260,25 +411,32 @@ export const Prompt = mutation({
     if (session.status === "ended") acpError("ACP_SESSION_ENDED");
     if (ACP_BUSY_STATUSES.includes(session.status)) acpError("ACP_SESSION_BUSY");
     if (
-      !args.prompt.length ||
-      !args.prompt.some((block) => block.type !== "text" || block.text.trim()) ||
-      utf8Bytes(JSON.stringify(args.prompt)) > ACP_PROMPT_BYTES
+      args.prompt &&
+      (!args.prompt.length ||
+        !args.prompt.some((block) => block.type !== "text" || block.text.trim()) ||
+        utf8Bytes(JSON.stringify(args.prompt)) > ACP_PROMPT_BYTES)
     )
       acpError("ACP_INVALID_PROMPT");
-    const command = await enqueue(
-      ctx,
-      { workspace: session.workspace, worker: session.worker },
+    const signedMode = await signedDispatch(ctx, session.workspace, session.worker);
+    // The prompt text itself must never reach Convex for a paired Worker.
+    if (signedMode && args.prompt) acpError("ACP_E2EE_MODE");
+    const command = await dispatchCommand(ctx, {
+      signedMode,
+      session,
+      chat,
       userId,
-      { kind: "prompt", prompt: args.prompt },
-      args.chat,
-      args.clientId,
-    );
+      kind: "prompt",
+      payload: args.prompt ? { kind: "prompt", prompt: args.prompt } : undefined,
+      signed: args.signed,
+      clientId: args.clientId,
+    });
     const now = Date.now();
     await ctx.db.patch(session._id, {
       status: "starting",
       turnBy: userId,
       stopReason: undefined,
       error: undefined,
+      sealedError: undefined,
       updatedAt: now,
       ...(await admitWarm(ctx, session, now)),
     });
@@ -287,12 +445,15 @@ export const Prompt = mutation({
   },
 });
 
-/** Cancel unclaimed intent locally; otherwise send one cancellation to the live agent. */
+/**
+ * Cancel unclaimed intent locally; otherwise send one cancellation to the live agent. Signed mode
+ * callers always pass a signed `cancel`; it is used only when a command must be queued.
+ */
 export const Cancel = mutation({
-  args: { chat: v.id("aisdk_chats") },
+  args: { chat: v.id("aisdk_chats"), signed: v.optional(acpSignedCommandValidator) },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { session, userId } = await accessibleSession(ctx, args.chat);
+    const { session, userId, chat } = await accessibleSession(ctx, args.chat);
     const prompts = await ctx.db
       .query("acp_commands")
       .withIndex("by_chat_and_status", (q) => q.eq("chat", args.chat).eq("status", "pending"))
@@ -303,6 +464,7 @@ export const Cancel = mutation({
         status: "failed",
         error: "Cancelled",
         payload: undefined,
+        signed: undefined,
         finishedAt: Date.now(),
       });
       await ctx.db.patch(session._id, {
@@ -322,13 +484,15 @@ export const Cancel = mutation({
         .filter((q) => q.eq(q.field("kind"), "cancel"))
         .take(1);
       if (!pending.length)
-        await enqueue(
-          ctx,
-          { workspace: session.workspace, worker: session.worker },
+        await dispatchCommand(ctx, {
+          signedMode: await signedDispatch(ctx, session.workspace, session.worker),
+          session,
+          chat,
           userId,
-          { kind: "cancel" },
-          args.chat,
-        );
+          kind: "cancel",
+          payload: { kind: "cancel" },
+          signed: args.signed,
+        });
     }
     return null;
   },
@@ -347,79 +511,137 @@ async function promptClaimed(ctx: MutationCtx, chat: Id<"aisdk_chats">) {
   return claimed !== null;
 }
 
-/** Store pre-session choices as metadata; live changes go through the assigned Worker. */
+/**
+ * Keyless workspaces retain pre-session draft metadata. In keyed workspaces the choice travels
+ * only in the signed sealed command; Convex cannot inspect or validate its contents.
+ */
 export const SetConfig = mutation({
   args: {
     chat: v.id("aisdk_chats"),
-    configId: v.string(),
-    value: v.union(v.string(), v.boolean()),
+    configId: v.optional(v.string()),
+    value: v.optional(v.union(v.string(), v.boolean())),
+    signed: v.optional(acpSignedCommandValidator),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { session, userId } = await accessibleSession(ctx, args.chat);
+    const { session, userId, chat } = await accessibleSession(ctx, args.chat);
     if (session.status === "ended") acpError("ACP_SESSION_ENDED");
-    if (!session.sessionId) {
-      const agent = await findAgent(ctx, session.workspace, session.worker, session.agentId);
-      validateConfig(agent?.defaults?.config, args.configId, args.value);
-      const draft = session.draft ?? { config: [] };
-      const config = draft.config.filter((option) => option.configId !== args.configId);
-      config.push({ configId: args.configId, value: args.value });
-      await ctx.db.patch(session._id, { draft: { ...draft, config }, updatedAt: Date.now() });
-      if (!(await promptClaimed(ctx, args.chat))) return null;
+    const signedMode = await signedDispatch(ctx, session.workspace, session.worker);
+    if (signedMode) {
+      if (args.configId !== undefined || args.value !== undefined) acpError("ACP_E2EE_MODE");
     } else {
-      if (!session.config) acpError("ACP_INVALID_CONFIG");
-      validateConfig(session.config, args.configId, args.value);
+      if (args.configId === undefined || args.value === undefined) acpError("ACP_INVALID_CONFIG");
+      if (!session.sessionId) {
+        const agent = await findAgent(ctx, session.workspace, session.worker, session.agentId);
+        validateConfig(agent?.defaults?.config, args.configId, args.value);
+        const draft = session.draft ?? { config: [] };
+        const config = draft.config.filter((option) => option.configId !== args.configId);
+        config.push({ configId: args.configId, value: args.value });
+        await ctx.db.patch(session._id, { draft: { ...draft, config }, updatedAt: Date.now() });
+        if (!(await promptClaimed(ctx, args.chat))) return null;
+      } else {
+        if (!session.config) acpError("ACP_INVALID_CONFIG");
+        validateConfig(session.config, args.configId, args.value);
+      }
     }
-    await enqueue(
-      ctx,
-      { workspace: session.workspace, worker: session.worker },
+    await dispatchCommand(ctx, {
+      signedMode,
+      session,
+      chat,
       userId,
-      { kind: "set_config", configId: args.configId, value: args.value },
-      args.chat,
-    );
+      kind: "set_config",
+      payload: args.configId !== undefined && args.value !== undefined
+        ? { kind: "set_config", configId: args.configId, value: args.value }
+        : undefined,
+      signed: args.signed,
+    });
     return null;
   },
 });
 
-/** Choose an advertised mode, either in the draft or through a live command. */
+/** Choose an advertised mode, either in the draft or through a live command (see `SetConfig`). */
 export const SetMode = mutation({
-  args: { chat: v.id("aisdk_chats"), modeId: v.string() },
+  args: {
+    chat: v.id("aisdk_chats"),
+    modeId: v.optional(v.string()),
+    signed: v.optional(acpSignedCommandValidator),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { session, userId } = await accessibleSession(ctx, args.chat);
+    const { session, userId, chat } = await accessibleSession(ctx, args.chat);
     if (session.status === "ended") acpError("ACP_SESSION_ENDED");
-    if (!session.sessionId) {
-      const agent = await findAgent(ctx, session.workspace, session.worker, session.agentId);
-      validateMode(agent?.defaults?.config, args.modeId);
-      await ctx.db.patch(session._id, {
-        draft: { ...(session.draft ?? { config: [] }), modeId: args.modeId },
-        updatedAt: Date.now(),
-      });
-      if (!(await promptClaimed(ctx, args.chat))) return null;
+    const signedMode = await signedDispatch(ctx, session.workspace, session.worker);
+    if (signedMode) {
+      if (args.modeId !== undefined) acpError("ACP_E2EE_MODE");
     } else {
-      if (!session.config) acpError("ACP_INVALID_MODE");
-      validateMode(session.config, args.modeId);
+      if (args.modeId === undefined) acpError("ACP_INVALID_MODE");
+      if (!session.sessionId) {
+        const agent = await findAgent(ctx, session.workspace, session.worker, session.agentId);
+        validateMode(agent?.defaults?.config, args.modeId);
+        await ctx.db.patch(session._id, {
+          draft: { ...(session.draft ?? { config: [] }), modeId: args.modeId },
+          updatedAt: Date.now(),
+        });
+        if (!(await promptClaimed(ctx, args.chat))) return null;
+      } else {
+        if (!session.config) acpError("ACP_INVALID_MODE");
+        validateMode(session.config, args.modeId);
+      }
     }
-    await enqueue(
-      ctx,
-      { workspace: session.workspace, worker: session.worker },
+    await dispatchCommand(ctx, {
+      signedMode,
+      session,
+      chat,
       userId,
-      { kind: "set_mode", modeId: args.modeId },
-      args.chat,
-    );
+      kind: "set_mode",
+      payload: args.modeId !== undefined ? { kind: "set_mode", modeId: args.modeId } : undefined,
+      signed: args.signed,
+    });
     return null;
   },
 });
 
-/** First valid visible user's decision wins; another user's private chat is never exposed. */
+/**
+ * First visible user's decision wins; another user's private chat is never exposed. A sealed
+ * request (keyed workspace) takes a `sealed` answer Convex cannot validate: it checks only that the
+ * caller signed it, and the Worker re-opens the interaction when the answer is not valid.
+ */
 export const Answer = mutation({
-  args: { interaction: v.id("acp_interactions"), answer: acpInteractionAnswerValidator },
+  args: {
+    interaction: v.id("acp_interactions"),
+    answer: v.optional(acpInteractionAnswerValidator),
+    sealed: v.optional(acpSealedAnswerValidator),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
     const row = await ctx.db.get(args.interaction);
     if (!row) acpError("ACP_INTERACTION_CLOSED");
     const { userId } = await accessibleSession(ctx, row.chat);
     if (row.status !== "pending") acpError("ACP_INTERACTION_CLOSED");
+    if (row.sealedRequest) {
+      if (!args.sealed || args.answer) acpError("ACP_E2EE_MODE");
+      requireSealedBox(args.sealed.answer, ACP_SEALED_INTERACTION_BYTES);
+      await verifyUserSignature(ctx, {
+        userId,
+        signerKeyId: args.sealed.signerKeyId,
+        signature: args.sealed.signature,
+        message: acpAnswerStatement({
+          workspaceId: row.workspace,
+          workerId: row.worker,
+          chatId: row.chat,
+          requestKey: row.requestKey,
+          answer: new Uint8Array(args.sealed.answer),
+        }),
+      });
+      await ctx.db.patch(row._id, {
+        status: "answered",
+        sealedAnswer: args.sealed,
+        answeredBy: userId,
+        answeredAt: Date.now(),
+      });
+      return null;
+    }
+    if (!row.request || !args.answer || args.sealed) acpError("ACP_E2EE_MODE");
     const message = acpAnswerError(row.request, args.answer);
     if (message) acpError("ACP_INVALID_ANSWER", message);
     await ctx.db.patch(row._id, {
@@ -434,13 +656,20 @@ export const Answer = mutation({
 
 /**
  * History pages are shared within a warm epoch, so duplicate page requests share an unfinished
- * command; a retry after it finished or failed asks the Worker again.
+ * command; a retry after it finished or failed asks the Worker again. A signed request's clientId
+ * must start with the page key `history:${chat}:${epoch}:${before}:`.
  */
 export const RequestHistory = mutation({
-  args: { chat: v.id("aisdk_chats"), epoch: v.number(), before: v.number(), limit: v.number() },
+  args: {
+    chat: v.id("aisdk_chats"),
+    epoch: v.number(),
+    before: v.number(),
+    limit: v.number(),
+    signed: v.optional(acpSignedCommandValidator),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { session, userId } = await accessibleSession(ctx, args.chat);
+    const { session, userId, chat } = await accessibleSession(ctx, args.chat);
     if (!session.warm || args.epoch !== session.epoch) return null;
     // Dedupe keys are Worker-scoped, so the chat must be part of the page's key.
     const page = `history:${args.chat}:${args.epoch}:${args.before}`;
@@ -452,46 +681,82 @@ export const RequestHistory = mutation({
         .take(32);
       if (active.some((row) => row.clientId.startsWith(`${page}:`))) return null;
     }
-    await enqueue(
-      ctx,
-      { workspace: session.workspace, worker: session.worker },
+    if (args.signed && !args.signed.clientId.startsWith(`${page}:`))
+      acpError("ACP_INVALID_CLIENT_ID");
+    await dispatchCommand(ctx, {
+      signedMode: await signedDispatch(ctx, session.workspace, session.worker),
+      session,
+      chat,
       userId,
-      {
+      kind: "history",
+      payload: {
         kind: "history",
         epoch: args.epoch,
         before: args.before,
         limit: Math.min(ACP_HISTORY_REQUEST_ITEMS, Math.max(1, Math.floor(args.limit))),
       },
-      args.chat,
-      `${page}:${crypto.randomUUID()}`,
-    );
+      signed: args.signed,
+      clientId: args.signed?.clientId ?? `${page}:${crypto.randomUUID()}`,
+    });
     return null;
   },
 });
 
-/** Latest-point fork preserves binding and scope but grants ownership of the new chat to its caller. */
+/**
+ * Latest-point fork preserves binding and scope but grants ownership of the new chat to its caller.
+ * Signed mode is two steps, since the fork command names the new chat: this creates the target with
+ * chat keys (`e2ee`; `members` for a shared source), then `StartFork` publishes its binding and
+ * queues the signed command.
+ */
 export const Fork = mutation({
-  args: { chat: v.id("aisdk_chats"), clientId: v.string() },
+  args: {
+    chat: v.id("aisdk_chats"),
+    clientId: v.string(),
+    e2ee: v.optional(
+      v.object({ keys: chatKeysSetupValidator, members: v.optional(v.array(v.string())) }),
+    ),
+  },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args) => {
-    const { session, chat, userId, agent } = await accessibleSession(ctx, args.chat);
-    const existing = await existingCommand(
-      ctx,
-      session.workspace,
-      session.worker,
-      args.clientId,
-      userId,
-    );
-    if (existing) {
-      if (existing.kind !== "fork") acpError("ACP_INVALID_CLIENT_ID");
-      // The command keeps no prompt; its receipt identifies the fork after payload removal.
-      const target = existing.result ? ctx.db.normalizeId("aisdk_chats", existing.result) : null;
-      if (target) return target;
-      acpError("ACP_COMMAND_CLOSED");
+    const { session, chat, userId, agent, workspace } = await accessibleSession(ctx, args.chat);
+    const signedMode = await signedDispatch(ctx, session.workspace, session.worker);
+    if (!signedMode) {
+      if (args.e2ee) acpError("ACP_E2EE_MODE");
+      const existing = await existingCommand(
+        ctx,
+        session.workspace,
+        session.worker,
+        args.clientId,
+        userId,
+      );
+      if (existing) {
+        if (existing.kind !== "fork") acpError("ACP_INVALID_CLIENT_ID");
+        // The command keeps no prompt; its receipt identifies the fork after payload removal.
+        const target = existing.result ? ctx.db.normalizeId("aisdk_chats", existing.result) : null;
+        if (target) return target;
+        acpError("ACP_COMMAND_CLOSED");
+      }
     }
     const report = await findAgent(ctx, session.workspace, session.worker, session.agentId);
     if (!report?.capabilities.fork || !session.sessionId) acpError("ACP_UNSUPPORTED");
     if (ACP_BUSY_STATUSES.includes(session.status)) acpError("ACP_SESSION_BUSY");
+    if (signedMode) {
+      if (!args.e2ee || !session.binding) acpError("ACP_BINDING_REQUIRED");
+      return insertAgentChat(ctx, {
+        workspace,
+        userId,
+        worker: session.worker,
+        agentId: session.agentId,
+        cwd: session.cwd,
+        version: agent.agentVersion,
+        profile: session.profile ?? "native",
+        scope: chat.scope ?? "personal",
+        members: args.e2ee.members,
+        keys: args.e2ee.keys,
+        project: chat.project,
+        status: "starting",
+      });
+    }
     const { sessionId: _, ...binding } = agent;
     const target = await ctx.db.insert("aisdk_chats", {
       workspace: session.workspace,
@@ -528,6 +793,77 @@ export const Fork = mutation({
   },
 });
 
+/**
+ * Second step of a signed fork: the caller (the target's creator) publishes the target's binding
+ * (version 1) and queues the signed `fork` command, whose statement names the source chat. Retrying
+ * with the same command is a no-op.
+ */
+export const StartFork = mutation({
+  args: {
+    chat: v.id("aisdk_chats"),
+    target: v.id("aisdk_chats"),
+    binding: acpSignedBindingValidator,
+    signed: acpSignedCommandValidator,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { session, userId, chat } = await accessibleSession(ctx, args.chat);
+    const existing = await existingCommand(
+      ctx,
+      session.workspace,
+      session.worker,
+      args.signed.clientId,
+      userId,
+    );
+    if (existing) return null;
+    const target = await accessibleSession(ctx, args.target);
+    if (
+      target.chat.userId !== userId ||
+      target.session.sessionId ||
+      target.session.worker !== session.worker ||
+      target.session.workspace !== session.workspace ||
+      !session.sessionId ||
+      !session.binding
+    )
+      acpError("ACP_INVALID_BINDING");
+    await verifyNextBinding(ctx, {
+      session: target.session,
+      chat: target.chat,
+      ...(await chatAudience(ctx, target.chat)),
+      binding: args.binding,
+    });
+    await ctx.db.patch(target.session._id, { binding: args.binding, updatedAt: Date.now() });
+    const command = await dispatchCommand(ctx, {
+      signedMode: await signedDispatch(ctx, session.workspace, session.worker),
+      session,
+      chat,
+      userId,
+      kind: "fork",
+      signed: args.signed,
+    });
+    // The receipt lets Worker recovery find the target once the payload is gone.
+    await ctx.db.patch(command, { result: args.target });
+    return null;
+  },
+});
+
+/**
+ * Fallback title of an encrypted ACP chat, which the browser derives from the first prompt and
+ * seals itself (the server never sees the prompt). Ignored once the chat has any title.
+ */
+export const SetFallbackTitle = mutation({
+  args: { chat: v.id("aisdk_chats"), sealedTitle: acpSealedBoxValidator },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { chat, session } = await accessibleSession(ctx, args.chat);
+    if (!chat.e2eeId || !chat.keyEpoch || chat.rekey) acpError("ACP_E2EE_MODE");
+    if (chat.sealedTitle || chat.title || session.userTitled) return null;
+    validateChatBox(args.sealedTitle, chat.keyEpoch, 2048);
+    await ctx.db.patch(chat._id, { sealedTitle: args.sealedTitle });
+    return null;
+  },
+});
+
 /** Paginate metadata without contacting the Worker or reading conversation content. */
 export const ListAgentSessionIndex = ownedWorkspaceQuery({
   args: { agentId: v.string(), paginationOpts: paginationOptsValidator },
@@ -546,24 +882,6 @@ export const ListAgentSessionIndex = ownedWorkspaceQuery({
         indexedSessionRow(row, folders.get(folderKey(row.worker, row.cwd)) ?? null),
       ),
     };
-  },
-});
-
-export const SearchAgentSessionIndex = ownedWorkspaceQuery({
-  args: { agentId: v.string(), query: v.string() },
-  handler: async (ctx, args) => {
-    const text = args.query.trim().slice(0, 500);
-    if (!text) return [];
-    const rows = await ctx.db
-      .query("acp_agent_sessions")
-      .withSearchIndex("search_title", (q) =>
-        q.search("title", text).eq("workspace", ctx.workspace._id).eq("agentId", args.agentId),
-      )
-      .take(50);
-    const folders = await projectFolders(ctx, ctx.workspace._id);
-    return (await visibleIndexRows(ctx, ctx.identity._id, rows)).map((row) =>
-      indexedSessionRow(row, folders.get(folderKey(row.worker, row.cwd)) ?? null),
-    );
   },
 });
 
@@ -645,12 +963,22 @@ export const ListUnopenedAgentSessions = ownedWorkspaceQuery({
   },
 });
 
-/** Safe on every Home open: online-only, coalesced intent and a one-minute freshness window. */
+/**
+ * Safe on every Home open: online-only, coalesced intent and a one-minute freshness window. In a
+ * keyed workspace each certified Worker needs its own owner-signed `sync_sessions` command
+ * (`signed`, by Worker); Workers without one, or not certified, are skipped.
+ */
 export const SyncAgentSessions = ownedWorkspaceMutation({
-  args: { agentId: v.string() },
+  args: {
+    agentId: v.string(),
+    signed: v.optional(
+      v.array(v.object({ worker: v.string(), ...acpSignedCommandValidator.fields })),
+    ),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
     const now = Date.now();
+    const keyed = await workspaceHasKeys(ctx, ctx.workspace._id);
     const agents = await ctx.db
       .query("worker_agents")
       .withIndex("by_workspace_and_agentId", (q) =>
@@ -667,6 +995,11 @@ export const SyncAgentSessions = ownedWorkspaceMutation({
         continue;
       const presence = await findWorkerPresence(ctx, ctx.workspace._id, agent.worker);
       if (!isWorkerOnline(presence?.lastSeenAt, now)) continue;
+      const signedEntry = args.signed?.find((entry) => entry.worker === agent.worker);
+      if (keyed) {
+        if (!signedEntry) continue;
+        if (!(await certifiedWorkerKeys(ctx, ctx.workspace._id, agent.worker))) continue;
+      }
       let pending = false;
       for (const status of ["pending", "claimed"] as const) {
         const command = await ctx.db
@@ -684,18 +1017,46 @@ export const SyncAgentSessions = ownedWorkspaceMutation({
         }
       }
       if (pending) continue;
-      await enqueue(ctx, { workspace: ctx.workspace._id, worker: agent.worker }, ctx.identity._id, {
-        kind: "sync_sessions",
-        agentId: args.agentId,
-      });
+      const binding = { workspace: ctx.workspace._id, worker: agent.worker };
+      if (keyed && signedEntry) {
+        const { worker: _, ...signed } = signedEntry;
+        await verifySignedCommand(ctx, {
+          ...binding,
+          chat: "",
+          kind: "sync_sessions",
+          userId: ctx.identity._id,
+          signed,
+        });
+        await enqueueSigned(ctx, binding, ctx.identity._id, {
+          kind: "sync_sessions",
+          signed,
+          agentId: args.agentId,
+        });
+      } else {
+        await enqueue(ctx, binding, ctx.identity._id, {
+          kind: "sync_sessions",
+          agentId: args.agentId,
+        });
+      }
     }
     return null;
   },
 });
 
-/** Open an indexed session even while offline; the immutable binding reopens when it reconnects. */
+/**
+ * Open an indexed session even while offline; the immutable binding reopens when it reconnects.
+ * In a keyed workspace the owner's browser creates chat keys (`e2ee`) and seals the decrypted index
+ * title to them, then publishes the binding with its import proof (`PublishBinding`).
+ */
 export const OpenAgentSession = ownedWorkspaceMutation({
-  args: { worker: v.string(), agentId: v.string(), sessionId: v.string() },
+  args: {
+    worker: v.string(),
+    agentId: v.string(),
+    sessionId: v.string(),
+    e2ee: v.optional(
+      v.object({ keys: chatKeysSetupValidator, sealedTitle: v.optional(acpSealedBoxValidator) }),
+    ),
+  },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args) => {
     const row = await ctx.db
@@ -715,6 +1076,14 @@ export const OpenAgentSession = ownedWorkspaceMutation({
       ctx.workspace._id,
       workspaceWorkerMetadata(ctx, ctx.workspace._id),
     );
+    await requireChatKeysForCreate(ctx, {
+      userId: ctx.identity._id,
+      workspace: ctx.workspace,
+      scope: "personal",
+      hasKeys: !!args.e2ee,
+    });
+    if ((await signedDispatch(ctx, ctx.workspace._id, args.worker)) && !args.e2ee)
+      acpError("ACP_E2EE_REQUIRED");
     const agent = await findAgent(ctx, ctx.workspace._id, args.worker, args.agentId);
     if (!agent || !(agent.capabilities.loadSession || agent.capabilities.resume))
       acpError("ACP_UNSUPPORTED");
@@ -731,7 +1100,7 @@ export const OpenAgentSession = ownedWorkspaceMutation({
     if (bound) acpError("ACP_SESSION_BOUND");
     const folders = await projectFolders(ctx, ctx.workspace._id);
     const chat = await insertAgentChat(ctx, {
-      workspace: ctx.workspace._id,
+      workspace: ctx.workspace,
       userId: ctx.identity._id,
       worker: args.worker,
       agentId: args.agentId,
@@ -739,6 +1108,8 @@ export const OpenAgentSession = ownedWorkspaceMutation({
       cwd: row.cwd,
       version: agent.version,
       title: row.title,
+      keys: args.e2ee?.keys,
+      sealedTitle: args.e2ee?.sealedTitle,
       updatedAt: row.updatedAt,
       project: folders.get(folderKey(row.worker, row.cwd)),
     });
@@ -747,9 +1118,48 @@ export const OpenAgentSession = ownedWorkspaceMutation({
   },
 });
 
+/** Queue an owner-only agent-level command in the Worker's dispatch mode (`chat` is `""`). */
+async function dispatchAgentCommand(
+  ctx: MutationCtx,
+  input: {
+    workspace: Id<"workspaces">;
+    worker: string;
+    userId: string;
+    payload: Extract<AcpCommandPayload, { kind: "authenticate" | "logout" }>;
+    clientId: string;
+    signed?: AcpSignedCommand;
+  },
+) {
+  const binding = { workspace: input.workspace, worker: input.worker };
+  if (await signedDispatch(ctx, input.workspace, input.worker)) {
+    if (!input.signed || input.signed.clientId !== input.clientId)
+      acpError("ACP_SIGNATURE_REQUIRED");
+    await verifySignedCommand(ctx, {
+      ...binding,
+      chat: "",
+      kind: input.payload.kind,
+      userId: input.userId,
+      signed: input.signed,
+    });
+    return enqueueSigned(ctx, binding, input.userId, {
+      kind: input.payload.kind,
+      signed: input.signed,
+      agentId: input.payload.agentId,
+    });
+  }
+  if (input.signed) acpError("ACP_E2EE_MODE");
+  return enqueue(ctx, binding, input.userId, input.payload, undefined, input.clientId);
+}
+
 /** Agent-managed authentication only; terminal methods stay local to the Worker. */
 export const Authenticate = ownedWorkspaceMutation({
-  args: { worker: v.string(), agentId: v.string(), methodId: v.string(), clientId: v.string() },
+  args: {
+    worker: v.string(),
+    agentId: v.string(),
+    methodId: v.string(),
+    clientId: v.string(),
+    signed: v.optional(acpSignedCommandValidator),
+  },
   returns: v.id("acp_commands"),
   handler: async (ctx, args) => {
     await requireActiveWorkspaceWorker(
@@ -762,20 +1172,25 @@ export const Authenticate = ownedWorkspaceMutation({
       !agent?.authMethods.some((method) => method.id === args.methodId && method.type === "agent")
     )
       acpError("ACP_UNSUPPORTED");
-    return enqueue(
-      ctx,
-      { workspace: ctx.workspace._id, worker: args.worker },
-      ctx.identity._id,
-      { kind: "authenticate", agentId: args.agentId, methodId: args.methodId },
-      undefined,
-      args.clientId,
-    );
+    return dispatchAgentCommand(ctx, {
+      workspace: ctx.workspace._id,
+      worker: args.worker,
+      userId: ctx.identity._id,
+      payload: { kind: "authenticate", agentId: args.agentId, methodId: args.methodId },
+      clientId: args.clientId,
+      signed: args.signed,
+    });
   },
 });
 
 /** Owner-only logout when supported by the installed agent. */
 export const Logout = ownedWorkspaceMutation({
-  args: { worker: v.string(), agentId: v.string(), clientId: v.string() },
+  args: {
+    worker: v.string(),
+    agentId: v.string(),
+    clientId: v.string(),
+    signed: v.optional(acpSignedCommandValidator),
+  },
   returns: v.id("acp_commands"),
   handler: async (ctx, args) => {
     await requireActiveWorkspaceWorker(
@@ -785,14 +1200,14 @@ export const Logout = ownedWorkspaceMutation({
     );
     const agent = await findAgent(ctx, ctx.workspace._id, args.worker, args.agentId);
     if (!agent?.capabilities.logout) acpError("ACP_UNSUPPORTED");
-    return enqueue(
-      ctx,
-      { workspace: ctx.workspace._id, worker: args.worker },
-      ctx.identity._id,
-      { kind: "logout", agentId: args.agentId },
-      undefined,
-      args.clientId,
-    );
+    return dispatchAgentCommand(ctx, {
+      workspace: ctx.workspace._id,
+      worker: args.worker,
+      userId: ctx.identity._id,
+      payload: { kind: "logout", agentId: args.agentId },
+      clientId: args.clientId,
+      signed: args.signed,
+    });
   },
 });
 
@@ -884,15 +1299,18 @@ export const GenerateTitle = action({
 /**
  * Quiet session metadata subscription; deliberately excludes Worker presence and viewer rows.
  * Before the ACP session exists, `defaultConfig` and `commands` come from the agent's last
- * advertised defaults, so draft choices can be shown and changed.
+ * advertised defaults, so draft choices can be shown and changed. `signed` tells the client to
+ * seal and sign every command; `binding` is the published audience (null: the creator must
+ * publish one first); `sealedError` replaces the generic `error` text for keyed chats.
  */
 export const GetSession = query({
   args: { chat: v.id("aisdk_chats") },
   handler: async (ctx, args) => {
-    const { session, agent } = await accessibleSession(ctx, args.chat);
+    const { session, agent, chat } = await accessibleSession(ctx, args.chat);
     const report = await findAgent(ctx, session.workspace, session.worker, session.agentId);
     return {
       agent,
+      workspace: session.workspace,
       profile: session.profile ?? "native",
       gateway:
         session.profile === "gateway"
@@ -913,6 +1331,16 @@ export const GetSession = query({
       warm: session.warm,
       stopReason: session.stopReason,
       error: session.error,
+      sealedError: session.sealedError ?? null,
+      signed: await workspaceHasKeys(ctx, session.workspace),
+      e2eeId: chat.e2eeId ?? null,
+      binding: session.binding
+        ? {
+            version: session.binding.version,
+            scope: session.binding.scope,
+            members: session.binding.members,
+          }
+        : null,
       config: session.config,
       // Native process defaults cannot describe the Gateway process's model choices.
       ...(session.profile !== "gateway" && report?.defaults?.config
@@ -927,7 +1355,10 @@ export const GetSession = query({
   },
 });
 
-/** Both pending questions and durable, not-yet-relayed answers remain visible. */
+/**
+ * Both pending questions and durable, not-yet-relayed answers remain visible. Keyed workspaces
+ * return the Worker-sealed request (`sealed`), which clients verify against the roster first.
+ */
 export const OpenInteractions = query({
   args: { chat: v.id("aisdk_chats") },
   handler: async (ctx, args) => {
@@ -945,10 +1376,25 @@ export const OpenInteractions = query({
       .map((row) => ({
         _id: row._id,
         kind: row.kind,
-        request: row.request,
+        requestKey: row.requestKey,
+        ...(row.request ? { request: row.request } : {}),
+        ...(row.sealedRequest ? { sealed: row.sealedRequest } : {}),
         status: row.status,
         createdAt: row.createdAt,
       }));
+  },
+});
+
+/** The Worker-signed capsule of one stream epoch (keyed chats), for viewers to open frames. */
+export const StreamCapsule = query({
+  args: { chat: v.id("aisdk_chats"), epoch: v.number() },
+  handler: async (ctx, args) => {
+    await accessibleSession(ctx, args.chat);
+    const stream = await ctx.db
+      .query("acp_streams")
+      .withIndex("by_chat_and_epoch", (q) => q.eq("chat", args.chat).eq("epoch", args.epoch))
+      .first();
+    return stream?.capsule ?? null;
   },
 });
 

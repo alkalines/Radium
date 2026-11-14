@@ -1,6 +1,6 @@
 # E2EE Data
 
-Status: **partly implemented.** Part of [End-to-end encryption](../E2EE.md). Keys and the envelope format are in [Keys](Keys.md). Table references are `packages/backend/convex/schema.ts` unless stated. Built-in Chatroom content (messages, titles, queued prompts, attachments) is encrypted for chats created by accounts with keys ([task 11 phases 5–6](../tasks/11_E2EE.md#phase-6-chatroom-content)); everything else below is planned.
+Status: **partly implemented.** Part of [End-to-end encryption](../E2EE.md). Keys and the envelope format are in [Keys](Keys.md). Table references are `packages/backend/convex/schema.ts` unless stated. Built-in Chatroom content is encrypted for chats created by accounts with keys; paired Workers encrypt ACP content and built-in tool persistence ([task 11 phases 5–7](../tasks/11_E2EE.md)). Telemetry, notifications and legacy-data migration remain planned.
 
 ## Classes
 
@@ -15,7 +15,9 @@ Status: **partly implemented.** Part of [End-to-end encryption](../E2EE.md). Key
 
 Encrypted today, for Chatroom chats created by an account with keys (`aisdk_chats.e2eeId` set): `chat_messages.sealed` (per-turn capsules in `e2ee_capsules`), `aisdk_chats.sealedTitle` and `sealedQueue`, and attachment bytes in File Storage (`chat_files.capsule`). Workspace-scope chats are encrypted only once their workspace has keys. Telemetry never records content of encrypted chats.
 
-Still plaintext: chats created before keys existed or by accounts without keys (`chat_messages.message`, `aisdk_chats.title`, `messages_queue`, their attachments), `chat_frames.payload` (ACP transcripts while warm), `acp_commands.payload`, `acp_interactions`, ACP session titles, `worker_tasks` requests and results, `worker_chat_calls` receipts, workspace and project names and folders, `notifications.title`/`body` (encrypted chats send no title), `telemetry_blobs.content` and large telemetry blobs. Secret Store encrypts credentials with a deployment-held KEK, which protects ciphertext at rest but not from the backend.
+Paired Workers persist ACP frames, commands, interactions, titles and session errors as ciphertext; built-in tool requests, request-key results and durable receipts are sealed. Session-specific config and available commands travel inside encrypted frames, not plaintext session patches. Keyless workspaces with unpaired Workers retain legacy plaintext behavior and trust their backend.
+
+Still plaintext: legacy chats and attachments awaiting migration; workspace/project names and folders; Worker/ACP directories, installation reports and availability; routing, audience, status and usage metadata; notifications and telemetry (encrypted chats suppress content capture and notification titles). Secret Store encrypts credentials with a deployment-held KEK, which protects ciphertext at rest but not from the backend.
 
 ## Classification
 
@@ -29,8 +31,8 @@ Still plaintext: chats created before keys existed or by accounts without keys (
 | Attachments       | Convex `_storage` bytes, `chat_files` filename                                                                         | E     | Encrypted before upload; media type and size stay P (size is padded).                                                                |
 | Projects          | `projects` name, icon, per-Worker folders                                                                              | E     | Folders are also sealed to each listed Worker so it can resolve directories ([Worker tasks](#worker-tasks-from-the-built-in-agent)). |
 | ACP               | `chat_frames.payload`, `acp_commands.payload`/`result`/`error`, `acp_interactions.request`/`answer`                    | E     | Browser ↔ Worker; Convex relays ciphertext.                                                                                          |
-| ACP               | `acp_agent_sessions.title`, `cwd`; `acp_sessions.cwd`, `history`, `draft`, error text                                  | E     | Session index sealed by the Worker to the owner key. The full-text `search_title` index is removed.                                  |
-| ACP               | `acp_sessions` status, config option IDs, usage; `acp_usage`; `acp_streams` counters                                   | P     | Run state, notifications and usage totals need them.                                                                                 |
+| ACP               | `acp_agent_sessions.title`; `acp_sessions` error text; `aisdk_chats` ACP title                                          | E     | Index titles sealed to the owner key, errors and titles to the chat key. No server title-search index. Directories and history availability stay P. |
+| ACP               | `acp_sessions` status and usage; `acp_usage`; `acp_streams` counters                                                   | P     | Session config values and commands are inside encrypted frames; run state and usage stay readable. |
 | Worker tools      | `worker_tasks.editRequest`/`bashRequest`/`result`; `worker_chat_calls.result`, `directory`                             | S / E | Requests sealed to the Worker; results to the request key; receipts to the chat key.                                                 |
 | Workers           | `worker_presence.tempDirectory`, `worker_agents` reports                                                               | E / P | Local paths E (owner key); availability and capabilities P.                                                                          |
 | Notifications     | `notifications.title`, `body`                                                                                          | S / E | Sealed to the recipient's identity key. Kind, chat ID, delivery state P.                                                             |
@@ -61,7 +63,7 @@ The chat private key never leaves the client. The server sees the conversation f
 
 ### Titles
 
-Title generation (`src/chatroom/titles.ts`) runs inside the first turn of an encrypted chat, concurrently with the response, from the first user message in that request; the result is stored as a title box sealed to the chat key (class S). Regenerating a title is the `aisdk.regenerateTitle` action, to which the client sends the decrypted first user message; renaming is done by the client, which seals the new title itself. The ACP fallback title (`src/acp/browser.ts`) already receives first-prompt text from the browser; ACP titles stay plaintext until ACP becomes end-to-end ([task 11](../tasks/11_E2EE.md#phase-7-workers-and-acp)).
+Title generation (`src/chatroom/titles.ts`) runs inside the first turn of an encrypted chat, concurrently with the response, from the first user message in that request; the result is stored as a title box sealed to the chat key (class S). Regenerating a title is the `aisdk.regenerateTitle` action, to which the client sends the decrypted first user message; renaming is done by the client, which seals the new title itself. Encrypted ACP chats never send the first prompt to the server: the browser seals a fallback title from it (`acp.SetFallbackTitle`), and titles the agent reports are sealed by the Worker to the chat key (a user rename still wins).
 
 ### Search
 
@@ -69,20 +71,23 @@ Server-side full-text search over titles ends (`acp_agent_sessions` `search_titl
 
 ### ACP
 
-The Worker is a client, so ACP becomes end-to-end (browser ↔ Worker) except in [Gateway mode](../ACP/Agents.md#gateway-mode), where the agent's model calls pass through the Gateway like any API request.
+The Worker is a client, so ACP is end-to-end (browser ↔ Worker) in workspaces with keys, except in [Gateway mode](../ACP/Agents.md#gateway-mode), where the agent's model calls pass through the Gateway like any API request. Implemented in phase 7 (`src/acp/sealed.ts` and the `signed`/`sealed` arguments in `src/acp/{browser,machine}.ts`; Worker `packages/worker/src/acp/`; web `components/session/acp/`). Keyless workspaces with unpaired Workers keep the plaintext path.
 
-- **Commands and answers** (`acp_commands`, `acp_interactions`): the browser seals the payload to the Worker's encryption key and signs it with the user's identity key. The Worker verifies the signature against the roster before acting ([Keys § Workers](Keys.md#workers)).
-- **Frames** (`chat_frames`): for each stream epoch the Worker creates one key capsule to the chat public key (referenced from the epoch row) and encrypts each frame with AES-256-GCM under the derived stream key and counter nonces. Viewers open the capsule once per epoch. Identical-retry detection in `appendFrames` (`src/acp/machine.ts`) keeps working because the Worker retries the exact same ciphertext bytes.
-- **Session index**: titles, `cwd` and history pointers are sealed by the Worker to the owner key.
+- **Binding**: the chat's creator signs `acpBindingStatement` (Worker, agent, profile, directory, scope, members, version) at creation and re-signs it with a higher version on every scope or member change; `acp_sessions.binding` stores it. The Worker pins the creator per chat, refuses lower versions, takes the directory, agent and profile only from it, and authorizes signers by it: personal → creator, shared → creator and members, workspace → roster. Agent-level commands (`authenticate`, `logout`, `sync_sessions`) need the owner. Shared ACP chats are allowed.
+- **Executable definitions**: the owner explicitly reviews and signs the full launch command, arguments, environment and Gateway template before paired Workers probe or execute it. Workers persist per-agent issuance marks and reject changed or older definitions. A signed disable advances the mark before stopping execution. Removing a server row is not cryptographic revocation: a relay can withhold a newer disable or replay an authorization the Worker has not superseded; stop the local Worker for immediate revocation.
+- **Commands and answers** (`acp_commands.signed`, `acp_interactions.sealedAnswer`): the browser seals the payload to the Worker's encryption key and signs it with the user's identity key; Convex retains routing, kind, issuer and client ID, never keyed-session config values. The Worker verifies signature, signer and freshness before acting, applies pre-session choices only from signed commands (never the draft), and re-opens an interaction whose answer is forged, unauthorized or invalid (`acp.reopenInteraction`). `close`/`delete` after chat deletion carry a binding snapshot. Worker errors are fixed codes or sealed to the chat key (`acp_sessions.sealedError`).
+- **Frames** (`chat_frames`): for each stream epoch the Worker creates one key capsule to the verified chat public key, signs it and stores it on `acp_streams`; each frame seals `{seqTo, kind, ops}` under that capsule and its frame AAD. Viewers verify the capsule signature against the roster's Worker, open it once per epoch and authenticate routing metadata before advancing their cursor. Retries use the exact same ciphertext bytes.
+- **Session index**: titles are sealed by the Worker to the owner key with a Worker-keyed tag for diffing; Home decrypts and filters them locally. `cwd` stays plaintext (residual leakage, see below).
+- **Legacy bindings**: a pre-encryption session ID has no authenticated ownership proof. Pairing never silently signs that server-supplied ID; use owner-authorized re-import from the agent index or create a new session. Existing plaintext records are not migrated by phase 7.
 
 ### Worker Tasks From The Built-In Agent
 
 Edit and Bash tool calls are decided by the agent loop in Convex, so the backend authors them.
 
-- The action seals the request to the target Worker's encryption key and polls for a result encrypted under its request key ([Keys § Request keys](Keys.md#request-keys)); `worker_tasks` holds ciphertext only.
-- The Worker seals the durable receipt (`worker_chat_calls`) to the chat public key, which the action passes along with the task.
-- Directories come from Project folders, which are E. Each folder entry is also sealed to the Worker it belongs to; the backend passes the sealed entry through and the Worker resolves it.
-- **Approvals are signed by the user.** Today they use a server-derived HMAC (`src/worker/chat-tools.ts`), which a compromised backend could mint. Under E2EE a Worker runs a Chatroom tool call only with a user signature over the exact request, or under a user-signed auto-approve grant scoped to chat, Worker, tools and directory with an expiry.
+- The action seals each stage to the paired Worker's certified encryption key and polls for a result encrypted under its request key ([Keys § Request keys](Keys.md#request-keys)); `worker_tasks` holds ciphertext only (`sealed`, `sealedResult`). Plaintext tasks remain only for workspaces without keys and chats without keys with an unpaired Worker; an encrypted chat never dispatches one.
+- The Worker seals the durable receipt (`worker_chat_calls.sealedResult`) to the chat public key epoch the action passes inside the sealed request. A replayed call stage gets a fixed "already executed" outcome, never plaintext.
+- Directories stay plaintext metadata in phase 7 (residual leakage); the Worker takes the directory only from the user-signed approval or grant.
+- **Approvals are signed by the user.** Edit/Create/Bash run only with the owner's signature over `toolApprovalStatement` (exact input JSON the user saw, chat, Worker, directory, tool, call ID, `approvedAt`), accepted for 24 hours and once. Read runs under the owner's standing grant (`toolGrantStatement`, no expiry; a newer `issuedAt` replaces it and the Worker refuses older ones), signed whenever the owner changes the selection or opens the chat unlocked. The AI SDK approval HMAC remains only as the SDK's replay guard, keyed by an HKDF-derived key, not the issuer key.
 
 ### Notifications
 

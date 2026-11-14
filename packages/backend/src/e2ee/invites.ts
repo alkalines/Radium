@@ -16,6 +16,7 @@ import {
   type GrantInput,
 } from "./workspace-contract";
 import { storeGrant, workspaceUsers } from "./workspace-keys";
+import { pruneWorkerPairings } from "./worker-keys";
 import type { Doc } from "../../convex/_generated/dataModel";
 const INVITE_TTL = 7 * 24 * 60 * 60 * 1000;
 /** Stores one admission proof per member identity; proof secrets remain encrypted. */
@@ -210,7 +211,10 @@ export const revokeInvite = mutation({
     return null;
   },
 });
-/** Prunes a bounded batch; the hourly cron catches later batches without unbounded scans. */
+/**
+ * Prunes a bounded batch of expired invites and Worker pairing secrets past retention; the hourly
+ * cron catches later batches without unbounded scans.
+ */
 export const pruneExpiredInvites = internalMutation({
   args: {},
   returns: v.null(),
@@ -222,6 +226,7 @@ export const pruneExpiredInvites = internalMutation({
     for (const row of rows) {
       await ctx.db.delete("e2ee_invites", row._id);
     }
+    await pruneWorkerPairings(ctx);
     return null;
   },
 });

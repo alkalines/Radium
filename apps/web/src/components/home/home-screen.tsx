@@ -53,12 +53,18 @@ import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { newTabId } from "@/components/window/window-tabs";
 import { useFrontendLogger } from "@/lib/logging";
 import { SessionActionsMenu } from "./session-actions-menu";
-import { AgentSessions, useOpenAgentSession } from "./agent-sessions";
+import {
+  AgentSessions,
+  useAgentSessionTitles,
+  useOpenAgentSession,
+  useSyncAgentSessions,
+} from "./agent-sessions";
 import { HOME_PAGE_SIZE, useMergedPages, type PagedSource } from "./merged-pages";
 import { formatRelativeTime, groupByRecency } from "./recency";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { openRowSeed, type WrapWire } from "@/lib/crypto/chat-keys";
 import { openTitle } from "@/lib/crypto/chat-content";
+import { KeysLockedError } from "@/lib/crypto/key-manager";
 
 type HomeSession = FunctionReturnType<typeof api.aisdk.ListPinnedChats>[number];
 type UnopenedAgentSession = FunctionReturnType<
@@ -76,6 +82,7 @@ type HomeRow =
       kind: "agent";
       id: string;
       title: string;
+      untitled: boolean;
       at: number;
       row: UnopenedAgentSession;
       agent: RowAgent;
@@ -156,20 +163,30 @@ export function HomeScreen() {
 
   // Refreshes the agents' session indexes whenever the owner looks at a session list, as opening
   // an agent under Agents does; the backend skips offline Workers and anything synced in the
-  // last minute.
-  const syncAgentSessions = useMutation(api.acp.SyncAgentSessions);
-  const agentIdsToSync =
-    isOwner && !selectedAgent ? agents.map((agent) => agent.agentId).join("\n") : "";
+  // last minute. A keyed workspace gets one signed sync per Worker that reports the agent.
+  const syncAgentSessions = useSyncAgentSessions();
+  const syncTargets = JSON.stringify(
+    isOwner && !selectedAgent
+      ? agents.map((agent) => [
+          agent.agentId,
+          (agentRows ?? [])
+            .filter((row) => row.agentId === agent.agentId && activeWorkerIds.has(row.worker))
+            .map((row) => row.worker),
+        ])
+      : [],
+  );
   const filterKey = `${workspaceId}:${String(projectFilter)}`;
   useEffect(() => {
-    if (!workspaceId || !agentIdsToSync) return;
-    for (const agentId of agentIdsToSync.split("\n")) {
-      void syncAgentSessions({ workspace: workspaceId, agentId }).catch((error) => {
+    if (!workspaceId) return;
+    for (const [agentId, workerIds] of JSON.parse(syncTargets) as [string, string[]][]) {
+      void syncAgentSessions(workspaceId, agentId, workerIds).catch((error) => {
+        // Locked keys only mean the refresh cannot be signed yet.
+        if (error instanceof KeysLockedError) return;
         const message = acpActionError(error);
         if (message) toast.error(message);
       });
     }
-  }, [agentIdsToSync, filterKey, syncAgentSessions, workspaceId]);
+  }, [filterKey, syncAgentSessions, syncTargets, workspaceId]);
 
   const workspaceName = workspace?.name ?? "workspace";
 
@@ -563,6 +580,7 @@ function SessionList({
     { initialNumItems: HOME_PAGE_SIZE, customPagination: true },
   );
   const { pending: openingAgentSessions, openRow: openAgentSession } = useOpenAgentSession();
+  const agentSessionTitle = useAgentSessionTitles(workspaceId, agentSessions.results);
   const keyStatus = useKeyStatus();
   const [openedTitles, setOpenedTitles] = useState<
     Record<string, { box: ArrayBuffer; title: string; emoji?: string }>
@@ -646,7 +664,8 @@ function SessionList({
           items: agentSessions.results.map((row) => ({
             kind: "agent" as const,
             id: row._id,
-            title: row.title?.trim() || "Untitled session",
+            title: agentSessionTitle(row) ?? "Untitled session",
+            untitled: agentSessionTitle(row) === undefined,
             at: row.updatedAt,
             row,
             agent: definitionsById.get(row.agentId) ?? { name: row.agentId },
@@ -705,7 +724,7 @@ function SessionList({
                 <AgentSessionRow
                   key={row.id}
                   title={row.title}
-                  untitled={!row.row.title?.trim()}
+                  untitled={row.untitled}
                   updatedAt={row.at}
                   agent={row.agent}
                   project={row.row.project ? projectsById.get(row.row.project) : undefined}

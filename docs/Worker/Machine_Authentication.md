@@ -1,6 +1,6 @@
 # Worker Machine Authentication
 
-Status: **implemented locally, deployment integration unverified** (2026-10-04).
+Status: **implemented; local phase-7 enrollment and authenticated control verified** (2026-11-13).
 This is the selected authentication profile for the [Convex transport](Convex_Transport.md).
 It uses the existing [identity component](Component.md); it does not create human
 accounts, Gateway API keys or deployment credentials for Workers.
@@ -106,6 +106,13 @@ select `file` with `RADIUM_WORKER_CREDENTIAL_STORE`. Version-1 local state migra
 without changing the key or recovery selector; version-2 metadata omits the private
 JWK and records the selected backend. Missing saved credentials fail closed.
 This local setting is separate from the parent app's Convex issuer variables.
+
+### Content Encryption And Execution Authority
+
+Machine authentication is not permission to execute backend-authored content. Phase 7 adds separate encryption/signing keys and a pinned owner identity in local state v3. A keyed workspace's browser makes a `radium-worker-v2.` setup code with a pairing secret; an enrolled Worker instead uses `radium-worker pair` to keep its P-256 identity. The browser verifies the Worker's pairing MAC and certifies its fingerprint in roster v2. Private seeds stay in the credential store and `forget` removes journaled interrupted-pairing credentials too.
+
+Paired Workers verify the owner-signed roster, executable ACP definitions and per-chat authority before acting; they refuse unsigned tasks and incomplete v2 setup rather than falling back to plaintext. Persisted high-water marks reject rollback and equal-version conflicts, including after revocation and restart. Unpaired Workers retain backend-trusting legacy behavior only for keyless workspaces. Protocol and leakage details: [E2EE keys](../E2EE/Keys.md#workers), [ACP data](../E2EE/Data.md#acp), and [tool grants](Chatroom.md).
+
 
 ## Protocol And Authorization
 
@@ -292,8 +299,4 @@ bun run --cwd packages/worker typecheck
 bun run --cwd apps/web vite:build
 ```
 
-No functions, auth configuration or migrations were uploaded in this slice.
-Actual Convex JWT verification, reactive revocation, TLS/proxy routing and recovery
-across separately deployed processes still require deployment integration testing.
-Agent job commands, ACP, approvals, filesystem/process execution, output and isolation remain
-the next [task 06](../tasks/06_Chatroom_Worker.md) slice.
+Phase 7 additionally exercised v2 enrollment, certification and the real authenticated Convex subscription on an authorized local deployment ([task 11](../tasks/11_E2EE.md#phase-7-workers-and-acp)). TLS/proxy routing, partitioned revocation and recovery across separately deployed installations are not established by that smoke.

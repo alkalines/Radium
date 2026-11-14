@@ -74,11 +74,7 @@ legacy-balance workspace with no local provider configuration rows. Any existing
 local row, including a disabled or tombstoned row, disables this fallback and
 restores the local-configuration invariant above.
 
-Provider, Exa, and MCP credentials are scoped to a workspace and stored through
-the Convex Secret Store component. Regular Convex tables contain only non-secret
-metadata and masked previews. Broader application-level encryption is planned in
-[End-to-end encryption](E2EE.md); this document does not claim encrypted
-workspace records or telemetry.
+Provider, Exa, and MCP credentials are workspace-scoped and write-only through the Convex Secret Store component; ordinary configuration contains masked previews, not credentials. [End-to-end encryption](E2EE.md) additionally protects keyed Chatroom persistence and paired Worker/ACP traffic: owner-pinned Workers verify signed executable definitions, commands and approvals, and persist only sealed content. Built-in turns still expose plaintext to the active backend action to call models and tools. Legacy content, workspace/project metadata, telemetry and notifications have not completed the planned encryption migration.
 
 Provider endpoint configuration is owner-only. Deliberately configured local and
 private endpoints are a required self-hosted use case, but the complete

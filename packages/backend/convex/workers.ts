@@ -15,3 +15,4 @@ export {
   pruneChallenges,
 } from "../src/worker/identity";
 export { setGatewayAccess, issueGatewayKey, setGatewayTelemetry } from "../src/worker/gateway";
+export { publishWorkerKeys as publishKeys } from "../src/e2ee/worker-keys";

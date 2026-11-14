@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useAction, useMutation } from "convex/react";
+import { useMutation, useQuery as useConvexQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import {
   CheckIcon,
@@ -57,15 +57,36 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { acpActionError } from "@/components/session/acp/use-acp-session";
+import { EncryptionNotice } from "@/components/auth/encryption-notice";
+import { useKeyStatus } from "@/lib/crypto/use-key-status";
+import {
+  createWorkerPairingCode,
+  createWorkerSetupCode,
+  workerPairingStates,
+  type WorkerPairingState,
+} from "@/lib/crypto/workers";
 import { useWorkspace } from "./workspace-provider";
 
 type WorkerList = Exclude<FunctionReturnType<typeof api.workers.list>, string>;
 
+/** A secret setup (`kind: "setup"`) or pairing code; it never leaves this dialog's state. */
 type EnrollmentCode = {
+  kind: "setup" | "pair";
   code: string;
-  enrollmentId: string;
+  enrollmentId?: string;
   expiresAt: number;
   workspace: Id<"workspaces">;
+};
+
+const pairingLabels: Record<WorkerPairingState, string> = {
+  paired: "Paired",
+  unpaired: "Not paired",
+  failed: "Pairing failed",
+};
+const pairingRunStates: Record<WorkerPairingState, "succeeded" | "idle" | "failed"> = {
+  paired: "succeeded",
+  unpaired: "idle",
+  failed: "failed",
 };
 
 export function WorkerManagement() {
@@ -74,7 +95,18 @@ export function WorkerManagement() {
   const { data, error } = useQuery(
     convexQuery(api.workers.list, isOwner && workspaceId ? { workspace: workspaceId } : "skip"),
   );
-  const createEnrollment = useAction(api.workers.createEnrollment);
+  const keyState = useConvexQuery(
+    api.e2ee.workspaceKeyState,
+    isOwner && workspaceId ? { workspace: workspaceId } : "skip",
+  );
+  const keyed = Boolean(keyState?.keyEpoch);
+  const keyStatus = useKeyStatus();
+  const unlocked = keyStatus.state === "unlocked";
+  const workerKeys = useConvexQuery(
+    api.e2ee.workerKeys,
+    isOwner && keyed && workspaceId ? { workspace: workspaceId } : "skip",
+  );
+  const [pairing, setPairing] = useState<Map<string, WorkerPairingState> | null>(null);
   const revokeWorker = useMutation(api.workers.revoke);
   const revokeEnrollment = useMutation(api.workers.revokeEnrollment);
   const setGatewayAccess = useMutation(api.workers.setGatewayAccess);
@@ -102,14 +134,30 @@ export function WorkerManagement() {
     setPendingAction(null);
   }, [workspaceId]);
 
+  // Pairing state needs the unlocked owner key (pairing secrets are sealed to it).
+  useEffect(() => {
+    setPairing(null);
+    if (!workspaceId || !keyed || !unlocked || !workerKeys || !data) return;
+    let active = true;
+    workerPairingStates(workspaceId).then(
+      (states) => {
+        if (active) setPairing(states);
+      },
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, [workspaceId, keyed, unlocked, workerKeys, data]);
+
   useEffect(() => {
     if (!enrollmentCode) return;
     const timeout = window.setTimeout(
       () => {
-        setEnrollmentCode((current) =>
-          current?.enrollmentId === enrollmentCode.enrollmentId ? null : current,
-        );
-        setExpired(true);
+        setEnrollmentCode((current) => (current?.code === enrollmentCode.code ? null : current));
+        // An expired pairing code has no form to fall back to.
+        if (enrollmentCode.kind === "pair") setDialogOpen(false);
+        else setExpired(true);
         setCopied(false);
       },
       Math.max(0, enrollmentCode.expiresAt - Date.now()),
@@ -140,12 +188,9 @@ export function WorkerManagement() {
     const workspaceAtStart = workspaceId;
     setPendingAction("create-enrollment");
     try {
-      const result = await createEnrollment({
-        workspace: workspaceAtStart,
-        name: trimmedName,
-      });
+      const result = await createWorkerSetupCode(workspaceAtStart, trimmedName);
       if (workspaceIdRef.current !== workspaceAtStart) return;
-      setEnrollmentCode({ ...result, workspace: workspaceAtStart });
+      setEnrollmentCode({ ...result, kind: "setup", workspace: workspaceAtStart });
       setExpired(false);
       toast.success("Worker setup code created.");
     } catch (actionError) {
@@ -153,6 +198,26 @@ export function WorkerManagement() {
         actionError instanceof Error
           ? actionError.message
           : "Could not create a worker setup code.",
+      );
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function issuePairingCode(worker: WorkerList[number]) {
+    if (!workspaceId || !isOwner || pendingAction) return;
+    const workspaceAtStart = workspaceId;
+    clearEnrollment();
+    setDialogOpen(true);
+    setPendingAction(`pair:${worker.workerId}`);
+    try {
+      const result = await createWorkerPairingCode(workspaceAtStart, worker.workerId);
+      if (workspaceIdRef.current !== workspaceAtStart) return;
+      setEnrollmentCode({ ...result, kind: "pair", workspace: workspaceAtStart });
+    } catch (actionError) {
+      setDialogOpen(false);
+      toast.error(
+        actionError instanceof Error ? actionError.message : "Could not create a pairing code.",
       );
     } finally {
       setPendingAction(null);
@@ -177,7 +242,7 @@ export function WorkerManagement() {
   }
 
   async function revokeSetupCode() {
-    if (!workspaceId || !enrollmentCode || pendingAction) return;
+    if (!workspaceId || !enrollmentCode?.enrollmentId || pendingAction) return;
     const workspaceAtStart = workspaceId;
     const enrollmentId = enrollmentCode.enrollmentId;
     setPendingAction("revoke-enrollment");
@@ -246,6 +311,14 @@ export function WorkerManagement() {
       ? enrollmentCode
       : null;
 
+  let addWorkerDescription = "Name the Worker to generate its setup code.";
+  if (keyed && !unlocked) {
+    addWorkerDescription =
+      "Unlock to create a setup code. It carries a pairing secret sealed to your keys, so the Worker's keys can be verified.";
+  } else if (expired) {
+    addWorkerDescription = "The setup code expired. Generate another to continue.";
+  }
+
   const headerAction = isOwner ? (
     <Button
       variant="outline"
@@ -276,6 +349,9 @@ export function WorkerManagement() {
           workers={workers}
           workspaceId={workspaceId}
           disabled={pendingAction !== null}
+          pairing={keyed ? pairing : undefined}
+          canPair={keyed && unlocked}
+          onPair={(worker) => void issuePairingCode(worker)}
           onRevoke={setRevokeTarget}
           onGatewayAccess={(worker, enabled) =>
             void updateGateway(worker.workerId, (workspace) =>
@@ -312,7 +388,11 @@ export function WorkerManagement() {
           {visibleEnrollmentCode ? (
             <>
               <DialogHeader>
-                <DialogTitle>Worker setup code</DialogTitle>
+                <DialogTitle>
+                  {visibleEnrollmentCode.kind === "pair"
+                    ? "Worker pairing code"
+                    : "Worker setup code"}
+                </DialogTitle>
                 <DialogDescription>
                   Keep this code private. It expires {formatExpiry(visibleEnrollmentCode.expiresAt)}
                   .
@@ -320,7 +400,9 @@ export function WorkerManagement() {
               </DialogHeader>
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor="worker-setup-code">Setup code</FieldLabel>
+                  <FieldLabel htmlFor="worker-setup-code">
+                    {visibleEnrollmentCode.kind === "pair" ? "Pairing code" : "Setup code"}
+                  </FieldLabel>
                   <Textarea
                     id="worker-setup-code"
                     readOnly
@@ -329,26 +411,35 @@ export function WorkerManagement() {
                     value={visibleEnrollmentCode.code}
                   />
                   <FieldDescription>
-                    Run <code>bun run --cwd packages/worker setup</code> on the machine and paste
-                    this code into the prompt.
+                    Run{" "}
+                    <code>
+                      {visibleEnrollmentCode.kind === "pair"
+                        ? "bun run --cwd packages/worker pair"
+                        : "bun run --cwd packages/worker setup"}
+                    </code>{" "}
+                    on the machine and paste this code into the prompt.
                   </FieldDescription>
                 </Field>
               </FieldGroup>
               <DialogFooter className="flex-col-reverse sm:flex-row sm:justify-between">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="text-muted-foreground hover:text-destructive"
-                  disabled={pendingAction !== null}
-                  onClick={() => void revokeSetupCode()}
-                >
-                  {pendingAction === "revoke-enrollment" ? (
-                    <Spinner data-icon="inline-start" />
-                  ) : (
-                    <Trash2Icon data-icon="inline-start" />
-                  )}
-                  Revoke code
-                </Button>
+                {visibleEnrollmentCode.enrollmentId ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-destructive"
+                    disabled={pendingAction !== null}
+                    onClick={() => void revokeSetupCode()}
+                  >
+                    {pendingAction === "revoke-enrollment" ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <Trash2Icon data-icon="inline-start" />
+                    )}
+                    Revoke code
+                  </Button>
+                ) : (
+                  <span />
+                )}
                 <div className="flex flex-col-reverse gap-2 sm:flex-row">
                   <Button
                     type="button"
@@ -368,21 +459,30 @@ export function WorkerManagement() {
                     ) : (
                       <CopyIcon data-icon="inline-start" />
                     )}
-                    {copied ? "Copied" : "Copy setup code"}
+                    {copied ? "Copied" : "Copy code"}
                   </Button>
                 </div>
               </DialogFooter>
             </>
+          ) : pendingAction?.startsWith("pair:") ? (
+            <DialogHeader>
+              <DialogTitle>Worker pairing code</DialogTitle>
+              <DialogDescription className="flex items-center gap-2">
+                <Spinner />
+                Creating the pairing code…
+              </DialogDescription>
+            </DialogHeader>
           ) : (
             <form onSubmit={issueEnrollment}>
               <DialogHeader>
                 <DialogTitle>Add Worker</DialogTitle>
-                <DialogDescription>
-                  {expired
-                    ? "The setup code expired. Generate another to continue."
-                    : "Name the Worker to generate its setup code."}
-                </DialogDescription>
+                <DialogDescription>{addWorkerDescription}</DialogDescription>
               </DialogHeader>
+              {keyed && !unlocked ? (
+                <div className="pt-4">
+                  <EncryptionNotice />
+                </div>
+              ) : null}
               <FieldGroup className="py-4">
                 <Field>
                   <FieldLabel htmlFor="worker-enrollment-name">Worker name</FieldLabel>
@@ -407,7 +507,10 @@ export function WorkerManagement() {
                 >
                   Cancel
                 </Button>
-                <Button type="submit" disabled={pendingAction !== null || !name.trim()}>
+                <Button
+                  type="submit"
+                  disabled={pendingAction !== null || !name.trim() || (keyed && !unlocked)}
+                >
                   {pendingAction === "create-enrollment" ? (
                     <Spinner data-icon="inline-start" />
                   ) : (
@@ -471,6 +574,9 @@ function WorkerRows({
   workers,
   workspaceId,
   disabled,
+  pairing,
+  canPair,
+  onPair,
   onRevoke,
   onGatewayAccess,
   onGatewayTelemetry,
@@ -481,6 +587,10 @@ function WorkerRows({
   workers: WorkerList;
   workspaceId: Id<"workspaces"> | undefined;
   disabled: boolean;
+  /** Keyed workspaces only: per-Worker pairing state, `null` until known (locked or loading). */
+  pairing: Map<string, WorkerPairingState> | null | undefined;
+  canPair: boolean;
+  onPair: (worker: WorkerList[number]) => void;
   onRevoke: (worker: WorkerList[number]) => void;
   onGatewayAccess: (worker: WorkerList[number], enabled: boolean) => void;
   onGatewayTelemetry: (worker: WorkerList[number], enabled: boolean) => void;
@@ -534,6 +644,8 @@ function WorkerRows({
       worker={worker}
       workspaceId={workspaceId}
       disabled={disabled}
+      pairing={pairing === undefined ? undefined : (pairing?.get(worker.workerId) ?? null)}
+      onPair={canPair ? () => onPair(worker) : undefined}
       onRevoke={() => onRevoke(worker)}
       onGatewayAccess={(enabled) => onGatewayAccess(worker, enabled)}
       onGatewayTelemetry={(enabled) => onGatewayTelemetry(worker, enabled)}
@@ -550,12 +662,15 @@ const gatewayAccessLabels: Record<WorkerList[number]["gateway"]["access"], strin
 
 /**
  * One Worker identity: name, id, authorization status, and owner actions in a `…` menu. An
- * authorized Worker also shows its Gateway access and, while on, its Gateway telemetry.
+ * authorized Worker also shows its end-to-end encryption pairing (keyed workspaces), its Gateway
+ * access and, while on, its Gateway telemetry.
  */
 function WorkerRow({
   worker,
   workspaceId,
   disabled,
+  pairing,
+  onPair,
   onRevoke,
   onGatewayAccess,
   onGatewayTelemetry,
@@ -563,12 +678,29 @@ function WorkerRow({
   worker: WorkerList[number];
   workspaceId: Id<"workspaces"> | undefined;
   disabled: boolean;
+  /** `undefined`: keyless workspace (no row); `null`: unknown until unlocked. */
+  pairing: WorkerPairingState | null | undefined;
+  /** Present when the owner can create a pairing code now (keyed workspace, unlocked). */
+  onPair: (() => void) | undefined;
   onRevoke: () => void;
   onGatewayAccess: (enabled: boolean) => void;
   onGatewayTelemetry: (enabled: boolean) => void;
 }) {
   const isActive = worker.status === "active";
   const { access, telemetry } = worker.gateway;
+
+  // `onPair` is offered only while unlocked, so its absence means the owner key is locked.
+  let pairingDescription = onPair
+    ? "Checking this Worker's encryption keys…"
+    : "Unlock to check this Worker's encryption keys.";
+  if (pairing === "paired") {
+    pairingDescription = "Verified with a pairing code; it accepts only signed commands.";
+  } else if (pairing === "unpaired") {
+    pairingDescription = "Pair this Worker to run agents and tools in this workspace.";
+  } else if (pairing === "failed") {
+    pairingDescription =
+      "Its published keys did not match the pairing code. Pair it again with a new code.";
+  }
 
   return (
     <>
@@ -596,6 +728,7 @@ function WorkerRow({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuGroup>
+                {onPair ? <DropdownMenuItem onSelect={onPair}>Pair</DropdownMenuItem> : null}
                 <DropdownMenuItem variant="destructive" onSelect={onRevoke}>
                   Revoke
                 </DropdownMenuItem>
@@ -604,6 +737,30 @@ function WorkerRow({
           </DropdownMenu>
         ) : null}
       </Row>
+      {isActive && pairing !== undefined ? (
+        <Row
+          className="pl-7"
+          title="End-to-end encryption"
+          description={
+            <span className={pairing === "failed" ? "text-destructive" : undefined}>
+              {pairingDescription}
+            </span>
+          }
+        >
+          {pairing ? (
+            <AgentStatus
+              state={pairingRunStates[pairing]}
+              label={pairingLabels[pairing]}
+              title="End-to-end encryption pairing"
+            />
+          ) : null}
+          {onPair && pairing !== "paired" ? (
+            <Button size="xs" variant="outline" disabled={disabled} onClick={onPair}>
+              Pair
+            </Button>
+          ) : null}
+        </Row>
+      ) : null}
       {isActive ? (
         <Row
           className="pl-7"

@@ -28,33 +28,45 @@ it does not establish that the process is online. The terminal must report
    Edit accepts hashline patches or `apply_patch` Update File envelopes. Create
    constructs an Add File envelope from a path and text content.
 4. Edit/Create/Bash return a Chatroom approval request before any task dispatch.
-   AI SDK approval signatures use a domain-separated HMAC key derived from the
-   existing backend `WORKER_AUTH_PRIVATE_JWK` secret, scoped to user, workspace,
-   chat, Worker, directory, and enabled tools. The SDK checks the signature and
-   exact tool input before executing a submitted approval. Changing configuration
-   or rotating the issuer secret invalidates pending write approvals.
-   Bash-only selections also derive this approval key; enabling a file-write
-   tool alongside Bash is not required.
-5. Internal `worker_tasks.dispatchChatEdit` rechecks visibility, ownership, active
-   Worker identity, exact configured directory, and enabled tool at every stage.
-   Write calls stage a preview and apply only that call's successful preview ID.
-   The native session ID is derived from chat and directory, so changing the root
-   starts a separate session instead of switching an existing session's directory.
-6. The external Worker claims the task and performs local operations. Native
+   For a paired Worker the browser signs the approval with the owner's identity key
+   (`toolApprovalStatement` over the exact input JSON it showed, chat, Worker,
+   directory, tool, call ID and `approvedAt`; `components/session/worker-authorization.ts`).
+   Direct calls send it in the next chat request's `approvals`; Code Mode sends only the
+   signature with its answer, and the action pairs it with the input text it presented
+   (`workerCodeModeInteractions`). The AI SDK approval HMAC (key HKDF-derived from
+   `WORKER_AUTH_PRIVATE_JWK`, scoped to user, workspace, chat, Worker, directory and tools)
+   is only the SDK's replay guard; it authorizes nothing on the Worker.
+5. Read needs no per-call approval but runs on a paired Worker only under the owner's
+   standing grant (`toolGrantStatement`). This delegates reads within the signed directory
+   to the Chatroom agent without further user presence, including while the browser is closed.
+   The grant has no expiry; the Worker remembers the newest valid `issuedAt` it has observed
+   and refuses older grants. A relay can withhold a newer grant, so disabling Read or changing
+   the selection does not by itself revoke a captured older grant on a disconnected Worker.
+   Without a grant, Read returns `WORKER_GRANT_MISSING` without dispatch. File paths and
+   symlinks are confined by the native Worker, but the selected directory is not an OS sandbox.
+6. A paired Worker (or any encrypted chat) gets only sealed tasks: the action seals each
+   stage to the Worker's certified key, the Worker verifies the owner's signature, accepts
+   an approval for 24 hours and once, derives the operation from the signed input only, and
+   returns the result under the request key plus a receipt sealed to the chat key. See
+   [sealed tasks](Tasks.md#sealed-tasks-paired-workers). Keyless workspaces with an unpaired
+   Worker keep the plaintext `worker_tasks.dispatchChatEdit` path, which rechecks visibility,
+   ownership, active Worker identity, exact configured directory and enabled tool at every
+   stage. Write calls stage a preview and apply only that call's own preview. The native
+   session ID is derived from chat and directory, so changing the root starts a separate
+   session instead of switching an existing session's directory.
+7. The external Worker claims the task and performs local operations. Native
    `writeMode` checks restrict Chatroom Edit to existing-file updates and Create
    to new files. Create cannot be used to edit an existing file, and Edit cannot
    create, delete, or move files. Path and symlink confinement remain enforced by
    the Worker, not Convex.
-7. Bash dispatches a single `execute` stage after approval. Native `Shell` runs in
+8. Bash dispatches a single `execute` stage after approval. Native `Shell` runs in
    Worker with a 1–30 second deadline and a bounded final-output receipt. The
    directory sets cwd; it does not confine commands or their OS access. See
    [Bash execution](Bash_Tool.md#implemented-radium-foreground-tool) for shell
    state, output, environment, cleanup and failure contracts.
 
-Read does not require a per-call approval: enabling it grants the owner-directed
-read tool for that chat. Approved writes are serialized within a model turn
-because the native session holds at most one pending preview. Manual owner-only
-`dispatchEdit` remains a separate API with its existing contracts.
+Approved writes are serialized within a model turn because the native session holds
+at most one pending preview. There is no public dispatch API for these tasks.
 
 ## Outcomes, Retention And Failure Behavior
 

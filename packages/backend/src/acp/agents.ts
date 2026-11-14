@@ -5,6 +5,8 @@ import { action } from "../../convex/_generated/server";
 import { authComponent } from "../../convex/auth";
 import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../../convex/helpers";
 import { workerQuery } from "../worker/machine";
+import { acpAgentDefinitionStatement, SIGNATURE_BYTES, verify } from "radium-crypto";
+import { activeIdentityFor } from "../e2ee/workspace-contract";
 import {
   ACP_AGENT_DEFINITIONS_MAX,
   acpAgentDefinitionError,
@@ -50,6 +52,30 @@ export const SaveAgentDefinition = ownedWorkspaceMutation({
       name: args.definition.name.trim(),
       command: args.definition.command.trim(),
     };
+    const authorization = definition.authorization;
+    if (ctx.workspace.keyEpoch || authorization) {
+      const identity = await activeIdentityFor(ctx, ctx.workspace.ownerId);
+      if (
+        !authorization ||
+        !identity ||
+        authorization.signerKeyId !== identity.keyId ||
+        authorization.signature.byteLength !== SIGNATURE_BYTES ||
+        !Number.isSafeInteger(authorization.issuedAt) ||
+        authorization.issuedAt <= 0 ||
+        authorization.issuedAt > Date.now() + 5 * 60_000 ||
+        !(await verify(
+          new Uint8Array(identity.signingPublicKey),
+          acpAgentDefinitionStatement({
+            workspaceId: ctx.workspace._id,
+            issuedAt: authorization.issuedAt,
+            definition,
+          }),
+          new Uint8Array(authorization.signature),
+        ))
+      ) {
+        throw new ConvexError({ code: "ACP_AGENT_AUTHORIZATION_REQUIRED" });
+      }
+    }
     if (args.id) {
       const existing = await ctx.db.get(args.id);
       if (!existing || existing.workspace !== ctx.workspace._id)
@@ -59,6 +85,12 @@ export const SaveAgentDefinition = ownedWorkspaceMutation({
           code: "ACP_INVALID_AGENT",
           message: "Agent IDs cannot be changed.",
         });
+      if (
+        existing.authorization &&
+        (!authorization || authorization.issuedAt <= existing.authorization.issuedAt)
+      ) {
+        throw new ConvexError({ code: "ACP_STALE_AGENT_AUTHORIZATION" });
+      }
       await ctx.db.replace(args.id, {
         workspace: ctx.workspace._id,
         ...definition,
@@ -113,7 +145,8 @@ export const agentDefinitions = workerQuery({
       .query("acp_agents")
       .withIndex("by_workspace_and_agentId", (q) => q.eq("workspace", ctx.worker.workspaceId))
       .take(ACP_AGENT_DEFINITIONS_MAX);
-    return rows.filter((row) => row.enabled).map(definitionFields);
+    // Disabled signed definitions advance the Worker's mark before it stops the agent.
+    return rows.map(definitionFields);
   },
 });
 

@@ -9,7 +9,9 @@ import {
   ACP_INTERACTION_RETENTION_MS,
   acpStream,
 } from "./contract";
-import { applySessionPatch, enqueue, findAgent, findSession } from "./policy";
+import { applySessionPatch, enqueue, enqueueSigned, findAgent, findSession } from "./policy";
+import { verifySignedCommand, workspaceHasKeys } from "./sealed";
+import type { AcpSignedCommand } from "./contract";
 
 const BATCH = 32;
 
@@ -141,9 +143,13 @@ export const prune = internalMutation({
     for (const row of pending) {
       await ctx.db.delete(row._id);
       if ((row.kind === "prompt" || row.kind === "fork") && row.chat) {
+        // A signed fork has no readable payload; its receipt names the target chat.
         const target =
-          row.kind === "fork" && row.payload?.kind === "fork"
-            ? ctx.db.normalizeId("aisdk_chats", row.payload.targetChat)
+          row.kind === "fork"
+            ? ctx.db.normalizeId(
+                "aisdk_chats",
+                row.payload?.kind === "fork" ? row.payload.targetChat : (row.result ?? ""),
+              )
             : row.chat;
         const session = target ? await findSession(ctx, target) : null;
         if (session?.status === "starting") {
@@ -168,11 +174,19 @@ export const prune = internalMutation({
   },
 });
 
-/** Queue a binding-only command before deleting a chat; no transcript survives deletion. */
+/**
+ * Queue a binding-only command before deleting a chat; no transcript survives deletion. In a keyed
+ * workspace the command must be the caller's signed `close`/`delete` (`signed`, statement chat =
+ * this chat), stored with the chat's binding snapshot so the Worker can authorize it after the chat
+ * is gone; without one (or for a chat that never got a binding) nothing is queued, since a paired
+ * Worker ignores unsigned commands anyway.
+ */
 export async function queueChatDeletion(
   ctx: MutationCtx,
   chat: {
     _id: Id<"aisdk_chats">;
+    userId: string;
+    e2eeId?: string;
     workspace?: Id<"workspaces">;
     agent?: {
       worker: string;
@@ -184,6 +198,7 @@ export async function queueChatDeletion(
   },
   by: string,
   deleteInAgent?: boolean,
+  signed?: AcpSignedCommand,
 ) {
   if (!chat.agent || !chat.workspace) return;
   const session = await findSession(ctx, chat._id);
@@ -205,13 +220,37 @@ export async function queueChatDeletion(
       if (kind === "delete") await ctx.db.delete(indexed._id);
       else await ctx.db.patch(indexed._id, { chat: undefined });
     }
-    await enqueue(ctx, { workspace: chat.workspace, worker: chat.agent.worker }, by, {
-      kind,
-      agentId: chat.agent.agentId,
-      profile: chat.agent.profile ?? session?.profile ?? "native",
-      cwd: chat.agent.cwd,
-      sessionId,
-    });
+    const binding = { workspace: chat.workspace, worker: chat.agent.worker };
+    const profile = chat.agent.profile ?? session?.profile ?? "native";
+    if (await workspaceHasKeys(ctx, chat.workspace)) {
+      if (signed && session?.binding && session.sessionProof && chat.e2eeId) {
+        await verifySignedCommand(ctx, { ...binding, chat: chat._id, kind, userId: by, signed });
+        await enqueueSigned(ctx, binding, by, {
+          kind,
+          signed,
+          agentId: chat.agent.agentId,
+          target: {
+            chat: chat._id,
+            e2eeId: chat.e2eeId,
+            creatorUserId: chat.userId,
+            agentId: chat.agent.agentId,
+            profile,
+            cwd: chat.agent.cwd,
+            sessionId,
+            binding: session.binding,
+            sessionProof: session.sessionProof,
+          },
+        });
+      }
+    } else {
+      await enqueue(ctx, binding, by, {
+        kind,
+        agentId: chat.agent.agentId,
+        profile,
+        cwd: chat.agent.cwd,
+        sessionId,
+      });
+    }
   }
   await ctx.scheduler.runAfter(0, internal.acp.cleanupChat, { chatId: chat._id });
 }

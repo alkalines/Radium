@@ -9,6 +9,7 @@ import {
   type KeyringEntryFactory,
   type WorkerCredentialStore,
 } from "./auth/credentials.js";
+import { TrustMarks } from "./e2ee/marks.js";
 import { createGatewayKeyStore } from "./auth/gateway.js";
 import {
   WorkerProtocolError,
@@ -208,7 +209,7 @@ describe("Worker credential persistence", () => {
       credentialStoreMode: "keyring",
     });
     expect(store.values.get(legacy.requestId)).toBe(JSON.stringify(legacy.privateKey));
-    expect(JSON.parse(storedText)).toMatchObject({ version: 2, credentialStoreMode: "keyring" });
+    expect(JSON.parse(storedText)).toMatchObject({ version: 3, credentialStoreMode: "keyring" });
     expect(JSON.parse(storedText)).not.toHaveProperty("privateKey");
   });
 
@@ -240,7 +241,7 @@ describe("Worker credential persistence", () => {
     expect(
       JSON.parse(await readFile(join(legacyDirectory, "worker-state.json"), "utf8")),
     ).toMatchObject({
-      version: 2,
+      version: 3,
       credentialStoreMode: "file",
     });
 
@@ -289,6 +290,20 @@ describe("Worker credential persistence", () => {
     await expect(readFile(credentialPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(gatewayPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readWorkerState(directory)).resolves.toBeNull();
+  });
+
+  it("forgets credentials journaled before an interrupted pairing", async () => {
+    const directory = await newStateDirectory();
+    const store = memoryCredentialStore("file");
+    const state = await createPendingState(directory, makeSetup(), { credentialStore: store });
+    const keyId = "AAAAAAAAAAAAAAAAAAAAAA";
+    const account = `${state.requestId}.e2ee-${keyId}`;
+    await (await TrustMarks.open(directory)).pin(`credential:${keyId}`, keyId);
+    await store.set(account, "orphaned secret");
+
+    await forgetWorkerState(directory, { credentialStore: store });
+    expect(store.values.size).toBe(0);
+    await expect(readFile(join(directory, "e2ee-marks.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("preserves unknown state versions without deleting an injected credential", async () => {

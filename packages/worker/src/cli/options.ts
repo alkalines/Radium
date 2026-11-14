@@ -2,7 +2,7 @@ import { defaultStateDirectory } from "../auth/state.js";
 import { WorkerProtocolError } from "../protocol.js";
 
 /** Commands supported by the Worker command-line interface. */
-export type Command = "setup" | "start" | "status" | "refresh" | "forget";
+export type Command = "setup" | "pair" | "start" | "status" | "refresh" | "forget";
 
 /** Parsed command options; setup credentials are deliberately absent. */
 export interface CliOptions {
@@ -15,6 +15,7 @@ export const HELP = `Radium Worker
 
   setup        Enroll using a masked prompt or stdin
   add-token    Alias for setup (the one-time code is never saved)
+  pair         Pair an enrolled Worker with E2EE keys from a pairing code (masked prompt or stdin)
   start        Run the authenticated outbound Convex control subscription
   status       Show local enrollment metadata, without making network requests
   refresh      Recover pending enrollment and verify a fresh access-token exchange
@@ -36,7 +37,7 @@ Run without a command in a terminal to open the interactive menu.`;
 export function normalizeCommand(command: string): Command {
   if (command === "add-token") return "setup";
   if (command === "forget-token") return "forget";
-  if (["setup", "start", "status", "refresh", "forget"].includes(command)) {
+  if (["setup", "pair", "start", "status", "refresh", "forget"].includes(command)) {
     return command as Command;
   }
 

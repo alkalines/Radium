@@ -3,9 +3,8 @@ import { components, internal } from "../../convex/_generated/api";
 import {
   internalQuery,
   internalMutation,
-  mutation,
-  query,
   type MutationCtx,
+  type QueryCtx,
 } from "../../convex/_generated/server";
 import type { Id } from "../../convex/_generated/dataModel";
 import { authComponent } from "../../convex/auth";
@@ -14,6 +13,7 @@ import {
   requireAccessibleChat,
   requireWorkspaceOwnedByUser,
 } from "../../convex/workspaces";
+import { requireDispatchableWorker } from "../e2ee/worker-keys";
 import { workerMutation, workerQuery } from "./machine";
 import { chatWorkerSessionId, validChatWorkerDirectory } from "./chat-config";
 import {
@@ -35,10 +35,16 @@ import {
 import {
   canTransitionWorkerTask,
   WORKER_CHAT_CALL_CLEANUP_BATCH,
+  WORKER_SEALED_REQUEST_BYTES,
+  WORKER_SEALED_RESULT_BYTES,
   WORKER_TASK_CLEANUP_BATCH,
+  WORKER_TASK_ENCAPSULATED_BYTES,
   WORKER_TASK_RETENTION_MS,
   workerChatStage,
+  workerChatStageMatchesTool,
+  workerChatTaskRequestId,
   workerChatTool,
+  workerSealedTask,
   type WorkerChatTool,
   type WorkerChatStage,
   workerTaskRecord,
@@ -174,6 +180,7 @@ export const updateStatus = workerMutation({
       !task ||
       task.editRequest !== undefined ||
       task.bashRequest !== undefined ||
+      task.sealed !== undefined ||
       task.workspace !== ctx.worker.workspaceId ||
       task.workerId !== ctx.worker.workerId ||
       !Number.isSafeInteger(args.expectedRevision) ||
@@ -202,50 +209,6 @@ export const updateStatus = workerMutation({
     };
     await ctx.db.patch(task._id, patch);
     return { ...task, ...patch };
-  },
-});
-
-/** Owner-only edit dispatch. Each apply request explicitly selects a staged preview. */
-export const dispatchEdit = mutation({
-  args: {
-    workspace: v.id("workspaces"),
-    workerId: v.string(),
-    requestId: v.string(),
-    request: workerEditDispatchRequest,
-    chatId: v.optional(v.id("aisdk_chats")),
-    toolCallId: v.optional(v.string()),
-  },
-  returns: v.id("worker_tasks"),
-  handler: async (ctx, args) => {
-    const user = await authorizeDispatch(ctx, args);
-    if (!validWorkerEditRequest(args.request)) return taskDenied();
-    const existing = await existingDispatch(ctx, args);
-    if (existing) {
-      if (
-        existing.operation !== "edit" ||
-        existing.editOwnerId !== user._id ||
-        existing.chatId !== args.chatId ||
-        existing.toolCallId !== args.toolCallId ||
-        !existing.editRequest ||
-        workerEditRequestKey(existing.editRequest) !== workerEditRequestKey(args.request)
-      )
-        return taskDenied();
-      return existing._id;
-    }
-    return await ctx.db.insert("worker_tasks", {
-      workspace: args.workspace,
-      workerId: args.workerId,
-      requestId: args.requestId,
-      operation: "edit",
-      editRequest: args.request,
-      editOwnerId: user._id,
-      chatId: args.chatId,
-      toolCallId: args.toolCallId,
-      status: "sent",
-      revision: 0,
-      attempt: 0,
-      updatedAt: Date.now(),
-    });
   },
 });
 
@@ -303,7 +266,7 @@ async function authorizeChatWorkerDispatch(
   )
     return taskDenied();
 
-  return { workspace, directory };
+  return { workspace, directory, chat };
 }
 
 function previewIdFromResult(result: WorkerEditResult | undefined): string | null {
@@ -327,14 +290,62 @@ function previewIdFromResult(result: WorkerEditResult | undefined): string | nul
   }
 }
 
-async function chatTaskRequestId(
+/**
+ * A tool-call ID stays bound to its original assignment across all stages. Returns this stage's
+ * existing receipt, if any, after checking every stage of the call against the assignment.
+ */
+async function boundChatCallStage(
+  ctx: MutationCtx,
+  args: {
+    chatId: Id<"aisdk_chats">;
+    userId: string;
+    workerId: string;
+    tool: WorkerChatTool;
+    toolCallId: string;
+    stage: WorkerChatStage;
+  },
+  assignment: { workspace: { _id: Id<"workspaces"> }; directory: string },
+) {
+  const callStages = await ctx.db
+    .query("worker_chat_calls")
+    .withIndex("by_chat_call_stage", (q) =>
+      q.eq("chatId", args.chatId).eq("toolCallId", args.toolCallId),
+    )
+    .take(4);
+  if (
+    callStages.length > 3 ||
+    callStages.some(
+      (call) =>
+        call.workspace !== assignment.workspace._id ||
+        call.userId !== args.userId ||
+        call.workerId !== args.workerId ||
+        call.directory !== assignment.directory ||
+        call.tool !== args.tool,
+    )
+  )
+    return taskDenied();
+
+  return {
+    existing: callStages.find((call) => call.stage === args.stage) ?? null,
+    preview: callStages.find((call) => call.stage === "preview") ?? null,
+  };
+}
+
+/** Owner of a live user workspace reading its own chat's Worker state from the chat action. */
+async function authorizeChatOwner(
+  ctx: QueryCtx | MutationCtx,
   chatId: Id<"aisdk_chats">,
-  toolCallId: string,
-  stage: WorkerChatStage,
-): Promise<string> {
-  const input = new TextEncoder().encode(JSON.stringify([chatId, toolCallId, stage]));
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", input));
-  return `chat-${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  userId: string,
+) {
+  const authorized = await authorizeChatRecord(ctx, chatId, userId);
+  if (
+    !authorized ||
+    authorized.workspace.ownerType !== "user" ||
+    authorized.workspace.archivedAt !== undefined ||
+    authorized.workspace.ownerId !== userId
+  )
+    return taskDenied();
+  return authorized;
 }
 
 /**
@@ -360,6 +371,12 @@ export const dispatchChatEdit = internalMutation({
 
     const assignment = await authorizeChatWorkerDispatch(ctx, args);
     if (args.request.directory !== args.directory) return taskDenied();
+    // Plaintext requests are only for keyless workspaces and chats without keys; a certified
+    // Worker gets sealed requests, and an encrypted chat never stores plaintext tool content.
+    if (assignment.chat.e2eeId) return taskDenied();
+    if (await requireDispatchableWorker(ctx, assignment.workspace._id, args.workerId)) {
+      return taskDenied();
+    }
 
     const bash = args.tool === "bash";
     let expectedAction: "read" | "preview" | "apply" | null = null;
@@ -404,67 +421,24 @@ export const dispatchChatEdit = internalMutation({
       requestKey = workerEditRequestKey(request);
     }
 
-    // A tool-call ID stays bound to its original assignment across all stages.
-    const callStages = await ctx.db
-      .query("worker_chat_calls")
-      .withIndex("by_chat_call_stage", (q) =>
-        q.eq("chatId", args.chatId).eq("toolCallId", args.toolCallId),
-      )
-      .take(4);
-    if (
-      callStages.length > 3 ||
-      callStages.some(
-        (call) =>
-          call.workspace !== assignment.workspace._id ||
-          call.userId !== args.userId ||
-          call.workerId !== args.workerId ||
-          call.directory !== assignment.directory ||
-          call.tool !== args.tool,
-      )
-    )
-      return taskDenied();
-
-    const existingCall = await ctx.db
-      .query("worker_chat_calls")
-      .withIndex("by_chat_call_stage", (q) =>
-        q.eq("chatId", args.chatId).eq("toolCallId", args.toolCallId).eq("stage", args.stage),
-      )
-      .unique();
+    const { existing: existingCall, preview: previewCall } = await boundChatCallStage(
+      ctx,
+      args,
+      assignment,
+    );
     if (existingCall) {
-      if (
-        existingCall.workspace !== assignment.workspace._id ||
-        existingCall.userId !== args.userId ||
-        existingCall.workerId !== args.workerId ||
-        existingCall.directory !== assignment.directory ||
-        existingCall.tool !== args.tool ||
-        existingCall.requestKey !== requestKey
-      )
-        return taskDenied();
+      if (existingCall.requestKey !== requestKey) return taskDenied();
       return { taskId: existingCall.taskId };
     }
 
     // A first-time apply must reference the successful preview receipt for this call.
     if (args.stage === "apply") {
       if (!("action" in args.request) || args.request.action.kind !== "apply") return taskDenied();
-      const previewCall = await ctx.db
-        .query("worker_chat_calls")
-        .withIndex("by_chat_call_stage", (q) =>
-          q.eq("chatId", args.chatId).eq("toolCallId", args.toolCallId).eq("stage", "preview"),
-        )
-        .unique();
-      if (
-        !previewCall ||
-        previewCall.workspace !== assignment.workspace._id ||
-        previewCall.userId !== args.userId ||
-        previewCall.workerId !== args.workerId ||
-        previewCall.directory !== assignment.directory ||
-        previewCall.tool !== args.tool ||
-        previewIdFromResult(previewCall.result) !== args.request.action.previewId
-      )
+      if (!previewCall || previewIdFromResult(previewCall.result) !== args.request.action.previewId)
         return taskDenied();
     }
 
-    const requestId = await chatTaskRequestId(args.chatId, args.toolCallId, args.stage);
+    const requestId = await workerChatTaskRequestId(args.chatId, args.toolCallId, args.stage);
     const existingTask = await existingDispatch(ctx, {
       workspace: assignment.workspace._id,
       workerId: args.workerId,
@@ -526,7 +500,126 @@ export const dispatchChatEdit = internalMutation({
   },
 });
 
-/** Read one chat call's persisted result after rechecking exact chat visibility. */
+/**
+ * Choose how the chat action reaches the selected Worker: `null` for the plaintext path (keyless
+ * workspace), otherwise the certified encryption key to seal requests to. Throws
+ * `WORKER_NOT_PAIRED` when the workspace has keys and the Worker is not in the latest roster.
+ */
+export const chatWorkerTarget = internalQuery({
+  args: { chatId: v.id("aisdk_chats"), userId: v.string(), workerId: v.string() },
+  returns: v.union(v.null(), v.object({ keyId: v.string(), encryptionPublicKey: v.bytes() })),
+  handler: async (ctx, args) => {
+    const { workspace } = await authorizeChatOwner(ctx, args.chatId, args.userId);
+    const keys = await requireDispatchableWorker(ctx, workspace._id, args.workerId);
+    return keys ? { keyId: keys.keyId, encryptionPublicKey: keys.encryptionPublicKey } : null;
+  },
+});
+
+/**
+ * Dispatch one sealed built-in tool stage to a paired Worker. The backend checks only metadata it
+ * still sees (owner, chat, selected Worker/directory/tool, stage shape, byte bounds, the Worker's
+ * current certified key) and stores bytes; the Worker opens the request and checks the user's
+ * signature. A call/stage dispatched before is reported as `replay` and never queued again: its
+ * result was sealed to an earlier request key the caller no longer holds.
+ */
+export const dispatchSealedChatTask = internalMutation({
+  args: {
+    chatId: v.id("aisdk_chats"),
+    userId: v.string(),
+    workerId: v.string(),
+    directory: v.string(),
+    tool: workerChatTool,
+    toolCallId: v.string(),
+    stage: workerChatStage,
+    sealed: workerSealedTask,
+    receiptEpoch: v.optional(v.number()),
+  },
+  returns: v.object({ taskId: v.id("worker_tasks"), replay: v.boolean() }),
+  handler: async (ctx, args) => {
+    if (
+      !args.userId ||
+      !args.toolCallId ||
+      args.toolCallId.length > 128 ||
+      !workerChatStageMatchesTool(args.tool, args.stage) ||
+      args.sealed.encapsulated.byteLength !== WORKER_TASK_ENCAPSULATED_BYTES ||
+      args.sealed.request.byteLength === 0 ||
+      args.sealed.request.byteLength > WORKER_SEALED_REQUEST_BYTES ||
+      (args.receiptEpoch !== undefined &&
+        (!Number.isSafeInteger(args.receiptEpoch) || args.receiptEpoch < 0))
+    )
+      return taskDenied();
+
+    const assignment = await authorizeChatWorkerDispatch(ctx, args);
+    // The request is sealed to one key; a Worker re-paired since could not open it.
+    const keys = await requireDispatchableWorker(ctx, assignment.workspace._id, args.workerId);
+    if (!keys || keys.keyId !== args.sealed.keyId) return taskDenied();
+
+    const { existing, preview } = await boundChatCallStage(ctx, args, assignment);
+    if (existing) return { taskId: existing.taskId, replay: true };
+    // The Worker applies only its own preview; this only refuses an apply nothing preceded.
+    if (args.stage === "apply" && preview?.completionRevision === undefined) return taskDenied();
+
+    const requestId = await workerChatTaskRequestId(args.chatId, args.toolCallId, args.stage);
+    if (
+      await existingDispatch(ctx, {
+        workspace: assignment.workspace._id,
+        workerId: args.workerId,
+        requestId,
+      })
+    )
+      return taskDenied();
+
+    const taskId = await ctx.db.insert("worker_tasks", {
+      workspace: assignment.workspace._id,
+      workerId: args.workerId,
+      requestId,
+      operation: args.tool === "bash" ? "bash" : "edit",
+      sealed: args.sealed,
+      editOwnerId: args.userId,
+      chatId: args.chatId,
+      toolCallId: args.toolCallId,
+      status: "sent",
+      revision: 0,
+      attempt: 0,
+      updatedAt: Date.now(),
+    });
+    await ctx.db.insert("worker_chat_calls", {
+      workspace: assignment.workspace._id,
+      chatId: args.chatId,
+      userId: args.userId,
+      workerId: args.workerId,
+      directory: assignment.directory,
+      tool: args.tool,
+      toolCallId: args.toolCallId,
+      stage: args.stage,
+      requestKey: requestId,
+      taskId,
+      receiptEpoch: args.receiptEpoch,
+    });
+    return { taskId, replay: false };
+  },
+});
+
+/**
+ * A sealed task's terminal state for the chat action that dispatched it: `result` is the Worker's
+ * `sealSym` result under the request key; it is absent when the Worker could not open the request.
+ * `null` while the task runs or after it was pruned.
+ */
+export const sealedChatTaskOutcome = internalQuery({
+  args: { chatId: v.id("aisdk_chats"), userId: v.string(), taskId: v.id("worker_tasks") },
+  returns: v.union(v.null(), v.object({ ok: v.boolean(), result: v.optional(v.bytes()) })),
+  handler: async (ctx, args) => {
+    await authorizeChatOwner(ctx, args.chatId, args.userId);
+    const task = await ctx.db.get(args.taskId);
+    if (!task) return null;
+    if (!task.sealed || task.chatId !== args.chatId || task.editOwnerId !== args.userId)
+      return taskDenied();
+    if (task.status !== "success" && task.status !== "failed") return null;
+    return { ok: task.status === "success", result: task.sealedResult };
+  },
+});
+
+/** Read one plaintext chat call's persisted result after rechecking exact chat visibility. */
 export const chatEditOutcome = internalQuery({
   args: {
     chatId: v.id("aisdk_chats"),
@@ -535,15 +628,7 @@ export const chatEditOutcome = internalQuery({
   },
   returns: v.union(v.null(), workerEditResult),
   handler: async (ctx, args) => {
-    const authorized = await authorizeChatRecord(ctx, args.chatId, args.userId);
-    if (
-      !authorized ||
-      authorized.workspace.ownerType !== "user" ||
-      authorized.workspace.archivedAt !== undefined ||
-      authorized.workspace.ownerId !== args.userId
-    )
-      return taskDenied();
-
+    const authorized = await authorizeChatOwner(ctx, args.chatId, args.userId);
     const call = await ctx.db
       .query("worker_chat_calls")
       .withIndex("by_task", (q) => q.eq("taskId", args.taskId))
@@ -579,22 +664,6 @@ export const cleanupChatCalls = internalMutation({
   },
 });
 
-/** Subscribe to one task's output with the same owner/private-chat policy as dispatch. */
-export const outcome = query({
-  args: { workspace: v.id("workspaces"), taskId: v.id("worker_tasks") },
-  returns: v.union(v.null(), workerTaskRecord),
-  handler: async (ctx, args) => {
-    const user = await authComponent.getAuthUser(ctx);
-    await requireWorkspaceOwnedByUser(ctx, args.workspace, user._id);
-    const task = await ctx.db.get(args.taskId);
-    if (!task) return null;
-    if (task.workspace !== args.workspace || (task.editOwnerId && task.editOwnerId !== user._id))
-      return taskDenied();
-    if (task.chatId) await requireAccessibleChat(ctx, task.chatId);
-    return task;
-  },
-});
-
 /** Load an executable task and require that it belongs to the calling Worker. */
 async function assignedToolTask(
   ctx: MutationCtx & { worker: { workspaceId: string; workerId: string } },
@@ -603,7 +672,7 @@ async function assignedToolTask(
   const task = await ctx.db.get(taskId);
   if (!task) return null;
   if (
-    (!task.editRequest && !task.bashRequest) ||
+    (!task.editRequest && !task.bashRequest && !task.sealed) ||
     task.workspace !== ctx.worker.workspaceId ||
     task.workerId !== ctx.worker.workerId
   )
@@ -669,8 +738,6 @@ export const completeEdit = workerMutation({
         call.workspace !== ctx.worker.workspaceId ||
         call.workerId !== ctx.worker.workerId ||
         call.completionClaimId !== args.claimId ||
-        !Number.isSafeInteger(args.expectedRevision) ||
-        args.expectedRevision < 0 ||
         call.completionRevision !== args.expectedRevision + 1 ||
         !call.result ||
         !sameExecutionResult(call.result, args.result)
@@ -678,12 +745,7 @@ export const completeEdit = workerMutation({
         return taskDenied();
       return { receiptAcknowledged: true as const };
     }
-    if (
-      task.claimId !== args.claimId ||
-      !Number.isSafeInteger(args.expectedRevision) ||
-      args.expectedRevision < 0
-    )
-      return taskDenied();
+    if (task.sealed || task.claimId !== args.claimId) return taskDenied();
     if (
       (args.result.output !== undefined &&
         new TextEncoder().encode(args.result.output).length >
@@ -737,6 +799,107 @@ function sameExecutionResult(left: WorkerEditResult, right: WorkerEditResult): b
     (left.ok || (!right.ok && left.code === right.code))
   );
 }
+
+function sameBytes(left: ArrayBuffer | undefined, right: ArrayBuffer | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  if (left.byteLength !== right.byteLength) return false;
+  const a = new Uint8Array(left);
+  const b = new Uint8Array(right);
+  return a.every((byte, index) => byte === b[index]);
+}
+
+/**
+ * Complete a sealed task once. `result` is the Worker's `sealSym` result under the request key
+ * (absent only when the Worker could not open the request); `receipt` is the durable receipt sealed
+ * to the chat key epoch named at dispatch (required exactly when the call recorded one and a result
+ * exists). `ok` is the Worker's own status claim. The Worker seals once and retries the same bytes,
+ * so an identical repeat (or an acknowledgment after the task was pruned) is idempotent.
+ */
+export const completeSealedTask = workerMutation({
+  args: {
+    taskId: v.id("worker_tasks"),
+    claimId: v.string(),
+    expectedRevision: v.number(),
+    ok: v.boolean(),
+    result: v.optional(v.bytes()),
+    receipt: v.optional(v.bytes()),
+  },
+  returns: v.union(
+    v.object({ completed: v.literal(true) }),
+    v.object({ receiptAcknowledged: v.literal(true) }),
+    v.object({ receiptDiscarded: v.literal(true) }),
+  ),
+  handler: async (ctx, args) => {
+    if (
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(args.claimId) ||
+      !Number.isSafeInteger(args.expectedRevision) ||
+      args.expectedRevision < 0 ||
+      (args.result !== undefined &&
+        (args.result.byteLength === 0 || args.result.byteLength > WORKER_SEALED_RESULT_BYTES)) ||
+      (args.receipt !== undefined &&
+        (args.receipt.byteLength === 0 || args.receipt.byteLength > WORKER_SEALED_RESULT_BYTES)) ||
+      (args.receipt !== undefined && args.result === undefined) ||
+      (args.ok && args.result === undefined)
+    )
+      return taskDenied();
+
+    const task = await assignedToolTask(ctx, args.taskId);
+    const chatCall = await ctx.db
+      .query("worker_chat_calls")
+      .withIndex("by_task", (q) => q.eq("taskId", args.taskId))
+      .unique();
+    if (!task) {
+      // No coordination or conversation record remains to accept this payload.
+      if (!chatCall) return { receiptDiscarded: true as const };
+      if (
+        chatCall.workspace !== ctx.worker.workspaceId ||
+        chatCall.workerId !== ctx.worker.workerId ||
+        chatCall.completionClaimId !== args.claimId ||
+        chatCall.completionRevision !== args.expectedRevision + 1 ||
+        !sameBytes(chatCall.sealedResult, args.receipt)
+      )
+        return taskDenied();
+      return { receiptAcknowledged: true as const };
+    }
+    if (!task.sealed || task.claimId !== args.claimId) return taskDenied();
+    // A receipt goes only where dispatch named a chat key epoch, and always accompanies a result.
+    if (
+      chatCall &&
+      (chatCall.receiptEpoch === undefined
+        ? args.receipt !== undefined
+        : args.result !== undefined && args.receipt === undefined)
+    )
+      return taskDenied();
+
+    const status = args.ok ? ("success" as const) : ("failed" as const);
+    if (
+      task.revision === args.expectedRevision + 1 &&
+      task.status === status &&
+      sameBytes(task.sealedResult, args.result)
+    )
+      return { completed: true as const };
+    if (task.status !== "processing" || task.revision !== args.expectedRevision) {
+      throw new ConvexError({ code: "WORKER_TASK_STALE_REVISION" });
+    }
+
+    const now = Date.now();
+    const revision = task.revision + 1;
+    await ctx.db.patch(task._id, {
+      status,
+      sealedResult: args.result,
+      revision,
+      updatedAt: now,
+      terminalAt: now,
+    });
+    if (chatCall)
+      await ctx.db.patch(chatCall._id, {
+        sealedResult: args.receipt,
+        completionClaimId: args.claimId,
+        completionRevision: revision,
+      });
+    return { completed: true as const };
+  },
+});
 
 /**
  * Delete only terminal coordination records aged at least five minutes.

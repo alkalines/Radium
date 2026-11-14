@@ -31,7 +31,14 @@ import {
 } from "../../convex/secrets";
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
-import { buildWorkerChatTools, workerChatApprovalSecret } from "../worker/chat-tools";
+import {
+  buildWorkerChatTools,
+  parseWorkerApprovals,
+  resolveWorkerChatTransport,
+  workerChatApprovalSecret,
+  workerCodeModeInteractions,
+  type WorkerApprovalSignature,
+} from "../worker/chat-tools";
 import { buildSessionTools } from "../chatroom/session-tools";
 import { CODE_MODE_TOOL_SET_ID, QUESTION_TOOL_ID } from "../chatroom/tools";
 import { CODE_MODE_TOOL_NAME, type CodeModeInteractionKind } from "../chatroom/code-mode";
@@ -69,6 +76,8 @@ type AISDKChatRequestBody = {
   reasoningBudget?: number;
   id?: Id<"aisdk_chats">;
   chatId?: Id<"aisdk_chats">;
+  /** User approval signatures by tool call ID (`parseWorkerApprovals`); paired Workers need them. */
+  approvals?: unknown;
 };
 
 /** Handles the authenticated AI SDK chat request body and stream lifecycle. */
@@ -93,7 +102,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
   const body = (await req.json()) as AISDKChatRequestBody;
   const chatId = body?.chatId || body?.id;
 
-  if (!chatId || !body.model || !Array.isArray(body.messages)) {
+  const approvals = parseWorkerApprovals(body?.approvals);
+  if (!chatId || !body.model || !Array.isArray(body.messages) || !approvals) {
     return Response.json(
       { error: { message: "Invalid chat request", code: 400 } },
       { status: 400 },
@@ -220,6 +230,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         workspaceId,
         ownerId: workspace.ownerId,
         selection: chat.worker,
+        encrypted: Boolean(chat.e2eeId),
+        approvals,
       },
       { systemPrompt: systemPrompt !== null },
     );
@@ -561,6 +573,10 @@ async function buildChatTools(
     ownerId: string;
     workspaceId: Id<"workspaces">;
     selection?: ChatWorkerSelection;
+    /** The chat has keys: Worker receipts are sealed to it and plaintext dispatch is refused. */
+    encrypted: boolean;
+    /** Approval signatures from the request body; Code Mode approvals are added as answered. */
+    approvals: Map<string, WorkerApprovalSignature>;
   },
   options: { systemPrompt: boolean },
 ): Promise<{
@@ -616,11 +632,19 @@ async function buildChatTools(
           workerId: id,
         }),
     );
+    const transport = await resolveWorkerChatTransport(ctx, {
+      chatId,
+      userId: worker.userId,
+      workerId,
+      encrypted: worker.encrypted,
+    });
     const scope = {
       chatId,
       workspaceId: worker.workspaceId,
       userId: worker.userId,
       selection: { ...selection, workerId },
+      transport,
+      approvals: worker.approvals,
     };
     const workerTools = buildWorkerChatTools(ctx, scope);
     Object.assign(tools, workerTools.tools);
@@ -703,23 +727,27 @@ async function buildChatTools(
       const codeMode = await createCodeMode({
         inventory: { tools: directTools, namespaces },
         catalogInDescription: !options.systemPrompt,
-        interactions: {
-          open: (kind) =>
-            ctx.runMutation(internal.code_mode.openInteraction, {
-              chatId,
-              userId: worker.userId,
-              kind,
-            }),
-          response: (id) =>
-            ctx.runQuery(internal.code_mode.interactionResponse, {
-              interaction: id as Id<"codemode_interactions">,
-            }),
-          close: async (id) => {
-            await ctx.runMutation(internal.code_mode.closeInteraction, {
-              interaction: id as Id<"codemode_interactions">,
-            });
+        // Inner approvals reach paired Workers as user signatures keyed by the inner call ID.
+        interactions: workerCodeModeInteractions(
+          {
+            open: (kind) =>
+              ctx.runMutation(internal.code_mode.openInteraction, {
+                chatId,
+                userId: worker.userId,
+                kind,
+              }),
+            response: (id) =>
+              ctx.runQuery(internal.code_mode.interactionResponse, {
+                interaction: id as Id<"codemode_interactions">,
+              }),
+            close: async (id) => {
+              await ctx.runMutation(internal.code_mode.closeInteraction, {
+                interaction: id as Id<"codemode_interactions">,
+              });
+            },
           },
-        },
+          worker.approvals,
+        ),
       });
       if (codeMode) {
         tools[CODE_MODE_TOOL_NAME] = codeMode.tool;

@@ -7,6 +7,7 @@ import { configureCryptoClient } from "@/lib/crypto/runtime";
 import { refreshOwnPublicKey } from "@/lib/crypto/public-keys";
 import { signUnsignedChatKeys } from "@/lib/crypto/chat-keys";
 import { syncWorkspaceKeys, TrustRequiredError } from "@/lib/crypto/workspace-keys";
+import { syncWorkerCertificates } from "@/lib/crypto/workers";
 import { trust } from "@/lib/crypto/trust-store";
 import {
   IdentityTrustSurface,
@@ -50,25 +51,34 @@ export function WorkspaceKeySync() {
 }
 function WorkspaceSync({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
   const state = useQuery(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+  // Owners certify newly published Worker keys and drop revoked Workers from the roster.
+  const workerKeys = useQuery(
+    api.e2ee.workerKeys,
+    state?.role === "owner" && state.keyEpoch ? { workspace: workspaceId } : "skip",
+  );
   const [prompt, setPrompt] = useState<TrustRequiredError | null>(null);
   const [revision, setRevision] = useState(0);
   const denied = useRef(false);
   useEffect(() => {
     if (!state || denied.current) return;
     let active = true;
-    syncWorkspaceKeys(workspaceId).then(
-      () => {
-        // A pin made elsewhere (an access link, another prompt) resolves this one too.
-        if (active) setPrompt(null);
-      },
-      (error: unknown) => {
-        if (active && error instanceof TrustRequiredError) setPrompt(error);
-      },
-    );
+    syncWorkspaceKeys(workspaceId)
+      .then(async () => {
+        if (state.role === "owner" && state.keyEpoch) await syncWorkerCertificates(workspaceId);
+      })
+      .then(
+        () => {
+          // A pin made elsewhere (an access link, another prompt) resolves this one too.
+          if (active) setPrompt(null);
+        },
+        (error: unknown) => {
+          if (active && error instanceof TrustRequiredError) setPrompt(error);
+        },
+      );
     return () => {
       active = false;
     };
-  }, [workspaceId, state, revision]);
+  }, [workspaceId, state, workerKeys, revision]);
   if (!prompt) return null;
   return (
     <div className="fixed bottom-4 right-4 z-40 max-h-[80svh] w-[min(420px,calc(100vw-2rem))] overflow-auto">

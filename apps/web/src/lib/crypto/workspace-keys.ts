@@ -15,7 +15,12 @@ import {
   sealBox,
   sha256,
   sign,
+  signRoster,
   toBase64Url,
+  verifyRoster,
+  type RosterMember,
+  type RosterWorker,
+  type WorkspaceRoster,
 } from "radium-crypto";
 import { keyManager, KeysLockedError } from "./key-manager";
 import {
@@ -42,11 +47,7 @@ import {
   openInvitePayload,
   openWorkspaceGrant,
   sealInvitePayload,
-  signRoster,
-  verifyRoster,
   type InvitePayload,
-  type RosterMember,
-  type WorkspaceRoster,
 } from "./workspace-proofs";
 
 type KeyState = FunctionReturnType<typeof api.e2ee.workspaceKeyState>;
@@ -326,6 +327,47 @@ async function getWorkspaceKey(
 export function getMemberKey(workspaceId: Id<"workspaces">, epoch: number): Promise<WorkspaceKey> {
   return getWorkspaceKey(workspaceId, epoch, "member");
 }
+/**
+ * Opens the workspace owner key of `epoch` (current epoch by default). Owner-only: members hold no
+ * owner grant. Same checks and memory-only cache as `getMemberKey`.
+ */
+export async function getOwnerKey(
+  workspaceId: Id<"workspaces">,
+  epoch?: number,
+): Promise<WorkspaceKey> {
+  const state = await verifyWorkspaceState(workspaceId);
+  if (state.role !== "owner" || !state.keyEpoch) {
+    throw new CryptoError("DECRYPT_FAILED", "Workspace owner key not granted");
+  }
+  return getWorkspaceKey(workspaceId, epoch ?? state.keyEpoch, "owner");
+}
+/**
+ * Owner-only: publishes the next roster version with `workers` as the certified Workers, keeping
+ * epochs and members. The caller must have verified every listed Worker's pairing. No-op when the
+ * verified roster already lists exactly these Workers.
+ */
+export async function publishRosterWorkers(
+  workspaceId: Id<"workspaces">,
+  workers: RosterWorker[],
+): Promise<void> {
+  const state = await verifyWorkspaceState(workspaceId);
+  if (state.role !== "owner") throw new CryptoError("DECRYPT_FAILED", "Only owners sign rosters");
+  const key = (list: RosterWorker[]) =>
+    JSON.stringify(
+      list
+        .map((worker) => [worker.workerId, worker.keyId, worker.fingerprint])
+        .sort((a, b) => a[0]!.localeCompare(b[0]!)),
+    );
+  if (key(state.verifiedRoster.workers) === key(workers)) return;
+  await cryptoClient().mutation(api.e2ee.publishRoster, {
+    workspace: workspaceId,
+    roster: await wireRoster({
+      ...state.verifiedRoster,
+      version: state.verifiedRoster.version + 1,
+      workers,
+    }),
+  });
+}
 /** Returns the verified current member public key; locked mode reads only the verified device cache. */
 export async function getCurrentMemberPublicKey(
   workspaceId: Id<"workspaces">,
@@ -389,9 +431,20 @@ async function makeGrant(
 function memberBinding(identity: PublicIdentity): RosterMember {
   return { userId: identity.userId, keyId: identity.keyId, fingerprint: identity.fingerprint };
 }
-async function wireRoster(roster: WorkspaceRoster) {
+async function wireRoster(roster: Omit<WorkspaceRoster, "v">) {
+  let workers = roster.workers;
+  if (workers.length) {
+    // Never re-list a Worker whose key set is gone (revoked) or replaced; the backend refuses it.
+    // Server rows can only shrink this list, never add to it.
+    const rows = await cryptoClient().query(api.e2ee.workerKeys, {
+      workspace: roster.workspace as Id<"workspaces">,
+    });
+    workers = workers.filter((worker) =>
+      rows.some((row) => row.workerId === worker.workerId && row.keyId === worker.keyId),
+    );
+  }
   return keyManager.useAmk(async (_, identity) => {
-    const signed = await signRoster(roster, identity.signing.seed);
+    const signed = await signRoster({ ...roster, workers }, identity.signing.seed);
     return { ...signed, body: buffer(signed.body), signature: buffer(signed.signature) };
   });
 }
@@ -435,7 +488,7 @@ async function createEpoch(
         grants.push(await makeGrant(workspaceId, epoch, "member", member.seed, identity));
       }
     const roster = await wireRoster({
-      v: 1,
+      workers: previous?.verifiedRoster.workers ?? [],
       workspace: workspaceId,
       version: (previous?.verifiedRoster.version ?? 0) + 1,
       epoch,

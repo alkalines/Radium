@@ -2,8 +2,10 @@ import { components } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
 import {
+  grantedChatWorkerTools,
   validChatWorkerDirectory,
   validateChatWorkerSelection,
+  type ChatWorkerGrant,
   type ChatWorkerSelection,
   type WorkerMetadataLookup,
 } from "./chat-config";
@@ -74,9 +76,10 @@ function storedSelection(
 
 /**
  * Validate an owner's requested chat Worker selection and return what to store. A client-sent
- * `directory` is ignored. When the Worker is unchanged and `current` already has a directory
- * (e.g. only tools were toggled) that directory is kept; otherwise it is derived with
- * {@link deriveChatWorkerDirectory} for the chat's Project.
+ * `directory` or `grant` is ignored. When the Worker is unchanged and `current` already has a
+ * directory (e.g. only tools were toggled) that directory is kept; otherwise it is derived with
+ * {@link deriveChatWorkerDirectory} for the chat's Project. The stored grant survives only while it
+ * still names the same Worker, directory and granted tools; otherwise the owner's browser re-signs.
  */
 export async function resolveChatWorkerSelection(
   ctx: MutationCtx,
@@ -99,7 +102,17 @@ export async function resolveChatWorkerSelection(
   if (workerId === undefined) return storedSelection(tools, undefined, undefined);
 
   if (args.current?.workerId === workerId && args.current.directory !== undefined) {
-    return storedSelection(tools, workerId, args.current.directory);
+    const kept = storedSelection(tools, workerId, args.current.directory);
+    const grant = args.current.grant;
+    const granted = grantedChatWorkerTools(tools);
+    if (
+      grant &&
+      grant.tools.length === granted.length &&
+      grant.tools.every((tool, index) => tool === granted[index])
+    ) {
+      return { ...kept, grant };
+    }
+    return kept;
   }
 
   const directory = await deriveChatWorkerDirectory(
@@ -125,4 +138,33 @@ export async function rederiveChatWorkerDirectory(
 
   const directory = await deriveChatWorkerDirectory(ctx, workspaceId, selection.workerId, project);
   return storedSelection(selection.tools, selection.workerId, directory);
+}
+
+/**
+ * Attach the owner's signed standing grant to the stored selection it was signed for. The signer
+ * names the Worker and directory it saw, so a selection that changed meanwhile is refused instead of
+ * storing a grant for the wrong target. Grants only move forward (`issuedAt` above the stored one),
+ * matching the Worker's own high-water rule. The signature is verified by the Worker, not here.
+ */
+export function attachChatWorkerGrant(
+  selection: ChatWorkerSelection | undefined,
+  signed: { workerId: string; directory: string; grant: ChatWorkerGrant },
+): ChatWorkerSelection {
+  const { grant } = signed;
+  const granted = grantedChatWorkerTools(selection?.tools ?? []);
+  if (
+    !selection ||
+    selection.workerId !== signed.workerId ||
+    selection.directory !== signed.directory ||
+    granted.length === 0 ||
+    grant.tools.length !== granted.length ||
+    grant.tools.some((tool, index) => tool !== granted[index]) ||
+    !Number.isSafeInteger(grant.issuedAt) ||
+    grant.issuedAt <= (selection.grant?.issuedAt ?? 0) ||
+    grant.signature.byteLength !== 64 ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(grant.signerKeyId)
+  ) {
+    throw new Error("The Worker selection changed; authorize it again.");
+  }
+  return { ...selection, grant };
 }

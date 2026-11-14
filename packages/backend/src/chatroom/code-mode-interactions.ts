@@ -42,6 +42,15 @@ export const answerInteraction = mutation({
     if (interaction.response) throw new Error("This request was already answered.");
     if (interaction.kind !== args.response.kind)
       throw new Error("Answer does not match the request.");
+    const signed = args.response.kind === "approval" ? args.response.signature : undefined;
+    if (
+      signed &&
+      (!/^[A-Za-z0-9_-]{86}$/.test(signed.signature) ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(signed.signerKeyId) ||
+        !Number.isSafeInteger(signed.approvedAt) ||
+        signed.approvedAt <= 0)
+    )
+      throw new Error("Invalid approval signature.");
 
     await ctx.db.patch("codemode_interactions", args.interaction, { response: args.response });
     return null;

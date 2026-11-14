@@ -129,6 +129,7 @@ class FakeTransport implements AcpTransport {
               sessionId: this.binding.sessionId,
               epoch: this.epoch,
               status: this.binding.status,
+              e2ee: null,
             },
           ]
         : [],
@@ -142,10 +143,14 @@ class FakeTransport implements AcpTransport {
     this.claims.set(command, {
       command,
       kind: payload.kind,
+      clientId: command,
       payload,
+      signed: null,
+      target: null,
+      forkTarget: null,
       by: "user",
       chat: agentLevel ? null : chat,
-      session: agentLevel ? null : { ...this.binding },
+      session: agentLevel ? null : { ...this.binding, e2ee: null },
     });
     this.assignments = [
       ...this.assignments,
@@ -181,7 +186,7 @@ class FakeTransport implements AcpTransport {
       accepted: true,
       bytes: this.frames
         .filter((entry) => entry.epoch === args.epoch)
-        .reduce((sum, entry) => sum + entry.frame.payload.length, 0),
+        .reduce((sum, entry) => sum + (entry.frame.payload as string).length, 0),
     };
   }
   async updateSession({ patch }: { chat: string; patch: AcpSessionPatch }) {
@@ -212,13 +217,17 @@ class FakeTransport implements AcpTransport {
   async recoverWorker() {
     return { more: false };
   }
+  async reopenInteraction() {}
+  async chatKey() {
+    return null;
+  }
   async openInteraction(args: {
     chat: string;
     requestKey: string;
-    request: AcpInteractionRequest;
+    request?: AcpInteractionRequest;
   }) {
     const id = crypto.randomUUID();
-    this.opened.push({ id, key: args.requestKey, request: args.request });
+    this.opened.push({ id, key: args.requestKey, request: args.request! });
     return id;
   }
   async resolveInteraction(args: { interaction: string; status: "resolved" | "cancelled" }) {
@@ -231,7 +240,7 @@ class FakeTransport implements AcpTransport {
     ]);
   }
   ops(): AcpOp[] {
-    return this.frames.flatMap(({ frame }) => JSON.parse(frame.payload) as AcpOp[]);
+    return this.frames.flatMap(({ frame }) => JSON.parse(frame.payload as string) as AcpOp[]);
   }
 }
 

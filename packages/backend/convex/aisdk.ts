@@ -26,8 +26,13 @@ import {
 } from "../src/chatroom/messages";
 import { linkChatFiles, storedFileUrls } from "../src/chatroom/files";
 import { canManageChat } from "../src/workspaces/policy";
-import { chatWorkerSelectionValidator, type ChatWorkerSelection } from "../src/worker/chat-config";
 import {
+  chatWorkerGrantValidator,
+  chatWorkerSelectionValidator,
+  type ChatWorkerSelection,
+} from "../src/worker/chat-config";
+import {
+  attachChatWorkerGrant,
   rederiveChatWorkerDirectory,
   resolveChatWorkerSelection,
 } from "../src/worker/chat-selection";
@@ -36,6 +41,7 @@ import { storedSelection, toolSelectionValidator } from "../src/chatroom/tool-se
 import { chatInterruptionValidator } from "../src/chatroom/interruption";
 import { findSession, requireChatActor } from "../src/acp/policy";
 import { queueChatDeletion } from "../src/acp/retention";
+import { acpSignedBindingValidator, acpSignedCommandValidator } from "../src/acp/contract";
 import {
   activeIdentityFor,
   chatKeyInputValidator,
@@ -610,6 +616,32 @@ export const SetChatWorker = mutation({
 });
 
 /**
+ * Store the owner's signed standing grant (`toolGrantStatement`) for the chat's current Worker
+ * selection. `workerId`/`directory` are what the owner's browser signed; a selection that changed
+ * since is refused (see `attachChatWorkerGrant`). Workers verify the signature before any Read.
+ */
+export const SetChatWorkerGrant = mutation({
+  args: {
+    chatId: v.id("aisdk_chats"),
+    workerId: v.string(),
+    directory: v.string(),
+    grant: chatWorkerGrantValidator,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { chat, workspace, userId } = await requireChatManager(ctx, args.chatId);
+    if (chat.agent) throw new ConvexError({ code: "ACP_IMMUTABLE_BINDING" });
+    if (workspace.ownerId !== userId) {
+      throw new Error("Only the workspace owner can configure a Worker for chats.");
+    }
+
+    const worker = attachChatWorkerGrant(chat.worker, args);
+    await ctx.db.patch("aisdk_chats", chat._id, { worker });
+    return null;
+  },
+});
+
+/**
  * File a chat under a Project in its own workspace, or detach it with `null`. Requires chat
  * management (creator, or workspace owner for shared chats); filing never changes visibility.
  * A chat with a Worker gets its directory re-derived for the new Project (owner-set folders).
@@ -641,7 +673,10 @@ export const SetChatProject = mutation({
   },
 });
 
-/** Change a chat's visibility. Only its creator may change its scope. */
+/**
+ * Change a chat's visibility. Only its creator may change its scope. An ACP chat with a published
+ * binding also needs the creator's re-signed binding for the new audience (`acpBinding`).
+ */
 export const SetChatScope = mutation({
   args: {
     chatId: v.id("aisdk_chats"),
@@ -650,6 +685,7 @@ export const SetChatScope = mutation({
     keys: v.optional(
       v.object({ rotate: v.optional(chatKeyInputValidator), wraps: v.array(wrapInputValidator) }),
     ),
+    acpBinding: v.optional(acpSignedBindingValidator),
   },
   returns: v.object({ scope: chatScopeValidator }),
   handler: async (ctx, args) => {
@@ -685,6 +721,9 @@ export const RenameChat = mutation({
         title: undefined,
         emoji: undefined,
       });
+      // A user's rename wins over later agent-reported titles, sealed or not.
+      const session = await findSession(ctx, args.chatId);
+      if (session) await ctx.db.patch(session._id, { userTitled: true });
       return null;
     }
     if (args.sealedTitle) {
@@ -750,14 +789,22 @@ export const RegenerateChatTitle = mutation({
   },
 });
 
+/**
+ * Delete a chat. For an ACP chat in a keyed workspace the browser passes its signed `close`/`delete`
+ * command (`acpCommand`, kind per `deleteInAgent`) so the paired Worker can act on it.
+ */
 export const DeleteChat = mutation({
-  args: { chatId: v.id("aisdk_chats"), deleteInAgent: v.optional(v.boolean()) },
+  args: {
+    chatId: v.id("aisdk_chats"),
+    deleteInAgent: v.optional(v.boolean()),
+    acpCommand: v.optional(acpSignedCommandValidator),
+  },
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) return "Not logged in!";
 
     const access = await requireChatActor(ctx, args.chatId);
-    await queueChatDeletion(ctx, access.chat, identity._id, args.deleteInAgent);
+    await queueChatDeletion(ctx, access.chat, identity._id, args.deleteInAgent, args.acpCommand);
 
     await ctx.db.delete("aisdk_chats", args.chatId);
     await ctx.scheduler.runAfter(0, internal.worker_tasks.cleanupChatCalls, {

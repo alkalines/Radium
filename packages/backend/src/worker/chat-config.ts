@@ -11,14 +11,36 @@ export const chatWorkerToolValidator = v.union(
 export type ChatWorkerTool = Infer<typeof chatWorkerToolValidator>;
 
 /**
+ * The owner's standing permission for the tools of a selection that need no per-call approval
+ * (Read): Ed25519 `signature` by identity key `signerKeyId` over `toolGrantStatement` for this
+ * chat, the selection's Worker and directory, sorted `tools` and `issuedAt` (ms). Written only by
+ * `aisdk.SetChatWorkerGrant`; every selection change drops it. Workers verify it themselves.
+ */
+export const chatWorkerGrantValidator = v.object({
+  tools: v.array(chatWorkerToolValidator),
+  issuedAt: v.number(),
+  signature: v.bytes(),
+  signerKeyId: v.string(),
+});
+
+export type ChatWorkerGrant = Infer<typeof chatWorkerGrantValidator>;
+
+/** Tools a grant covers: those of a selection that run without a per-call approval signature. */
+export function grantedChatWorkerTools(tools: readonly ChatWorkerTool[]): ChatWorkerTool[] {
+  return tools.filter((tool) => tool === "read").sort();
+}
+
+/**
  * Owner-selected Worker tools for a chat. `workerId` is optional so tools can be chosen before a
  * Worker is; dispatch requires one. `directory` is derived server-side (Project folder, then the
- * Worker's reported temp directory) and never accepted from clients.
+ * Worker's reported temp directory) and `grant` is written only by `aisdk.SetChatWorkerGrant`; both
+ * are ignored when a client sends a selection.
  */
 export const chatWorkerSelectionValidator = v.object({
   workerId: v.optional(v.string()),
   directory: v.optional(v.string()),
   tools: v.array(chatWorkerToolValidator),
+  grant: v.optional(chatWorkerGrantValidator),
 });
 
 /** Stored chat Worker selection; execution requires both `workerId` and `directory`. */

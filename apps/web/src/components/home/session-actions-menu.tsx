@@ -55,6 +55,7 @@ import { Input } from "@/components/ui/input";
 
 import { openMessages, sealTitle } from "@/lib/crypto/chat-content";
 import { writableChatKey } from "@/lib/crypto/chat-keys";
+import { signAcpCommand } from "@/components/session/acp/acp-crypto";
 import { getMessageText } from "@/components/session/message-parts";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 /** Matches the backend's title length limit for user-chosen titles. */
@@ -227,8 +228,32 @@ export function SessionActionsMenu({
       setDeleteInAgentStep(true);
       return;
     }
-    // An open Tab for this session drops itself once the chat is gone (spec §4).
-    const succeeded = await run("delete", () => deleteChat({ chatId: session.id, deleteInAgent }));
+    // An open Tab for this session drops itself once the chat is gone (spec §4). In a keyed
+    // workspace the agent-side close/delete is a sealed command signed here: the chat row is gone
+    // when the Worker sees it, so the command carries the session it targets.
+    const succeeded = await run("delete", async () => {
+      const agentSession = acpSession?.agent;
+      const acpCommand =
+        acpSession?.signed && agentSession?.sessionId
+          ? await signAcpCommand({
+              workspaceId: acpSession.workspace,
+              workerId: agentSession.worker,
+              chatId: session.id,
+              command: {
+                kind: deleteInAgent && acpSession.capabilities?.delete ? "delete" : "close",
+                agentId: agentSession.agentId,
+                profile: agentSession.profile,
+                sessionId: agentSession.sessionId,
+                cwd: agentSession.cwd,
+              },
+            })
+          : undefined;
+      return deleteChat({
+        chatId: session.id,
+        deleteInAgent,
+        ...(acpCommand ? { acpCommand } : {}),
+      });
+    });
     if (succeeded) {
       toast.success("Session deleted.");
       setIsDeleteOpen(false);

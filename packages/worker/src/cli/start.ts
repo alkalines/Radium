@@ -21,6 +21,7 @@ import {
   startLocalUsageSync,
   type LocalUsageSync,
 } from "../usage/local-usage.js";
+import { convexTrustTransport, WorkerTrust } from "../e2ee/trust.js";
 
 const DISCONNECT_GUIDANCE: Record<WorkerControlDisconnectReason, string> = {
   connecting: "Opening the Convex connection.",
@@ -41,6 +42,13 @@ export async function startWorker(options: CliOptions): Promise<void> {
   if (!state) throw new WorkerProtocolError("Worker is not configured; run setup first");
 
   state = await recoverPendingIdentity(options.stateDirectory, state);
+  // A v2 enrollment must never fall back to the legacy plaintext consumer after an interrupted
+  // pairing; the pairing secret is intentionally not persisted for automatic recovery.
+  if (state.setup.version === 2 && !state.e2ee) {
+    throw new WorkerProtocolError(
+      "Encrypted Worker setup is incomplete; create a pairing code and run `radium-worker pair`",
+    );
+  }
   console.info(storageDescription(state.credentialStoreMode));
 
   let control: WorkerControlConnection | undefined;
@@ -51,9 +59,11 @@ export async function startWorker(options: CliOptions): Promise<void> {
   let presence: PresenceReporter | undefined;
   let acp: AcpHost | undefined;
   let localUsage: LocalUsageSync | undefined;
+  let trust: WorkerTrust | null = null;
   const close = async () => {
     clearInterval(diagnosticsTimer);
     presence?.close();
+    trust?.close();
     localUsage?.close();
     try {
       await acp?.close();
@@ -83,6 +93,20 @@ export async function startWorker(options: CliOptions): Promise<void> {
       console.info(formatControlStatus(status));
     });
     presence = startPresenceReporter(control.client, tempDirectory);
+    // Paired Workers verify every command against the pinned owner; unpaired ones stay plaintext.
+    const client = control.client;
+    trust = await WorkerTrust.open({
+      stateDirectory: options.stateDirectory,
+      state,
+      transport: () => convexTrustTransport(client),
+    });
+    console.info(
+      trust
+        ? "End-to-end encryption: paired; commands must be signed by workspace members."
+        : "End-to-end encryption: not paired; this Worker only serves workspaces without keys.",
+    );
+    // Report an owner-key change, rollback or missing certification at startup (fixed messages).
+    void trust?.roster().catch(() => undefined);
     presence.setAvailable(previousStatusKey === "connected");
     diagnosticsTimer = setInterval(() => {
       if (!control || previousStatusKey === "connected") return;
@@ -92,16 +116,20 @@ export async function startWorker(options: CliOptions): Promise<void> {
       );
     }, 15_000);
     if (editor) {
-      tasks = consumeEditTasks(control.client, editor, bash);
+      tasks = consumeEditTasks(control.client, editor, bash, trust);
       tasks.setAvailable(previousStatusKey === "connected");
       console.info("Worker edit and Bash task consumer enabled.");
     }
-    acp = new AcpHost(convexAcpTransport(control.client), {
-      gateway: {
-        url: `${state.setup.backendUrl}/api/openai/v1`,
-        keys: createGatewayKeyStore(options.stateDirectory),
+    acp = new AcpHost(
+      convexAcpTransport(control.client),
+      {
+        gateway: {
+          url: `${state.setup.backendUrl}/api/openai/v1`,
+          keys: createGatewayKeyStore(options.stateDirectory),
+        },
       },
-    });
+      trust,
+    );
     acp.setAvailable(previousStatusKey === "connected");
     localUsage = startLocalUsageSync(convexLocalUsageTransport(control.client));
     localUsage.setAvailable(previousStatusKey === "connected");

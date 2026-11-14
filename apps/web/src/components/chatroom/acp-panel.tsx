@@ -73,6 +73,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { formatAgentCommandLine, parseAgentCommandLine } from "./agent-command-line";
+import { acpAgentDefinitionStatement } from "radium-crypto";
+import { buffer, cryptoClient } from "@/lib/crypto/runtime";
+import { signAsUser } from "@/lib/crypto/workers";
 
 type AgentDefinition = FunctionReturnType<typeof api.acp.ListAgentDefinitions>[number];
 type RegistryAgent = FunctionReturnType<typeof api.acp.RegistryAgents>[number];
@@ -86,6 +89,22 @@ function errorMessage(error: unknown): string {
 function definitionFields(agent: AcpAgentDefinition): AcpAgentDefinition {
   const { agentId, name, command, args, env, gateway, enabled, source, icon, version } = agent;
   return { agentId, name, command, args, env, gateway, enabled, source, icon, version };
+}
+
+/** Only explicit form submission (or disabling a launch) authorizes executable settings. */
+async function authorizeDefinition(
+  workspaceId: Id<"workspaces">,
+  definition: AcpAgentDefinition,
+  previousIssuedAt = 0,
+): Promise<AcpAgentDefinition> {
+  const state = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+  if (state.keyEpoch === null) return definition;
+  const issuedAt = Math.max(Date.now(), previousIssuedAt + 1);
+  const signed = await signAsUser(acpAgentDefinitionStatement({ workspaceId, issuedAt, definition }));
+  return {
+    ...definition,
+    authorization: { issuedAt, signerKeyId: signed.signerKeyId, signature: buffer(signed.signature) },
+  };
 }
 
 type AgentEnv = AcpAgentDefinition["env"];
@@ -146,12 +165,21 @@ export function AcpPanel() {
 
   async function toggle(agent: AgentDefinition, enabled: boolean) {
     if (!workspaceId || pending) return;
+    // Enabling may execute a program: always expose its full command and environment for review.
+    if (enabled) {
+      openForm({ ...agent, enabled: true });
+      return;
+    }
     setPending(agent._id);
     try {
       await saveAgent({
         workspace: workspaceId,
         id: agent._id,
-        definition: { ...definitionFields(agent), enabled },
+        definition: await authorizeDefinition(
+          workspaceId,
+          { ...definitionFields(agent), enabled },
+          agent.authorization?.issuedAt,
+        ),
       });
     } catch (saveError) {
       toast.error(errorMessage(saveError));
@@ -160,28 +188,9 @@ export function AcpPanel() {
     }
   }
 
-  async function add(entry: RegistryAgent) {
-    if (!workspaceId || !entry.launch || pending) return;
-    setPending(entry.id);
-    try {
-      await saveAgent({
-        workspace: workspaceId,
-        definition: {
-          agentId: entry.id,
-          name: entry.name,
-          ...entry.launch,
-          gateway: gatewayTemplate(entry.id),
-          enabled: true,
-          source: "registry",
-          icon: entry.icon,
-          version: entry.version,
-        },
-      });
-    } catch (saveError) {
-      toast.error(errorMessage(saveError));
-    } finally {
-      setPending(null);
-    }
+  function add(entry: RegistryAgent) {
+    if (!workspaceId || pending) return;
+    openForm(null, entry);
   }
 
   async function remove() {
@@ -283,6 +292,9 @@ export function AcpPanel() {
                         <span className="break-all font-mono text-[13px]">{command}</span>
                       </TooltipContent>
                     </Tooltip>
+                    {!agent.authorization ? (
+                      <span className="text-xs">Review and save this launch command to authorize paired Workers.</span>
+                    ) : null}
                     <span className="flex flex-wrap gap-1 whitespace-normal">
                       {workerError || reportError ? (
                         <span className="text-xs text-destructive">
@@ -648,7 +660,7 @@ function AgentDefinitionDialog({
 
   useEffect(() => {
     if (!open) return;
-    const launch = target ?? setup?.pathCommand;
+    const launch = target ?? setup?.launch ?? setup?.pathCommand;
     const gateway = target ? target.gateway : setup ? gatewayTemplate(setup.id) : undefined;
     setName(target?.name ?? setup?.name ?? "");
     setAgentId(target?.agentId ?? setup?.id ?? "");
@@ -697,7 +709,11 @@ function AgentDefinitionDialog({
     setSubmitting(true);
     setSaveError(null);
     try {
-      await saveAgent({ workspace: workspaceId, id: target?._id, definition });
+      await saveAgent({
+        workspace: workspaceId,
+        id: target?._id,
+        definition: await authorizeDefinition(workspaceId, definition, target?.authorization?.issuedAt),
+      });
       onOpenChange(false);
     } catch (error) {
       setSaveError(errorMessage(error));
@@ -722,7 +738,7 @@ function AgentDefinitionDialog({
             <DialogDescription>
               {setup
                 ? "Install this binary on each Worker's PATH. Radium does not download or install binaries."
-                : "Launch an ACP program on each Worker. The command runs directly, not through a shell."}
+                : "Review the command and environment before saving. Saving authorizes paired Workers to execute this program directly, not through a shell."}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup>

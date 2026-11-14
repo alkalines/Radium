@@ -1,21 +1,42 @@
 import * as prompts from "@clack/prompts";
 import { readSetupCodeFromStdin } from "./input.js";
 import type { WorkerCredentialStoreMode } from "../auth/credentials.js";
-import { parseSetupCode, WorkerProtocolError } from "../protocol.js";
+import { parsePairingCode, parseSetupCode, WorkerProtocolError } from "../protocol.js";
 
 /** Read setup credentials from bounded stdin or a masked prompt. */
-export async function readSetupCode(): Promise<string | null> {
+export function readSetupCode(): Promise<string | null> {
+  return readCode(
+    "Paste the setup code from Chatroom → Workers",
+    "Enter a valid, unexpired Radium Worker setup code.",
+    parseSetupCode,
+  );
+}
+
+/** Read a pairing code (contains the pairing secret) from bounded stdin or a masked prompt. */
+export function readPairingCode(): Promise<string | null> {
+  return readCode(
+    "Paste the pairing code from Chatroom → Workers → Pair",
+    "Enter a valid, unexpired Radium Worker pairing code.",
+    parsePairingCode,
+  );
+}
+
+async function readCode(
+  message: string,
+  invalid: string,
+  parse: (code: string, now: number) => unknown,
+): Promise<string | null> {
   if (!process.stdin.isTTY) return readSetupCodeFromStdin(Bun.stdin.stream());
   if (!isInteractive()) {
-    throw new WorkerProtocolError("Pipe the setup code to stdin when stdout is redirected");
+    throw new WorkerProtocolError("Pipe the code to stdin when stdout is redirected");
   }
   const result = await prompts.password({
-    message: "Paste the setup code from Chatroom → Workers",
+    message,
     validate(value) {
       try {
-        parseSetupCode(value?.trim() ?? "", Date.now());
+        parse(value?.trim() ?? "", Date.now());
       } catch {
-        return "Enter a valid, unexpired Radium Worker setup code.";
+        return invalid;
       }
     },
   });

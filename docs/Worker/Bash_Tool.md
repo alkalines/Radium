@@ -12,9 +12,10 @@ planned; upstream behavior is not an implemented Radium compatibility claim.
 The owner enables **Bash commands** in the composer's Worker menu, selects an
 absolute Worker directory, and uses a tool-calling model. `worker_bash` accepts
 `command` and an optional `timeout` in seconds (default 30, range 1–30). Every
-command requires the existing signed Chatroom approval, bound to the exact tool
-input, owner, workspace, chat, Worker, directory and enabled tools. A changed
-selection or issuer secret invalidates pending approvals.
+command requires Chatroom approval. On a paired Worker the command runs only with the
+owner's signature over the exact tool input (see [Chatroom approvals](Chatroom.md#authorization-and-execution-flow)),
+inside a sealed request; the AI SDK HMAC is only a replay guard. A changed selection
+or issuer secret invalidates pending SDK approvals.
 
 `packages/backend/src/worker/chat-tools.ts` dispatches one `execute` stage through
 the existing `dispatchChatEdit` coordination entry point. Despite its historical

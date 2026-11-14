@@ -176,6 +176,12 @@ change them to `http://127.0.0.1:3211`/`http://127.0.0.1:3210`, then confirm wit
 the backend checks proofs against its own `CONVEX_SITE_URL`.
 `bunx convex deployment select dev` switches back to the cloud deployment.
 
+### Worker Encryption Cutover
+
+Deploy matching browser, backend and Worker versions together for phase 7. Existing enrollment identities survive: pair each Worker from Workers → Pair using `radium-worker pair`, then let the unlocked owner certify its key in roster v2. In ACP settings, explicitly review and save existing launch definitions; paired Workers never probe unsigned definitions. Code/config changes are not evidence that stored legacy content has been encrypted.
+
+Legacy ACP session IDs without an authenticated proof are not silently adopted after pairing. Use owner-authorized agent-index re-import or a new Session; legacy plaintext migration remains phase 9. No migration or production deployment is implied by the phase-7 code. Standing Read grants and executable authorizations cannot provide instantaneous revocation across a partitioned or withholding relay; stop the local Worker when immediate revocation is required.
+
 ### Initial Workspace Provisioning
 
 After the first user signs up, the application provisions a personal workspace

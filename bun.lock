@@ -150,6 +150,7 @@
         "ccusage": "20.0.48",
         "convex": "^1.46.0",
         "jose": "^6.1.3",
+        "radium-crypto": "workspace:*",
       },
       "devDependencies": {
         "@types/bun": "latest",

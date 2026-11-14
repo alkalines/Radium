@@ -1,9 +1,18 @@
 import { expect, test, vi } from "vitest";
 import { generateText, type ModelMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
+import {
+  buildAad,
+  generateEncryptionKeyPair,
+  openRequestRecipient,
+  sealSym,
+  unpad,
+  utf8,
+} from "radium-crypto";
 import type { ActionCtx } from "../../convex/_generated/server";
 import type { Id } from "../../convex/_generated/dataModel";
 import { buildWorkerChatTools, workerChatApprovalSecret } from "./chat-tools";
+import { workerChatTaskRequestId, workerTaskAad } from "./task-contract";
 
 const scope = {
   chatId: "chat-test" as Id<"aisdk_chats">,
@@ -14,6 +23,8 @@ const scope = {
     directory: "/project",
     tools: ["read", "edit", "create"] as ("read" | "edit" | "create")[],
   },
+  transport: { kind: "plaintext" as const },
+  approvals: new Map(),
 };
 const usage = {
   inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
@@ -360,5 +371,150 @@ test("Bash requires signed approval of the exact command and dispatches one fore
     tool: "bash",
     stage: "execute",
     request: { command: "printf done", timeoutSeconds: 5, directory: "/project" },
+  });
+});
+
+/** A paired-Worker scope whose tasks the test opens and answers like the Worker would. */
+async function sealedFixture(tools: ("read" | "edit" | "bash")[], grant?: boolean) {
+  const worker = await generateEncryptionKeyPair();
+  const dispatched: Record<string, unknown>[] = [];
+  let answer: (request: Record<string, unknown>) => unknown = () => ({ ok: true, output: "{}" });
+  let responseKey: Uint8Array | undefined;
+  const runMutation = vi.fn(async (_fn: unknown, args: Record<string, unknown>) => {
+    const sealed = args.sealed as { encapsulated: ArrayBuffer; request: ArrayBuffer };
+    const recipient = await openRequestRecipient(worker.seed, new Uint8Array(sealed.encapsulated));
+    responseKey = recipient.responseKey;
+    const requestId = await workerChatTaskRequestId(
+      args.chatId as string,
+      args.toolCallId as string,
+      args.stage as "read",
+    );
+    const aad = { workspaceId: scope.workspaceId, chatId: scope.chatId, requestId };
+    const plaintext = unpad(
+      await recipient.open(
+        new Uint8Array(sealed.request),
+        buildAad(workerTaskAad({ ...aad, field: "request" })),
+      ),
+    );
+    dispatched.push({ ...args, aad, opened: JSON.parse(new TextDecoder().decode(plaintext)) });
+    return { taskId: requestId, replay: false };
+  });
+  const runQuery = vi.fn(async () => {
+    const { aad, opened } = dispatched.at(-1) as {
+      aad: { workspaceId: string; chatId: string; requestId: string };
+      opened: Record<string, unknown>;
+    };
+    const result = await sealSym({
+      key: responseKey!,
+      keyRef: new Uint8Array(16),
+      plaintext: utf8(JSON.stringify(answer(opened))),
+      aad: workerTaskAad({ ...aad, field: "result" }),
+    });
+    return { ok: true, result: result.slice().buffer };
+  });
+  const ctx = { runMutation, runQuery } as unknown as ActionCtx;
+  const approvals = new Map();
+  const built = buildWorkerChatTools(ctx, {
+    ...scope,
+    selection: {
+      ...scope.selection,
+      tools,
+      ...(grant
+        ? {
+            grant: {
+              tools: ["read" as const],
+              issuedAt: 5,
+              signature: new Uint8Array(64).fill(1).buffer,
+              signerKeyId: "owner-key",
+            },
+          }
+        : {}),
+    },
+    transport: {
+      kind: "sealed",
+      keyId: "worker-key",
+      encryptionPublicKey: worker.publicKey,
+    },
+    approvals,
+  });
+  return {
+    ...built,
+    approvals,
+    dispatched,
+    runMutation,
+    setAnswer: (next: typeof answer) => (answer = next),
+  };
+}
+
+const callOptions = (toolCallId: string) => ({ toolCallId, messages: [] }) as never;
+
+test("a paired Worker gets only sealed requests and the action opens the request-key result", async () => {
+  const f = await sealedFixture(["read"], true);
+  f.setAnswer((request) => {
+    expect(request).toMatchObject({
+      tool: "read",
+      stage: "read",
+      directory: "/project",
+      input: JSON.stringify({ path: "secret.txt" }),
+      authorization: { kind: "grant", tools: ["read"], issuedAt: 5, signerKeyId: "owner-key" },
+    });
+    return { ok: true, output: JSON.stringify({ ok: true, content: "sealed content" }) };
+  });
+  const output = await f.tools.worker_read!.execute!({ path: "secret.txt" }, callOptions("r-1"));
+  expect(output).toEqual({ ok: true, content: "sealed content" });
+
+  // Only ciphertext and routing metadata reach the backend.
+  const stored = JSON.stringify(
+    f.dispatched.map(({ opened: _opened, sealed: _sealed, ...metadata }) => metadata),
+  );
+  expect(stored).not.toContain("secret.txt");
+  const sealed = f.dispatched[0]!.sealed as { request: ArrayBuffer; keyId: string };
+  expect(sealed.keyId).toBe("worker-key");
+  expect(new TextDecoder().decode(sealed.request)).not.toContain("secret.txt");
+});
+
+test("Read without a grant and an approved write without a signature are not dispatched", async () => {
+  const read = await sealedFixture(["read"]);
+  expect(
+    await read.tools.worker_read!.execute!({ path: "file.txt" }, callOptions("r-1")),
+  ).toMatchObject({ ok: false, code: "WORKER_GRANT_MISSING" });
+
+  const bash = await sealedFixture(["bash"]);
+  const input = { command: "rm -rf build", timeout: 5 };
+  expect(await bash.tools.worker_bash!.execute!(input, callOptions("b-1"))).toMatchObject({
+    ok: false,
+    code: "WORKER_APPROVAL_UNSIGNED",
+  });
+  // A signature over a different command is not forwarded for this call.
+  bash.approvals.set("b-1", {
+    signature: "A".repeat(86),
+    signerKeyId: "owner-key",
+    input: JSON.stringify({ command: "ls", timeout: 5 }),
+    approvedAt: 1,
+  });
+  expect(await bash.tools.worker_bash!.execute!(input, callOptions("b-1"))).toMatchObject({
+    ok: false,
+    code: "WORKER_APPROVAL_UNSIGNED",
+  });
+  expect(read.runMutation).not.toHaveBeenCalled();
+  expect(bash.runMutation).not.toHaveBeenCalled();
+
+  bash.approvals.set("b-1", {
+    signature: "A".repeat(86),
+    signerKeyId: "owner-key",
+    input: JSON.stringify({ timeout: 5, command: "rm -rf build" }),
+    approvedAt: 1,
+  });
+  bash.setAnswer((request) => {
+    expect(request.authorization).toMatchObject({
+      kind: "approval",
+      input: JSON.stringify({ timeout: 5, command: "rm -rf build" }),
+      approvedAt: 1,
+    });
+    return { ok: true, output: JSON.stringify({ ok: true, exitCode: 0 }) };
+  });
+  expect(await bash.tools.worker_bash!.execute!(input, callOptions("b-1"))).toEqual({
+    ok: true,
+    exitCode: 0,
   });
 });

@@ -28,7 +28,7 @@ function fixture(options: AcpRelayOptions = {}) {
       calls.push(structuredClone(args));
       const bytes =
         (byteCounts.get(args.epoch) ?? 0) +
-        args.frames.reduce((sum, frame) => sum + utf8Bytes(frame.payload), 0);
+        args.frames.reduce((sum, frame) => sum + utf8Bytes(frame.payload as string), 0);
       byteCounts.set(args.epoch, bytes);
       return { accepted: true, bytes };
     }),
@@ -40,7 +40,7 @@ function fixture(options: AcpRelayOptions = {}) {
 
 function operations(calls: AppendArgs[]): AcpOp[] {
   return calls.flatMap((call) =>
-    call.frames.flatMap((frame) => JSON.parse(frame.payload) as AcpOp[]),
+    call.frames.flatMap((frame) => JSON.parse(frame.payload as string) as AcpOp[]),
   );
 }
 
@@ -71,7 +71,7 @@ describe("AcpRelay", () => {
     let next = 0;
     for (const frame of frames) {
       expect(frame.seqFrom).toBe(next);
-      const ops: AcpOp[] = JSON.parse(frame.payload);
+      const ops: AcpOp[] = JSON.parse(frame.payload as string);
       expect(frame.seqTo).toBe(next + ops.length - 1);
       next = frame.seqTo + 1;
     }
@@ -116,7 +116,7 @@ describe("AcpRelay", () => {
     for (const call of calls) {
       expect(call.frames.length).toBeLessThanOrEqual(ACP_FRAMES_PER_APPEND);
       for (const frame of call.frames)
-        expect(utf8Bytes(frame.payload)).toBeLessThanOrEqual(ACP_FRAME_BYTES);
+        expect(utf8Bytes(frame.payload as string)).toBeLessThanOrEqual(ACP_FRAME_BYTES);
     }
   });
 
@@ -145,7 +145,7 @@ describe("AcpRelay", () => {
       expect(JSON.parse(parts.map((op) => op.data).join(""))).toEqual(original);
     }
     for (const frame of calls.flatMap((call) => call.frames))
-      expect(utf8Bytes(frame.payload)).toBeLessThanOrEqual(ACP_FRAME_BYTES);
+      expect(utf8Bytes(frame.payload as string)).toBeLessThanOrEqual(ACP_FRAME_BYTES);
   });
 
   it("retries an uncertain append with identical immutable frames before later ops", async () => {
@@ -174,6 +174,39 @@ describe("AcpRelay", () => {
       { op: "turn.start", turnId: "turn" },
       { op: "text.append", id: "message", text: "later" },
     ]);
+  });
+
+  it("retries sealed frame bytes without resealing after an uncertain append", async () => {
+    vi.useFakeTimers();
+    const attempts: AppendArgs[] = [];
+    let fail = false;
+    let seals = 0;
+    const transport = {
+      startEpoch: async () => ({ accepted: true }),
+      appendFrames: async (args: AppendArgs) => {
+        if (fail) {
+          attempts.push(structuredClone(args));
+          if (attempts.length === 1) throw new Error("Disconnected after commit");
+        }
+        return { accepted: true, bytes: 1 };
+      },
+    };
+    const relay = new AcpRelay(transport, "chat", new AcpTimeline(), { random: () => 0.5 }, {
+      openEpoch: async () => ({
+        capsule: { chatEpoch: 1, capsule: new ArrayBuffer(1), signature: new ArrayBuffer(1) },
+        seal: async () => new Uint8Array([++seals]).buffer,
+      }),
+    });
+    relays.push(relay);
+    await relay.start(0);
+    fail = true;
+    relay.push([{ op: "turn.start", turnId: "turn" }]);
+    const flushing = relay.flush();
+    await vi.advanceTimersByTimeAsync(500);
+    await flushing;
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]).toEqual(attempts[0]);
+    expect(seals).toBe(2); // Initial snapshot and the retried frame.
   });
 
   it.each(["ACP_FRAME_CONFLICT", "ACP_FRAME_GAP", "ACP_STALE_EPOCH"])(
@@ -308,7 +341,7 @@ describe("AcpRelay", () => {
     expect(epochs).toEqual([1]);
     const history = calls.flatMap((call) => call.frames).filter((frame) => frame.kind === "history");
     expect(history.length).toBeGreaterThan(1);
-    const ops = history.flatMap((frame) => JSON.parse(frame.payload) as AcpOp[]);
+    const ops = history.flatMap((frame) => JSON.parse(frame.payload as string) as AcpOp[]);
     const fragments = ops.filter((op) => op.op === "fragment");
     const restored = [...new Set(fragments.map((op) => op.id))].map(
       (id) =>

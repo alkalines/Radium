@@ -22,6 +22,7 @@ import {
   acpAgentDefinitionError,
   validAcpToken,
   type AcpAgentSessionEntry,
+  type AcpCommandPayload,
   type AcpAgentDefinition,
   type AcpAgentReport,
   type AcpInteractionAnswer,
@@ -47,22 +48,40 @@ import {
   normalizeTurnUsage,
 } from "./timeline.js";
 import { AcpRelay } from "./relay.js";
+import {
+  AcpRefusal,
+  AcpSigned,
+  fixedErrorCode,
+  workerErrorCode,
+  type AuthorizedCommand,
+  type PatchContext,
+  type VerifiedBinding,
+} from "./signed.js";
+import type { WorkerTrust } from "../e2ee/trust.js";
 import { prepareTempDirectory } from "../presence.js";
 import { validChatWorkerDirectory } from "backend/src/worker/chat-config";
 import type {
   AcpTransport,
+  AcpAnsweredInteraction,
   AcpAssignment,
+  AcpSealedRequest,
   AcpClaim,
   AcpSessionBinding,
   AcpSessionPatch,
   AcpWarmSession,
 } from "./transport.js";
 
+/** How long a refused warm chat is left alone before its binding and chat key are re-checked. */
+const WARM_REFUSAL_MS = 3_000;
+
 interface LocalSession {
   chat: string;
   binding: AcpSessionBinding;
   timeline: AcpTimeline;
   relay: AcpRelay;
+  /** Creator-signed binding of a paired Worker's chat; `cwd`/`agentId`/`profile` come from it. */
+  verified?: VerifiedBinding;
+  keyEpoch?: number | null;
   process?: AcpAgentProcess;
   setup?: Promise<LocalSession>;
   warming?: Promise<void>;
@@ -90,6 +109,8 @@ interface AgentSlot {
 }
 interface PendingInteraction {
   chat: string;
+  /** The Worker's own copy of the request; a signed answer is validated against it. */
+  request: AcpInteractionRequest;
   resolve(answer: AcpInteractionAnswer | null): void;
 }
 
@@ -133,11 +154,24 @@ export class AcpHost {
   private gatewayKey: GatewayKey | null = null;
   private gatewayReconciliation?: Promise<void>;
   private gatewayDirty = false;
+  /** Signed-mode verification; null for an unpaired Worker, which keeps the plaintext path. */
+  private readonly signed: AcpSigned | null;
+  /** Warm chats refused a moment ago (unverifiable binding or chat key), skipped until then. */
+  private readonly warmCooldown = new Map<string, number>();
+  /** Answered interactions being verified right now, by row ID. */
+  private readonly answering = new Set<string>();
 
+  /**
+   * @param trust Present when the Worker is paired: every command, answer, binding and chat key
+   *   is then verified against it and all content written to Convex is sealed. `null` keeps the
+   *   legacy plaintext behavior (keyless workspace).
+   */
   constructor(
     private readonly transport: AcpTransport,
     private readonly options: AcpHostOptions = {},
+    trust: WorkerTrust | null = null,
   ) {
+    this.signed = trust ? new AcpSigned(trust, transport) : null;
     this.retry = setInterval(() => {
       void this.connect();
       void this.pump();
@@ -234,8 +268,12 @@ export class AcpHost {
         ),
         this.transport.answeredInteractions(
           (answers) => {
-            for (const answer of answers)
-              this.interactions.get(answer.requestKey)?.resolve(answer.answer);
+            for (const answer of answers) {
+              const pending = this.interactions.get(answer.requestKey);
+              if (!pending) continue;
+              if (this.signed) void this.acceptAnswer(pending, answer);
+              else if (answer.answer) pending.resolve(answer.answer);
+            }
           },
           () => undefined,
         ),
@@ -326,9 +364,20 @@ export class AcpHost {
   private async applyDefinitions(definitions: AcpAgentDefinition[]): Promise<void> {
     const revision = ++this.definitionsRevision;
     this.definitionsReady = false;
+    const counts = new Map<string, number>();
+    for (const definition of definitions)
+      counts.set(definition.agentId, (counts.get(definition.agentId) ?? 0) + 1);
+    // Definitions are executable code: authenticate before even probing the binary.
+    const checks = this.signed
+      ? await Promise.all(definitions.map((definition) =>
+          counts.get(definition.agentId) === 1 && this.signed!.verifyDefinition(definition).catch(() => false),
+        ))
+      : definitions.map(() => true);
+    if (revision !== this.definitionsRevision || this.stopped) return;
     const previous = new Map(this.slots);
     this.slots.clear();
-    for (const definition of definitions) {
+    for (const [index, definition] of definitions.entries()) {
+      if (!checks[index]) continue;
       if (!definition.enabled) continue;
       for (const profile of ["native", "gateway"] as const) {
         if (profile === "gateway" && !acpGatewayProfileOffered(definition)) continue;
@@ -454,6 +503,8 @@ export class AcpHost {
       );
     await write({ upserts: [], removals: [], start: true });
     try {
+      // Fetched first: without a verified owner key a paired Worker publishes no index titles.
+      const index = await this.signed?.indexSealer();
       const known = new Map(
         (await this.transport.knownAgentSessions({ agentId })).map((row) => [row.sessionId, row]),
       );
@@ -490,15 +541,42 @@ export class AcpHost {
           break;
         }
       }
-      const upserts = [...sessions.values()].filter((row) => {
+      const upserts: AcpAgentSessionEntry[] = [];
+      for (const row of sessions.values()) {
         const previous = known.get(row.sessionId);
-        return (
-          !previous ||
-          previous.cwd !== row.cwd ||
-          previous.title !== row.title ||
-          previous.updatedAt !== row.updatedAt
-        );
-      });
+        const { title, ...entry } = row;
+        if (!index) {
+          if (
+            !previous ||
+            previous.cwd !== row.cwd ||
+            previous.title !== row.title ||
+            previous.updatedAt !== row.updatedAt
+          )
+            upserts.push(row);
+          continue;
+        }
+        // Titles are sealed to the owner key; the keyed tag detects a change without opening
+        // the stored box, and a different owner epoch or leftover plaintext forces a re-seal.
+        const tag = title ? await index.tag(agentId, row.sessionId, title) : undefined;
+        const current =
+          previous &&
+          previous.cwd === row.cwd &&
+          previous.updatedAt === row.updatedAt &&
+          previous.title === undefined &&
+          previous.titleTag === tag &&
+          (tag === undefined || previous.sealedTitle?.epoch === index.epoch);
+        if (current) continue;
+        if (!title) {
+          upserts.push(entry);
+          continue;
+        }
+        const sealed = await index.seal(agentId, row.sessionId, title);
+        upserts.push({
+          ...entry,
+          sealedTitle: { epoch: sealed.epoch, box: sealed.box },
+          titleTag: sealed.tag,
+        });
+      }
       const removals = truncated ? [] : [...known.keys()].filter((id) => !sessions.has(id));
       for (
         let offset = 0;
@@ -515,7 +593,11 @@ export class AcpHost {
         upserts: [],
         removals: [],
         finish: {
-          error: error instanceof Error ? error.message.slice(0, 500) : "Agent session sync failed",
+          error: this.signed
+            ? "ACP_FAILED"
+            : error instanceof Error
+              ? error.message.slice(0, 500)
+              : "Agent session sync failed",
         },
       });
       throw error;
@@ -563,11 +645,21 @@ export class AcpHost {
         }
         if (!claim) continue;
         this.claimed.add(claim.command);
-        const key =
-          claim.chat ?? ("agentId" in claim.payload ? `agent:${claim.payload.agentId}` : "worker");
+        let command: AuthorizedCommand;
+        try {
+          command = this.signed ? await this.signed.verifyCommand(claim) : this.legacyCommand(claim);
+        } catch (error) {
+          // A refused command does nothing but report a fixed code; no content is touched.
+          void this.finish(claim, "failed", this.signed ? workerErrorCode(error) : String(error)).catch(
+            () => undefined,
+          );
+          continue;
+        }
+        const payload = command.payload;
+        const key = claim.chat ?? ("agentId" in payload ? `agent:${payload.agentId}` : "worker");
         const work = (this.commandTails.get(key) ?? Promise.resolve())
           .catch(() => undefined)
-          .then(() => this.execute(claim))
+          .then(() => this.execute(claim, command))
           .catch(() => undefined);
         this.commandTails.set(key, work);
         void work.finally(() => {
@@ -580,7 +672,47 @@ export class AcpHost {
     }
   }
 
-  private local(chat: string, binding: AcpSessionBinding): LocalSession {
+  /** The plaintext path: an unpaired Worker in a keyless workspace executes the claimed payload. */
+  private legacyCommand(claim: AcpClaim): AuthorizedCommand {
+    if (!claim.payload) throw new Error("Command has no payload");
+    return { payload: claim.payload, binding: null, sessionId: claim.session?.sessionId ?? null };
+  }
+
+  /**
+   * The session binding a command runs against. In signed mode `agentId`, `profile` and `cwd`
+   * are the creator-signed values, `sessionId` is the proven one and the server's `draft` is
+   * dropped (the browser's signed `set_config`/`set_mode` commands apply it instead).
+   */
+  private sessionBinding(
+    session: NonNullable<AcpClaim["session"]>,
+    command: AuthorizedCommand,
+  ): AcpSessionBinding {
+    const { e2ee: _e2ee, ...binding } = session;
+    const verified = command.binding;
+    if (!verified) return binding;
+    return {
+      ...binding,
+      agentId: verified.agentId,
+      profile: verified.profile,
+      cwd: verified.cwd,
+      sessionId: command.sessionId,
+      draft: null,
+      config: null,
+    };
+  }
+
+  private relayFor(chat: string, timeline: AcpTimeline): AcpRelay {
+    // The sealer reads the chat's current verified binding whenever an epoch opens.
+    const sealer = this.signed?.frameSealer(() => this.sessions.get(chat)?.verified);
+    return new AcpRelay(this.transport, chat, timeline, {}, sealer);
+  }
+
+  private local(
+    chat: string,
+    binding: AcpSessionBinding,
+    verified?: VerifiedBinding,
+    keyEpoch?: number | null,
+  ): LocalSession {
     let local = this.sessions.get(chat);
     if (!local) {
       const timeline = new AcpTimeline();
@@ -588,13 +720,17 @@ export class AcpHost {
         chat,
         binding: { ...binding },
         timeline,
-        relay: new AcpRelay(this.transport, chat, timeline),
+        relay: this.relayFor(chat, timeline),
         running: false,
         preparing: false,
         updates: Promise.resolve(),
       };
       this.sessions.set(chat, local);
     } else {
+      // A scope change or rotation invalidates the current frame capsule.
+      if (verified && local.verified &&
+          (verified.version !== local.verified.version ||
+            (keyEpoch !== undefined && keyEpoch !== local.keyEpoch))) local.relay.stop();
       local.binding.epoch = Math.max(local.binding.epoch, binding.epoch);
       if (!local.binding.sessionId) {
         local.binding.sessionId = binding.sessionId;
@@ -602,6 +738,8 @@ export class AcpHost {
       }
       if (!local.binding.config && binding.config) local.binding.config = binding.config;
     }
+    if (verified) local.verified = verified;
+    if (verified) local.keyEpoch = keyEpoch;
     return local;
   }
 
@@ -614,9 +752,30 @@ export class AcpHost {
     if (patch.status) local.binding.status = patch.status;
     if (patch.commands) local.timeline.sessionPatch.commands = patch.commands;
     if (patch.usage) local.timeline.sessionPatch.usage = patch.usage;
-    return this.lifecycle.run(local.chat, () =>
-      this.transport.updateSession({ chat: local.chat, patch }),
-    );
+    return this.writePatch(local.chat, patch, {
+      binding: local.verified,
+      agentId: local.binding.agentId,
+      sessionId: local.binding.sessionId,
+    });
+  }
+
+  /**
+   * Queue a lifecycle patch behind the chat's earlier writes. A paired Worker seals its free text
+   * and signs new session IDs inside the queued operation, once, so a retry resends the same
+   * bytes without reordering patches.
+   */
+  private writePatch(chat: string, patch: AcpSessionPatch, context: PatchContext): Promise<unknown> {
+    const signed = this.signed;
+    if (!signed) {
+      return this.lifecycle.run(chat, () => this.transport.updateSession({ chat, patch }));
+    }
+    let wire: Promise<AcpSessionPatch> | undefined;
+    return this.lifecycle.run(chat, async () => {
+      wire ??= signed.patchForWire(chat, patch, context);
+      const sealed = await wire;
+      if (Object.keys(sealed).length === 0) return undefined;
+      return this.transport.updateSession({ chat, patch: sealed });
+    });
   }
 
   private async processFor(
@@ -787,7 +946,7 @@ export class AcpHost {
         if (previousId) {
           local.timeline = new AcpTimeline();
           local.relay.stop();
-          local.relay = new AcpRelay(this.transport, local.chat, local.timeline);
+          local.relay = this.relayFor(local.chat, local.timeline);
           // A reopened session's cumulative cost is known only if the agent reports it again.
           local.costFromZero = false;
           if (report.capabilities.loadSession) {
@@ -834,6 +993,7 @@ export class AcpHost {
         if (previousId) local.reopened = local.timeline;
         const config = normalizeConfig(response, local.binding.config ?? undefined);
         await this.patch(local, { sessionId: local.binding.sessionId!, config, history });
+        if (this.signed) local.relay.push([{ op: "session.patch", config }]);
         if (!previousId) {
           for (const choice of local.binding.draft?.config ?? []) {
             if (
@@ -900,7 +1060,40 @@ export class AcpHost {
     if (!this.initialized || !this.definitionsReady || !this.available || this.stopped) return;
     await Promise.all(
       [...this.warm.values()].map(async (entry) => {
-        const local = this.local(entry.chat, { ...entry, warm: true, draft: null, config: null });
+        let verified: VerifiedBinding | undefined;
+        if (this.signed) {
+          if (entry.e2ee?.rekey) {
+            const local = this.sessions.get(entry.chat);
+            if (local) {
+              local.relay.stop();
+              local.verified = undefined;
+            }
+            return;
+          }
+          if ((this.warmCooldown.get(entry.chat) ?? 0) > Date.now()) return;
+          try {
+            // Only chats whose creator-signed binding verifies are opened or streamed.
+            const session = await this.signed.verifySession({
+              chat: entry.chat,
+              e2ee: entry.e2ee,
+              agentId: entry.agentId,
+              profile: entry.profile,
+              cwd: entry.cwd,
+              sessionId: entry.sessionId,
+            });
+            verified = session.binding;
+          } catch {
+            this.warmCooldown.set(entry.chat, Date.now() + WARM_REFUSAL_MS);
+            const refused = this.sessions.get(entry.chat);
+            if (refused) {
+              refused.relay.stop();
+              refused.verified = undefined;
+            }
+            return;
+          }
+        }
+        const { e2ee: _e2ee, ...warmBinding } = entry;
+        const local = this.local(entry.chat, { ...warmBinding, warm: true, draft: null, config: null }, verified, entry.e2ee?.keyEpoch);
         if (local.relay.active || local.warming || local.binding.status === "ended") return;
         local.binding.warm = true;
         local.warming = (async () => {
@@ -910,6 +1103,9 @@ export class AcpHost {
             await local.relay.start(Math.max(entry.epoch, local.binding.epoch));
             local.binding.epoch = local.relay.epoch;
           } catch (error) {
+            // Retrying a refusal (no verifiable chat key yet) every second would only spam errors.
+            if (error instanceof AcpRefusal)
+              this.warmCooldown.set(entry.chat, Date.now() + WARM_REFUSAL_MS);
             local.binding.warm = false;
             // Viewers wait for a snapshot that never comes unless the failure is reported. An
             // agent that no longer knows the session (-32002) cannot reopen it: the Session ends.
@@ -930,9 +1126,17 @@ export class AcpHost {
     );
   }
 
-  private async execute(claim: AcpClaim): Promise<void> {
-    const payload = claim.payload;
-    const local = claim.chat && claim.session ? this.local(claim.chat, claim.session) : undefined;
+  private async execute(claim: AcpClaim, command: AuthorizedCommand): Promise<void> {
+    const payload = command.payload;
+    const local =
+      claim.chat && claim.session
+        ? this.local(
+            claim.chat,
+            this.sessionBinding(claim.session, command),
+            command.binding ?? undefined,
+            claim.session.e2ee?.keyEpoch,
+          )
+        : undefined;
     try {
       if (this.stopped) throw new Error("Worker stopped before execution");
       if (!this.available) throw new Error("Worker disconnected before execution");
@@ -952,7 +1156,7 @@ export class AcpHost {
           ...local.timeline.startTurn(claim.command),
           ...local.timeline.user(payload.prompt),
         ]);
-        const turn = this.prompt(local, claim);
+        const turn = this.prompt(local, claim, payload);
         this.turns.add(turn);
         void turn.finally(() => this.turns.delete(turn)).catch(() => undefined);
         return;
@@ -1056,15 +1260,10 @@ export class AcpHost {
           ForkSessionResponse,
           ForkSessionRequest
         >("session/fork", request);
-        await this.lifecycle.run(payload.targetChat, () =>
-          this.transport.updateSession({
-            chat: payload.targetChat,
-            patch: {
-              sessionId: response.sessionId,
-              config: normalizeConfig(response),
-              status: "idle",
-            },
-          }),
+        await this.writePatch(
+          payload.targetChat,
+          { sessionId: response.sessionId, config: normalizeConfig(response), status: "idle" },
+          { binding: undefined, agentId: local.binding.agentId, sessionId: response.sessionId },
         );
       } else if (payload.kind === "close" || payload.kind === "delete") {
         const profile = payload.profile;
@@ -1121,8 +1320,11 @@ export class AcpHost {
     }
   }
 
-  private async prompt(local: LocalSession, claim: AcpClaim): Promise<void> {
-    if (claim.payload.kind !== "prompt") return;
+  private async prompt(
+    local: LocalSession,
+    claim: AcpClaim,
+    command: Extract<AcpCommandPayload, { kind: "prompt" }>,
+  ): Promise<void> {
     // Usage facts are captured here so Convex never asks the agent again: the model the turn
     // starts with, and the cumulative cost baseline (zero for a session created in this process).
     const startedAt = Date.now();
@@ -1132,7 +1334,7 @@ export class AcpHost {
     try {
       const response = await local.process!.connection.agent.request<PromptResponse, PromptRequest>(
         methods.agent.session.prompt,
-        { sessionId: local.binding.sessionId!, prompt: claim.payload.prompt },
+        { sessionId: local.binding.sessionId!, prompt: command.prompt },
       );
       if (local.gatewayFailure) throw new Error(local.gatewayFailure);
       await local.updates;
@@ -1218,18 +1420,29 @@ export class AcpHost {
     }
   }
 
+  /**
+   * Report a command's outcome. A paired Worker sends only a fixed `ACP_WORKER_ERROR_CODES`
+   * value and never a result: free text could leak content to the untrusted backend.
+   */
   private finish(
     claim: AcpClaim,
     status: "done" | "failed",
     error?: string,
     result?: string,
   ): Promise<unknown> {
+    const signed = this.signed !== null;
     return this.lifecycle.run(claim.chat ?? "worker", () =>
       this.transport.finishCommand({
         command: claim.command,
         status,
-        ...(error ? { error } : {}),
-        ...(result !== undefined ? { result } : {}),
+        ...(signed
+          ? status === "failed"
+            ? { error: fixedErrorCode(error) }
+            : {}
+          : {
+              ...(error ? { error } : {}),
+              ...(result !== undefined ? { result } : {}),
+            }),
       }),
     );
   }
@@ -1241,6 +1454,30 @@ export class AcpHost {
     );
   }
 
+  /**
+   * Accept a signed answer for a pending request, or reopen the interaction so the user can
+   * answer again. An answer that is unsigned, from outside the audience, undecryptable or invalid
+   * for the Worker's own copy of the request never reaches the agent.
+   */
+  private async acceptAnswer(pending: PendingInteraction, row: AcpAnsweredInteraction): Promise<void> {
+    const signed = this.signed;
+    if (!signed || this.answering.has(row._id)) return;
+    this.answering.add(row._id);
+    try {
+      const binding = this.sessions.get(pending.chat)?.verified;
+      const decision = binding
+        ? await signed.openAnswer(binding, row, pending.request).catch(() => null)
+        : null;
+      if (decision) pending.resolve(decision);
+      else
+        await this.lifecycle
+          .run(pending.chat, () => this.transport.reopenInteraction({ interaction: row._id }))
+          .catch(() => undefined);
+    } finally {
+      this.answering.delete(row._id);
+    }
+  }
+
   private async ask(
     local: LocalSession,
     request: AcpInteractionRequest,
@@ -1248,10 +1485,22 @@ export class AcpHost {
     if (utf8Bytes(JSON.stringify(request)) > ACP_INTERACTION_REQUEST_BYTES) return null;
     const requestKey = crypto.randomUUID();
     const answer = Promise.withResolvers<AcpInteractionAnswer | null>();
-    this.interactions.set(requestKey, { chat: local.chat, resolve: answer.resolve });
+    this.interactions.set(requestKey, { chat: local.chat, request, resolve: answer.resolve });
     try {
+      let sealed: AcpSealedRequest | undefined;
+      if (this.signed) {
+        // Sealed once, before queueing, so a retried open carries identical bytes; no verified
+        // chat key means the request is cancelled rather than sent in the clear.
+        if (!local.verified) return null;
+        sealed = await this.signed.sealRequest(local.verified, requestKey, request).catch(() => undefined);
+        if (!sealed) return null;
+      }
       const opened = this.lifecycle.run(local.chat, () =>
-        this.transport.openInteraction({ chat: local.chat, requestKey, request }),
+        this.transport.openInteraction({
+          chat: local.chat,
+          requestKey,
+          ...(sealed ? { sealed } : { request }),
+        }),
       );
       void opened.catch(() => answer.resolve(null));
       const decision = await answer.promise;

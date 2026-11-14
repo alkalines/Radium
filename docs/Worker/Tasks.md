@@ -76,10 +76,11 @@ and result fields are deleted with their terminal task.
 
 ## Edit Messaging And Execution
 
-The owner-authenticated `api.worker_tasks.dispatchEdit` mutation accepts
-`workspace`, `workerId`, a unique `requestId`, and `request`. The public request
-must include `directory`, an absolute path on the target Worker, as well as its
-runner session ID and action:
+There is no browser or public dispatch API for file or Bash tasks: they are created
+only by the Chatroom agent loop through internal mutations (see [Chatroom Dispatch](#chatroom-dispatch)
+and [Sealed Tasks](#sealed-tasks-paired-workers)). A plaintext task, used only in a
+workspace without keys and a chat without keys, stores a `request` with its
+`directory`, an absolute path on the target Worker, plus a runner session ID and action:
 
 ```ts
 {
@@ -104,16 +105,10 @@ runner session ID and action:
 }
 ```
 
-Use a different request ID for each step. Requests are at most 32 KiB UTF-8;
-session IDs are 1–128 ASCII letters, digits, underscores or hyphens. Optional chat
-and tool-call links have the same visibility policy as metadata dispatch.
-Dispatch goes through the owner-authorized backend mutation; the owner caller controls the target
-Worker's directory through `request.directory`. Workspace members cannot dispatch
-or read results. The directory is canonicalized on the Worker; no local directory
-allowlist is part of this contract. Edit paths are confined to that selected
-canonical directory.
-`api.worker_tasks.outcome({ workspace, taskId })` reactively returns the record,
-or null after cleanup, rechecking owner and private-chat visibility each time.
+Each step is its own task. Requests are at most 32 KiB UTF-8;
+session IDs are 1–128 ASCII letters, digits, underscores or hyphens. The directory is
+canonicalized on the Worker; no local directory allowlist is part of this contract.
+Edit paths are confined to that selected canonical directory.
 Tool outputs intentionally contain file content/diffs; they are not operational logs.
 Reads optionally accept one-based `startLine` and `maxLines` (1–5,000), with
 `nextLine` returned when a page is truncated. Hashline patches use tagged file
@@ -191,9 +186,36 @@ The consumer serializes both operations, and shutdown aborts shell commands befo
 flushing receipts. Bash tasks cannot use generic status/retry updates. See
 [Bash execution](Bash_Tool.md#implemented-radium-foreground-tool).
 Apply must select a successful preview from that same tool call. Internal
-`chatEditOutcome` uses the same authorization and reads durable receipts even
-after the transient task is pruned. Chat deletion schedules `cleanupChatCalls`
-in indexed batches. These internal paths are not browser or machine APIs.
+`chatEditOutcome` (plaintext) and `sealedChatTaskOutcome` (sealed) use the same
+authorization; the plaintext path reads durable receipts even after the transient
+task is pruned. Chat deletion schedules `cleanupChatCalls` in indexed batches.
+These internal paths are not browser or machine APIs.
+
+### Sealed Tasks (Paired Workers)
+
+A Worker with E2EE keys listed in the workspace roster never receives a plaintext
+task, and an encrypted chat never dispatches one (`dispatchChatEdit` refuses both).
+The chat action (`src/worker/chat-tools.ts`) instead seals each stage with
+`openRequestSender` to the Worker's certified encryption key
+(`worker_tasks.chatWorkerTarget`, which throws `WORKER_NOT_PAIRED` for an uncertified
+Worker in a workspace with keys) and calls `internal.worker_tasks.dispatchSealedChatTask`.
+The task stores only `sealed: { keyId, encapsulated, request }` (bytes, bounded); the
+backend checks owner, chat, selected Worker/directory/tool, stage shape and that
+`keyId` is still the certified key. A stage dispatched before returns `replay` and
+the action reports a fixed "already executed" outcome. The request plaintext
+(`WorkerSealedTaskRequest` in `src/worker/task-contract.ts`) carries the user's
+authorization: a per-call approval signature (`toolApprovalStatement` over the exact
+input JSON and `approvedAt`) for Edit/Create/Bash, or the chat's standing grant
+(`toolGrantStatement`) for Read. The Worker (`packages/worker/src/tasks.ts`) opens it,
+checks the signer is the pinned owner, that workspace/chat/Worker/directory/tool/call
+ID match, that the grant is not older than the newest it has seen for the chat, and that
+an approval is less than 24 hours old and unused (executed approvals are remembered
+only for that window). It derives the operation from the signed input alone; apply
+uses only a preview this process staged for the same signed call. It answers with
+`completeSealedTask`: the result sealed under the request's response key and, for
+encrypted chats, a durable receipt sealed to the chat key epoch named at dispatch
+(`worker_chat_calls.sealedResult`). Directories stay plaintext metadata (residual
+leakage); the Worker trusts only the signed copy.
 
 Enrollment alone does not authorize a task: the owner-only backend dispatch selects
 the directory and the machine claim authorizes its assigned task. Task claims do

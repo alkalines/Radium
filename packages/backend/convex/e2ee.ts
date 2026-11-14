@@ -42,3 +42,10 @@ export {
   staleWorkspaceWraps,
   replaceWorkspaceWraps,
 } from "../src/e2ee/chat-keys";
+export {
+  createWorkerPairing,
+  workerPairings,
+  workerKeys,
+  workerTrustState,
+  workerIdentities,
+} from "../src/e2ee/worker-keys";

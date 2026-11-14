@@ -7,13 +7,21 @@ import type { WorkerMutationCtx, WorkerQueryCtx } from "../worker/machine";
 import { logger } from "../logging/server";
 import { recordAcpTurn } from "../usage/acp";
 import type {
+  AcpCommandKind,
   AcpCommandPayload,
   AcpConfig,
+  AcpDeletedTarget,
   AcpSessionStatus,
+  AcpSignedCommand,
   AcpStopReason,
   AcpTurnReport,
 } from "./contract";
-import { ACP_WARM_SESSIONS_MAX, validAcpToken } from "./contract";
+import {
+  ACP_SEALED_ERROR_TEXT,
+  ACP_SEALED_SHORT_BYTES,
+  ACP_WARM_SESSIONS_MAX,
+  validAcpToken,
+} from "./contract";
 
 type ReadCtx = QueryCtx | MutationCtx;
 
@@ -158,6 +166,44 @@ export async function enqueue(
   });
 }
 
+/**
+ * Insert a sealed, user-signed command (keyed workspaces). Callers verified the signature
+ * (`verifySignedCommand`); the signed `clientId` is the idempotency key. `agentId` is the plaintext
+ * copy agent-level kinds need for debouncing; `target` snapshots a deleted chat's binding.
+ */
+export async function enqueueSigned(
+  ctx: MutationCtx,
+  binding: { workspace: Id<"workspaces">; worker: string },
+  by: string,
+  command: {
+    kind: AcpCommandKind;
+    signed: AcpSignedCommand;
+    agentId?: string;
+    target?: AcpDeletedTarget;
+  },
+  chat?: Id<"aisdk_chats">,
+) {
+  const existing = await existingCommand(
+    ctx,
+    binding.workspace,
+    binding.worker,
+    command.signed.clientId,
+    by,
+  );
+  if (existing) return existing._id;
+  return ctx.db.insert("acp_commands", {
+    ...binding,
+    by,
+    kind: command.kind,
+    agentId: command.agentId,
+    signed: command.signed,
+    target: command.target,
+    chat,
+    clientId: command.signed.clientId,
+    status: "pending",
+  });
+}
+
 /** Agent-advertised config is authoritative when known; drafts may precede its first report. */
 export function validateConfig(
   config: AcpConfig | undefined,
@@ -185,7 +231,12 @@ export function validateMode(config: AcpConfig | undefined, modeId: string) {
     acpError("ACP_INVALID_MODE");
 }
 
-/** Lifecycle patch accepted only from the bound Worker. Null explicitly clears the last error. */
+/**
+ * Lifecycle patch accepted only from the bound Worker. Null explicitly clears the last error. In a
+ * keyed workspace the Worker sends no free text: `sealedTitle` (chat key, `aisdk_chats` title AAD),
+ * `sealedError` (chat key, `acp_sessions` error AAD; null clears), `indexTitle` (owner key, index
+ * AAD) and a `sessionProof` signature with every new `sessionId`.
+ */
 export type SessionPatch = {
   status?: AcpSessionStatus;
   stopReason?: AcpStopReason;
@@ -197,6 +248,10 @@ export type SessionPatch = {
   history?: Doc<"acp_sessions">["history"];
   sessionId?: string;
   title?: string;
+  sealedTitle?: { epoch: number; box: ArrayBuffer };
+  sealedError?: { epoch: number; box: ArrayBuffer } | null;
+  indexTitle?: { epoch: number; box: ArrayBuffer; tag: string };
+  sessionProof?: ArrayBuffer;
   /** Usage facts of the turn this patch ends; recorded once per prompt command. */
   turn?: AcpTurnReport;
 };
@@ -208,6 +263,17 @@ const STOP_REASON_FAILURES: Partial<Record<AcpStopReason, string>> = {
   refusal: "The model refused",
 };
 
+/** Bounds of a Worker-sealed title/error box addressed to the chat's current key epoch. */
+function requireChatBox(chat: Doc<"aisdk_chats">, value: { epoch: number; box: ArrayBuffer }) {
+  if (
+    !chat.e2eeId ||
+    value.epoch !== chat.keyEpoch ||
+    value.box.byteLength === 0 ||
+    value.box.byteLength > ACP_SEALED_SHORT_BYTES
+  )
+    acpError("ACP_INVALID_SEALED");
+}
+
 /** Mirror boundaries atomically; frame writes deliberately never call this policy. */
 export async function applySessionPatch(
   ctx: MutationCtx,
@@ -217,9 +283,30 @@ export async function applySessionPatch(
   const chat = await ctx.db.get(session.chat);
   if (!chat?.agent) acpError("ACP_DENIED");
   const now = Date.now();
-  const { title, sessionId, error, turn, ...fields } = patch;
+  const {
+    title,
+    sessionId,
+    error,
+    turn,
+    sealedTitle,
+    sealedError,
+    indexTitle,
+    sessionProof,
+    ...fields
+  } = patch;
   const updates: Partial<Doc<"acp_sessions">> = { ...fields, updatedAt: now };
-  if (error !== undefined) updates.error = error === null ? undefined : error.slice(0, 500);
+  if (error !== undefined) {
+    updates.error = error === null ? undefined : error.slice(0, 500);
+    if (error === null) updates.sealedError = undefined;
+  }
+  if (sealedError === null) {
+    updates.error = undefined;
+    updates.sealedError = undefined;
+  } else if (sealedError) {
+    requireChatBox(chat, sealedError);
+    updates.sealedError = sealedError;
+    updates.error = ACP_SEALED_ERROR_TEXT;
+  }
   const chatPatch: Partial<Doc<"aisdk_chats">> = {};
   if (sessionId !== undefined) {
     if (!validAcpToken(sessionId)) acpError("ACP_INVALID_SESSION_ID");
@@ -244,12 +331,33 @@ export async function applySessionPatch(
     updates.sessionId = sessionId;
     chatPatch.agent = { ...chat.agent, sessionId };
   }
-  if (title !== undefined && !session.userTitled) {
+  // A paired Worker proves each session id it binds; Workers verify the proof before reopening.
+  if (sessionProof) {
+    if (!(sessionId ?? session.sessionId) || sessionProof.byteLength !== 64)
+      acpError("ACP_INVALID_SESSION_ID");
+    if (!session.sessionProof || sessionId !== undefined)
+      updates.sessionProof = { kind: "worker", signature: sessionProof };
+  }
+  // Plaintext titles never land on a chat whose title is sealed.
+  if (title !== undefined && !session.userTitled && !chat.e2eeId) {
     const normalized = title.replace(/\s+/g, " ").trim().slice(0, 80);
     if (normalized) chatPatch.title = normalized;
   }
+  if (sealedTitle) {
+    requireChatBox(chat, sealedTitle);
+    if (!session.userTitled)
+      Object.assign(chatPatch, { sealedTitle, title: undefined, emoji: undefined });
+  }
+  if (
+    indexTitle &&
+    (indexTitle.box.byteLength > ACP_SEALED_SHORT_BYTES || indexTitle.tag.length > 64)
+  )
+    acpError("ACP_INVALID_SEALED");
   const indexedSessionId = sessionId ?? session.sessionId;
-  if (indexedSessionId && (sessionId !== undefined || chatPatch.title !== undefined)) {
+  if (
+    indexedSessionId &&
+    (sessionId !== undefined || chatPatch.title !== undefined || indexTitle !== undefined)
+  ) {
     const row = await ctx.db
       .query("acp_agent_sessions")
       .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
@@ -260,18 +368,28 @@ export async function applySessionPatch(
           .eq("sessionId", indexedSessionId),
       )
       .first();
-    const indexedTitle = chatPatch.title ?? chat.title ?? row?.title;
-    if (row) {
-      if (row.chat !== chat._id || row.title !== indexedTitle)
-        await ctx.db.patch(row._id, { chat: chat._id, title: indexedTitle });
+    // Keyed chats keep only the Worker's owner-sealed index title; legacy rows mirror the chat title.
+    let indexed: Pick<Doc<"acp_agent_sessions">, "title" | "sealedTitle" | "titleTag">;
+    if (indexTitle) {
+      indexed = {
+        title: undefined,
+        sealedTitle: { epoch: indexTitle.epoch, box: indexTitle.box },
+        titleTag: indexTitle.tag,
+      };
+    } else if (chat.e2eeId) {
+      indexed = { title: undefined, sealedTitle: row?.sealedTitle, titleTag: row?.titleTag };
     } else {
+      indexed = { title: chatPatch.title ?? chat.title ?? row?.title };
+    }
+    if (row) await ctx.db.patch(row._id, { chat: chat._id, ...indexed });
+    else {
       await ctx.db.insert("acp_agent_sessions", {
         workspace: session.workspace,
         worker: session.worker,
         agentId: session.agentId,
         sessionId: indexedSessionId,
         cwd: session.cwd,
-        title: indexedTitle,
+        ...indexed,
         updatedAt: now,
         chat: chat._id,
       });
@@ -298,7 +416,14 @@ export async function applySessionPatch(
   } else if (patch.status === "failed") {
     const reason = patch.stopReason ?? session.stopReason;
     const reported = error === null ? undefined : (error ?? session.error);
-    detail = reported || (reason && STOP_REASON_FAILURES[reason]) || "Agent failed";
+    const fixed = (reason && STOP_REASON_FAILURES[reason]) || "Agent failed";
+    // A chat with keys never gets Worker free text in plaintext: its error is sealed or generic.
+    if (chat.e2eeId) {
+      const sealed = sealedError === undefined ? !!session.sealedError : sealedError !== null;
+      detail = sealed ? ACP_SEALED_ERROR_TEXT : fixed;
+    } else {
+      detail = reported || fixed;
+    }
     Object.assign(chatPatch, {
       activeStream: false,
       lastInteractionAt: now,

@@ -339,6 +339,12 @@ export const acpAgentDefinitionValidator = v.object({
   source: v.union(v.literal("registry"), v.literal("custom")),
   icon: v.optional(v.string()),
   version: v.optional(v.string()),
+  /** Owner's executable authorization; paired Workers refuse definitions without it. */
+  authorization: v.optional(v.object({
+    issuedAt: v.number(),
+    signerKeyId: v.string(),
+    signature: v.bytes(),
+  })),
 });
 export type AcpAgentDefinition = Infer<typeof acpAgentDefinitionValidator>;
 
@@ -491,11 +497,18 @@ export const acpCommandStatusValidator = v.union(
   v.literal("failed"),
 );
 
-/** Small agent-owned metadata index, never conversation content. Bounds are checked on ingestion. */
+/**
+ * Small agent-owned metadata index, never conversation content. Bounds are checked on ingestion.
+ * A paired Worker never sends `title`: it seals it to the workspace owner key (`sealedTitle`,
+ * AAD `acp_agent_sessions`/workerId/`${agentId}:${sessionId}`/`title`) and diffs on `titleTag`, a
+ * keyed tag only that Worker can compute.
+ */
 export const acpAgentSessionEntryValidator = v.object({
   sessionId: v.string(),
   cwd: v.string(),
   title: v.optional(v.string()),
+  sealedTitle: v.optional(v.object({ epoch: v.number(), box: v.bytes() })),
+  titleTag: v.optional(v.string()),
   updatedAt: v.number(),
 });
 export type AcpAgentSessionEntry = Infer<typeof acpAgentSessionEntryValidator>;
@@ -717,12 +730,16 @@ export const acpFrameKindValidator = v.union(
 );
 export type AcpFrameKind = Infer<typeof acpFrameKindValidator>;
 
-/** One frame as the Worker appends it; `payload` is the JSON of `AcpOp[]`. */
+/**
+ * One frame as the Worker appends it: `payload` is the JSON of `AcpOp[]`, or in a keyed workspace
+ * the bytes of that JSON sealed under the epoch's capsule (`sealWithCapsule`, AAD
+ * `chat_frames`/e2eeId/`${epoch}:${seqFrom}`/`payload`).
+ */
 export const acpFrameInputValidator = v.object({
   seqFrom: v.number(),
   seqTo: v.number(),
   kind: acpFrameKindValidator,
-  payload: v.string(),
+  payload: v.union(v.string(), v.bytes()),
 });
 export type AcpFrameInput = Infer<typeof acpFrameInputValidator>;
 
@@ -833,3 +850,126 @@ export type AcpOp =
    * `0..total-1` yields the op's JSON; clients apply it only once every piece arrived.
    */
   | { op: "fragment"; id: string; index: number; total: number; data: string };
+
+// ---------------------------------------------------------------------------------------------
+// End-to-end encryption (keyed workspaces; `docs/E2EE/Data.md#acp`)
+// ---------------------------------------------------------------------------------------------
+
+/** Largest sealed frame: an `ACP_FRAME_BYTES` payload after `content` padding and the envelope. */
+export const ACP_SEALED_FRAME_BYTES = ACP_FRAME_BYTES + 8 * 1024;
+/** Largest sealed command box (a prompt is the biggest payload). */
+export const ACP_SEALED_COMMAND_BYTES = ACP_PROMPT_BYTES + 8 * 1024;
+/** Largest sealed interaction request or answer box. */
+export const ACP_SEALED_INTERACTION_BYTES = ACP_INTERACTION_REQUEST_BYTES + 8 * 1024;
+/** Largest sealed title or error box (`short` padding of at most 500 characters). */
+export const ACP_SEALED_SHORT_BYTES = 4 * 1024;
+
+/** Audience of an ACP chat as the creator signed it. */
+export const acpChatScopeValidator = v.union(
+  v.literal("personal"),
+  v.literal("shared"),
+  v.literal("workspace"),
+);
+
+/**
+ * `acp_sessions.binding`: the creator's signature over `acpBindingStatement` (radium-crypto) for
+ * this chat. The other statement inputs are the session row (`workspace`, `worker`, `agentId`,
+ * `profile`, `cwd`) and the chat (`_id`, `e2eeId`, `userId` as creator). `version` starts at 1 and
+ * grows with every scope or member change; Workers refuse lower versions than they have seen.
+ */
+export const acpSignedBindingValidator = v.object({
+  version: v.number(),
+  scope: acpChatScopeValidator,
+  members: v.array(v.string()),
+  signerKeyId: v.string(),
+  signature: v.bytes(),
+});
+export type AcpSignedBinding = Infer<typeof acpSignedBindingValidator>;
+
+/**
+ * Who bound `acp_sessions.sessionId` to the chat: the Worker that created the agent session
+ * (`workerObjectStatement` over table `acp_sessions`, parent chatId, record sessionId, field
+ * `sessionId`, object UTF-8 agentId), or the workspace owner who imported an indexed session
+ * (`acpCommandStatement` with kind `import`, clientId sessionId, payload UTF-8 agentId).
+ */
+export const acpSessionProofValidator = v.union(
+  v.object({ kind: v.literal("worker"), signature: v.bytes() }),
+  v.object({ kind: v.literal("import"), signerKeyId: v.string(), signature: v.bytes() }),
+);
+export type AcpSessionProof = Infer<typeof acpSessionProofValidator>;
+
+/**
+ * A browser command in a keyed workspace. `payload` is a box sealed to the Worker's encryption key
+ * (AAD `acp_commands`/chatId or ""/clientId/`payload`, `content` padding) holding the UTF-8 JSON
+ * `{ v: 1, issuedAt, command: AcpCommandPayload }`; `signature` is the issuer's identity signature
+ * over `acpCommandStatement`. Convex stores it and checks only the signer; the Worker decides.
+ */
+export const acpSignedCommandValidator = v.object({
+  clientId: v.string(),
+  payload: v.bytes(),
+  signature: v.bytes(),
+  signerKeyId: v.string(),
+});
+export type AcpSignedCommand = Infer<typeof acpSignedCommandValidator>;
+
+/**
+ * Binding snapshot stored with a `close`/`delete` command, which outlives its chat: the Worker
+ * authorizes the issuer against it and the session proof exactly as for a live chat.
+ */
+export const acpDeletedTargetValidator = v.object({
+  chat: v.string(),
+  e2eeId: v.string(),
+  creatorUserId: v.string(),
+  agentId: v.string(),
+  profile: acpProfileValidator,
+  cwd: v.string(),
+  sessionId: v.string(),
+  binding: acpSignedBindingValidator,
+  sessionProof: acpSessionProofValidator,
+});
+export type AcpDeletedTarget = Infer<typeof acpDeletedTargetValidator>;
+
+/** A box sealed to a numbered chat key (or owner key) epoch. */
+export const acpSealedBoxValidator = v.object({ epoch: v.number(), box: v.bytes() });
+
+/**
+ * An interaction request sealed by the Worker to chat key `epoch` (AAD `acp_interactions`/e2eeId/
+ * requestKey/`request`) with its signature over `workerObjectStatement` of the same location.
+ */
+export const acpSealedRequestValidator = v.object({
+  epoch: v.number(),
+  box: v.bytes(),
+  signature: v.bytes(),
+});
+
+/**
+ * An answer sealed to the Worker (AAD `acp_interactions`/chatId/requestKey/`answer`) and signed by
+ * the answering user over `acpAnswerStatement`. Only the Worker can validate it.
+ */
+export const acpSealedAnswerValidator = v.object({
+  answer: v.bytes(),
+  signature: v.bytes(),
+  signerKeyId: v.string(),
+});
+
+/**
+ * An epoch's frame capsule: `encodeCapsule` of a capsule to chat key `chatEpoch` (AAD
+ * `acp_streams`/e2eeId/String(epoch)/`capsule`) and the Worker's `workerObjectStatement` signature.
+ */
+export const acpStreamCapsuleValidator = v.object({
+  chatEpoch: v.number(),
+  capsule: v.bytes(),
+  signature: v.bytes(),
+});
+
+/** Error codes a paired Worker reports instead of free text (commands and session sync). */
+export const ACP_WORKER_ERROR_CODES = [
+  "ACP_UNSIGNED",
+  "ACP_FORBIDDEN",
+  "ACP_FAILED",
+  "ACP_EXPIRED",
+  "ACP_SESSION_DELETED",
+] as const;
+
+/** Plaintext stand-in for a sealed session error, safe for notifications and Home. */
+export const ACP_SEALED_ERROR_TEXT = "The agent reported an error";

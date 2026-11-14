@@ -56,11 +56,31 @@ export {
   sha256,
 } from "./box";
 export {
+  acpAgentDefinitionStatement,
+  acpAnswerStatement,
+  acpBindingStatement,
+  acpCommandStatement,
   chatKeyStatement,
   grantStatement,
   rosterStatement,
+  toolApprovalStatement,
+  toolGrantStatement,
+  workerKeysStatement,
+  workerObjectStatement,
+  workerPairingMac,
+  type ChatScopeName,
   type WorkspaceKeyPurpose,
 } from "./statements";
+export {
+  signRoster,
+  verifyRoster,
+  type RosterEpoch,
+  type RosterMember,
+  type RosterOwner,
+  type RosterWorker,
+  type SignedRoster,
+  type WorkspaceRoster,
+} from "./roster";
 export {
   createAccountKeys,
   deriveKek,

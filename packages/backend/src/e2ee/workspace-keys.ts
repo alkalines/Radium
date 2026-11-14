@@ -19,6 +19,7 @@ import {
   type GrantInput,
   type RosterInput,
 } from "./workspace-contract";
+import { admitRosterWorkers } from "./worker-keys";
 type ReadCtx = QueryCtx | MutationCtx;
 /** Bounded workspace membership list, including implicit ownership. */
 export async function workspaceUsers(
@@ -93,7 +94,7 @@ export async function storeRoster(
   try {
     const body = JSON.parse(new TextDecoder().decode(roster.body));
     if (
-      body.v !== 1 ||
+      (body.v !== 1 && body.v !== 2) ||
       body.workspace !== workspace._id ||
       body.version !== roster.version ||
       body.epoch !== epoch ||
@@ -121,6 +122,8 @@ export async function storeRoster(
       }
       seen.add(member.userId);
     }
+    // Version 1 rosters predate Worker keys and certify no Worker.
+    await admitRosterWorkers(ctx, workspace._id, body.v === 2 ? body.workers : []);
   } catch {
     invalidKeys();
   }

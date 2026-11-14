@@ -499,6 +499,8 @@ export const titleModelForChat = internalQuery({
 /**
  * Authorize an ACP viewer and resolve the ordinary workspace title model without reading a
  * transcript. The action receives the first prompt only in memory, never through this query.
+ * Encrypted chats return null: their first prompt must never reach the Gateway, so the browser
+ * seals a fallback title itself (`acp.SetFallbackTitle`).
  */
 export const acpTitleGenerationInfo = internalQuery({
   args: { chatId: v.id("aisdk_chats") },
@@ -512,7 +514,7 @@ export const acpTitleGenerationInfo = internalQuery({
   ),
   handler: async (ctx, args) => {
     const { chat, session, workspace } = await accessibleSession(ctx, args.chatId);
-    if (chat.title || session.userTitled) return null;
+    if (chat.e2eeId || chat.title || session.userTitled) return null;
     const settings = await loadWorkspaceSettings(ctx, workspace);
     const model = await firstAvailableModel(
       ctx,

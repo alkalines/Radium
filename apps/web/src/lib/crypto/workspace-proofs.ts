@@ -10,34 +10,15 @@ import {
   LABELS,
   openBox,
   openSym,
-  rosterStatement,
   sealSym,
   sha256,
-  sign,
   toBase64Url,
   utf8,
   verify,
   type AadParts,
+  type RosterMember,
 } from "radium-crypto";
 import type { PublicIdentity } from "./trust-store";
-/** Owner-signed public roster body, serialized in this declaration's property order. */
-export type WorkspaceRoster = {
-  v: 1;
-  workspace: string;
-  version: number;
-  epoch: number;
-  owner: RosterMember;
-  epochs: {
-    epoch: number;
-    memberKeyId: string;
-    memberKeyHash: string;
-    ownerKeyId: string;
-    ownerKeyHash: string;
-  }[];
-  members: RosterMember[];
-};
-/** Identity binding endorsed by the owner. */
-export type RosterMember = { userId: string; keyId: string; fingerprint: string };
 /** Access secret plaintext; only encrypted forms may leave this module's caller. */
 export type InvitePayload = {
   v: 1;
@@ -46,113 +27,6 @@ export type InvitePayload = {
   memberSeed: string;
   owner: RosterMember;
 };
-/** Creates a canonical, signed roster. The caller must have approved every listed identity. */
-export async function signRoster(
-  body: WorkspaceRoster,
-  signingSeed: Uint8Array,
-): Promise<{ version: number; body: Uint8Array; signature: Uint8Array; signerKeyId: string }> {
-  const canonical: WorkspaceRoster = {
-    v: 1,
-    workspace: body.workspace,
-    version: body.version,
-    epoch: body.epoch,
-    owner: {
-      userId: body.owner.userId,
-      keyId: body.owner.keyId,
-      fingerprint: body.owner.fingerprint,
-    },
-    epochs: body.epochs.map((entry) => ({
-      epoch: entry.epoch,
-      memberKeyId: entry.memberKeyId,
-      memberKeyHash: entry.memberKeyHash,
-      ownerKeyId: entry.ownerKeyId,
-      ownerKeyHash: entry.ownerKeyHash,
-    })),
-    members: body.members.map((member) => ({
-      userId: member.userId,
-      keyId: member.keyId,
-      fingerprint: member.fingerprint,
-    })),
-  };
-  const encoded = utf8(JSON.stringify(canonical));
-  return {
-    version: canonical.version,
-    body: encoded,
-    signature: await sign(
-      signingSeed,
-      rosterStatement({ workspaceId: canonical.workspace, body: encoded }),
-    ),
-    signerKeyId: canonical.owner.keyId,
-  };
-}
-/** Verifies owner binding, signature, workspace and monotonic version before trusting a roster. */
-export async function verifyRoster(input: {
-  workspaceId: string;
-  version: number;
-  body: Uint8Array;
-  signature: Uint8Array;
-  signerKeyId: string;
-  owner: PublicIdentity;
-  highWater: number;
-}): Promise<WorkspaceRoster> {
-  if (
-    input.version < input.highWater ||
-    input.signerKeyId !== input.owner.keyId ||
-    !(await verify(
-      input.owner.signingPublicKey,
-      rosterStatement({ workspaceId: input.workspaceId, body: input.body }),
-      input.signature,
-    ))
-  )
-    throw new CryptoError("DECRYPT_FAILED", "Roster signature or version failed");
-  const body = JSON.parse(new TextDecoder().decode(input.body)) as WorkspaceRoster;
-  if (
-    body.v !== 1 ||
-    body.workspace !== input.workspaceId ||
-    body.version !== input.version ||
-    !Number.isSafeInteger(body.version) ||
-    body.version < 1 ||
-    !Number.isSafeInteger(body.epoch) ||
-    body.epoch < 1 ||
-    body.owner.userId !== input.owner.userId ||
-    body.owner.keyId !== input.owner.keyId ||
-    body.owner.fingerprint !== input.owner.fingerprint ||
-    !Array.isArray(body.epochs) ||
-    !Array.isArray(body.members)
-  )
-    throw new CryptoError("BAD_ENVELOPE", "Invalid roster body");
-  const epochIds = new Set<number>();
-  for (const epoch of body.epochs) {
-    if (
-      !Number.isSafeInteger(epoch.epoch) ||
-      epoch.epoch < 1 ||
-      epoch.epoch > body.epoch ||
-      epochIds.has(epoch.epoch) ||
-      fromBase64Url(epoch.memberKeyId).length !== 16 ||
-      fromBase64Url(epoch.ownerKeyId).length !== 16 ||
-      fromBase64Url(epoch.memberKeyHash).length !== 32 ||
-      fromBase64Url(epoch.ownerKeyHash).length !== 32
-    )
-      throw new CryptoError("BAD_ENVELOPE", "Invalid roster epoch");
-    epochIds.add(epoch.epoch);
-  }
-  if (!epochIds.has(body.epoch))
-    throw new CryptoError("BAD_ENVELOPE", "Roster current epoch missing");
-  const members = new Set<string>();
-  for (const member of body.members) {
-    if (
-      !member ||
-      typeof member.userId !== "string" ||
-      typeof member.fingerprint !== "string" ||
-      member.userId === body.owner.userId ||
-      members.has(member.userId) ||
-      fromBase64Url(member.keyId).length !== 16
-    )
-      throw new CryptoError("BAD_ENVELOPE", "Invalid roster member");
-    members.add(member.userId);
-  }
-  return body;
-}
 /** Opens a signed recipient grant and checks its seed against both the roster hash and epoch row. */
 export async function openWorkspaceGrant(input: {
   workspaceId: string;

@@ -10,7 +10,10 @@ import type { Id } from "backend/convex/_generated/dataModel";
 import {
   ACP_HISTORY_REQUEST_ITEMS,
   ACP_VIEWER_HEARTBEAT_MS,
+  acpAnswerError,
+  type AcpCommandPayload,
   type AcpInteractionAnswer,
+  type AcpInteractionRequest,
 } from "backend/src/acp/contract";
 import {
   applyAcpFrames,
@@ -21,10 +24,35 @@ import {
 import { isWorkerOnline } from "backend/src/worker/presence";
 import { acpBrowserTabId } from "./browser-tab";
 import { acpChatStatus, acpRunState, createAcpViewModel } from "./view-model";
+import {
+  createChatKeys,
+  rememberChatSeed,
+  writableChatKey,
+  type ChatScope,
+} from "@/lib/crypto/chat-keys";
+import { sealTitle } from "@/lib/crypto/chat-content";
+import { cryptoClient, currentUserId } from "@/lib/crypto/runtime";
+import { useKeyStatus } from "@/lib/crypto/use-key-status";
+import {
+  acpFallbackTitle,
+  openAcpError,
+  openAcpFrames,
+  openAcpInteraction,
+  sealAcpAnswer,
+  signAcpBinding,
+  signAcpCommand,
+  type AcpChatContext,
+  type AcpFrameRow,
+} from "./acp-crypto";
 
 type Interactions = FunctionReturnType<typeof api.acp.OpenInteractions>;
 type WorkerStatus = FunctionReturnType<typeof api.acp.WorkerStatus>;
-const noInteractions: Interactions = [];
+
+/** An open interaction whose request is readable: plaintext in legacy mode, verified in signed mode. */
+export type AcpInteractionView = Omit<Interactions[number], "request" | "sealed"> & {
+  request: AcpInteractionRequest;
+};
+const noInteractions: AcpInteractionView[] = [];
 /** Quiet time after which a history request counts as finished (or failed, if nothing came). */
 const HISTORY_STALL_MS = 15_000;
 
@@ -98,12 +126,14 @@ export function useAcpSession({
   const watch = useMutation(api.chatroom.Watch);
   const promptMutation = useMutation(api.acp.Prompt);
   const generateTitle = useAction(api.acp.GenerateTitle);
+  const fallbackTitleMutation = useMutation(api.acp.SetFallbackTitle);
   const cancelMutation = useMutation(api.acp.Cancel);
   const configMutation = useMutation(api.acp.SetConfig);
   const modeMutation = useMutation(api.acp.SetMode);
   const answerMutation = useMutation(api.acp.Answer);
   const historyMutation = useMutation(api.acp.RequestHistory);
   const forkMutation = useMutation(api.acp.Fork);
+  const startForkMutation = useMutation(api.acp.StartFork);
 
   const epoch = session?.epoch;
   const streamEnabled = isVisible && epoch !== undefined && timeline.epoch === epoch;
@@ -128,10 +158,126 @@ export function useAcpSession({
     [chatId, epoch, fromSeq, isVisible, streamEnabled],
   );
   const results = useQueries(queries);
-  const frames = results.frames as AcpFrame[] | Error | undefined;
-  const interactions = results.interactions as Interactions | Error | undefined;
+  const rawFrames = results.frames as AcpFrameRow[] | Error | undefined;
+  const rawInteractions = results.interactions as Interactions | Error | undefined;
   const worker = results.worker as WorkerStatus | Error | undefined;
   if (worker && !(worker instanceof Error)) lastWorker.current = worker;
+
+  // Signed mode: the workspace has keys, so every command is sealed to the Worker and every Worker
+  // object is verified and opened here instead of being read as the backend delivered it.
+  const keyStatus = useKeyStatus();
+  const signed = session?.signed === true;
+  const workspaceId = session?.workspace;
+  const workerId = session?.agent.worker;
+  const e2eeId = session?.e2eeId ?? undefined;
+  const chatContext = useMemo<AcpChatContext | undefined>(
+    () =>
+      workspaceId && workerId && e2eeId ? { chatId, workspaceId, workerId, e2eeId } : undefined,
+    [chatId, e2eeId, workerId, workspaceId],
+  );
+  const [openedFrames, setOpenedFrames] = useState<{
+    source: AcpFrameRow[];
+    frames: AcpFrame[] | Error;
+  }>();
+  useEffect(() => {
+    if (!chatContext || !rawFrames || rawFrames instanceof Error || epoch === undefined) return;
+    let cancelled = false;
+    openAcpFrames(chatContext, epoch, rawFrames).then(
+      (frames) => {
+        if (!cancelled) setOpenedFrames({ source: rawFrames, frames });
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        const failure =
+          error instanceof Error ? error : new Error("Could not verify the agent's content.");
+        setOpenedFrames({ source: rawFrames, frames: failure });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+    // `keyStatus` re-runs a decryption that failed while the keys were locked.
+  }, [chatContext, epoch, rawFrames, keyStatus]);
+  let frames: AcpFrame[] | Error | undefined;
+  if (rawFrames instanceof Error) frames = rawFrames;
+  else if (!signed) frames = rawFrames as AcpFrame[] | undefined;
+  else if (openedFrames && openedFrames.source === rawFrames) frames = openedFrames.frames;
+
+  const [openedInteractions, setOpenedInteractions] = useState<{
+    source: Interactions;
+    rows: AcpInteractionView[];
+  }>();
+  useEffect(() => {
+    if (!chatContext || !rawInteractions || rawInteractions instanceof Error) return;
+    let cancelled = false;
+    void Promise.all(
+      rawInteractions.map(async (row): Promise<AcpInteractionView | undefined> => {
+        if (!row.sealed) return undefined;
+        try {
+          const request = await openAcpInteraction(chatContext, {
+            requestKey: row.requestKey,
+            sealed: row.sealed,
+          });
+          const { request: _legacy, sealed: _sealed, ...rest } = row;
+          return { ...rest, request };
+        } catch {
+          // An unverifiable or unreadable request is dropped: it is never shown or answered.
+          return undefined;
+        }
+      }),
+    ).then((rows) => {
+      if (!cancelled)
+        setOpenedInteractions({
+          source: rawInteractions,
+          rows: rows.filter((row) => row !== undefined),
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatContext, rawInteractions, keyStatus]);
+  const interactions = useMemo(() => {
+    if (!rawInteractions || rawInteractions instanceof Error) return noInteractions;
+    if (signed)
+      return openedInteractions?.source === rawInteractions
+        ? openedInteractions.rows
+        : noInteractions;
+    return rawInteractions.flatMap((row) => {
+      const { request, sealed: _sealed, ...rest } = row;
+      return request ? [{ ...rest, request }] : [];
+    });
+  }, [openedInteractions, rawInteractions, signed]);
+
+  const sealedError = session?.sealedError ?? undefined;
+  const [openedError, setOpenedError] = useState<{
+    source: NonNullable<typeof sealedError>;
+    message: string;
+  }>();
+  useEffect(() => {
+    if (!chatContext || !sealedError) return;
+    let cancelled = false;
+    openAcpError(chatContext, sealedError).then(
+      (message) => {
+        if (!cancelled) setOpenedError({ source: sealedError, message });
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [chatContext, sealedError, keyStatus]);
+  // The generic server text stands in until (or unless) the sealed one opens.
+  const errorMessage =
+    sealedError && openedError?.source === sealedError ? openedError.message : session?.error;
+
+  /** Seals and signs a command for this chat's Worker; never used outside signed mode. */
+  const signCommand = useCallback(
+    (command: AcpCommandPayload, clientId?: string) => {
+      if (!workspaceId || !workerId) throw new Error("This agent Session is still loading.");
+      return signAcpCommand({ workspaceId, workerId, chatId, command, clientId });
+    },
+    [chatId, workerId, workspaceId],
+  );
 
   useEffect(() => {
     // A return from a hidden Tab starts at the fold's next op, not its old subscription page.
@@ -218,11 +364,18 @@ export function useAcpSession({
     setFailedBefore(undefined);
     setLoadingBefore(before);
     try {
+      const request = { epoch: state.epoch, before, limit: ACP_HISTORY_REQUEST_ITEMS };
       await historyMutation({
         chat: chatId,
-        epoch: state.epoch,
-        before,
-        limit: ACP_HISTORY_REQUEST_ITEMS,
+        ...request,
+        ...(signed
+          ? {
+              signed: await signCommand(
+                { kind: "history", ...request },
+                `history:${chatId}:${request.epoch}:${before}:${crypto.randomUUID()}`,
+              ),
+            }
+          : {}),
       });
     } catch (error) {
       requestedHistory.current.delete(key);
@@ -230,7 +383,7 @@ export function useAcpSession({
       setFailedBefore(before);
       showActionError(error);
     }
-  }, [chatId, historyMutation, isVisible]);
+  }, [chatId, historyMutation, isVisible, signCommand, signed]);
 
   // Hidden Tabs drop the WorkerStatus subscription, so presence is unknown rather than offline.
   const workerKnown = isVisible && worker !== undefined && !(worker instanceof Error);
@@ -267,66 +420,153 @@ export function useAcpSession({
   const prompt = useCallback(
     async (text: string) => {
       try {
-        await promptMutation({
-          chat: chatId,
-          prompt: [{ type: "text", text }],
-          clientId: crypto.randomUUID(),
-        });
+        const prompt = [{ type: "text" as const, text }];
+        const clientId = crypto.randomUUID();
+        if (signed) {
+          await promptMutation({
+            chat: chatId,
+            clientId,
+            signed: await signCommand({ kind: "prompt", prompt }, clientId),
+          });
+          if (!session?.agent.sessionId) {
+            // Keyed chats never send the prompt text to a title action; the title is sealed here.
+            void (async () => {
+              const key = await writableChatKey(chatId);
+              const sealedTitle = await sealTitle({ title: acpFallbackTitle(text) }, key);
+              await fallbackTitleMutation({ chat: chatId, sealedTitle });
+            })().catch(() => {});
+          }
+          return;
+        }
+        await promptMutation({ chat: chatId, prompt, clientId });
         if (!session?.agent.sessionId) void generateTitle({ chat: chatId, text }).catch(() => {});
       } catch (error) {
         // Composer restores the draft and toasts this readable error when submission rejects.
         throw new Error(acpActionError(error) ?? "The agent could not send this prompt");
       }
     },
-    [chatId, generateTitle, promptMutation, session?.agent.sessionId],
+    [
+      chatId,
+      fallbackTitleMutation,
+      generateTitle,
+      promptMutation,
+      session?.agent.sessionId,
+      signCommand,
+      signed,
+    ],
   );
   const cancel = useCallback(async () => {
     try {
-      await cancelMutation({ chat: chatId });
+      await cancelMutation({
+        chat: chatId,
+        ...(signed ? { signed: await signCommand({ kind: "cancel" }) } : {}),
+      });
     } catch (error) {
       showActionError(error);
     }
-  }, [cancelMutation, chatId]);
+  }, [cancelMutation, chatId, signCommand, signed]);
   const setConfig = useCallback(
     async (configId: string, value: string | boolean) => {
       try {
-        await configMutation({ chat: chatId, configId, value });
+        await configMutation({
+          chat: chatId,
+          ...(signed
+            ? { signed: await signCommand({ kind: "set_config", configId, value }) }
+            : { configId, value }),
+        });
       } catch (error) {
         showActionError(error);
       }
     },
-    [chatId, configMutation],
+    [chatId, configMutation, signCommand, signed],
   );
   const setMode = useCallback(
     async (modeId: string) => {
       try {
-        await modeMutation({ chat: chatId, modeId });
+        await modeMutation({
+          chat: chatId,
+          ...(signed ? { signed: await signCommand({ kind: "set_mode", modeId }) } : { modeId }),
+        });
       } catch (error) {
         showActionError(error);
       }
     },
-    [chatId, modeMutation],
+    [chatId, modeMutation, signCommand, signed],
   );
   const answer = useCallback(
-    async (interaction: Id<"acp_interactions">, answer: AcpInteractionAnswer) => {
+    async (interaction: Id<"acp_interactions">, response: AcpInteractionAnswer) => {
       try {
-        await answerMutation({ interaction, answer });
+        if (!signed) {
+          await answerMutation({ interaction, answer: response });
+          return true;
+        }
+        const row = interactions.find((candidate) => candidate._id === interaction);
+        if (!row || !workspaceId || !workerId) throw new Error("This question is no longer open.");
+        // The server cannot read a sealed answer, so the browser validates it before sending.
+        const invalid = acpAnswerError(row.request, response);
+        if (invalid) {
+          toast.error(invalid);
+          return false;
+        }
+        const sealed = await sealAcpAnswer({
+          workspaceId,
+          workerId,
+          chatId,
+          requestKey: row.requestKey,
+          answer: response,
+        });
+        await answerMutation({ interaction, sealed });
         return true;
       } catch (error) {
         showActionError(error);
         return false;
       }
     },
-    [answerMutation],
+    [answerMutation, chatId, interactions, signed, workerId, workspaceId],
   );
   const fork = useCallback(async () => {
     try {
-      return await forkMutation({ chat: chatId, clientId: crypto.randomUUID() });
+      const clientId = crypto.randomUUID();
+      if (!signed) return await forkMutation({ chat: chatId, clientId });
+      if (!session) throw new Error("This agent Session is still loading.");
+      // The fork keeps the source's audience but belongs to the caller, who is not a member.
+      const source = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+      const scope: ChatScope = source.scope;
+      const me = currentUserId();
+      const members =
+        scope === "shared"
+          ? [...new Set([...source.members, source.creatorId])].filter((id) => id !== me)
+          : [];
+      const keys = await createChatKeys({ workspaceId: session.workspace, scope, members });
+      const target = await forkMutation({
+        chat: chatId,
+        clientId,
+        e2ee: { keys: keys.keys, ...(scope === "shared" ? { members } : {}) },
+      });
+      rememberChatSeed(target, keys.e2eeId, 1, keys.seed);
+      await startForkMutation({
+        chat: chatId,
+        target,
+        binding: await signAcpBinding({
+          workspaceId: session.workspace,
+          chatId: target,
+          e2eeId: keys.e2eeId,
+          workerId: session.agent.worker,
+          agentId: session.agent.agentId,
+          profile: session.agent.profile,
+          cwd: session.agent.cwd,
+          scope,
+          members,
+          version: 1,
+        }),
+        signed: await signCommand({ kind: "fork", targetChat: target }),
+      });
+      return target;
     } catch (error) {
       showActionError(error);
       return undefined;
     }
-  }, [chatId, forkMutation]);
+  }, [chatId, forkMutation, session, signCommand, signed, startForkMutation]);
   const [buildView] = useState(createAcpViewModel);
   const view = useMemo(
     () => buildView(timeline, session?.status, shownFrom),
@@ -353,8 +593,10 @@ export function useAcpSession({
     workerKnown,
     workerLastSeenAt: lastWorker.current?.lastSeenAt,
     workerName: lastWorker.current?.name,
-    interactions: interactions && !(interactions instanceof Error) ? interactions : noInteractions,
+    interactions,
     contentError: frames instanceof Error ? frames : undefined,
+    errorMessage,
+    signed,
     loadOlder,
     historyFailed,
     loadingHistory,

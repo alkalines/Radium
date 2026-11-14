@@ -4,7 +4,9 @@ The Worker package implements local machine identity setup, authenticated outbou
 
 ## Setup and run
 
-Obtain a `radium-worker-v1.` setup code from **Chatroom → Workers** in the website.
+Obtain a setup code from **Chatroom → Workers** in the website: `radium-worker-v1.` for a
+workspace without encryption keys, `radium-worker-v2.` (which also pairs the Worker, below)
+for a keyed workspace.
 The whole code is a one-time secret. Run setup in a terminal to paste it into a
 masked `@clack/prompts` input, or pipe it on stdin for automation. It is never
 accepted as a command-line value or read from the Worker's environment:
@@ -34,6 +36,7 @@ Run `bun run --cwd packages/worker cli` for an interactive command menu, or
 | Command                   | Purpose                                                                                                         |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `setup` / `add-token`     | Enroll with a one-time setup code; refuses to overwrite an identity.                                            |
+| `pair`                    | Pair an enrolled Worker with new end-to-end encryption keys from a pairing code (Workers → `…` → Pair).          |
 | `start`                   | Run authenticated Convex control, consume file/Bash tasks, and host configured ACP agents.                      |
 | `status`                  | Inspect local enrollment state and identifiers; no network access.                                              |
 | `refresh`                 | Recover pending identity if needed, then verify a fresh backend token exchange. Prints expiry, never the token. |
@@ -67,6 +70,21 @@ If the backend confirms enrollment was never completed and the original setup co
 has expired, forget the pending local state and generate a new code on the Workers
 page. Preserve pending state until recovery has been attempted: its key is what
 recovers a successful enrollment whose response was lost.
+
+**End-to-end encryption pairing.** In a workspace with encryption keys the backend dispatches work only to a **paired** Worker
+([Keys § Workers](../../docs/E2EE/Keys.md#workers)). A v2 setup code, or a
+`radium-worker-pair-v1.` pairing code for an already enrolled Worker (`pair`, masked prompt or
+stdin), carries a 32-byte pairing secret and the owner's identity key. The Worker generates an
+encryption key and a signing key, saves their seeds in the credential store next to the machine
+key (covered by `forget`), pins the owner in `worker-state.json` (version 3), and publishes the
+public keys with its signature and a MAC under the pairing secret. The owner's browser checks
+the MAC while unlocked and certifies the Worker in the signed roster; restart the Worker after
+pairing. A pairing code for another Worker or workspace is refused.
+
+A paired Worker verifies the roster against the pinned owner and records the highest roster
+version in `e2ee-marks.json`. If the owner's key changes, the backend serves an older roster,
+or the roster no longer lists the Worker (revoked or re-paired), it refuses all commands and
+logs a fixed reason; pair it again with a new code.
 
 `start` creates one `ConvexClient`, obtains short-lived machine JWTs through
 challenge/proof exchanges, and subscribes to the `workers:current` query. It
@@ -160,8 +178,10 @@ The real SDK fixture is available as `bun run test-agent --store /tmp/acp-sessio
 ## Edit Tasks
 
 `start` always consumes file and foreground Bash tasks; the execution directory comes from the
-owner-authorized backend dispatch, not a CLI option. Public `dispatchEdit` requests
-require `request.directory`, an absolute path on the target Worker. The Worker
+Chatroom's owner-authorized dispatch, not a CLI option. A paired Worker runs only sealed tasks
+authorized by the workspace owner's signature (a per-call approval, or the chat's standing
+grant for Read) and takes the directory from that signed data; plaintext tasks carry
+`request.directory`, an absolute path on the target Worker. The Worker
 canonicalizes the selected directory and confines edit paths to it; no local
 directory allowlist is part of the contract. The native service is loaded only for
 the first valid directory request. The edit tool supports reads that record native
@@ -170,12 +190,12 @@ and session disposal. See
 [native editing](../../docs/Worker/Native_Tools.md) and
 [backend messaging](../../docs/Worker/Tasks.md) for contracts, bounds and limitations.
 
-Owners dispatch via `api.worker_tasks.dispatchEdit` and subscribe to
-`api.worker_tasks.outcome`; the Chatroom composer can save an owner-only Worker
+There is no public dispatch API; the Chatroom composer can save an owner-only Worker
 selection and independent Read/Edit/Create/Bash preferences. The backend derives the directory: the chat Project's folder for that Worker, else the Worker's reported temp directory.
-Chatroom exposes those tools to the model for owner requests; Edit/Create require
-signed approval and operation-constrained staging/application. See
-[Chatroom integration](../../docs/Worker/Chatroom.md). Sessions
+Chatroom exposes those tools to the model for owner requests; Edit/Create/Bash require
+approval (signed by the owner's identity key for paired Workers) and operation-constrained
+staging/application. See [Chatroom integration](../../docs/Worker/Chatroom.md) and
+[sealed tasks](../../docs/Worker/Tasks.md#sealed-tasks-paired-workers). Sessions
 are bound to a canonical directory and isolated by workspace, owner, chat and
 runner session ID. A directory change during a live session fails with
 `SESSION_DIRECTORY_CHANGED`; close it with its bound directory before reusing the
