@@ -3,7 +3,9 @@ import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import { internalMutation, mutation, type MutationCtx } from "../_generated/server";
 import { isChatVisibleToWorkspace } from "../chatroom";
+import { assertLegacyWritesAllowed, deleteLegacySidecar } from "../../src/e2ee/migration-contract";
 import { requireOwnedWorkspace } from "../workspaces";
+import { invalidateTelemetryProofs } from "../../src/e2ee/migration-telemetry-proofs";
 
 const DAY_MS = 86_400_000;
 /** Requests deleted per mutation; each one enqueues up to ~11 GC rows. */
@@ -15,6 +17,7 @@ const GC_BATCH = 100;
 
 /** Queue reference checks for everything a request pointed at, then delete the request. */
 async function deleteRequestRow(ctx: MutationCtx, request: Doc<"telemetry_requests">) {
+  await assertLegacyWritesAllowed(ctx);
   const blobs = new Set<Id<"telemetry_blobs">>();
   for (const blob of [
     request.system,
@@ -33,7 +36,9 @@ async function deleteRequestRow(ctx: MutationCtx, request: Doc<"telemetry_reques
   for (const node of new Set([request.input, request.output])) {
     if (node) await ctx.db.insert("telemetry_gc", { workspace: request.workspace, node });
   }
+  if (request.legacyContent) await deleteLegacySidecar(ctx, { table: "telemetry_requests", record: request._id });
   await ctx.db.delete("telemetry_requests", request._id);
+  await invalidateTelemetryProofs(ctx, request.workspace);
 }
 
 async function scheduleCollectGarbage(ctx: MutationCtx) {
@@ -90,7 +95,10 @@ async function deleteSessionPage(
       .query("telemetry_requests")
       .withIndex("by_session_and_startedAt", (q) => q.eq("session", session._id))
       .first();
-    if (!remaining) await ctx.db.delete("telemetry_sessions", session._id);
+    if (!remaining) {
+      if (session.legacyContent) await deleteLegacySidecar(ctx, { table: "telemetry_sessions", record: session._id });
+      await ctx.db.delete("telemetry_sessions", session._id);
+    }
   }
   await scheduleCollectGarbage(ctx);
 }
@@ -171,6 +179,7 @@ export const pruneExpired = internalMutation({
           .withIndex("by_session_and_startedAt", (q) => q.eq("session", session._id))
           .first();
         if (remaining) continue;
+        if (session.legacyContent) await deleteLegacySidecar(ctx, { table: "telemetry_sessions", record: session._id });
         await ctx.db.delete("telemetry_sessions", session._id);
         removed++;
       }
@@ -194,6 +203,7 @@ export const pruneExpired = internalMutation({
 
 /** Delete a node nothing references; queue its parent and blob for the same check. */
 async function collectNode(ctx: MutationCtx, node: Doc<"telemetry_nodes">) {
+  await assertLegacyWritesAllowed(ctx);
   const child = await ctx.db
     .query("telemetry_nodes")
     .withIndex("by_parent", (q) => q.eq("parent", node._id))
@@ -210,11 +220,13 @@ async function collectNode(ctx: MutationCtx, node: Doc<"telemetry_nodes">) {
     .first();
   if (asOutput) return;
 
+  if (node.legacyContent) await deleteLegacySidecar(ctx, { table: "telemetry_nodes", record: node._id });
   await ctx.db.delete("telemetry_nodes", node._id);
   if (node.parent) {
     await ctx.db.insert("telemetry_gc", { workspace: node.workspace, node: node.parent });
   }
   await ctx.db.insert("telemetry_gc", { workspace: node.workspace, blob: node.blob });
+  await invalidateTelemetryProofs(ctx, node.workspace);
 }
 
 async function isBlobReferenced(ctx: MutationCtx, blob: Doc<"telemetry_blobs">) {
@@ -265,6 +277,7 @@ async function isBlobReferenced(ctx: MutationCtx, blob: Doc<"telemetry_blobs">) 
 
 /** Delete an unreferenced blob, its file, and (for toolsets) its membership rows. */
 async function collectBlob(ctx: MutationCtx, blob: Doc<"telemetry_blobs">) {
+  await assertLegacyWritesAllowed(ctx);
   if (await isBlobReferenced(ctx, blob)) return;
 
   if (blob.kind === "toolset") {
@@ -278,7 +291,9 @@ async function collectBlob(ctx: MutationCtx, blob: Doc<"telemetry_blobs">) {
     }
   }
   if (blob.storage) await ctx.storage.delete(blob.storage);
+  if (blob.legacyContent) await deleteLegacySidecar(ctx, { table: "telemetry_blobs", record: blob._id });
   await ctx.db.delete("telemetry_blobs", blob._id);
+  await invalidateTelemetryProofs(ctx, blob.workspace);
 }
 
 /**

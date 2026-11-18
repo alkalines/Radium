@@ -1,3 +1,4 @@
+import { setEncryptedName } from "./names";
 import { api } from "backend/convex/_generated/api";
 import type { Doc, Id } from "backend/convex/_generated/dataModel";
 import type { FunctionReturnType } from "convex/server";
@@ -526,11 +527,10 @@ export async function bootstrapWorkspace(workspaceId: Id<"workspaces">): Promise
 }
 /** Creates a workspace then bootstraps keys as soon as its Convex ID is available. */
 export async function createKeyedWorkspace(name: string): Promise<Id<"workspaces">> {
-  if (keyManager.getSnapshot().state === "locked") {
-    throw new KeysLockedError();
-  }
-  const workspace = await cryptoClient().mutation(api.workspaces.create, { name });
-  if (keyManager.getSnapshot().state === "unlocked") await bootstrapWorkspace(workspace);
+  if (keyManager.getSnapshot().state !== "unlocked") throw new KeysLockedError();
+  const workspace = await cryptoClient().mutation(api.workspaces.create, { name: "Workspace" });
+  await bootstrapWorkspace(workspace);
+  await setEncryptedName({ target: workspace, workspace, table: "workspaces", name });
   return workspace;
 }
 /** Removes a member and rotates both workspace keys, grants and roster in one backend mutation. */

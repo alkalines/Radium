@@ -962,7 +962,10 @@ export const acpStreamCapsuleValidator = v.object({
   signature: v.bytes(),
 });
 
-/** Error codes a paired Worker reports instead of free text (commands and session sync). */
+/**
+ * Fixed codes a paired Worker may report in `error` fields instead of free text, so verification never
+ * counts them as plaintext. A Worker can never report the backend-only codes below.
+ */
 export const ACP_WORKER_ERROR_CODES = [
   "ACP_UNSIGNED",
   "ACP_FORBIDDEN",
@@ -970,6 +973,25 @@ export const ACP_WORKER_ERROR_CODES = [
   "ACP_EXPIRED",
   "ACP_SESSION_DELETED",
 ] as const;
+
+/**
+ * Fixed codes only the backend writes: `ACP_CANCELLED` (a user cancelled a queued prompt) and
+ * `ACP_ABANDONED` (an operator closed a stale legacy row of a revoked or deleted Worker; its host-side
+ * outcome is unknown and is never replayed).
+ */
+export const ACP_BACKEND_ERROR_CODES = ["ACP_CANCELLED", "ACP_ABANDONED"] as const;
+
+/**
+ * Whether a persisted `error` value is a fixed code from either set, hence metadata that the legacy
+ * migration neither seals nor counts as plaintext. This is a classifier of stored rows only; it does
+ * not make a code Worker-reportable (see `ACP_WORKER_ERROR_CODES`).
+ */
+export function isPersistedAcpErrorCode(value: unknown): boolean {
+  return (
+    (ACP_WORKER_ERROR_CODES as readonly unknown[]).includes(value) ||
+    (ACP_BACKEND_ERROR_CODES as readonly unknown[]).includes(value)
+  );
+}
 
 /** Plaintext stand-in for a sealed session error, safe for notifications and Home. */
 export const ACP_SEALED_ERROR_TEXT = "The agent reported an error";

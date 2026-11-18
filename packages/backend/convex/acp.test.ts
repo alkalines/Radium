@@ -945,10 +945,11 @@ test("lifecycle mirrors boundaries, preserves user titles and writes the ACP ses
   });
   await f.first.machine.mutation(api.acp.updateSession, {
     chat: f.chat,
-    patch: { status: "failed", stopReason: "max_tokens", error: null },
+    patch: { status: "failed", stopReason: "max_tokens", error: "provider echoed a prompt" },
   });
-  expect(await f.owner.query(api.aisdk.GetChat, { chatId: f.chat })).toMatchObject({
-    interruption: { kind: "failed", message: "Output limit reached" },
+  // The chat keeps only the generic kind; error text never lands on it.
+  expect((await f.owner.query(api.aisdk.GetChat, { chatId: f.chat }))?.interruption).toEqual({
+    kind: "failed",
   });
   await expect(
     f.owner.mutation(api.aisdk.SetChatWorker, { chatId: f.chat, selection: null }),

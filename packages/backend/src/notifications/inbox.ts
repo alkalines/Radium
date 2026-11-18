@@ -3,6 +3,8 @@ import { internal } from "../../convex/_generated/api";
 import { internalMutation, mutation, query } from "../../convex/_generated/server";
 import { authComponent } from "../../convex/auth";
 import schema from "../../convex/schema";
+import { legacyBoxValidator } from "../e2ee/legacy-contract";
+import { deleteLegacySidecar, readMigrationState } from "../e2ee/migration-contract";
 import {
   notificationCategory,
   notificationCategoryValidator,
@@ -11,7 +13,7 @@ import {
   resolvedNotificationPreferencesValidator,
   resolveNotificationPreferences,
 } from "./contract";
-import { loadNotificationPreferences } from "./notify";
+import { BROWSER_CLAIM_GRACE_MS, loadNotificationPreferences } from "./notify";
 import { webPushConfig } from "./push";
 
 /**
@@ -38,6 +40,7 @@ const notificationViewValidator = v.object({
   category: notificationCategoryValidator,
   userId: v.string(),
   sealed: v.optional(v.object({ keyId: v.string(), box: v.bytes() })),
+  legacyContent: v.optional(legacyBoxValidator),
   title: v.string(),
   body: v.string(),
   /** App-relative path the notification opens. */
@@ -70,6 +73,7 @@ export const recent = query({
       category: notificationCategory(row.kind),
       userId: row.userId,
       ...(row.sealed ? { sealed: row.sealed } : {}),
+      ...(row.legacyContent ? { legacyContent: row.legacyContent } : {}),
       // Legacy rows may contain plaintext. Never expose them to a locked device.
       title: notificationTitle(row.kind),
       body: row.chat ? "Session" : "Workspace",
@@ -118,7 +122,12 @@ export const deliverFallback = internalMutation({
   handler: async (ctx, args) => {
     const row = await ctx.db.get("notifications", args.notification);
     if (!row || row.seenAt !== undefined || row.delivery !== undefined) return null;
-    if (row.sealingPending) await ctx.db.patch("notifications", row._id, { sealingPending: false });
+    // Unsealed rows become visible as generic notifications once the grace passed, except while the
+    // cutover freeze holds sealing: they stay pending so `resumeSealing` can seal them after it.
+    // Resuming never pushes again; delivery is decided here only.
+    if (row.sealingPending && !(await readMigrationState(ctx))?.frozen) {
+      await ctx.db.patch("notifications", row._id, { sealingPending: false });
+    }
 
     // @todo(expo): Phone before desktop. Once the Expo app exists, look up the user's Expo push
     // tokens here (registered by the app and stored by `@convex-dev/expo-push-notifications`,
@@ -152,7 +161,21 @@ export const prune = internalMutation({
       .query("notifications")
       .withIndex("by_createdAt", (q) => q.lt("createdAt", Date.now() - RETENTION_MS))
       .take(PRUNE_BATCH);
-    for (const row of rows) await ctx.db.delete("notifications", row._id);
+    for (const row of rows) {
+      if (row.legacyContent) await deleteLegacySidecar(ctx, { table: "notifications", record: row._id });
+      await ctx.db.delete("notifications", row._id);
+    }
+    // Safety net for a lost cutover hook or interrupted sealing: only stalled rows (older than the
+    // browser grace, so never in-flight ones) restart it, never while frozen. Every run of it ends
+    // by clearing the marker, and retention bounds a row that keeps failing.
+    if (!(await readMigrationState(ctx))?.frozen) {
+      const stalled = await ctx.db
+        .query("notifications")
+        .withIndex("by_sealingPending_and_createdAt", (q) =>
+          q.eq("sealingPending", true).lt("createdAt", Date.now() - BROWSER_CLAIM_GRACE_MS))
+        .first();
+      if (stalled) await ctx.scheduler.runAfter(0, internal.notifications.resumeSealing, {});
+    }
     return null;
   },
 });

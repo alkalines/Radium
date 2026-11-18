@@ -9,6 +9,7 @@ import {
   acpAnswerStatement,
   acpBindingStatement,
   acpCommandStatement,
+  chatKeyBindingStatement,
   chatKeyStatement,
   decodeCapsule,
   generateEncryptionKeyPair,
@@ -264,6 +265,14 @@ class SignedTransport implements AcpTransport {
   warm = false;
   epoch = 0;
   chatKeyUnsigned = false;
+  /** An epoch created before recipient binding: valid original signature, no binding. */
+  chatKeyUnbound = false;
+  chatKeyBound: Partial<{
+    chatId: string;
+    scope: ChatScopeName;
+    creatorId: string;
+    members: string[];
+  }> = {};
   e2ee: AcpChatE2ee | null;
   binding: AcpSessionBinding = {
     agentId: "scripted",
@@ -423,16 +432,26 @@ class SignedTransport implements AcpTransport {
   async chatKey(): Promise<AcpChatKey> {
     this.chatKeyCalls++;
     const publicKey = this.env.chatKey.publicKey;
-    const signature = await sign(
+    const key = {
+      workspaceId: WORKSPACE,
+      chatE2eeId: E2EE_ID,
+      epoch: 1,
+      keyId: "chat-key-1",
+      suite: SUITE_1,
+      publicKey,
+    };
+    const signature = await sign(this.env.creator.sign.seed, chatKeyStatement(key));
+    // What the creator signed as the key's binding; `chatKeyBound` overrides one field of it.
+    const policy = {
+      chatId: CHAT,
+      scope: "personal" as ChatScopeName,
+      creatorId: this.env.creator.userId,
+      members: [] as string[],
+      ...this.chatKeyBound,
+    };
+    const binding = await sign(
       this.env.creator.sign.seed,
-      chatKeyStatement({
-        workspaceId: WORKSPACE,
-        chatE2eeId: E2EE_ID,
-        epoch: 1,
-        keyId: "chat-key-1",
-        suite: SUITE_1,
-        publicKey,
-      }),
+      chatKeyBindingStatement({ ...key, ...policy }),
     );
     return {
       e2eeId: E2EE_ID,
@@ -442,6 +461,8 @@ class SignedTransport implements AcpTransport {
       publicKey: arrayBuffer(publicKey),
       signerKeyId: this.chatKeyUnsigned ? null : this.env.creator.keyId,
       signature: this.chatKeyUnsigned ? null : arrayBuffer(signature),
+      bindingSignature: this.chatKeyUnbound ? null : arrayBuffer(binding),
+      bindingMembers: policy.scope === "shared" ? policy.members : null,
       rekey: false,
     };
   }
@@ -674,6 +695,80 @@ describe("paired ACP host refuses what the backend could have authored", () => {
     await delay(300);
     expect(transport.epochStarts).toEqual([]);
     expect(transport.frames).toEqual([]);
+  });
+
+  it("writes no frames for a chat key epoch that predates recipient binding", async () => {
+    const { env, transport } = await setup();
+    transport.warm = true;
+    transport.chatKeyUnbound = true;
+    await startPaired(env, transport);
+    await until(() => transport.chatKeyCalls > 0);
+    await delay(300);
+    expect(transport.epochStarts).toEqual([]);
+    expect(transport.frames).toEqual([]);
+  });
+
+  describe("chat key recipient binding", () => {
+    async function keyFor(
+      bound: SignedTransport["chatKeyBound"],
+      options: { binding?: Parameters<typeof signedBinding>[1]; unbound?: boolean } = {},
+    ) {
+      const env = await environment();
+      const transport = new SignedTransport(env, await signedBinding(env, options.binding));
+      transport.chatKeyBound = bound;
+      transport.chatKeyUnbound = options.unbound ?? false;
+      const signed = new AcpSigned(fakeTrust(env), transport);
+      const binding = await signed.verifyBinding({
+        chat: CHAT,
+        e2ee: transport.e2ee!,
+        agentId: "scripted",
+        profile: "native",
+        cwd: tmpdir(),
+      });
+      return { env, signed, binding };
+    }
+    const shared = (members: string[]) => ({
+      binding: { scope: "shared" as const, members: ["member-user"] },
+      bound: { scope: "shared" as const, members },
+    });
+
+    it("returns the key only when bound to this chat, scope, creator and audience", async () => {
+      const personal = await keyFor({});
+      const key = await personal.signed.chatKey(personal.binding);
+      expect(key.epoch).toBe(1);
+      expect(Array.from(key.publicKey)).toEqual(Array.from(personal.env.chatKey.publicKey));
+
+      const group = shared(["member-user"]);
+      const sharedKey = await keyFor(group.bound, { binding: group.binding });
+      await expect(sharedKey.signed.chatKey(sharedKey.binding)).resolves.toMatchObject({ epoch: 1 });
+    });
+
+    it("refuses an epoch with no binding signature", async () => {
+      const { signed, binding } = await keyFor({}, { unbound: true });
+      await expect(signed.chatKey(binding)).rejects.toThrow("ACP_FORBIDDEN");
+    });
+
+    it("refuses a key whose binding names another chat, scope or creator", async () => {
+      for (const bound of [
+        { chatId: "other-chat" },
+        { scope: "workspace" as const },
+        { creatorId: "member-user" },
+      ]) {
+        const { signed, binding } = await keyFor(bound);
+        await expect(signed.chatKey(binding)).rejects.toThrow("ACP_UNSIGNED");
+      }
+    });
+
+    it("refuses a key bound to a different member list than the creator-signed audience", async () => {
+      for (const members of [[], ["member-user", "extra-user"], ["other-user"]]) {
+        const group = shared(members);
+        const { signed, binding } = await keyFor(group.bound, { binding: group.binding });
+        await expect(signed.chatKey(binding)).rejects.toThrow("ACP_FORBIDDEN");
+      }
+      // A personal-bound key replayed under a shared audience carries no member list at all.
+      const replay = await keyFor({}, { binding: shared([]).binding });
+      await expect(replay.signed.chatKey(replay.binding)).rejects.toThrow("ACP_FORBIDDEN");
+    });
   });
 
   it("refuses a fork whose target is not the chat its issuer bound", async () => {

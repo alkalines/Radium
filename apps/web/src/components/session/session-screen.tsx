@@ -17,6 +17,7 @@ import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
 import { RotateCcwIcon, Undo2Icon } from "lucide-react";
 import { toast } from "sonner";
+import { toBase64Url } from "radium-crypto";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
@@ -91,6 +92,15 @@ import { acpFallbackTitle, publishAcpBinding, signAcpCommand } from "./acp/acp-c
 import { EncryptionNotice } from "@/components/auth/encryption-notice";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { keyManager, KeysLockedError } from "@/lib/crypto/key-manager";
+import { CustodialContentError } from "@/lib/crypto/legacy-content";
+import {
+  ChatKeysRequiredError,
+  openHistoricalFile,
+  openHistoricalChat,
+  reencryptFilePart,
+  reencryptMessageFiles,
+  requireChatKeys,
+} from "@/lib/crypto/legacy-chat";
 import {
   createChatKeys,
   rememberChatSeed,
@@ -100,6 +110,7 @@ import {
   changeChatScope,
 } from "@/lib/crypto/chat-keys";
 import type { ChatKeysSetupWire } from "@/lib/crypto/chat-keys";
+import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 import {
   openMessages,
   openQueue,
@@ -108,10 +119,14 @@ import {
   sealTitle,
   sealMessagesForFork,
   decryptFileUrl,
+  parseFileFragment,
   type ChatContentKey,
   type ChatQueue,
 } from "@/lib/crypto/chat-content";
 import { signToolApproval, signToolGrant } from "./worker-authorization";
+
+// A stable identity while the Projects list loads, so the name decryption effect does not restart.
+const NO_PROJECTS: never[] = [];
 
 /**
  * A user turn the Session reverted to: the messages as they were before (restorable until the next
@@ -252,6 +267,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const [persistedMessages, setPersistedMessages] = useState<UIMessage[]>();
   const [queue, setQueue] = useState<ChatQueue>();
   const [openedTitle, setOpenedTitle] = useState<string>();
+  const [openedInterruption, setOpenedInterruption] = useState<string>();
   const revisions = useRef<Record<string, number>>({});
   const draftKeys = useRef<
     (ChatContentKey & { keys: ChatKeysSetupWire; seed: Uint8Array }) | undefined
@@ -338,7 +354,21 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       if (context) {
         await openChatSeed(chatId, chat.keyEpoch ?? 1);
       }
-      const opened = await openMessages(chatContent.entries, chatContent.capsules, {
+      const historical = await openHistoricalChat(
+        {
+          chatId,
+          workspaceId: chat.workspace,
+          legacyContent: chat.legacyContent,
+          wants: {
+            title: !(context && chat.sealedTitle),
+            // `null` records a consumed queue; a sealed or plaintext queue replaces the historical one.
+            queue: chat.messages_queue === undefined && !(context && chat.sealedQueue),
+            interruption: chat.interruption?.message === "",
+          },
+        },
+        chatContent.entries,
+      );
+      const opened = await openMessages(historical.entries, chatContent.capsules, {
         chatId,
         workspaceId: chat.workspace,
         e2eeId: chat.e2eeId ?? chatId,
@@ -346,11 +376,11 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       const openedQueue =
         context && chat.sealedQueue
           ? await openQueue(chat.sealedQueue, context)
-          : chat.messages_queue;
+          : (chat.messages_queue ?? historical.queue);
       const title =
         context && chat.sealedTitle
           ? (await openTitle(chat.sealedTitle, context)).title
-          : chat.title;
+          : (chat.title ?? historical.title?.title);
       if (cancelled) {
         return;
       }
@@ -358,6 +388,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       setPersistedMessages(opened.messages);
       setQueue(openedQueue as ChatQueue | undefined);
       setOpenedTitle(title);
+      setOpenedInterruption(historical.interruptionMessage);
     })().catch((error: unknown) => {
       if (cancelled) {
         return;
@@ -365,10 +396,13 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       setPersistedMessages(undefined);
       setQueue(undefined);
       setOpenedTitle(undefined);
+      setOpenedInterruption(undefined);
       setContentFailure(
         error instanceof KeysLockedError
           ? "Unlock to read"
-          : "Could not verify or decrypt this chat.",
+          : error instanceof CustodialContentError
+            ? "Historical content is held in recovery custody and is not yet available."
+            : "Could not verify or decrypt this chat.",
       );
     });
     return () => {
@@ -429,12 +463,19 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
     ),
   );
-  const { data: projects } = useQuery(
+  const { data: projectsData } = useQuery(
     convexQuery(
       api.projects.list,
       signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
     ),
   );
+  // Every use below sees decrypted names; `undefined` still means the list is loading.
+  const decryptedProjects = useDecryptedNames(
+    projectsData ?? NO_PROJECTS,
+    "projects",
+    settingsWorkspaceId,
+  );
+  const projects = projectsData ? decryptedProjects : undefined;
   const { data: workerToolDefaults } = useQuery(
     convexQuery(
       api.chatroom.getWorkerToolDefaults,
@@ -776,8 +817,32 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           id,
           messages,
         }) {
-          if (chatId && chat?.e2eeId) {
-            await writableChatKey(chatId);
+          let sendMessages = messages;
+          let sendRevisions = revisions.current;
+          let recipientKey: { e2eeId: string; epoch: number; publicKey: string } | undefined;
+          if (chatId) {
+            // Every write is native: a keyless chat gets its keys first (no plaintext fallback), and
+            // historical attachments become fresh encrypted uploads before the server sees the history.
+            if (!chat?.e2eeId) await requireChatKeys(chatId);
+            const key = await writableChatKey(chatId);
+            // The server seals this turn only while the chat's current key is still exactly this one.
+            recipientKey = {
+              e2eeId: key.e2eeId,
+              epoch: key.epoch,
+              publicKey: toBase64Url(key.publicKey),
+            };
+            const reencrypted = await reencryptMessageFiles(messages, {
+              chatId,
+              workspaceId: key.workspaceId,
+              key,
+            });
+            sendMessages = reencrypted.messages;
+            if (reencrypted.changed.size > 0) {
+              // A new URL must be rewritten even though the message ID is unchanged.
+              sendRevisions = Object.fromEntries(
+                Object.entries(revisions.current).filter(([id]) => !reencrypted.changed.has(id)),
+              );
+            }
           }
           // A paired Worker runs an approved call only with the user's signature over its input.
           const lastParts = messages.at(-1)?.parts ?? [];
@@ -797,9 +862,10 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
               ...body,
               chatId,
               id,
-              messages,
-              revisions: revisions.current,
+              messages: sendMessages,
+              revisions: sendRevisions,
               approvals,
+              recipientKey,
               model: body?.model ?? getLastMessageModel(messages),
               provider: body?.provider ?? getLastMessageProvider(messages),
             },
@@ -1118,7 +1184,12 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   if (error) {
     interruption = { kind: "failed", message: error.message };
   } else if (chat?.interruption && !chat.activeStream) {
-    interruption = chat.interruption;
+    // An empty message marks historical error text that moved into the sidecar; new failures
+    // store none and show the generic line.
+    interruption =
+      chat.interruption.message === ""
+        ? { kind: chat.interruption.kind, message: openedInterruption }
+        : chat.interruption;
   }
   const runState = sessionRunState(
     status,
@@ -1131,7 +1202,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const submittedTitle = pendingPrompt?.split("\n")[0]?.trim() || undefined;
   // Encrypted titles exist only after decryption; an unlocked chat without one is simply untitled.
   const encryptedFallback = keyStatus.state === "unlocked" ? "Encrypted session" : "Locked";
-  const title = chat?.e2eeId
+  const title = chat?.e2eeId || chat?.legacyContent
     ? (openedTitle ?? submittedTitle ?? encryptedFallback)
     : (chat?.title ?? submittedTitle);
 
@@ -1403,7 +1474,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     }
     try {
       if (chatId) {
-        return chat?.e2eeId ? await writableChatKey(chatId) : undefined;
+        // New attachments are always encrypted; a keyless chat gets its keys first.
+        if (!chat?.e2eeId) await requireChatKeys(chatId);
+        return await writableChatKey(chatId);
       }
       const keys = await getDraftKeys();
       return keys && settingsWorkspaceId
@@ -1413,7 +1486,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       setCreateError(
         error instanceof KeysLockedError
           ? "Unlock to create encryption keys."
-          : "Could not prepare chat encryption.",
+          : error instanceof ChatKeysRequiredError
+            ? error.message
+            : "Could not prepare chat encryption.",
       );
       throw error;
     }
@@ -1452,9 +1527,15 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     if (status === "submitted" || status === "streaming") return;
     const index = messages.findIndex((candidate) => candidate.id === message.id);
     if (index === -1) return;
+    // A message exists only in a saved chat; capture the narrowed ids for the async callbacks.
+    const revertChatId = chatId;
+    const revertWorkspaceId = settingsWorkspaceId;
+    if (!revertChatId || !revertWorkspaceId) return;
 
     const files = await Promise.all(
-      getMessageFiles(message).map((part) => toComposerFile(part, settingsWorkspaceId!)),
+      getMessageFiles(message).map((part) =>
+        toComposerFile(part, revertWorkspaceId, revertChatId),
+      ),
     );
     const replacedDraft = composerRef.current?.swapDraft({
       text: getMessageText(message),
@@ -1480,7 +1561,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
    * it, and the chosen model is preselected for the next turn.
    */
   async function handleFork(message: UIMessage, forkModel: string) {
-    if (!settingsWorkspaceId) return;
+    if (!settingsWorkspaceId || !chatId) return;
     const index = messages.findIndex((candidate) => candidate.id === message.id);
     if (index === -1) return;
 
@@ -1511,6 +1592,18 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       ? await createChatKeys({ workspaceId: settingsWorkspaceId, scope, members })
       : undefined;
     const forkKey = keys ? { ...keys, workspaceId: settingsWorkspaceId } : undefined;
+    // A fork cannot reuse a historical attachment's sidecar: each becomes a fresh upload under the
+    // fork's own key first. Without a key this rejects rather than forking a broken attachment.
+    const reencryptTarget = { chatId, workspaceId: settingsWorkspaceId, key: forkKey };
+    const { messages: forkHistory } = await reencryptMessageFiles(history, reencryptTarget);
+    const queuedFork = forkQueue
+      ? {
+          ...forkQueue,
+          files: await Promise.all(
+            forkQueue.files.map((file) => reencryptFilePart(file, reencryptTarget)),
+          ),
+        }
+      : undefined;
     const newChatId = await forkChat({
       workspace: settingsWorkspaceId,
       scope,
@@ -1520,14 +1613,15 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         ? {
             e2ee: {
               keys: keys.keys,
-              ...(await sealMessagesForFork(history, forkKey)),
-              sealedQueue: forkQueue ? await sealQueue(forkQueue, forkKey) : undefined,
-              fileUrls: [...history.flatMap(getMessageFiles), ...(forkQueue?.files ?? [])].map(
-                (file) => file.url,
-              ),
+              ...(await sealMessagesForFork(forkHistory, forkKey)),
+              sealedQueue: queuedFork ? await sealQueue(queuedFork, forkKey) : undefined,
+              fileUrls: [
+                ...forkHistory.flatMap(getMessageFiles),
+                ...(queuedFork?.files ?? []),
+              ].map((file) => file.url),
             },
           }
-        : { messages: history, messages_queue: forkQueue }),
+        : { messages: forkHistory, messages_queue: queuedFork }),
     });
     if (keys) {
       rememberChatSeed(newChatId, keys.e2eeId, 1, keys.seed);
@@ -2149,10 +2243,22 @@ function hasFileUrl<T extends { url?: string }>(file: T): file is T & FileUIPart
   return Boolean(file.url);
 }
 
-/** Restores a file locally; any download or integrity failure aborts the entire revert. */
-async function toComposerFile(part: FileUIPart, workspaceId: Id<"workspaces">): Promise<File> {
-  const blob = await decryptFileUrl(part.url, workspaceId);
-  return new File([blob], part.filename ?? "attachment", { type: part.mediaType });
+/**
+ * Restores a file locally; any download or integrity failure aborts the entire revert. A
+ * historical attachment comes from its sidecar, since its old storage URL no longer serves bytes.
+ */
+async function toComposerFile(
+  part: FileUIPart,
+  workspaceId: Id<"workspaces">,
+  chatId: Id<"aisdk_chats">,
+): Promise<File> {
+  const historical = parseFileFragment(part.url)
+    ? null
+    : await openHistoricalFile(chatId, workspaceId, part.url);
+  const blob = historical?.blob ?? (await decryptFileUrl(part.url, workspaceId));
+  return new File([blob], part.filename ?? historical?.filename ?? "attachment", {
+    type: part.mediaType,
+  });
 }
 
 /** Chatroom's AI SDK endpoint lives on the Convex site origin, not the web origin. */

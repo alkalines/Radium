@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { internalMutation, type MutationCtx, type QueryCtx } from "../../convex/_generated/server";
 import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../../convex/helpers";
+import { deleteLegacySidecar } from "../e2ee/migration-contract";
 import {
   requireWorkspaceProvider,
   resolveRoutableProviders,
@@ -372,6 +373,7 @@ export const reportResult = internalMutation({
         binding.provider === args.provider &&
         binding.credential === args.credential;
       if (boundHere && rebind) {
+        if (binding.legacyContent) await deleteLegacySidecar(ctx, { table: "routing_sessions", record: binding._id });
         await ctx.db.delete("routing_sessions", binding._id);
       }
     }
@@ -428,7 +430,10 @@ export const prune = internalMutation({
       .query("routing_sessions")
       .withIndex("by_expiresAt", (q) => q.lt("expiresAt", now))
       .take(PRUNE_BATCH);
-    for (const session of sessions) await ctx.db.delete("routing_sessions", session._id);
+    for (const session of sessions) {
+      if (session.legacyContent) await deleteLegacySidecar(ctx, { table: "routing_sessions", record: session._id });
+      await ctx.db.delete("routing_sessions", session._id);
+    }
 
     const cooldowns = await ctx.db
       .query("routing_cooldowns")

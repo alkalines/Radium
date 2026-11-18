@@ -58,7 +58,7 @@ import {
 import { transitions } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { VoiceInputButton } from "./voice-input-button";
-import { encryptFile, fileUrlWithKey, type ChatContentKey } from "@/lib/crypto/chat-content";
+import { uploadEncryptedFile, type ChatContentKey } from "@/lib/crypto/chat-content";
 
 /** What the Composer submits: trimmed text plus AI SDK file parts backed by Convex File Storage. */
 export type ComposerMessage = { text: string; files: FileUIPart[] };
@@ -588,48 +588,27 @@ function useAttachmentUpload(workspace: Id<"workspaces"> | undefined) {
     if (!workspace) {
       throw new Error("Choose a workspace before uploading files.");
     }
-    const encrypted = chatKey ? await encryptFile(file, chatKey) : undefined;
-    try {
-      const uploadUrl = await generateUploadUrl({ workspace });
-      const response = await fetch(uploadUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": encrypted
-            ? "application/octet-stream"
-            : file.type || "application/octet-stream",
-        },
-        body: encrypted?.body ?? file,
+    if (chatKey) {
+      return uploadEncryptedFile(file, chatKey, {
+        generateUploadUrl: () => generateUploadUrl({ workspace }),
+        register: (args) => registerFile({ workspace, ...args }),
       });
-      if (!response.ok) {
-        throw new Error(`Unable to upload ${file.name} (${response.status}).`);
-      }
-      const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
-      const part = await registerFile({
-        workspace,
-        storageId,
-        ...(encrypted
-          ? {
-              e2ee: encrypted.register,
-              // The stored bytes are ciphertext; the declared type is what the model needs.
-              ...(file.type ? { mediaType: file.type } : {}),
-            }
-          : { filename: file.name }),
-      });
-      if (!part) {
-        throw new Error("File could not be attached.");
-      }
-      if (!encrypted || !chatKey) {
-        return part;
-      }
-      return {
-        type: "file",
-        url: fileUrlWithKey(part.url, encrypted.fileId, chatKey.e2eeId, encrypted.objectKey),
-        mediaType: file.type || "application/octet-stream",
-        filename: file.name,
-      };
-    } finally {
-      encrypted?.objectKey.fill(0);
     }
+    const uploadUrl = await generateUploadUrl({ workspace });
+    const response = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    if (!response.ok) {
+      throw new Error(`Unable to upload ${file.name} (${response.status}).`);
+    }
+    const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
+    const part = await registerFile({ workspace, storageId, filename: file.name });
+    if (!part) {
+      throw new Error("File could not be attached.");
+    }
+    return part;
   };
 }
 

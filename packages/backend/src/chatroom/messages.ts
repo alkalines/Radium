@@ -3,7 +3,9 @@ import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { internalMutation, type MutationCtx, type QueryCtx } from "../../convex/_generated/server";
 import { internal } from "../../convex/_generated/api";
 import type { messageSchema } from "../../convex/aisdk_schemas";
+import { deleteLegacySidecar } from "../e2ee/migration-contract";
 import { canonicalJson } from "../telemetry/canonical";
+import { assertPlaintextChatWriteAllowed } from "./legacy";
 import { deleteChatFileBatch, linkChatFiles, storedFileUrls } from "./files";
 import {
   invalidSealedContent,
@@ -83,6 +85,8 @@ export async function saveChatMessages(
     .query("chat_messages")
     .withIndex("by_chat_and_position", (q) => q.eq("chat", chat._id))
     .collect();
+  // A row whose plaintext moved into a sidecar must be rewritten natively, never with new plaintext.
+  await assertPlaintextChatWriteAllowed(ctx, rows.find((row) => row.legacyContent) ?? chat);
 
   const written: StoredMessage[] = [];
   for (const [position, message] of messages.entries()) {
@@ -109,6 +113,7 @@ export async function insertChatMessages(
   workspace: Id<"workspaces">,
   messages: StoredMessage[],
 ) {
+  await assertPlaintextChatWriteAllowed(ctx);
   for (const [position, message] of messages.entries()) {
     validatePlaintextAttachments(message.parts);
     await ctx.db.insert("chat_messages", { chat, position, message });
@@ -157,6 +162,14 @@ export async function saveSealedChatMessages(
     positions.add(write.position);
     messageIds.add(write.messageId);
   }
+  // A row whose history is still in custody cannot be replaced or truncated: no client could
+  // have read it, so the write would silently discard history awaiting release.
+  for (const row of rows) {
+    const replaced = positions.has(row.position) || row.position >= writes.length;
+    if (row.legacyContent?.kind === "custody" && replaced) {
+      invalidSealedContent();
+    }
+  }
   for (let position = 0; position < writes.length; position++) {
     if (!positions.has(position) && !existing.has(position)) {
       invalidSealedContent();
@@ -180,7 +193,15 @@ export async function saveSealedChatMessages(
     };
     const row = existing.get(write.position);
     if (row) {
-      await ctx.db.patch("chat_messages", row._id, { ...value, message: undefined });
+      // The native envelope supersedes any historical plaintext this row carried in a sidecar.
+      if (row.legacyContent) {
+        await deleteLegacySidecar(ctx, { table: "chat_messages", record: row._id });
+      }
+      await ctx.db.patch("chat_messages", row._id, {
+        ...value,
+        message: undefined,
+        legacyContent: undefined,
+      });
     } else {
       await ctx.db.insert("chat_messages", { chat: chat._id, position: write.position, ...value });
     }
@@ -188,6 +209,7 @@ export async function saveSealedChatMessages(
   for (const row of rows) {
     if (row.position >= writes.length) {
       await ctx.db.delete("chat_messages", row._id);
+      if (row.legacyContent) await deleteLegacySidecar(ctx, { table: "chat_messages", record: row._id });
     }
   }
   await linkChatFiles(ctx, workspace, chat._id, writes.fileUrls, { sealed: true });
@@ -216,7 +238,10 @@ export const cleanupChatContent = internalMutation({
       .query("chat_messages")
       .withIndex("by_chat_and_position", (q) => q.eq("chat", args.chatId))
       .take(DELETE_BATCH_SIZE);
-    for (const row of rows) await ctx.db.delete("chat_messages", row._id);
+    for (const row of rows) {
+      await ctx.db.delete("chat_messages", row._id);
+      if (row.legacyContent) await deleteLegacySidecar(ctx, { table: "chat_messages", record: row._id });
+    }
 
     const moreFiles = await deleteChatFileBatch(ctx, args.chatId);
     let moreKeys = false;

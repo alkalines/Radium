@@ -73,7 +73,19 @@ export type WorkerChatTransport =
       kind: "sealed";
       keyId: string;
       encryptionPublicKey: Uint8Array;
-      receipt?: { e2eeId: string; epoch: number; publicKey: Uint8Array };
+      receipt?: {
+        e2eeId: string;
+        epoch: number;
+        publicKey: Uint8Array;
+        keyId: string;
+        suite: number;
+        signerKeyId: string;
+        signature: Uint8Array;
+        bindingSignature: Uint8Array;
+        scope: "personal" | "shared" | "workspace";
+        creatorId: string;
+        members: string[];
+      };
     }
   | { kind: "blocked"; code: string; message: string };
 
@@ -214,7 +226,10 @@ export async function resolveWorkerChatTransport(
   };
   if (!scope.encrypted) return transport;
 
-  const chatKey = await ctx.runQuery(internal.aisdk.chatSealingInfo, { chatId: scope.chatId });
+  const chatKey = await ctx.runQuery(internal.worker_tasks.chatReceiptKey, {
+    chatId: scope.chatId,
+    userId: scope.userId,
+  });
   if (!chatKey) {
     return {
       kind: "blocked",
@@ -228,6 +243,14 @@ export async function resolveWorkerChatTransport(
       e2eeId: chatKey.e2eeId,
       epoch: chatKey.epoch,
       publicKey: new Uint8Array(chatKey.publicKey),
+      keyId: chatKey.keyId,
+      suite: chatKey.suite,
+      signerKeyId: chatKey.signerKeyId,
+      signature: new Uint8Array(chatKey.signature),
+      bindingSignature: new Uint8Array(chatKey.bindingSignature),
+      scope: chatKey.scope,
+      creatorId: chatKey.creatorId,
+      members: chatKey.members,
     },
   };
 }
@@ -403,6 +426,14 @@ export function buildWorkerChatTools(
               e2eeId: transport.receipt.e2eeId,
               epoch: transport.receipt.epoch,
               publicKey: toBase64Url(transport.receipt.publicKey),
+              keyId: transport.receipt.keyId,
+              suite: transport.receipt.suite,
+              signerKeyId: transport.receipt.signerKeyId,
+              signature: toBase64Url(transport.receipt.signature),
+              bindingSignature: toBase64Url(transport.receipt.bindingSignature),
+              scope: transport.receipt.scope,
+              creatorId: transport.receipt.creatorId,
+              members: transport.receipt.members,
             },
           }
         : {}),

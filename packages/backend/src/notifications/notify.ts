@@ -8,6 +8,7 @@ import {
   type NotificationKind,
   type NotificationPreferences,
 } from "./contract";
+import { readMigrationState } from "../e2ee/migration-contract";
 
 /**
  * How long open browser tabs have to claim a notification before it falls back to push. Tabs
@@ -21,7 +22,6 @@ export type NotificationInput = {
   kind: NotificationKind;
   chat?: Id<"aisdk_chats">;
   limitEvent?: Id<"limit_events">;
-  limitMetadata?: { provider: string; credential: string; meter?: string };
   createdAt: number;
 };
 
@@ -55,6 +55,8 @@ export async function notify(
   ctx: MutationCtx,
   input: NotificationInput,
 ): Promise<Id<"notifications"> | null> {
+  // Best-effort alerts must not write while the encryption cutover freeze keeps data stable.
+  if ((await readMigrationState(ctx))?.frozen) return null;
   const preferences = await loadNotificationPreferences(ctx, input.userId);
   if (!preferences[notificationCategory(input.kind)].enabled) return null;
 
@@ -71,7 +73,6 @@ export async function notify(
     body: input.chat ? "Session" : "Workspace",
     ...(input.chat ? { chat: input.chat } : {}),
     ...(input.limitEvent ? { limitEvent: input.limitEvent } : {}),
-    ...(input.limitMetadata ? { limitMetadata: input.limitMetadata } : {}),
     createdAt: input.createdAt,
     ...(identity ? { sealingPending: true } : {}),
   });

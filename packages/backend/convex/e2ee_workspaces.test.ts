@@ -6,12 +6,13 @@ import {
   sign,
   signingPublicKeyFromSeed,
   toBase64Url,
+  chatKeyBindingStatement,
   chatKeyStatement,
 } from "radium-crypto";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import type { GrantInput } from "../src/e2ee/workspace-contract";
+import type { ChatKeyInput, GrantInput, WrapInput } from "../src/e2ee/workspace-contract";
 
 vi.mock("./auth", () => ({
   authComponent: {
@@ -437,33 +438,272 @@ test("chat key setup requires complete active-identity recipient coverage", asyn
   await owner.mutation(api.aisdk.SetChatScope, { chatId, scope: "shared", members: ["member"] });
   const keys = {
     e2eeId: keyId(60),
-    epoch: { epoch: 1, keyId: keyId(61), suite: 1, publicKey: bytes(1216) },
-    wraps: [
-      {
-        chatEpoch: 1,
-        recipient: "identity" as const,
-        userId: "owner",
-        recipientKeyId: keyId(1),
-        sealed: bytes(1200),
-      },
-    ],
+    epoch: await chatEpochInput(workspace, keyId(60), 1, "owner", {
+      chat: chatId,
+      scope: "shared",
+      creatorId: "owner",
+      members: ["member"],
+    }),
+    wraps: [identityWrap("owner")],
   };
   await expect(owner.mutation(api.e2ee.setupChatKeys, { chatId, keys })).rejects.toThrow(
     "E2EE_KEYS_INVALID",
   );
-  keys.wraps.push({
-    chatEpoch: 1,
-    recipient: "identity",
-    userId: "member",
-    recipientKeyId: keyId(99),
-    sealed: bytes(1200),
-  });
+  keys.wraps.push({ ...identityWrap("member"), recipientKeyId: keyId(99) });
   await expect(owner.mutation(api.e2ee.setupChatKeys, { chatId, keys })).rejects.toThrow(
     "E2EE_KEYS_INVALID",
   );
   keys.wraps[1]!.recipientKeyId = keyId(2);
   await owner.mutation(api.e2ee.setupChatKeys, { chatId, keys });
   expect((await owner.query(api.e2ee.chatKeys, { chatId })).keyEpoch).toBe(1);
+});
+
+/** An identity wrap of epoch one for a fixture user (key IDs 1, 2 and 3). */
+const identityWrap = (userId: keyof typeof seeds) => ({
+  chatEpoch: 1,
+  recipient: "identity" as const,
+  userId,
+  recipientKeyId: keyId(userId === "owner" ? 1 : userId === "member" ? 2 : 3),
+  sealed: bytes(1200),
+});
+
+async function keylessChat(
+  f: Awaited<ReturnType<typeof fixture>>,
+  creator: keyof typeof seeds,
+  scope: "personal" | "shared" | "workspace",
+  members?: string[],
+) {
+  const chatId = await f.t.run((ctx) =>
+    ctx.db.insert("aisdk_chats", { workspace: f.workspace, userId: creator, scope, lastInteractionAt: 1 }),
+  );
+  if (members) {
+    await f[creator].mutation(api.aisdk.SetChatScope, { chatId, scope: "shared", members });
+  }
+  return chatId;
+}
+
+const chatEpochRows = (f: Awaited<ReturnType<typeof fixture>>, chat: Id<"aisdk_chats">) =>
+  f.t.run((ctx) =>
+    ctx.db
+      .query("e2ee_chat_keys")
+      .withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat))
+      .collect(),
+  );
+
+test("any current reader bootstraps a keyless chat with their own signature and its exact audience", async () => {
+  const f = await fixture();
+  const chatId = await keylessChat(f, "owner", "shared", ["member"]);
+  const e2eeId = keyId(60);
+  const audience = [identityWrap("owner"), identityWrap("member")];
+  const policy = {
+    chat: chatId,
+    scope: "shared" as const,
+    creatorId: "owner",
+    members: ["member"],
+  };
+  const signed = await chatEpochInput(f.workspace, e2eeId, 1, "member", policy);
+  const setup = (user: "owner" | "member" | "other", epoch: typeof signed, wraps = audience, id = e2eeId) =>
+    f[user].mutation(api.e2ee.setupChatKeys, { chatId, keys: { e2eeId: id, epoch, wraps } });
+
+  // A workspace member outside the shared chat is not a reader.
+  await expect(setup("other", await chatEpochInput(f.workspace, e2eeId, 1, "other", policy))).rejects.toThrow(
+    "Chat not found",
+  );
+  // Unsigned, or signed by an identity other than the caller's.
+  const { signature: _signature, signerKeyId: _signerKeyId, ...unsigned } = signed;
+  await expect(setup("member", unsigned as typeof signed)).rejects.toThrow("E2EE_KEYS_INVALID");
+  await expect(setup("member", await chatEpochInput(f.workspace, e2eeId, 1, "owner", policy))).rejects.toThrow(
+    "E2EE_KEYS_INVALID",
+  );
+  // The creator must be covered and nobody may be added.
+  await expect(setup("member", signed, [identityWrap("member")])).rejects.toThrow("E2EE_KEYS_INVALID");
+  await expect(setup("member", signed, [...audience, identityWrap("other")])).rejects.toThrow(
+    "E2EE_KEYS_INVALID",
+  );
+  // A binding proof is required, and it must be for this chat and exactly this audience.
+  const { bindingSignature: _binding, bindingMembers: _bound, ...v1Only } = signed;
+  await expect(setup("member", v1Only as typeof signed)).rejects.toThrow("E2EE_KEYS_INVALID");
+  const elsewhere = await keylessChat(f, "owner", "shared", ["member"]);
+  await expect(
+    setup("member", await chatEpochInput(f.workspace, e2eeId, 1, "member", { ...policy, chat: elsewhere })),
+  ).rejects.toThrow("E2EE_KEYS_INVALID");
+  await expect(
+    setup("member", await chatEpochInput(f.workspace, e2eeId, 1, "member", { ...policy, members: [] })),
+  ).rejects.toThrow("E2EE_KEYS_INVALID");
+  await expect(
+    setup("member", await chatEpochInput(f.workspace, e2eeId, 1, "member", { ...policy, scope: "workspace" })),
+  ).rejects.toThrow("E2EE_KEYS_INVALID");
+
+  await setup("member", signed);
+  const stored = await chatEpochRows(f, chatId);
+  expect(stored).toMatchObject([
+    {
+      epoch: 1,
+      keyId: signed.keyId,
+      signerUserId: "member",
+      signerKeyId: keyId(2),
+      bindingMembers: ["member"],
+    },
+  ]);
+  expect(stored[0]?.bindingSignature?.byteLength).toBe(64);
+  expect(await f.owner.query(api.e2ee.chatKeys, { chatId })).toMatchObject({
+    e2eeId,
+    keyEpoch: 1,
+    creatorId: "owner",
+    members: ["member"],
+  });
+
+  // A concurrent or later setup, even by the creator, never replaces the stored epoch.
+  const loser = keyId(61);
+  await expect(
+    setup("owner", await chatEpochInput(f.workspace, loser, 1, "owner", policy), audience, loser),
+  ).rejects.toThrow("E2EE_KEYS_INVALID");
+  expect(await chatEpochRows(f, chatId)).toEqual(stored);
+  expect(await wrapRows(f, chatId)).toHaveLength(2);
+});
+
+test("a removed creator is neither a reader nor a recipient, and personal chats stay creator-only", async () => {
+  const f = await fixture();
+  const shared = await keylessChat(f, "other", "shared", ["member"]);
+  await f.t.run(async (ctx) => {
+    const membership = await ctx.db
+      .query("workspace_members")
+      .withIndex("by_workspace_and_userId", (q) => q.eq("workspace", f.workspace).eq("userId", "other"))
+      .unique();
+    await ctx.db.delete("workspace_members", membership!._id);
+  });
+  const e2eeId = keyId(62);
+  const sharedPolicy = {
+    chat: shared,
+    scope: "shared" as const,
+    creatorId: "other",
+    members: ["member"],
+  };
+  const keys = async (signer: keyof typeof seeds, wraps: WrapInput[], policy = sharedPolicy) => ({
+    e2eeId,
+    epoch: await chatEpochInput(f.workspace, e2eeId, 1, signer, policy),
+    wraps,
+  });
+  await expect(
+    f.other.mutation(api.e2ee.setupChatKeys, { chatId: shared, keys: await keys("other", [identityWrap("member")]) }),
+  ).rejects.toThrow("Chat not found");
+  await expect(
+    f.member.mutation(api.e2ee.setupChatKeys, {
+      chatId: shared,
+      keys: await keys("member", [identityWrap("member"), identityWrap("other")]),
+    }),
+  ).rejects.toThrow("E2EE_KEYS_INVALID");
+  await f.member.mutation(api.e2ee.setupChatKeys, {
+    chatId: shared,
+    keys: await keys("member", [identityWrap("member")]),
+  });
+  expect(await chatEpochRows(f, shared)).toMatchObject([{ signerUserId: "member" }]);
+
+  const personal = await keylessChat(f, "member", "personal");
+  const personalPolicy = {
+    chat: personal,
+    scope: "personal" as const,
+    creatorId: "member",
+  };
+  await expect(
+    f.owner.mutation(api.e2ee.setupChatKeys, {
+      chatId: personal,
+      keys: await keys("owner", [identityWrap("member")], personalPolicy),
+    }),
+  ).rejects.toThrow("Chat not found");
+  await f.member.mutation(api.e2ee.setupChatKeys, {
+    chatId: personal,
+    keys: await keys("member", [identityWrap("member")], personalPolicy),
+  });
+});
+
+test("a removed picked member left behind by an unfinished removal batch is excluded, not required", async () => {
+  const f = await fixture();
+  const chatId = await keylessChat(f, "owner", "shared", ["member", "other"]);
+  // `removeMember` deleted the membership; the batch that deletes `chat_members` has not run yet.
+  await f.t.run(async (ctx) => {
+    const membership = await ctx.db
+      .query("workspace_members")
+      .withIndex("by_workspace_and_userId", (q) => q.eq("workspace", f.workspace).eq("userId", "other"))
+      .unique();
+    await ctx.db.delete("workspace_members", membership!._id);
+  });
+  const e2eeId = keyId(64);
+  const policy = {
+    chat: chatId,
+    scope: "shared" as const,
+    creatorId: "owner",
+    members: ["member", "other"],
+  };
+  const epoch = await chatEpochInput(f.workspace, e2eeId, 1, "member", policy);
+  const current = [identityWrap("owner"), identityWrap("member")];
+  const setup = (user: "member" | "other", wraps: WrapInput[], signed = epoch) =>
+    f[user].mutation(api.e2ee.setupChatKeys, { chatId, keys: { e2eeId, epoch: signed, wraps } });
+
+  // The leaver can neither act nor receive the new key.
+  await expect(setup("other", [...current, identityWrap("other")], await chatEpochInput(f.workspace, e2eeId, 1, "other", policy)))
+    .rejects.toThrow("Chat not found");
+  await expect(setup("member", [...current, identityWrap("other")])).rejects.toThrow("E2EE_KEYS_INVALID");
+  await setup("member", current);
+  // The raw membership is kept, so scope changes and rekey still see the removal.
+  expect((await f.member.query(api.e2ee.chatKeys, { chatId })).members).toEqual(["member", "other"]);
+
+  // A revocation rotation covers the same current audience.
+  await f.t.run((ctx) => ctx.db.patch("aisdk_chats", chatId, { rekey: true }));
+  const next = current.map((wrap) => ({ ...wrap, chatEpoch: 2 }));
+  const rotate = async (wraps: WrapInput[]) =>
+    f.member.mutation(api.e2ee.rotateChatKey, {
+      chatId,
+      epoch: await chatEpochInput(f.workspace, e2eeId, 2, "member", policy),
+      wraps,
+    });
+  await expect(rotate([...next, { ...identityWrap("other"), chatEpoch: 2 }])).rejects.toThrow("E2EE_KEYS_INVALID");
+  await rotate(next);
+  expect(await f.member.query(api.e2ee.chatKeys, { chatId })).toMatchObject({ keyEpoch: 2, rekey: false });
+});
+
+test("missing recipient or workspace keys keep a keyless chat waiting", async () => {
+  const f = await fixture();
+  const shared = await keylessChat(f, "owner", "shared", ["member"]);
+  await f.t.run(async (ctx) => {
+    const identity = await ctx.db
+      .query("e2ee_identities")
+      .withIndex("by_userId_and_status", (q) => q.eq("userId", "member").eq("status", "active"))
+      .unique();
+    await ctx.db.patch("e2ee_identities", identity!._id, { status: "retired", retiredAt: 1 });
+  });
+  const e2eeId = keyId(63);
+  const epoch = await chatEpochInput(f.workspace, e2eeId, 1, "owner", {
+    chat: shared,
+    scope: "shared",
+    creatorId: "owner",
+    members: ["member"],
+  });
+  for (const wraps of [[identityWrap("owner")], [identityWrap("owner"), identityWrap("member")]]) {
+    await expect(
+      f.owner.mutation(api.e2ee.setupChatKeys, { chatId: shared, keys: { e2eeId, epoch, wraps } }),
+    ).rejects.toThrow("E2EE_KEYS_INVALID");
+  }
+
+  const workspaceChat = await keylessChat(f, "owner", "workspace");
+  const workspaceKeys = async () => ({
+    e2eeId,
+    epoch: await chatEpochInput(f.workspace, e2eeId, 1, "other", {
+      chat: workspaceChat,
+      scope: "workspace",
+      creatorId: "owner",
+    }),
+    wraps: [workspaceWrap(1, 1, 100)],
+  });
+  await expect(
+    f.other.mutation(api.e2ee.setupChatKeys, { chatId: workspaceChat, keys: await workspaceKeys() }),
+  ).rejects.toThrow("E2EE_KEYS_INVALID");
+  await f.owner.mutation(api.e2ee.bootstrapWorkspaceKeys, {
+    workspace: f.workspace,
+    ...(await rotation(f.workspace)),
+  });
+  await f.other.mutation(api.e2ee.setupChatKeys, { chatId: workspaceChat, keys: await workspaceKeys() });
+  expect(await chatEpochRows(f, workspaceChat)).toMatchObject([{ signerUserId: "other" }]);
 });
 
 async function roster(
@@ -492,15 +732,25 @@ async function roster(
   };
 }
 
+/** The declared audience a chat key binding signs: raw picked members matter only when shared. */
+type BindingPolicy = {
+  chat: Id<"aisdk_chats">;
+  scope: "personal" | "shared" | "workspace";
+  creatorId: string;
+  members?: string[];
+};
+
+/** A real chat epoch signed by a fixture user, with a binding proof when `bind` is given. */
 async function chatEpochInput(
   workspace: Id<"workspaces">,
   e2eeId: string,
   epoch: number,
   signer: keyof typeof seeds,
-) {
+  bind?: BindingPolicy,
+): Promise<ChatKeyInput> {
   const publicKey = bytes(1216, 9);
   const id = keyId(70 + epoch);
-  return {
+  const input: ChatKeyInput = {
     epoch,
     keyId: id,
     suite: 1,
@@ -520,6 +770,31 @@ async function chatEpochInput(
       )
     ).slice().buffer,
   };
+  if (!bind) {
+    return input;
+  }
+  const members = bind.scope === "shared" ? [...new Set(bind.members ?? [])].sort() : [];
+  return {
+    ...input,
+    bindingSignature: (
+      await sign(
+        seeds[signer],
+        chatKeyBindingStatement({
+          chatId: bind.chat,
+          workspaceId: workspace,
+          chatE2eeId: e2eeId,
+          epoch,
+          keyId: id,
+          suite: 1,
+          publicKey: new Uint8Array(publicKey),
+          scope: bind.scope,
+          creatorId: bind.creatorId,
+          members,
+        }),
+      )
+    ).slice().buffer,
+    bindingMembers: bind.scope === "shared" ? members : undefined,
+  };
 }
 
 /** A workspace wrap input sealed to the member key of `workspaceEpoch` (fixture key IDs `10 + n`). */
@@ -531,36 +806,38 @@ const workspaceWrap = (chatEpoch: number, workspaceEpoch: number, sealedBytes: n
   sealed: bytes(sealedBytes),
 });
 
+/** A keyed chat whose epoch one is really signed and bound by its creator (not stale, no wraps). */
 async function keyedWorkspaceChat(
   f: Awaited<ReturnType<typeof fixture>>,
-  creator: string,
+  creator: "owner" | "member",
   scope: "workspace" | "personal" = "workspace",
 ) {
   const e2eeId = keyId(80);
-  const chat = await f.t.run(async (ctx) => {
-    const chat = await ctx.db.insert("aisdk_chats", {
+  const chat = await f.t.run((ctx) =>
+    ctx.db.insert("aisdk_chats", {
       workspace: f.workspace,
       userId: creator,
       scope,
       e2eeId,
       keyEpoch: 1,
       lastInteractionAt: 1,
-    });
-    await ctx.db.insert("e2ee_chat_keys", {
+    }),
+  );
+  const epoch = await chatEpochInput(f.workspace, e2eeId, 1, creator, {
+    chat,
+    scope,
+    creatorId: creator,
+  });
+  await f.t.run((ctx) =>
+    ctx.db.insert("e2ee_chat_keys", {
+      ...epoch,
       chat,
       workspace: f.workspace,
-      epoch: 1,
-      keyId: keyId(71),
-      suite: 1,
-      publicKey: bytes(1216),
       signerUserId: creator,
-      signerKeyId: keyId(creator === "owner" ? 1 : 2),
-      signature: bytes(64),
       // After the workspace keys of these fixtures, so a freshly keyed chat is not stale.
       createdAt: Date.now() + 60_000,
-    });
-    return chat;
-  });
+    }),
+  );
   return { chat, e2eeId };
 }
 
@@ -707,7 +984,11 @@ test("narrowing a chat away from workspace scope deletes its workspace wraps", a
     chatId: chat,
     scope: "personal",
     keys: {
-      rotate: await chatEpochInput(f.workspace, e2eeId, 2, "owner"),
+      rotate: await chatEpochInput(f.workspace, e2eeId, 2, "owner", {
+        chat,
+        scope: "personal",
+        creatorId: "owner",
+      }),
       wraps: [
         {
           chatEpoch: 2,
@@ -822,7 +1103,11 @@ test("non-creators rotate a chat key only when it needs rotation, and epochs are
   );
   const rotate = async (user: "member" | "other", epoch: number) => ({
     chatId: chat,
-    epoch: await chatEpochInput(f.workspace, e2eeId, epoch, user),
+    epoch: await chatEpochInput(f.workspace, e2eeId, epoch, user, {
+      chat,
+      scope: "workspace",
+      creatorId: "member",
+    }),
     wraps: [workspaceWrap(epoch, 1, 100)],
   });
   await expect(f.other.mutation(api.e2ee.rotateChatKey, await rotate("other", 2))).rejects.toThrow(
@@ -877,20 +1162,278 @@ test("sealing info is withheld while a chat key predates the workspace key or aw
   );
   expect(await info()).toBeNull();
 
+  const refreshed = await chatEpochInput(f.workspace, keyId(80), 2, "member", {
+    chat,
+    scope: "workspace",
+    creatorId: "member",
+  });
   await f.t.run(async (ctx) => {
     await ctx.db.insert("e2ee_chat_keys", {
+      ...refreshed,
       chat,
       workspace: f.workspace,
-      epoch: 2,
-      keyId: keyId(72),
-      suite: 1,
-      publicKey: bytes(1216),
+      signerUserId: "member",
       createdAt: Date.now() + 60_000,
     });
     await ctx.db.patch("aisdk_chats", chat, { keyEpoch: 2 });
+  });
+  // An unbound current epoch is never a sealing target, even when it is fresh.
+  await f.t.run(async (ctx) => {
+    const key = await ctx.db.query("e2ee_chat_keys").withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat).eq("epoch", 2)).unique();
+    await ctx.db.patch("e2ee_chat_keys", key!._id, { bindingSignature: undefined });
+  });
+  expect(await info()).toBeNull();
+  await f.t.run(async (ctx) => {
+    const key = await ctx.db.query("e2ee_chat_keys").withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat).eq("epoch", 2)).unique();
+    await ctx.db.patch("e2ee_chat_keys", key!._id, { bindingSignature: refreshed.bindingSignature });
   });
   expect(await info()).not.toBeNull();
   expect(await stale()).toBe(false);
   await f.t.run((ctx) => ctx.db.patch("aisdk_chats", chat, { rekey: true }));
   expect(await info()).toBeNull();
+});
+
+/** A chat whose epoch one is its creator's unsigned locked-device root (no signer fields). */
+async function unsignedRootChat(
+  f: Awaited<ReturnType<typeof fixture>>,
+  creator: string,
+  scope: "workspace" | "personal",
+) {
+  const e2eeId = keyId(80);
+  const chat = await f.t.run(async (ctx) => {
+    const chat = await ctx.db.insert("aisdk_chats", {
+      workspace: f.workspace,
+      userId: creator,
+      scope,
+      e2eeId,
+      keyEpoch: 1,
+      lastInteractionAt: 1,
+    });
+    await ctx.db.insert("e2ee_chat_keys", {
+      chat,
+      workspace: f.workspace,
+      epoch: 1,
+      keyId: keyId(71),
+      suite: 1,
+      publicKey: bytes(1216, 9),
+      createdAt: Date.now() + 60_000,
+    });
+    return chat;
+  });
+  const pin = { userId: creator, e2eeId, epoch: 1, publicKey: bytes(1216, 9) };
+  const info = (recipient?: typeof pin) =>
+    f.t.query(internal.aisdk.chatSealingInfo, { chatId: chat, ...(recipient ? { recipient } : {}) });
+  const patchKey = (patch: Record<string, unknown>) =>
+    f.t.run(async (ctx) => {
+      const key = await ctx.db.query("e2ee_chat_keys").withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat).eq("epoch", 1)).unique();
+      await ctx.db.patch("e2ee_chat_keys", key!._id, patch);
+    });
+  return { chat, e2eeId, pin, info, patchKey };
+}
+
+test("only the creator's exact pin seals to its own unsigned recoverable personal root", async () => {
+  const f = await fixture();
+  const { chat, pin, info, patchKey } = await unsignedRootChat(f, "member", "personal");
+  await f.t.run((ctx) =>
+    ctx.db.insert("e2ee_chat_key_wraps", {
+      chat,
+      workspace: f.workspace,
+      chatEpoch: 1,
+      recipient: "identity",
+      userId: "member",
+      recipientKeyId: keyId(2),
+      sealed: bytes(100),
+    }),
+  );
+  expect(await info(pin)).toMatchObject({ epoch: 1, keyId: keyId(71) });
+  // Unbound keys never seal without the sender's pin (Node/background writers).
+  expect(await info()).toBeNull();
+  // Same public key under another epoch or chat identity, or a swapped key, is not this pin.
+  expect(await info({ ...pin, epoch: 2 })).toBeNull();
+  expect(await info({ ...pin, e2eeId: keyId(81) })).toBeNull();
+  expect(await info({ ...pin, publicKey: bytes(1216, 8) })).toBeNull();
+  // Another actor's exact pin never uses the creator's exception.
+  expect(await info({ ...pin, userId: "owner" })).toBeNull();
+  // Partial signer fields mean it is not the creator's untouched unsigned root.
+  await patchKey({ signerKeyId: keyId(2) });
+  expect(await info(pin)).toBeNull();
+  await patchKey({ signerKeyId: undefined });
+  expect(await info(pin)).not.toBeNull();
+  // A revocation race leaves the key stale.
+  await f.t.run((ctx) => ctx.db.patch("aisdk_chats", chat, { rekey: true }));
+  expect(await info(pin)).toBeNull();
+  await f.t.run((ctx) => ctx.db.patch("aisdk_chats", chat, { rekey: undefined }));
+  expect(await info(pin)).not.toBeNull();
+  // A reset retires the identity the only wrap targets: nothing current could open new content.
+  await f.t.run(async (ctx) => {
+    const old = await ctx.db
+      .query("e2ee_identities")
+      .withIndex("by_userId_and_status", (q) => q.eq("userId", "member").eq("status", "active"))
+      .unique();
+    await ctx.db.patch("e2ee_identities", old!._id, { status: "retired" });
+    const { _id, _creationTime, ...identity } = old!;
+    await ctx.db.insert("e2ee_identities", { ...identity, keyId: keyId(9), status: "active" });
+  });
+  expect(await info(pin)).toBeNull();
+});
+
+test("an unsigned workspace root needs a current workspace wrap and member key availability", async () => {
+  const f = await fixture();
+  await f.owner.mutation(api.e2ee.bootstrapWorkspaceKeys, {
+    workspace: f.workspace,
+    ...(await rotation(f.workspace)),
+  });
+  const { chat, pin, info } = await unsignedRootChat(f, "member", "workspace");
+  expect(await info(pin)).toBeNull();
+  const wrap = await f.t.run((ctx) =>
+    ctx.db.insert("e2ee_chat_key_wraps", {
+      ...workspaceWrap(1, 1, 100),
+      chat,
+      workspace: f.workspace,
+    }),
+  );
+  expect(await info(pin)).not.toBeNull();
+  expect(await info()).toBeNull();
+  // `other` reads this workspace chat, but is not its creator.
+  expect(await info({ ...pin, userId: "other" })).toBeNull();
+  await f.t.run((ctx) => ctx.db.delete("e2ee_chat_key_wraps", wrap));
+  expect(await info(pin)).toBeNull();
+  await f.t.run((ctx) =>
+    ctx.db.insert("e2ee_chat_key_wraps", {
+      ...workspaceWrap(1, 1, 100),
+      chat,
+      workspace: f.workspace,
+    }),
+  );
+  expect(await info(pin)).not.toBeNull();
+  // The owner's reset leaves no active identity holding the current member key.
+  await f.t.run(async (ctx) => {
+    const owner = await ctx.db
+      .query("e2ee_identities")
+      .withIndex("by_userId_and_status", (q) => q.eq("userId", "owner").eq("status", "active"))
+      .unique();
+    await ctx.db.patch("e2ee_identities", owner!._id, { status: "retired" });
+  });
+  expect(await info(pin)).toBeNull();
+});
+
+test("a bound epoch seals to any reader's exact pin, and a rotation in between rejects the old pin", async () => {
+  const f = await fixture();
+  await f.owner.mutation(api.e2ee.bootstrapWorkspaceKeys, {
+    workspace: f.workspace,
+    ...(await rotation(f.workspace)),
+  });
+  const { chat, e2eeId } = await keyedWorkspaceChat(f, "member");
+  const pin = { userId: "other", e2eeId, epoch: 1, publicKey: bytes(1216, 9) };
+  const info = (recipient?: typeof pin) =>
+    f.t.query(internal.aisdk.chatSealingInfo, { chatId: chat, ...(recipient ? { recipient } : {}) });
+  expect(await info(pin)).toMatchObject({ epoch: 1 });
+  expect(await info()).toMatchObject({ epoch: 1 });
+  expect(await info({ ...pin, publicKey: bytes(1216, 8) })).toBeNull();
+  // Epoch two reuses the fixture public key: the pin's epoch still has to match.
+  const next = await chatEpochInput(f.workspace, e2eeId, 2, "member", {
+    chat,
+    scope: "workspace",
+    creatorId: "member",
+  });
+  await f.t.run(async (ctx) => {
+    await ctx.db.insert("e2ee_chat_keys", {
+      ...next,
+      chat,
+      workspace: f.workspace,
+      signerUserId: "member",
+      createdAt: Date.now() + 60_000,
+    });
+    await ctx.db.patch("aisdk_chats", chat, { keyEpoch: 2 });
+  });
+  expect(await info(pin)).toBeNull();
+  expect(await info({ ...pin, epoch: 2 })).toMatchObject({ epoch: 2 });
+  // A stale bound epoch withholds even an exact pin.
+  await f.t.run((ctx) => ctx.db.patch("aisdk_chats", chat, { rekey: true }));
+  expect(await info({ ...pin, epoch: 2 })).toBeNull();
+});
+
+test("every scope or member change needs a fresh epoch bound to the NEXT audience, and widening still rewraps history", async () => {
+  const f = await fixture();
+  const { chat, e2eeId } = await keyedWorkspaceChat(f, "owner", "personal");
+  const before = await chatEpochRows(f, chat);
+  const next = (bind: BindingPolicy) => chatEpochInput(f.workspace, e2eeId, 2, "owner", bind);
+  const widen = async (rotate?: ChatKeyInput) =>
+    f.owner.mutation(api.aisdk.SetChatScope, {
+      chatId: chat,
+      scope: "shared",
+      members: ["member"],
+      keys: {
+        rotate,
+        wraps: [
+          identityWrap("member"),
+          { ...identityWrap("owner"), chatEpoch: 2 },
+          { ...identityWrap("member"), chatEpoch: 2 },
+        ],
+      },
+    });
+  const asShared = { chat, scope: "shared" as const, creatorId: "owner", members: ["member"] };
+
+  // No fresh epoch, or one bound to the old scope, another chat or other members: nothing changes.
+  await expect(widen()).rejects.toThrow("E2EE_KEYS_INVALID");
+  await expect(widen(await next({ chat, scope: "personal", creatorId: "owner" }))).rejects.toThrow(
+    "E2EE_KEYS_INVALID",
+  );
+  const elsewhere = (await keyedWorkspaceChat(f, "owner", "personal")).chat;
+  await expect(widen(await next({ ...asShared, chat: elsewhere }))).rejects.toThrow("E2EE_KEYS_INVALID");
+  await expect(widen(await next({ ...asShared, members: [] }))).rejects.toThrow("E2EE_KEYS_INVALID");
+  expect((await f.owner.query(api.e2ee.chatKeys, { chatId: chat })).scope).toBe("personal");
+
+  await widen(await next(asShared));
+  const state = await f.owner.query(api.e2ee.chatKeys, { chatId: chat });
+  expect(state).toMatchObject({ scope: "shared", keyEpoch: 2, members: ["member"] });
+  const rows = await chatEpochRows(f, chat);
+  // The old epoch and its signature are untouched; the new one carries the next audience.
+  expect(rows[0]).toEqual(before[0]);
+  expect(rows[1]).toMatchObject({ epoch: 2, bindingMembers: ["member"] });
+  expect((await wrapRows(f, chat)).map((wrap) => [wrap.chatEpoch, wrap.userId]).sort()).toEqual([
+    [1, "member"],
+    [2, "member"],
+    [2, "owner"],
+  ]);
+});
+
+test("readers upgrade a pre-binding epoch with a fresh bound epoch; replayed or unbound rotations are refused", async () => {
+  const f = await fixture();
+  const chat = await keylessChat(f, "owner", "shared", ["member"]);
+  const e2eeId = keyId(81);
+  // Every earlier PR state: a creator-signed epoch without any binding proof.
+  const legacy = await chatEpochInput(f.workspace, e2eeId, 1, "owner");
+  await f.t.run(async (ctx) => {
+    await ctx.db.insert("e2ee_chat_keys", {
+      ...legacy,
+      chat,
+      workspace: f.workspace,
+      signerUserId: "owner",
+      createdAt: Date.now() + 60_000,
+    });
+    await ctx.db.patch("aisdk_chats", chat, { e2eeId, keyEpoch: 1 });
+  });
+  const stored = await chatEpochRows(f, chat);
+  const policy = { chat, scope: "shared" as const, creatorId: "owner", members: ["member"] };
+  const rotate = async (epoch: number, bind?: BindingPolicy) =>
+    f.member.mutation(api.e2ee.rotateChatKey, {
+      chatId: chat,
+      epoch: await chatEpochInput(f.workspace, e2eeId, epoch, "member", bind),
+      wraps: [
+        { ...identityWrap("owner"), chatEpoch: epoch },
+        { ...identityWrap("member"), chatEpoch: epoch },
+      ],
+    });
+
+  await expect(rotate(2)).rejects.toThrow("E2EE_KEYS_INVALID");
+  const elsewhere = await keylessChat(f, "owner", "shared", ["member"]);
+  await expect(rotate(2, { ...policy, chat: elsewhere })).rejects.toThrow("E2EE_KEYS_INVALID");
+  await expect(rotate(2, { ...policy, members: [] })).rejects.toThrow("E2EE_KEYS_INVALID");
+  await rotate(2, policy);
+  const rows = await chatEpochRows(f, chat);
+  expect(rows[0]).toEqual(stored[0]);
+  expect(rows[1]).toMatchObject({ epoch: 2, signerUserId: "member", bindingMembers: ["member"] });
+  // The current epoch is now bound, so another reader cannot rotate it away.
+  await expect(rotate(3, policy)).rejects.toThrow("E2EE_KEYS_INVALID");
 });

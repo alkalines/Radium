@@ -55,6 +55,8 @@ import { useAcpSession } from "./use-acp-session";
 import { AcpSessionFolder } from "./session-folder";
 import { repairAcpBinding, signAcpBinding } from "./acp-crypto";
 import { openTitle } from "@/lib/crypto/chat-content";
+import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
+import { openHistoricalChat } from "@/lib/crypto/legacy-chat";
 import { changeChatScope, ensureChatKeys } from "@/lib/crypto/chat-keys";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { authClient } from "@/lib/auth-client";
@@ -118,9 +120,13 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     });
   }, [chatId, isVisible, keyStatus, needsBinding, legacyNeedsImport]);
   const unavailable = Boolean(chatError || acp.sessionError) || typeof chatResult === "string";
-  const { data: projects } = useQuery(
+  const { data: projectsData } = useQuery(
     convexQuery(api.projects.list, chat ? { workspace: chat.workspace } : "skip"),
   );
+  // The React Query cache keeps ciphertext; only these local rows carry decrypted names. A stable
+  // array keeps the hook from re-opening names on every render.
+  const projectRows = useMemo(() => projectsData ?? [], [projectsData]);
+  const projects = useDecryptedNames(projectRows, "projects", chat?.workspace);
   // Radium's estimate of the recorded turns; subscribed only while the Session is on screen.
   const { data: estimate } = useQuery(
     convexQuery(api.agent_usage.GetChatCost, isVisible ? { chat: chatId } : "skip"),
@@ -147,6 +153,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   );
   const { data: authSession } = authClient.useSession();
   const [scopeSaving, setScopeSaving] = useState(false);
+  const [authorizing, setAuthorizing] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const reportedUnavailable = useRef(false);
   useEffect(() => {
@@ -155,8 +162,8 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     onUnavailable(tabId);
   }, [onUnavailable, tabId, unavailable]);
 
-  const selectedProject = projects?.find((project) => project._id === chat?.project);
-  const projectKnown = chat !== undefined && (!chat.project || projects !== undefined);
+  const selectedProject = projects.find((project) => project._id === chat?.project);
+  const projectKnown = chat !== undefined && (!chat.project || projectsData !== undefined);
   const projectHint = useMemo((): TabProjectHint | null | undefined => {
     if (!projectKnown) return undefined;
     if (!selectedProject) return null;
@@ -178,11 +185,41 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
       cancelled = true;
     };
   }, [chat?.e2eeId, chat?.sealedTitle, chat?.workspace, chatId, keyStatus]);
+  // A migrated Session's former plaintext title lives in the chat sidecar. It is read only while
+  // the chat has no sealed or plaintext title of its own, and never written back.
+  const [historicalTitle, setHistoricalTitle] = useState<string>();
+  const historicalSource = chat && !chat.sealedTitle && !chat.title ? chat.legacyContent : undefined;
+  const historicalWorkspace = chat?.workspace;
+  useEffect(() => {
+    if (!historicalSource || !historicalWorkspace) {
+      setHistoricalTitle((current) => (current === undefined ? current : undefined));
+      return;
+    }
+    let cancelled = false;
+    openHistoricalChat(
+      {
+        chatId,
+        workspaceId: historicalWorkspace,
+        legacyContent: historicalSource,
+        wants: { title: true, queue: false },
+      },
+      [],
+    ).then(
+      (opened) => {
+        if (!cancelled) setHistoricalTitle(opened.title?.title);
+      },
+      // Locked keys and recovery custody leave the Session untitled.
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, historicalSource, historicalWorkspace, keyStatus]);
   const tabTitle = chat?.sealedTitle
     ? openedTitle?.box === chat.sealedTitle.box
       ? openedTitle.title
       : undefined
-    : chat?.title;
+    : (chat?.title ?? historicalTitle);
   useEffect(() => {
     onTabHint(tabId, { title: tabTitle, runState, project: projectHint });
   }, [onTabHint, projectHint, runState, tabId, tabTitle]);
@@ -389,10 +426,31 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
         {legacyNeedsImport ? (
           <Alert className="mx-4 w-auto">
             <AlertTitle>Legacy agent Session needs authorization</AlertTitle>
-            <AlertDescription>
-              This older Session cannot be safely bound automatically. Ask the workspace owner to
-              re-import it from Agent sessions, or start a new Session.
-            </AlertDescription>
+            {isOwner && chat?.canManageScope ? (
+              <AlertDescription>
+                This Session was started before encryption, so its Worker runs it only after you
+                confirm it is yours.
+                <Button
+                  size="sm"
+                  className="mt-2"
+                  disabled={authorizing || keyStatus.state !== "unlocked"}
+                  onClick={() => {
+                    setAuthorizing(true);
+                    repairAcpBinding(chatId, { authorizeSession: true })
+                      .catch(() => toast.error("Could not authorize this Session."))
+                      .finally(() => setAuthorizing(false));
+                  }}
+                >
+                  {authorizing ? <Spinner /> : <KeyRoundIcon />}
+                  {keyStatus.state === "unlocked" ? "Authorize Session" : "Unlock to authorize"}
+                </Button>
+              </AlertDescription>
+            ) : (
+              <AlertDescription>
+                This older Session can be authorized only by the workspace owner, and only if they
+                started it. Otherwise, start a new Session.
+              </AlertDescription>
+            )}
           </Alert>
         ) : null}
         {offline && !hasContent && isVisible ? (

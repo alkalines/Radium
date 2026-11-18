@@ -7,6 +7,7 @@ export {
   dispatchChatEdit,
   chatEditOutcome,
   chatWorkerTarget,
+  chatReceiptKey,
   dispatchSealedChatTask,
   sealedChatTaskOutcome,
   cleanupChatCalls,

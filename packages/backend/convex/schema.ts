@@ -80,8 +80,29 @@ import {
 import { agentTurnPricingValidator, modelsDevMatchValidator } from "../src/usage/agent_usage";
 import { storedLocalUsageModelValidator } from "../src/usage/local_contract";
 import { identityStatusValidator } from "../src/e2ee/contract";
+import { legacyBoxValidator } from "../src/e2ee/legacy-contract";
+import { migrationStateFields, migrationJobFields, legacyCustodyFields } from "../src/e2ee/migration-contract";
+import { telemetryProofFields, telemetryRevisionFields } from "../src/e2ee/migration-telemetry-contract";
+import { acpDeferredCleanupValidator } from "../src/acp/deferred-contract";
 
 export default defineSchema({
+  e2ee_migration_state: defineTable(migrationStateFields).index("by_key", ["key"]),
+  e2ee_telemetry_proofs: defineTable(telemetryProofFields)
+    .index("by_table_and_record", ["table", "record"]).index("by_table_and_status", ["table", "status"]),
+  e2ee_telemetry_revisions: defineTable(telemetryRevisionFields).index("by_workspace", ["workspace"]),
+  e2ee_migration_jobs: defineTable(migrationJobFields)
+    .index("by_kind_and_table", ["kind", "table"]).index("by_status", ["status"]),
+  e2ee_legacy_custody: defineTable(legacyCustodyFields)
+    .index("by_source", ["table", "record"]).index("by_userId", ["userId"])
+    .index("by_workspace", ["workspace"]).index("by_chat", ["chat"])
+    .index("by_workspace_and_table", ["workspace", "table"]),
+  /** Keeps the orphan sweep from deleting encrypted historical envelopes. */
+  e2ee_legacy_storage: defineTable({
+    storageId: v.id("_storage"),
+    table: v.string(),
+    record: v.string(),
+  }).index("by_storageId", ["storageId"]).index("by_source", ["table", "record"]),
+  acp_deferred_cleanups: defineTable(acpDeferredCleanupValidator).index("by_key", ["key"]),
   /** Owner-defined launch configuration, shared by every Worker in the workspace. */
   acp_agents: defineTable({
     workspace: v.id("workspaces"),
@@ -90,6 +111,7 @@ export default defineSchema({
   }).index("by_workspace_and_agentId", ["workspace", "agentId"]),
   /** Owner-only agent session catalog, independent of Radium chat creation. */
   acp_agent_sessions: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     workspace: v.id("workspaces"),
     worker: v.string(),
     agentId: v.string(),
@@ -113,6 +135,7 @@ export default defineSchema({
     .index("by_sessionId_and_worker", ["workspace", "sessionId", "worker"]),
   /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
   acp_sessions: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     profile: v.optional(acpProfileValidator),
     chat: v.id("aisdk_chats"),
     workspace: v.id("workspaces"),
@@ -235,6 +258,7 @@ export default defineSchema({
   }).index("by_chat_and_epoch", ["chat", "epoch"]),
   /** Command payloads exist only until the assigned Worker claims them. */
   acp_commands: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     workspace: v.id("workspaces"),
     worker: v.string(),
     chat: v.optional(v.id("aisdk_chats")),
@@ -261,6 +285,7 @@ export default defineSchema({
     .index("by_status", ["status"]),
   /** Durable decisions are relayed once, then retained briefly for retries. */
   acp_interactions: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     chat: v.id("aisdk_chats"),
     workspace: v.id("workspaces"),
     worker: v.string(),
@@ -283,6 +308,7 @@ export default defineSchema({
     .index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
   /** Viewer-gated normalized output; no ACP content is saved in chat_messages. */
   chat_frames: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     chat: v.id("aisdk_chats"),
     stream: v.string(),
     seqFrom: v.number(),
@@ -304,6 +330,7 @@ export default defineSchema({
     .index("by_chat_and_lastSeenAt", ["chat", "lastSeenAt"]),
   /** Worker-owned agent availability; presence is deliberately not part of session reads. */
   worker_agents: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     workspace: v.id("workspaces"),
     worker: v.string(),
     ...acpAgentReportValidator.fields,
@@ -349,6 +376,7 @@ export default defineSchema({
     .index("by_workspace_and_worker", ["workspace", "worker"])
     .index("by_key", ["key"]),
   worker_presence: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     workspace: v.id("workspaces"),
     workerId: v.string(),
     lastSeenAt: v.number(),
@@ -374,6 +402,7 @@ export default defineSchema({
    * membership remain future work.
    */
   workspaces: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     ownerType: v.literal("user"),
     ownerId: v.string(), // Better Auth user ID
     name: v.string(),
@@ -387,6 +416,8 @@ export default defineSchema({
     legacyTeamId: v.optional(v.string()),
     /** Current workspace key epoch (`e2ee_workspace_epochs`); absent until the owner creates keys. */
     keyEpoch: v.optional(v.number()),
+    /** Transitional staged-format field; dedicated revision documents now own proof invalidation. */
+    telemetryProofRevision: v.optional(v.number()),
   })
     .index("by_ownerId", ["ownerId"])
     .index("by_legacyBalance", ["legacyBalance"]),
@@ -500,6 +531,7 @@ export default defineSchema({
    * (one of `folders`) are owner-set and pick the Worker working directory for its chats.
    */
   projects: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     workspace: v.id("workspaces"),
     userId: v.string(), // Better Auth ID of the creator
     name: v.string(),
@@ -689,6 +721,10 @@ export default defineSchema({
     signerUserId: v.optional(v.string()),
     signerKeyId: v.optional(v.string()),
     signature: v.optional(v.bytes()),
+    /** V2 purpose proof additionally binds the chat ID and declared audience for new encryption. */
+    bindingSignature: v.optional(v.bytes()),
+    /** Original raw picked members authenticated by bindingSignature; needed to prove safe removal. */
+    bindingMembers: v.optional(v.array(v.string())),
     createdAt: v.number(),
   }).index("by_chat_and_epoch", ["chat", "epoch"]),
   /** One chat key epoch's seed sealed to a workspace member key epoch or to one identity. */
@@ -736,6 +772,7 @@ export default defineSchema({
    * unclaimed ones fall back to push (`delivery`). Kept 7 days.
    */
   notifications: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     userId: v.string(), // Better Auth ID of the recipient
     workspace: v.optional(v.id("workspaces")),
     kind: v.union(sessionNotificationKindValidator, limitEventKindValidator),
@@ -765,6 +802,7 @@ export default defineSchema({
     ),
   })
     .index("by_userId_and_createdAt", ["userId", "createdAt"])
+    .index("by_sealingPending_and_createdAt", ["sealingPending", "createdAt"])
     .index("by_createdAt", ["createdAt"]),
   /**
    * Web Push subscriptions (one per browser profile and user), registered from Settings >
@@ -1039,6 +1077,8 @@ export default defineSchema({
    * bindings keep the provider and let the strategy choose the credential.
    */
   routing_sessions: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
+    legacyHashVersion: v.optional(v.number()),
     workspace: v.id("workspaces"),
     key: v.string(),
     provider: v.string(),
@@ -1135,6 +1175,7 @@ export default defineSchema({
     mcpServers: v.array(v.id("mcp_servers")),
   }).index("by_userId", ["userId"]),
   aisdk_chats: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     userId: v.string(), // Better Auth ID
     /** Deprecated routing pointer retained until ownership backfill completes. */
     balance: v.optional(v.id("balances")),
@@ -1235,6 +1276,7 @@ export default defineSchema({
    * `revision` let saves skip unchanged rows without reading content.
    */
   chat_messages: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     chat: v.id("aisdk_chats"),
     position: v.number(),
     message: v.optional(messageSchema),
@@ -1248,10 +1290,11 @@ export default defineSchema({
    * last row. `url` is the storage URL persisted in message file parts.
    */
   chat_files: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     workspace: v.id("workspaces"),
     /** Better Auth ID of the uploader. */
     userId: v.string(),
-    storageId: v.id("_storage"),
+    storageId: v.optional(v.id("_storage")),
     url: v.string(),
     mediaType: v.string(),
     filename: v.optional(v.string()),
@@ -1283,6 +1326,10 @@ export default defineSchema({
    * inline limit, in file storage (`storage`); neither is set when content recording was off.
    */
   telemetry_blobs: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
+    legacyHashVersion: v.optional(v.number()),
+    custodyFree: v.optional(v.boolean()),
+    custodyFreeGeneration: v.optional(v.number()),
     workspace: v.id("workspaces"),
     hash: v.string(),
     kind: telemetryBlobKindSchema,
@@ -1317,6 +1364,10 @@ export default defineSchema({
    * siblings instead of replacing history.
    */
   telemetry_nodes: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
+    legacyHashVersion: v.optional(v.number()),
+    custodyFree: v.optional(v.boolean()),
+    custodyFreeGeneration: v.optional(v.number()),
     workspace: v.id("workspaces"),
     hash: v.string(),
     parent: v.optional(v.id("telemetry_nodes")),
@@ -1331,6 +1382,8 @@ export default defineSchema({
     .index("by_blob", ["blob"]),
   /** A conversation or agent run grouped by the routing session key. */
   telemetry_sessions: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
+    legacyHashVersion: v.optional(v.number()),
     workspace: v.id("workspaces"),
     key: v.string(),
     /** Parent session key for subagents (`x-parent-session-id`). */
@@ -1343,6 +1396,7 @@ export default defineSchema({
     .index("by_workspace_and_parentKey", ["workspace", "parentKey"]),
   /** One captured Gateway request: pointers into blobs/nodes plus routing, timing, and usage. */
   telemetry_requests: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     workspace: v.id("workspaces"),
     /** Gateway request ID; idempotency key for capture. */
     requestId: v.string(),
@@ -1445,6 +1499,7 @@ export default defineSchema({
   }).index("by_workspace", ["workspace"]),
   /** Deprecated: AI SDK traces. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_traces: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     /** Deprecated attribution pointer retained for historical traces. */
     balance: v.optional(v.id("balances")),
     key: v.optional(v.id("keys")),
@@ -1479,6 +1534,7 @@ export default defineSchema({
     .index("by_chat_and_startedAt", ["chatId", "startedAt"]),
   /** Deprecated: AI SDK spans. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_spans: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     trace: v.id("telemetry_traces"),
     /** Deprecated attribution pointer retained for historical spans. */
     balance: v.optional(v.id("balances")),
@@ -1503,6 +1559,7 @@ export default defineSchema({
     .index("by_workspace_and_startedAt", ["workspace", "startedAt"]),
   /** Deprecated: AI SDK payloads. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_payloads: defineTable({
+    legacyContent: v.optional(legacyBoxValidator),
     trace: v.id("telemetry_traces"),
     span: v.optional(v.id("telemetry_spans")),
     inputJson: v.optional(v.string()),

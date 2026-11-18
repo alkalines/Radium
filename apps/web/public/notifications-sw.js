@@ -13,6 +13,7 @@ var ENVELOPE_VERSION = 1;
 var KEY_ID_BYTES = 16;
 var ENCRYPTION_PUBLIC_KEY_BYTES = 1216;
 var SIGNING_PUBLIC_KEY_BYTES = 32;
+var SIGNATURE_BYTES = 64;
 function assertSupportedSuite(suite) {
   if (suite !== SUITE_1) {
     throw new CryptoError("UNSUPPORTED_SUITE", "Unsupported crypto suite");
@@ -77,6 +78,16 @@ function fromBase64Url(text) {
 }
 function utf8(text) {
   return new TextEncoder().encode(text);
+}
+function randomBytes(length) {
+  if (!Number.isInteger(length) || length < 0) {
+    throw new CryptoError("BAD_INPUT", "Invalid random length");
+  }
+  const bytes = new Uint8Array(length);
+  for (let offset = 0;offset < length; offset += 65536) {
+    crypto.getRandomValues(bytes.subarray(offset, Math.min(offset + 65536, length)));
+  }
+  return bytes;
 }
 function equalBytes(a, b) {
   if (a.length !== b.length) {
@@ -176,7 +187,32 @@ function buildAad(parts) {
 }
 // ../../packages/crypto/src/padding.ts
 var LENGTH_PREFIX_BYTES = 4;
+var SHORT_BUCKET_BYTES = 32;
+var CONTENT_MIN_BYTES = 32;
+var CONTENT_PAGE_BYTES = 4096;
 var MAX_DATA_BYTES = 4294967295 - LENGTH_PREFIX_BYTES;
+function paddedLength(framedLength, mode) {
+  if (mode === "short") {
+    return Math.ceil(framedLength / SHORT_BUCKET_BYTES) * SHORT_BUCKET_BYTES;
+  }
+  if (framedLength > CONTENT_PAGE_BYTES) {
+    return Math.ceil(framedLength / CONTENT_PAGE_BYTES) * CONTENT_PAGE_BYTES;
+  }
+  let bucket = CONTENT_MIN_BYTES;
+  while (bucket < framedLength) {
+    bucket *= 2;
+  }
+  return bucket;
+}
+function pad(data, mode) {
+  if (data.length > MAX_DATA_BYTES) {
+    throw new CryptoError("BAD_INPUT", "Data too large to pad");
+  }
+  const padded = new Uint8Array(paddedLength(LENGTH_PREFIX_BYTES + data.length, mode));
+  new DataView(padded.buffer).setUint32(0, data.length);
+  padded.set(data, LENGTH_PREFIX_BYTES);
+  return padded;
+}
 function unpad(padded) {
   if (padded.length < LENGTH_PREFIX_BYTES) {
     throw new CryptoError("BAD_INPUT", "Invalid padding");
@@ -212,6 +248,19 @@ function kindToByte(kind) {
   }
   throw new CryptoError("BAD_INPUT", "Invalid envelope kind");
 }
+function encodeEnvelope(envelope) {
+  if (envelope.version !== ENVELOPE_VERSION) {
+    throw new CryptoError("BAD_INPUT", "Unsupported envelope version");
+  }
+  assertSupportedSuite(envelope.suite);
+  assertLength(envelope.keyRef, KEY_ID_BYTES, "keyRef");
+  assertLength(envelope.nonce, NONCE_BYTES, "nonce");
+  if (envelope.body.length < TAG_BYTES) {
+    throw new CryptoError("BAD_INPUT", "Envelope body is shorter than the tag");
+  }
+  const header = Uint8Array.of(envelope.version, envelope.suite, kindToByte(envelope.kind));
+  return concatBytes(header, envelope.keyRef, envelope.nonce, envelope.body);
+}
 function decodeEnvelope(bytes) {
   if (bytes.length < HEADER_BYTES + TAG_BYTES) {
     throw new CryptoError("BAD_ENVELOPE", "Envelope too short");
@@ -244,6 +293,22 @@ function envelopeAad(envelope, parts) {
 function importAesKey(key, usage) {
   assertLength(key, AES_KEY_BYTES, "key");
   return crypto.subtle.importKey("raw", bufferSource(key), "AES-GCM", false, [usage]);
+}
+async function sealSym(input) {
+  assertLength(input.keyRef, KEY_ID_BYTES, "keyRef");
+  const padMode = input.pad ?? "content";
+  const kind = input.kind ?? "sym";
+  const aesKey = await importAesKey(input.key, "encrypt");
+  const nonce = randomBytes(NONCE_BYTES);
+  const header = { version: ENVELOPE_VERSION, suite: SUITE_1, kind, keyRef: input.keyRef };
+  const data = padMode === "none" ? input.plaintext : pad(input.plaintext, padMode);
+  const body = await crypto.subtle.encrypt({
+    name: "AES-GCM",
+    iv: bufferSource(nonce),
+    additionalData: bufferSource(envelopeAad(header, input.aad)),
+    tagLength: TAG_BYTES * 8
+  }, aesKey, bufferSource(data));
+  return encodeEnvelope({ ...header, nonce, body: new Uint8Array(body) });
 }
 async function openSym(input) {
   const envelope = decodeEnvelope(input.envelope);
@@ -4873,6 +4938,19 @@ async function signingPublicKeyFromSeed(seed) {
   assertLength(seed, SEED_BYTES2, "seed");
   return (await getEd25519()).publicKeyFromSeed(seed);
 }
+async function sign(seed, message) {
+  assertLength(seed, SEED_BYTES2, "seed");
+  return (await getEd25519()).sign(seed, message);
+}
+async function verify(publicKey, message, signature) {
+  if (publicKey.length !== SIGNING_PUBLIC_KEY_BYTES || signature.length !== SIGNATURE_BYTES) {
+    return false;
+  }
+  return (await getEd25519()).verify(publicKey, message, signature);
+}
+function signingMessage(label, ...parts) {
+  return lengthPrefixed([utf8(label), ...parts]);
+}
 // ../../packages/crypto/src/fingerprints.ts
 var FINGERPRINT_LABEL = "radium/fingerprint-v1/";
 var FINGERPRINT_BYTES = 16;
@@ -4934,6 +5012,130 @@ async function openBox(input) {
   } finally {
     capsuleKey.fill(0);
   }
+}
+async function sha2562(bytes) {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", bufferSource(bytes)));
+}
+function decimal(value) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new CryptoError("BAD_INPUT", "Invalid integer");
+  }
+  return utf8(String(value));
+}
+// ../../packages/crypto/src/statements.ts
+function grantStatement(input) {
+  return signingMessage("radium/v1/grant", utf8(input.workspaceId), decimal(input.epoch), utf8(input.purpose), utf8(input.recipientUserId), utf8(input.recipientKeyId), input.sealed);
+}
+function rosterStatement(input) {
+  return signingMessage("radium/v1/roster", utf8(input.workspaceId), input.body);
+}
+function chatKeyStatement(input) {
+  return signingMessage("radium/v1/chat-key", utf8(input.workspaceId), utf8(input.chatE2eeId), decimal(input.epoch), utf8(input.keyId), decimal(input.suite), input.publicKey);
+}
+// ../../packages/crypto/src/roster.ts
+async function signRoster(body, signingSeed) {
+  const canonical = {
+    v: 2,
+    workspace: body.workspace,
+    version: body.version,
+    epoch: body.epoch,
+    owner: {
+      userId: body.owner.userId,
+      keyId: body.owner.keyId,
+      fingerprint: body.owner.fingerprint
+    },
+    epochs: body.epochs.map((entry) => ({
+      epoch: entry.epoch,
+      memberKeyId: entry.memberKeyId,
+      memberKeyHash: entry.memberKeyHash,
+      ownerKeyId: entry.ownerKeyId,
+      ownerKeyHash: entry.ownerKeyHash
+    })),
+    members: body.members.map((member) => ({
+      userId: member.userId,
+      keyId: member.keyId,
+      fingerprint: member.fingerprint
+    })),
+    workers: body.workers.map((worker) => ({
+      workerId: worker.workerId,
+      keyId: worker.keyId,
+      fingerprint: worker.fingerprint
+    }))
+  };
+  const encoded = utf8(JSON.stringify(canonical));
+  return {
+    version: canonical.version,
+    body: encoded,
+    signature: await sign(signingSeed, rosterStatement({ workspaceId: canonical.workspace, body: encoded })),
+    signerKeyId: canonical.owner.keyId
+  };
+}
+function isKeyId(value) {
+  if (typeof value !== "string")
+    return false;
+  try {
+    return fromBase64Url(value).length === 16;
+  } catch {
+    return false;
+  }
+}
+function isDigest(value) {
+  if (typeof value !== "string")
+    return false;
+  try {
+    return fromBase64Url(value).length === 32;
+  } catch {
+    return false;
+  }
+}
+function isPositive(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+async function verifyRoster(input) {
+  if (input.version < input.highWater || input.signerKeyId !== input.owner.keyId || !await verify(input.owner.signingPublicKey, rosterStatement({ workspaceId: input.workspaceId, body: input.body }), input.signature))
+    throw new CryptoError("DECRYPT_FAILED", "Roster signature or version failed");
+  let body;
+  try {
+    body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(input.body));
+  } catch {
+    throw new CryptoError("BAD_ENVELOPE", "Invalid roster body");
+  }
+  if (!body || typeof body !== "object" || body.v !== 1 && body.v !== 2 || body.workspace !== input.workspaceId || body.version !== input.version || !isPositive(body.version) || !isPositive(body.epoch) || !body.owner || body.owner.userId !== input.owner.userId || body.owner.keyId !== input.owner.keyId || body.owner.fingerprint !== input.owner.fingerprint || !Array.isArray(body.epochs) || !Array.isArray(body.members) || body.v === 2 && !Array.isArray(body.workers))
+    throw new CryptoError("BAD_ENVELOPE", "Invalid roster body");
+  const epochIds = new Set;
+  for (const epoch of body.epochs) {
+    if (!epoch || !isPositive(epoch.epoch) || epoch.epoch > body.epoch || epochIds.has(epoch.epoch) || !isKeyId(epoch.memberKeyId) || !isKeyId(epoch.ownerKeyId) || !isDigest(epoch.memberKeyHash) || !isDigest(epoch.ownerKeyHash))
+      throw new CryptoError("BAD_ENVELOPE", "Invalid roster epoch");
+    epochIds.add(epoch.epoch);
+  }
+  if (!epochIds.has(body.epoch))
+    throw new CryptoError("BAD_ENVELOPE", "Roster current epoch missing");
+  const members = new Set;
+  for (const member of body.members) {
+    if (!member || typeof member.userId !== "string" || typeof member.fingerprint !== "string" || member.userId === body.owner.userId || members.has(member.userId) || !isKeyId(member.keyId))
+      throw new CryptoError("BAD_ENVELOPE", "Invalid roster member");
+    members.add(member.userId);
+  }
+  const workers = body.v === 2 ? body.workers : [];
+  const workerIds = new Set;
+  for (const worker of workers) {
+    if (!worker || typeof worker.workerId !== "string" || worker.workerId.length === 0 || typeof worker.fingerprint !== "string" || workerIds.has(worker.workerId) || !isKeyId(worker.keyId))
+      throw new CryptoError("BAD_ENVELOPE", "Invalid roster worker");
+    workerIds.add(worker.workerId);
+  }
+  return { ...body, workers };
+}
+// ../../packages/crypto/src/account.ts
+var IDENTITY_STATEMENT = "radium/v1/identity";
+function identityStatement(keyId, suite, encryptionPublicKey, signingPublicKey) {
+  return signingMessage(IDENTITY_STATEMENT, keyId, Uint8Array.of(suite), encryptionPublicKey, signingPublicKey);
+}
+async function verifyIdentitySelfSignature(input) {
+  if (input.suite !== SUITE_1 || input.keyId.length !== KEY_ID_BYTES) {
+    return false;
+  }
+  const statement = identityStatement(input.keyId, input.suite, input.encryptionPublicKey, input.signingPublicKey);
+  return verify(input.signingPublicKey, statement, input.signature);
 }
 // ../../node_modules/.bun/convex@1.49.0+0441d6f8f57aca1e/node_modules/convex/dist/esm/values/base64.js
 var lookup = [];
@@ -5759,6 +5961,65 @@ var v = {
     return v.union(value, v.null());
   }
 };
+// ../../node_modules/.bun/convex@1.49.0+0441d6f8f57aca1e/node_modules/convex/dist/esm/server/functionName.js
+var functionName = Symbol.for("functionName");
+
+// ../../node_modules/.bun/convex@1.49.0+0441d6f8f57aca1e/node_modules/convex/dist/esm/server/components/paths.js
+var toReferencePath = Symbol.for("toReferencePath");
+
+// ../../node_modules/.bun/convex@1.49.0+0441d6f8f57aca1e/node_modules/convex/dist/esm/server/api.js
+function makeFunctionReference(name) {
+  return { [functionName]: name };
+}
+function createApi(pathParts = []) {
+  const handler = {
+    get(_, prop) {
+      if (typeof prop === "string") {
+        const newParts = [...pathParts, prop];
+        return createApi(newParts);
+      } else if (prop === functionName) {
+        if (pathParts.length < 2) {
+          const found = ["api", ...pathParts].join(".");
+          throw new Error(`API path is expected to be of the form \`api.moduleName.functionName\`. Found: \`${found}\``);
+        }
+        const path = pathParts.slice(0, -1).join("/");
+        const exportName = pathParts[pathParts.length - 1];
+        if (exportName === "default") {
+          return path;
+        } else {
+          return path + ":" + exportName;
+        }
+      } else if (prop === Symbol.toStringTag) {
+        return "FunctionReference";
+      } else {
+        return;
+      }
+    }
+  };
+  return new Proxy({}, handler);
+}
+var anyApi = createApi();
+// ../../node_modules/.bun/convex@1.49.0+0441d6f8f57aca1e/node_modules/convex/dist/esm/server/components/index.js
+function createChildComponents(root, pathParts) {
+  const handler = {
+    get(_, prop) {
+      if (typeof prop === "string") {
+        const newParts = [...pathParts, prop];
+        return createChildComponents(root, newParts);
+      } else if (prop === toReferencePath) {
+        if (pathParts.length < 1) {
+          const found = [root, ...pathParts].join(".");
+          throw new Error(`API path is expected to be of the form \`${root}.childComponent.functionName\`. Found: \`${found}\``);
+        }
+        return `_reference/childComponent/` + pathParts.join("/");
+      } else {
+        return;
+      }
+    }
+  };
+  return new Proxy({}, handler);
+}
+var componentsGeneric = () => createChildComponents("components", []);
 // ../../packages/backend/src/notifications/contract.ts
 var sessionNotificationKindValidator = v.union(v.literal("session_finished"), v.literal("session_approval"), v.literal("session_question"), v.literal("session_failed"));
 var notificationCategoryValidator = v.union(v.literal("finished"), v.literal("attention"), v.literal("failed"), v.literal("limits"));
@@ -5786,6 +6047,23 @@ function notificationAad(userId, workspace, id) {
     record: id,
     field: "content"
   };
+}
+var resumeNotificationSealingReference = makeFunctionReference("notifications:resumeSealing");
+
+// ../../packages/backend/convex/_generated/api.js
+var api = anyApi;
+var components = componentsGeneric();
+
+// ../../packages/backend/src/e2ee/legacy-contract.ts
+var legacyBoxValidator = v.object({
+  kind: v.union(v.literal("identity"), v.literal("workspace_member"), v.literal("workspace_owner"), v.literal("chat"), v.literal("custody")),
+  keyId: v.string(),
+  epoch: v.number(),
+  box: v.bytes(),
+  storageId: v.optional(v.id("_storage"))
+});
+function legacyAad(table, record, workspace) {
+  return { workspace: workspace ?? "", parent: "legacy-v1", table, record, field: "legacy" };
 }
 
 // src/lib/crypto/account-keys.ts
@@ -6392,6 +6670,802 @@ var keyManager = {
   dispose: () => browser()?.dispose()
 };
 
+// src/lib/crypto/runtime.ts
+var client = null;
+var clearers = new Set;
+var generation = 0;
+function cryptoClient() {
+  if (!client)
+    throw new CryptoError("BAD_INPUT", "Encryption client is not mounted");
+  return client;
+}
+function currentUserId() {
+  const status = keyManager.getSnapshot();
+  if (!("userId" in status))
+    throw new KeysLockedError;
+  return status.userId;
+}
+function onSecretsCleared(clear) {
+  clearers.add(clear);
+}
+function secretGeneration() {
+  return generation;
+}
+function bytes(value) {
+  return value instanceof Uint8Array ? value : new Uint8Array(value);
+}
+function buffer(value) {
+  return value.slice().buffer;
+}
+function highWater(name) {
+  try {
+    const n = Number(localStorage.getItem(name));
+    return Number.isSafeInteger(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+function advanceHighWater(name, value) {
+  try {
+    localStorage.setItem(name, String(Math.max(highWater(name), value)));
+  } catch {}
+}
+
+// src/lib/crypto/public-keys.ts
+function readCache() {
+  try {
+    const value = JSON.parse(localStorage.getItem(`radium.e2ee.pub.v1:${currentUserId()}`) ?? "null");
+    return value && typeof value.workspaces === "object" ? value : { workspaces: {} };
+  } catch {
+    return { workspaces: {} };
+  }
+}
+function writeCache(cache) {
+  if (keyManager.getSnapshot().state !== "unlocked")
+    throw new KeysLockedError;
+  try {
+    localStorage.setItem(`radium.e2ee.pub.v1:${currentUserId()}`, JSON.stringify(cache));
+  } catch {}
+}
+async function fetchIdentities(userIds) {
+  const result = new Map;
+  const unique = [...new Set(userIds)];
+  for (let start = 0;start < unique.length; start += 200) {
+    const rows = await cryptoClient().query(api.e2ee.identityKeys, {
+      userIds: unique.slice(start, start + 200)
+    });
+    for (const row of rows) {
+      if (!row)
+        continue;
+      const identity = await verifyPublicIdentity(row);
+      result.set(row.userId, identity);
+    }
+  }
+  return result;
+}
+async function verifyPublicIdentity(row) {
+  const identity = {
+    userId: row.userId,
+    keyId: row.keyId,
+    suite: row.suite,
+    encryptionPublicKey: bytes(row.encryptionPublicKey),
+    signingPublicKey: bytes(row.signingPublicKey),
+    selfSignature: bytes(row.selfSignature)
+  };
+  const valid = await verifyIdentitySelfSignature({
+    keyId: fromBase64Url(row.keyId),
+    suite: row.suite,
+    encryptionPublicKey: identity.encryptionPublicKey,
+    signingPublicKey: identity.signingPublicKey,
+    signature: identity.selfSignature
+  });
+  if (fromBase64Url(row.keyId).length !== 16 || !valid) {
+    throw new CryptoError("DECRYPT_FAILED", "Identity signature failed");
+  }
+  return { ...identity, fingerprint: await fingerprint(identity), status: row.status };
+}
+async function fetchHistoricalIdentities(keyIds, chatId) {
+  const result = new Map;
+  const unique = [...new Set(keyIds)];
+  for (let start = 0;start < unique.length; start += 200) {
+    const rows = await cryptoClient().query(api.e2ee.identityKeysByKeyId, {
+      keyIds: unique.slice(start, start + 200),
+      chatId
+    });
+    for (const row of rows) {
+      if (!row)
+        continue;
+      result.set(row.keyId, await verifyPublicIdentity(row));
+    }
+  }
+  return result;
+}
+function cacheWorkspacePublicKey(workspaceId, key) {
+  const cache = readCache();
+  cache.workspaces[workspaceId] = {
+    epoch: key.epoch,
+    memberKeyId: key.keyId,
+    memberPublicKey: toBase64Url(key.publicKey)
+  };
+  writeCache(cache);
+}
+
+// src/lib/crypto/trust-store.ts
+var listeners = new Set;
+var store = null;
+var owner = null;
+var status = "locked";
+var loading = null;
+function emit() {
+  for (const listener of listeners)
+    listener();
+}
+onSecretsCleared(() => {
+  store = null;
+  owner = null;
+  status = "locked";
+  loading = null;
+  emit();
+});
+var aad = (userId, version) => ({
+  table: "e2ee_trust_stores",
+  workspace: "",
+  parent: userId,
+  record: String(version),
+  field: "pins"
+});
+async function sealTrustStore(input) {
+  const key = await hkdf(input.amk, LABELS.trustStore);
+  try {
+    return await sealSym({
+      key,
+      keyRef: fromBase64Url(input.keyId),
+      plaintext: utf8(JSON.stringify(input.store)),
+      aad: aad(input.userId, input.store.version),
+      pad: "content"
+    });
+  } finally {
+    key.fill(0);
+  }
+}
+async function openTrustStore(input) {
+  if (input.version < input.highWater)
+    throw new CryptoError("DECRYPT_FAILED", "Trust store rollback detected");
+  if (!equalBytes(decodeEnvelope(input.envelope).keyRef, fromBase64Url(input.keyId)))
+    throw new CryptoError("DECRYPT_FAILED", "Trust store identity mismatch");
+  const key = await hkdf(input.amk, LABELS.trustStore);
+  let plaintext;
+  try {
+    plaintext = await openSym({
+      key,
+      envelope: input.envelope,
+      aad: aad(input.userId, input.version),
+      pad: "content"
+    });
+    const parsed = JSON.parse(new TextDecoder().decode(plaintext));
+    if (parsed.v !== 1 || parsed.version !== input.version || !parsed.pins || Array.isArray(parsed.pins) || typeof parsed.pins !== "object")
+      throw new CryptoError("BAD_ENVELOPE", "Invalid trust store");
+    for (const pin of Object.values(parsed.pins)) {
+      if (!pin || typeof pin.keyId !== "string" || fromBase64Url(pin.keyId).length !== 16 || typeof pin.fingerprint !== "string" || !["tofu", "verified"].includes(pin.state) || !Number.isFinite(pin.updatedAt))
+        throw new CryptoError("BAD_ENVELOPE", "Invalid trust pin");
+    }
+    return parsed;
+  } finally {
+    key.fill(0);
+    plaintext?.fill(0);
+  }
+}
+async function load(force = false) {
+  const userId = currentUserId();
+  if (!force && store && owner === userId)
+    return;
+  if (loading)
+    return loading;
+  loading = keyManager.useAmk(async (amk, identity) => {
+    const row = await cryptoClient().query(api.e2ee.getTrustStore, {});
+    const marker = `radium.e2ee.trust.v1:${userId}`;
+    if ((row?.version ?? 0) < highWater(marker)) {
+      status = "rollback";
+      store = null;
+      emit();
+      throw new CryptoError("DECRYPT_FAILED", "Trust store rollback detected");
+    }
+    const next = row ? await openTrustStore({
+      amk,
+      keyId: toBase64Url(identity.keyId),
+      userId,
+      version: row.version,
+      envelope: bytes(row.envelope),
+      highWater: highWater(marker)
+    }) : { v: 1, version: 0, pins: {} };
+    if (keyManager.getSnapshot().state !== "unlocked" || currentUserId() !== userId)
+      throw new CryptoError("DECRYPT_FAILED", "Keys locked during trust sync");
+    store = next;
+    owner = userId;
+    status = "ready";
+    advanceHighWater(marker, next.version);
+    emit();
+  }).finally(() => {
+    loading = null;
+  });
+  return loading;
+}
+var trust = {
+  load,
+  getSnapshot: () => status,
+  pinnedFingerprint(userId) {
+    return store?.pins[userId]?.fingerprint ?? null;
+  },
+  subscribe(listener) {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  },
+  async check(userId, identity) {
+    await load();
+    const digest = await fingerprint(identity);
+    if (digest !== identity.fingerprint)
+      throw new CryptoError("DECRYPT_FAILED", "Identity fingerprint mismatch");
+    if (userId === currentUserId()) {
+      return keyManager.useAmk(async (_, own) => equalBytes(own.encryption.publicKey, identity.encryptionPublicKey) && equalBytes(own.signing.publicKey, identity.signingPublicKey) ? "self" : "changed");
+    }
+    const pin = store?.pins[userId];
+    if (!pin)
+      return "first-contact";
+    if (pin.keyId !== identity.keyId || pin.fingerprint !== digest)
+      return "changed";
+    return pin.state;
+  },
+  async pin(userId, identity, state) {
+    for (let attempt = 0;attempt < 5; attempt++) {
+      await load(attempt > 0);
+      if (status !== "ready" || !store)
+        throw new CryptoError("DECRYPT_FAILED", "Trust store unavailable");
+      const expectedVersion = store.version || null;
+      const next = {
+        v: 1,
+        version: store.version + 1,
+        pins: {
+          ...store.pins,
+          [userId]: {
+            keyId: identity.keyId,
+            fingerprint: await fingerprint(identity),
+            state,
+            updatedAt: Date.now()
+          }
+        }
+      };
+      try {
+        await keyManager.useAmk(async (amk, own) => {
+          const envelope = await sealTrustStore({
+            amk,
+            keyId: toBase64Url(own.keyId),
+            userId: currentUserId(),
+            store: next
+          });
+          await cryptoClient().mutation(api.e2ee.saveTrustStore, {
+            expectedVersion,
+            version: next.version,
+            envelope: buffer(envelope)
+          });
+        });
+        if (keyManager.getSnapshot().state !== "unlocked")
+          throw new CryptoError("DECRYPT_FAILED", "Keys locked during trust update");
+        store = next;
+        advanceHighWater(`radium.e2ee.trust.v1:${currentUserId()}`, next.version);
+        emit();
+        return;
+      } catch (error) {
+        const data = error && typeof error === "object" && "data" in error ? error.data : null;
+        if (!data || typeof data !== "object" || !("code" in data) || data.code !== "TRUST_STORE_CONFLICT")
+          throw error;
+      }
+    }
+    throw new CryptoError("BAD_INPUT", "Trust store changed concurrently; try again");
+  }
+};
+
+// src/lib/crypto/trust-requests.ts
+var queue = [];
+var listeners2 = new Set;
+function emit2() {
+  for (const listener of listeners2)
+    listener();
+}
+onSecretsCleared(() => {
+  for (const pending of queue)
+    pending.reject(new CryptoError("DECRYPT_FAILED", "Key exchange cancelled by lock"));
+  queue.length = 0;
+  emit2();
+});
+async function requestIdentityTrust(identity, trustState) {
+  let pending = queue.find((entry) => entry.identity.userId === identity.userId && entry.identity.keyId === identity.keyId && entry.identity.fingerprint === identity.fingerprint);
+  if (!pending) {
+    const deferred = Promise.withResolvers();
+    pending = { identity, trustState, ...deferred };
+    queue.push(pending);
+    emit2();
+  }
+  await pending.promise;
+  const accepted = await trust.check(identity.userId, identity);
+  if (accepted !== "self" && accepted !== "tofu" && accepted !== "verified") {
+    throw new CryptoError("DECRYPT_FAILED", "Identity approval failed");
+  }
+}
+
+// src/lib/crypto/workspace-proofs.ts
+async function openWorkspaceGrant(input) {
+  if (!await verify(input.granter.signingPublicKey, grantStatement({
+    workspaceId: input.workspaceId,
+    epoch: input.epoch,
+    purpose: input.purpose,
+    recipientUserId: input.userId,
+    recipientKeyId: input.recipientKeyId,
+    sealed: input.sealed
+  }), input.signature))
+    throw new CryptoError("DECRYPT_FAILED", "Grant signature failed");
+  const seed = await openBox({
+    seed: input.recipientSeed,
+    box: input.sealed,
+    aad: {
+      table: "e2ee_workspace_grants",
+      workspace: input.workspaceId,
+      parent: input.userId,
+      record: `${input.epoch}:${input.purpose}`,
+      field: input.recipientKeyId
+    },
+    pad: "none"
+  });
+  if (seed.length !== 32 || !equalBytes(await encryptionPublicKeyFromSeed(seed), input.epochPublicKey) || toBase64Url(await sha2562(input.epochPublicKey)) !== input.rosterKeyHash) {
+    seed.fill(0);
+    throw new CryptoError("DECRYPT_FAILED", "Grant key differs from roster");
+  }
+  return seed;
+}
+
+// src/lib/crypto/workspace-keys.ts
+var ring = new Map;
+var verifiedStates = new Map;
+var stateLoads = new Map;
+var cacheKey = (workspaceId, epoch, purpose) => `${workspaceId}:${epoch}:${purpose}`;
+onSecretsCleared(() => {
+  for (const key of ring.values())
+    key.seed.fill(0);
+  ring.clear();
+  verifiedStates.clear();
+  stateLoads.clear();
+});
+trust.subscribe(() => {
+  verifiedStates.clear();
+  stateLoads.clear();
+});
+
+class TrustRequiredError extends Error {
+  identity;
+  trustState;
+  constructor(identity, trustState) {
+    super(trustState === "changed" ? "Identity key changed; approval required" : "Approve this identity before exchanging keys");
+    this.identity = identity;
+    this.trustState = trustState;
+    this.name = "TrustRequiredError";
+  }
+}
+async function requireTrust(identity) {
+  const state = await trust.check(identity.userId, identity);
+  if (state === "first-contact" || state === "changed") {
+    await requestIdentityTrust(identity, state);
+  }
+}
+function verifyWorkspaceState(workspaceId) {
+  const pending = stateLoads.get(workspaceId);
+  if (pending)
+    return pending;
+  const load = (async () => {
+    const state = await cryptoClient().query(api.e2ee.workspaceKeyState, {
+      workspace: workspaceId
+    });
+    const key = JSON.stringify(state, (_, value) => value instanceof ArrayBuffer ? toBase64Url(bytes(value)) : value);
+    const cached = verifiedStates.get(workspaceId);
+    if (cached?.key === key)
+      return cached.promise;
+    const promise = verifyState(workspaceId, state);
+    verifiedStates.set(workspaceId, { key, promise });
+    try {
+      return await promise;
+    } catch (error) {
+      verifiedStates.delete(workspaceId);
+      throw error;
+    }
+  })().finally(() => stateLoads.delete(workspaceId));
+  stateLoads.set(workspaceId, load);
+  return load;
+}
+async function verifyState(workspaceId, state) {
+  const generation = secretGeneration();
+  const identities = await fetchIdentities([
+    state.ownerId,
+    currentUserId(),
+    ...state.members.map((member) => member.userId),
+    ...state.myGrants.map((grant) => grant.granterUserId)
+  ]);
+  const owner = identities.get(state.ownerId);
+  if (!owner || !state.roster || !state.keyEpoch)
+    throw new CryptoError("DECRYPT_FAILED", "Workspace roster missing");
+  await requireTrust(owner);
+  const marker = `radium.e2ee.roster.v1:${workspaceId}`;
+  let roster = state.roster;
+  if (roster.signerKeyId !== owner.keyId && state.ownerId === currentUserId()) {
+    const historical = (await fetchHistoricalIdentities([roster.signerKeyId])).get(roster.signerKeyId);
+    if (!historical || historical.status !== "retired" || historical.userId !== state.ownerId) {
+      throw new CryptoError("DECRYPT_FAILED", "Historical roster owner unavailable");
+    }
+    const previous = await verifyRoster({
+      workspaceId,
+      ...roster,
+      body: bytes(roster.body),
+      signature: bytes(roster.signature),
+      owner: historical,
+      highWater: highWater(marker)
+    });
+    const resigned = await wireRoster({
+      ...previous,
+      version: previous.version + 1,
+      owner: memberBinding(owner)
+    });
+    await cryptoClient().mutation(api.e2ee.publishRoster, {
+      workspace: workspaceId,
+      roster: resigned
+    });
+    roster = { ...roster, ...resigned };
+  }
+  const verifiedRoster = await verifyRoster({
+    workspaceId,
+    version: roster.version,
+    signerKeyId: roster.signerKeyId,
+    body: bytes(roster.body),
+    signature: bytes(roster.signature),
+    owner,
+    highWater: highWater(marker)
+  });
+  if (verifiedRoster.epoch !== state.keyEpoch || state.epochs.length !== verifiedRoster.epochs.length)
+    throw new CryptoError("DECRYPT_FAILED", "Workspace epoch rollback or substitution");
+  for (const epoch of state.epochs) {
+    const entry = verifiedRoster.epochs.find((row) => row.epoch === epoch.epoch);
+    if (!entry || entry.memberKeyId !== epoch.memberKeyId || entry.ownerKeyId !== epoch.ownerKeyId || entry.memberKeyHash !== toBase64Url(await sha2562(bytes(epoch.memberPublicKey))) || entry.ownerKeyHash !== toBase64Url(await sha2562(bytes(epoch.ownerPublicKey))))
+      throw new CryptoError("DECRYPT_FAILED", "Workspace epoch differs from signed roster");
+  }
+  if (secretGeneration() !== generation) {
+    throw new KeysLockedError;
+  }
+  advanceHighWater(marker, verifiedRoster.version);
+  const latest = state.epochs.find((epoch) => epoch.epoch === state.keyEpoch);
+  cacheWorkspacePublicKey(workspaceId, {
+    epoch: latest.epoch,
+    keyId: latest.memberKeyId,
+    publicKey: bytes(latest.memberPublicKey)
+  });
+  return { ...state, identities, verifiedRoster };
+}
+async function trustedIdentity(workspaceId, userId, allowPinnedCreator = false) {
+  const state = await verifyWorkspaceState(workspaceId);
+  const identity = state.identities.get(userId);
+  if (!identity)
+    throw new CryptoError("DECRYPT_FAILED", "Identity unavailable");
+  if (userId === currentUserId() || userId === state.ownerId || allowPinnedCreator) {
+    await requireTrust(identity);
+    return identity;
+  }
+  const pinState = await trust.check(userId, identity);
+  if (pinState === "changed") {
+    await requestIdentityTrust(identity, "changed");
+    return identity;
+  }
+  if (pinState === "tofu" || pinState === "verified") {
+    return identity;
+  }
+  const member = state.verifiedRoster.members.find((entry) => entry.userId === userId && entry.keyId === identity.keyId && entry.fingerprint === identity.fingerprint);
+  if (!member) {
+    await requestIdentityTrust(identity, "first-contact");
+  }
+  return identity;
+}
+async function getWorkspaceKey(workspaceId, epoch, purpose) {
+  if (trust.getSnapshot() === "rollback") {
+    throw new CryptoError("DECRYPT_FAILED", "Trust store rollback blocks key access");
+  }
+  if (keyManager.getSnapshot().state !== "unlocked")
+    throw new KeysLockedError;
+  const cached = ring.get(cacheKey(workspaceId, epoch, purpose));
+  if (cached)
+    return cached;
+  const generation = secretGeneration();
+  const state = await verifyWorkspaceState(workspaceId);
+  const row = state.epochs.find((entry) => entry.epoch === epoch);
+  const rosterEpoch = state.verifiedRoster.epochs.find((entry) => entry.epoch === epoch);
+  if (!row || !rosterEpoch)
+    throw new CryptoError("DECRYPT_FAILED", "Workspace epoch missing");
+  return keyManager.useAmk(async (_, own) => {
+    const recipientKeyId = toBase64Url(own.keyId);
+    const grant = state.myGrants.find((entry) => entry.epoch === epoch && entry.purpose === purpose && entry.recipientKeyId === recipientKeyId);
+    if (!grant)
+      throw new CryptoError("DECRYPT_FAILED", "Workspace key not granted");
+    let granter = state.identities.get(grant.granterUserId);
+    const retired = granter?.keyId !== grant.granterKeyId;
+    if (retired) {
+      granter = (await fetchHistoricalIdentities([grant.granterKeyId])).get(grant.granterKeyId);
+      const endorsedUser = grant.granterUserId === state.ownerId || state.verifiedRoster.members.some((member) => member.userId === grant.granterUserId);
+      if (!granter || granter.status !== "retired" || granter.userId !== grant.granterUserId || !endorsedUser || purpose === "owner" && granter.userId !== state.ownerId) {
+        throw new CryptoError("DECRYPT_FAILED", "Historical grant signer not authorized");
+      }
+    }
+    if (!granter || granter.keyId !== grant.granterKeyId) {
+      throw new CryptoError("DECRYPT_FAILED", "Grant signer unavailable");
+    }
+    if (!retired) {
+      if (granter.userId === currentUserId() || granter.userId === state.ownerId) {
+        await requireTrust(granter);
+      } else {
+        const entry = state.verifiedRoster.members.find((member) => member.userId === granter.userId && member.keyId === granter.keyId && member.fingerprint === granter.fingerprint);
+        if (!entry || purpose === "owner") {
+          throw new CryptoError("DECRYPT_FAILED", "Grant signer not authorized by roster");
+        }
+        if (await trust.check(granter.userId, granter) === "changed") {
+          await requestIdentityTrust(granter, "changed");
+        }
+      }
+    }
+    const publicKey = bytes(purpose === "member" ? row.memberPublicKey : row.ownerPublicKey);
+    const seed = await openWorkspaceGrant({
+      workspaceId,
+      ...grant,
+      sealed: bytes(grant.sealed),
+      signature: bytes(grant.signature),
+      granter,
+      recipientSeed: own.encryption.seed,
+      epochPublicKey: publicKey,
+      rosterKeyHash: purpose === "member" ? rosterEpoch.memberKeyHash : rosterEpoch.ownerKeyHash
+    });
+    if (keyManager.getSnapshot().state !== "unlocked" || secretGeneration() !== generation) {
+      seed.fill(0);
+      throw new KeysLockedError;
+    }
+    const result = {
+      epoch,
+      keyId: purpose === "member" ? row.memberKeyId : row.ownerKeyId,
+      publicKey,
+      seed
+    };
+    ring.set(cacheKey(workspaceId, epoch, purpose), result);
+    return result;
+  });
+}
+function getMemberKey(workspaceId, epoch) {
+  return getWorkspaceKey(workspaceId, epoch, "member");
+}
+async function getOwnerKey(workspaceId, epoch) {
+  const state = await verifyWorkspaceState(workspaceId);
+  if (state.role !== "owner" || !state.keyEpoch) {
+    throw new CryptoError("DECRYPT_FAILED", "Workspace owner key not granted");
+  }
+  return getWorkspaceKey(workspaceId, epoch ?? state.keyEpoch, "owner");
+}
+function memberBinding(identity) {
+  return { userId: identity.userId, keyId: identity.keyId, fingerprint: identity.fingerprint };
+}
+async function wireRoster(roster) {
+  let workers = roster.workers;
+  if (workers.length) {
+    const rows = await cryptoClient().query(api.e2ee.workerKeys, {
+      workspace: roster.workspace
+    });
+    workers = workers.filter((worker) => rows.some((row) => row.workerId === worker.workerId && row.keyId === worker.keyId));
+  }
+  return keyManager.useAmk(async (_, identity) => {
+    const signed = await signRoster({ ...roster, workers }, identity.signing.seed);
+    return { ...signed, body: buffer(signed.body), signature: buffer(signed.signature) };
+  });
+}
+
+// src/lib/crypto/chat-keys.ts
+async function approvedIdentity(workspaceId, userId) {
+  try {
+    return await trustedIdentity(workspaceId, userId);
+  } catch (error) {
+    if (!(error instanceof TrustRequiredError))
+      throw error;
+    await requestIdentityTrust(error.identity, error.trustState);
+    return await trustedIdentity(workspaceId, userId);
+  }
+}
+var seeds = new Map;
+var devicePolicies = new Map;
+var unsigned = new Map;
+var verifiedBindings = new Map;
+var opening = new Map;
+var settingUp = new Map;
+onSecretsCleared(() => {
+  for (const seed of seeds.values())
+    seed.fill(0);
+  seeds.clear();
+  devicePolicies.clear();
+  unsigned.clear();
+  verifiedBindings.clear();
+  opening.clear();
+  settingUp.clear();
+});
+var cacheKey2 = (id, epoch) => `${id}:${epoch}`;
+async function verifyChatEpoch(input) {
+  if (!await verify(input.signingPublicKey, chatKeyStatement({
+    workspaceId: input.workspaceId,
+    chatE2eeId: input.e2eeId,
+    epoch: input.epoch,
+    keyId: input.keyId,
+    suite: input.suite,
+    publicKey: input.publicKey
+  }), input.signature))
+    throw new CryptoError("DECRYPT_FAILED", "Chat key signature failed");
+}
+async function openChatSeed(chatId, epoch) {
+  const key = cacheKey2(chatId, epoch);
+  const pending = opening.get(key);
+  if (pending)
+    return pending;
+  const promise = openCheckedChatSeed(chatId, epoch).finally(() => opening.delete(key));
+  opening.set(key, promise);
+  return promise;
+}
+async function openCheckedChatSeed(chatId, epoch) {
+  const cached = seeds.get(cacheKey2(chatId, epoch));
+  if (trust.getSnapshot() === "rollback") {
+    throw new CryptoError("DECRYPT_FAILED", "Trust store rollback blocks key access");
+  }
+  if (cached)
+    return cached;
+  if (keyManager.getSnapshot().state !== "unlocked")
+    throw new KeysLockedError;
+  const generation = secretGeneration();
+  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+  if (!state.e2eeId)
+    throw new CryptoError("BAD_INPUT", "Chat has no keys");
+  const row = state.epochs.find((entry) => entry.epoch === epoch);
+  if (!row || !row.signature || !row.signerKeyId)
+    throw new CryptoError("DECRYPT_FAILED", "Chat key is unsigned");
+  const historical = (await fetchHistoricalIdentities([row.signerKeyId], chatId)).get(row.signerKeyId);
+  if (!historical)
+    throw new CryptoError("DECRYPT_FAILED", "Chat key signer unavailable");
+  let signer;
+  if (historical.status === "retired") {
+    if (historical.userId === state.creatorId) {
+      signer = historical;
+    } else {
+      const workspace = await verifyWorkspaceState(state.workspace);
+      if (historical.userId === workspace.ownerId || workspace.verifiedRoster.members.some((member) => member.userId === historical.userId)) {
+        signer = historical;
+      }
+    }
+  } else {
+    signer = await activeSigner(state.workspace, state.creatorId, historical);
+  }
+  if (!signer)
+    throw new CryptoError("DECRYPT_FAILED", "Unknown chat key signer");
+  await verifyChatEpoch({
+    workspaceId: state.workspace,
+    e2eeId: state.e2eeId,
+    ...row,
+    publicKey: bytes(row.publicKey),
+    signature: bytes(row.signature),
+    signingPublicKey: signer.signingPublicKey
+  });
+  const wrap = usableWrap(state, epoch);
+  if (!wrap)
+    throw new CryptoError("DECRYPT_FAILED", "Missing chat key wrap");
+  const seed = await openWrap(state.workspace, state.e2eeId, wrap);
+  if (!equalBytes(await encryptionPublicKeyFromSeed(seed), bytes(row.publicKey))) {
+    seed.fill(0);
+    throw new CryptoError("DECRYPT_FAILED", "Chat key does not match epoch");
+  }
+  if (keyManager.getSnapshot().state !== "unlocked" || secretGeneration() !== generation) {
+    seed.fill(0);
+    throw new KeysLockedError;
+  }
+  seeds.set(cacheKey2(chatId, epoch), seed);
+  return seed;
+}
+async function activeSigner(workspaceId, creatorId, identity) {
+  if (identity.userId === currentUserId() || identity.userId === creatorId) {
+    const signerTrust = await trust.check(identity.userId, identity);
+    if (signerTrust === "first-contact" || signerTrust === "changed") {
+      await requestIdentityTrust(identity, signerTrust);
+    }
+    return identity;
+  }
+  const candidate = await approvedIdentity(workspaceId, identity.userId);
+  return candidate.keyId === identity.keyId ? candidate : undefined;
+}
+function usableWrap(state, epoch) {
+  return state.wraps.find((entry) => entry.chatEpoch === epoch && entry.recipient === "identity" && entry.userId === currentUserId()) ?? (state.scope === "workspace" ? state.wraps.find((entry) => entry.chatEpoch === epoch && entry.recipient === "workspace") : undefined);
+}
+async function openWrap(workspaceId, e2eeId, wrap) {
+  const aad = {
+    table: "e2ee_chat_key_wraps",
+    workspace: workspaceId,
+    parent: e2eeId,
+    record: String(wrap.chatEpoch),
+    field: wrap.recipientKeyId
+  };
+  if (wrap.recipient === "workspace") {
+    if (!Number.isSafeInteger(wrap.workspaceEpoch) || !wrap.workspaceEpoch) {
+      throw new CryptoError("BAD_ENVELOPE", "Workspace wrap epoch missing");
+    }
+    const key = await getMemberKey(workspaceId, wrap.workspaceEpoch);
+    if (key.keyId !== wrap.recipientKeyId)
+      throw new CryptoError("DECRYPT_FAILED", "Workspace wrap key mismatch");
+    return openBox({ seed: key.seed, box: bytes(wrap.sealed), aad, pad: "none" });
+  }
+  return keyManager.useAmk(async (_, identity) => {
+    if (wrap.userId !== currentUserId() || toBase64Url(identity.keyId) !== wrap.recipientKeyId)
+      throw new CryptoError("DECRYPT_FAILED", "Identity wrap mismatch");
+    return openBox({ seed: identity.encryption.seed, box: bytes(wrap.sealed), aad, pad: "none" });
+  });
+}
+
+// src/lib/crypto/legacy-content.ts
+class CustodialContentError extends Error {
+  constructor() {
+    super("Not yet end-to-end encrypted. Set up encryption and release historical content.");
+    this.name = "CustodialContentError";
+  }
+}
+async function openLegacyContent(sealed, context) {
+  if (sealed.kind === "custody")
+    throw new CustodialContentError;
+  if (keyManager.getSnapshot().state !== "unlocked")
+    throw new KeysLockedError;
+  const generation = secretGeneration();
+  let box = new Uint8Array(sealed.box);
+  if (sealed.storageId) {
+    if (box.byteLength !== 0)
+      throw new Error("Ambiguous historical envelope storage");
+    const url = await cryptoClient().query(api.e2ee_legacy.storageUrl, { table: context.table, record: context.record });
+    if (!url)
+      throw new Error("Historical envelope storage is unavailable");
+    const response = await fetch(url);
+    if (!response.ok)
+      throw new Error("Historical envelope download failed");
+    box = new Uint8Array(await response.arrayBuffer());
+  }
+  const aad = legacyAad(context.table, context.record, context.workspace);
+  const open = (seed) => openBox({ seed, box, aad, pad: "content" });
+  let plaintext;
+  if (sealed.kind === "identity") {
+    plaintext = await keyManager.useAmk(async (_amk, identity) => {
+      if (toBase64Url(identity.keyId) !== sealed.keyId)
+        throw new Error("Historical identity key is unavailable");
+      return open(identity.encryption.seed);
+    });
+  } else if (sealed.kind === "chat") {
+    if (!context.chatId)
+      throw new Error("Historical chat context is missing");
+    plaintext = await open(await openChatSeed(context.chatId, sealed.epoch));
+  } else {
+    if (!context.workspace)
+      throw new Error("Historical workspace context is missing");
+    const key = sealed.kind === "workspace_owner" ? await getOwnerKey(context.workspace, sealed.epoch) : await getMemberKey(context.workspace, sealed.epoch);
+    if (key.keyId !== sealed.keyId)
+      throw new Error("Historical workspace key changed");
+    plaintext = await open(key.seed);
+  }
+  try {
+    if (generation !== secretGeneration() || keyManager.getSnapshot().state !== "unlocked")
+      throw new KeysLockedError;
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext));
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("Invalid historical content");
+    return value;
+  } finally {
+    plaintext.fill(0);
+  }
+}
+
 // src/lib/crypto/notification-content.ts
 async function openNotificationBox(notification, seed) {
   if (!notification.sealed)
@@ -6417,6 +7491,28 @@ async function openNotificationBox(notification, seed) {
   }
 }
 async function openNotification(notification, remembered = false) {
+  if (!notification.sealed && notification.legacyContent) {
+    const legacy = notification.legacyContent;
+    if (remembered || legacy.kind !== "identity")
+      return null;
+    const before = keyManager.getSnapshot();
+    if (before.state !== "unlocked" || before.userId !== notification.userId || before.keyId !== legacy.keyId)
+      return null;
+    try {
+      const value = await openLegacyContent(legacy, {
+        table: "notifications",
+        record: notification._id,
+        workspace: notification.workspace
+      });
+      const after = keyManager.getSnapshot();
+      if (after.state !== "unlocked" || after.userId !== before.userId || after.keyId !== before.keyId || !value || typeof value !== "object")
+        return null;
+      const content = value;
+      return typeof content.title === "string" && typeof content.body === "string" ? { title: content.title, body: content.body } : null;
+    } catch {
+      return null;
+    }
+  }
   const sealed = notification.sealed;
   if (!sealed)
     return null;

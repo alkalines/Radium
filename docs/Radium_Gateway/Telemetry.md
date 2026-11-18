@@ -135,17 +135,9 @@ Remote endpoints must use HTTPS; plain HTTP is accepted only for loopback.
 
 ## Legacy Traces
 
-Rows from the former AI SDK collector (`telemetry_traces`, `telemetry_spans`,
-`telemetry_payloads`) are moved by `migrations:telemetryTracesToRequests` into
-`telemetry_requests` with `legacy` set; their truncated payloads become `legacy`
-blobs flagged `truncated`. Those tables remain in the schema only until the
-migration has run:
+Phase 9 can seal `telemetry_traces`, `telemetry_spans` and `telemetry_payloads` in place, alongside modern telemetry rows. Existing native ciphertext and keyed fingerprints stay unchanged; only proven unkeyed fingerprints are rekeyed. Shared legacy blobs require audience-attribution proof, and mixed/unknown audiences remain custodial under the approved privacy fallback. [Rollout and verification](../deployment.md#e2ee-phase-9-rollout-approval-required).
 
-1. Deploy, then run `npx convex run migrations:runTelemetryTraces` (a dry run
-   first: `npx convex run migrations:runTelemetryTraces '{"dryRun": true}'`).
-2. Verify the three tables are empty.
-3. In a follow-up deploy, remove the three tables and their `legacyTelemetry*`
-   validators from the schema.
+The older `migrations:runTelemetryTraces` is a plaintext representation conversion, not the E2EE migration. It must not run on rows already carrying encrypted historical sidecars; its guard refuses them. Do not remove the legacy tables merely because the E2EE sealing job completed: schema narrowing is a separate approved deployment.
 
 ## Known Limitations
 

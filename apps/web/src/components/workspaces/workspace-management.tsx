@@ -39,6 +39,8 @@ import { WorkspaceIcon } from "./workspace-icon";
 import { useWorkspace, type WorkspaceSummary } from "./workspace-provider";
 import { WorkspaceKeys } from "./workspace-keys";
 import { createKeyedWorkspace, removeMemberWithRotation } from "@/lib/crypto/workspace-keys";
+import { setEncryptedName } from "@/lib/crypto/names";
+import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 
 type WorkspaceMemberList = Exclude<FunctionReturnType<typeof api.workspaces.listMembers>, string>;
 type ArchivedWorkspaceList = Exclude<
@@ -56,8 +58,6 @@ type ArchivedWorkspaceList = Exclude<
 export function WorkspaceManagement() {
   const { workspaces, workspace, workspaceId, isLoading, error, isProvisioning, setWorkspace } =
     useWorkspace();
-  const renameWorkspace = useMutation(api.workspaces.rename);
-  const setWorkspaceIcon = useMutation(api.workspaces.setIcon);
   const setWorkspaceColor = useMutation(api.workspaces.setColor);
   const archiveWorkspace = useMutation(api.workspaces.archive);
   const restoreWorkspace = useMutation(api.workspaces.restore);
@@ -74,7 +74,7 @@ export function WorkspaceManagement() {
       isOwner && workspaceId ? { workspace: workspaceId } : "skip",
     ),
   );
-  const archived = Array.isArray(archivedData) ? archivedData : ([] as ArchivedWorkspaceList);
+  const archived = useDecryptedNames(Array.isArray(archivedData) ? archivedData : ([] as ArchivedWorkspaceList), "workspaces");
   const members = Array.isArray(membersData) ? membersData : ([] as WorkspaceMemberList);
 
   const [nameDialog, setNameDialog] = useState<"create" | "rename" | null>(null);
@@ -116,7 +116,7 @@ export function WorkspaceManagement() {
         setWorkspace(created);
         toast.success("Workspace created.");
       } else if (renameTarget) {
-        await renameWorkspace({ workspace: renameTarget._id, name: trimmed });
+        await setEncryptedName({ target: renameTarget._id, workspace: renameTarget._id, table: "workspaces", name: trimmed === renameTarget.name ? undefined : trimmed });
         toast.success("Workspace renamed.");
       }
       setNameDialog(null);
@@ -148,7 +148,7 @@ export function WorkspaceManagement() {
     setPendingAction("appearance");
     try {
       if ("icon" in change) {
-        await setWorkspaceIcon({ workspace: workspace._id, icon: change.icon });
+        await setEncryptedName({ target: workspace._id, workspace: workspace._id, table: "workspaces", icon: change.icon });
       } else {
         await setWorkspaceColor({ workspace: workspace._id, color: change.color });
       }

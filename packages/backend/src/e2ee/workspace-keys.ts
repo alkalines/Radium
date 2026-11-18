@@ -20,6 +20,7 @@ import {
   type RosterInput,
 } from "./workspace-contract";
 import { admitRosterWorkers } from "./worker-keys";
+import { requestCustodyRelease } from "./migration-contract";
 type ReadCtx = QueryCtx | MutationCtx;
 /** Bounded workspace membership list, including implicit ownership. */
 export async function workspaceUsers(
@@ -301,6 +302,7 @@ export async function insertWorkspaceEpoch(
   }
   await storeRoster(ctx, updated, roster, epoch.epoch);
   await ctx.db.patch("workspaces", workspace._id, { keyEpoch: epoch.epoch });
+  await requestCustodyRelease(ctx, { workspace: workspace._id });
 }
 /** Deletes old-epoch admission proofs before rotating keys. */
 export async function clearWorkspaceJoins(
@@ -374,6 +376,9 @@ export const addGrants = mutation({
     }
     for (const grant of args.grants) {
       await storeGrant(ctx, workspace, grant, user._id);
+    }
+    if (args.grants.some(grant => grant.epoch === workspace.keyEpoch)) {
+      await requestCustodyRelease(ctx, { workspace: workspace._id });
     }
     return null;
   },

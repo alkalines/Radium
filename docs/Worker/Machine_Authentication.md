@@ -113,6 +113,8 @@ Machine authentication is not permission to execute backend-authored content. Ph
 
 Paired Workers verify the owner-signed roster, executable ACP definitions and per-chat authority before acting; they refuse unsigned tasks and incomplete v2 setup rather than falling back to plaintext. Persisted high-water marks reject rollback and equal-version conflicts, including after revocation and restart. Unpaired Workers retain backend-trusting legacy behavior only for keyless workspaces. Protocol and leakage details: [E2EE keys](../E2EE/Keys.md#workers), [ACP data](../E2EE/Data.md#acp), and [tool grants](Chatroom.md).
 
+Phase 9 preparation seals legacy requests/results/receipts as read-only history and never treats migration as renewed execution authority. Historical tasks are not assignable or claimable, and pending legacy work blocks sealing until quiescent. Execution directories stay plaintext routing metadata by explicit scope choice. Deployment execution and narrowing remain [approval-gated](../deployment.md#e2ee-phase-9-rollout-approval-required).
+
 
 ## Protocol And Authorization
 

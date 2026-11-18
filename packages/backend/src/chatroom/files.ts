@@ -4,13 +4,23 @@ import type { Doc, Id } from "../../convex/_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
+  query,
   type ActionCtx,
   type MutationCtx,
 } from "../../convex/_generated/server";
 import { internal } from "../../convex/_generated/api";
+import { requireAccessibleChat } from "../../convex/workspaces";
+import { legacyBoxValidator } from "../e2ee/legacy-contract";
+import {
+  assertLegacyPlaintextAllowed,
+  assertLegacyWritesAllowed,
+  deleteLegacySidecar,
+  isLegacyStorage,
+} from "../e2ee/migration-contract";
 import { workspaceMutation } from "../../convex/helpers";
 import { decodeExactBytes } from "../e2ee/contract";
 import { CAPSULE_BYTES, decodeCapsule } from "radium-crypto";
+import { assertPlaintextChatWriteAllowed } from "./legacy";
 import {
   invalidSealedContent,
   openFileBytes,
@@ -54,6 +64,31 @@ export const generateUploadUrl = workspaceMutation({
 });
 
 /**
+ * Locate a historical attachment's sealed sidecar by its old storage URL, after authorizing the
+ * parent chat. The legacy plaintext blob is gone, so the browser opens the sidecar itself
+ * (`openLegacyContent`, which resolves an external envelope through `e2ee_legacy.storageUrl`) and
+ * re-encrypts the file natively before it is sent or forked. Null: not a historical attachment.
+ */
+export const historicalFile = query({
+  args: { chatId: v.id("aisdk_chats"), url: v.string() },
+  returns: v.union(
+    v.null(),
+    v.object({ recordId: v.id("chat_files"), legacyContent: legacyBoxValidator }),
+  ),
+  handler: async (ctx, { chatId, url }) => {
+    const { workspace } = await requireAccessibleChat(ctx, chatId);
+    const file = await ctx.db
+      .query("chat_files")
+      .withIndex("by_workspace_and_url_and_chat", (q) =>
+        q.eq("workspace", workspace._id).eq("url", stripFileFragment(url)).eq("chat", chatId),
+      )
+      .first();
+    if (!file?.legacyContent) return null;
+    return { recordId: file._id, legacyContent: file.legacyContent };
+  },
+});
+
+/**
  * Record an uploaded file as a pending attachment of the caller in this workspace and return its
  * file part. A storage ID can be registered once, so another user cannot claim an upload. Returns
  * `null` (deleting the upload) when the file is missing or larger than `MAX_CHAT_FILE_BYTES`;
@@ -79,6 +114,9 @@ export const register = workspaceMutation({
     if (args.mediaType !== undefined && (!args.e2ee || !MEDIA_TYPE_PATTERN.test(args.mediaType))) {
       throw new ConvexError({ code: "E2EE_CONTENT_INVALID" });
     }
+    // Uploads stop during the freeze; plaintext ones never resume after cutover.
+    await assertLegacyWritesAllowed(ctx);
+    if (!args.e2ee) await assertLegacyPlaintextAllowed(ctx);
     if (args.e2ee) {
       if (
         args.filename !== undefined ||
@@ -188,6 +226,8 @@ export async function linkChatFiles(
 
     const pending = await fileReference(undefined);
     if (pending) {
+      // A historical box is tied to its row and original recipient; attaching it cannot grant a chat access.
+      if (pending.legacyContent) invalidSealedContent();
       if (options.sealed && !isSealedFile(pending)) invalidSealedContent();
       await ctx.db.patch("chat_files", pending._id, { chat });
       continue;
@@ -200,6 +240,11 @@ export async function linkChatFiles(
       )
       .first();
     if (!source) continue;
+    // A sidecar is bound to its own row ID and cannot be copied; the browser re-encrypts a
+    // historical attachment as a fresh native upload before it is reused or forked.
+    if (source.legacyContent) invalidSealedContent();
+    // A plaintext reference is a legacy write, so it stops with them at cutover.
+    if (!isSealedFile(source)) await assertPlaintextChatWriteAllowed(ctx);
     await ctx.db.insert("chat_files", {
       workspace,
       userId: source.userId,
@@ -217,12 +262,14 @@ export async function linkChatFiles(
   }
 }
 
-/** Delete a reference row, and the stored file once no other row references it. */
-async function deleteFileReference(
-  ctx: MutationCtx,
-  file: { _id: Id<"chat_files">; storageId: Id<"_storage"> },
-) {
+/**
+ * Delete a reference row, and the stored file once no other row references it. A historical
+ * attachment's external sidecar envelope goes with its row.
+ */
+async function deleteFileReference(ctx: MutationCtx, file: Doc<"chat_files">) {
   await ctx.db.delete("chat_files", file._id);
+  await deleteLegacySidecar(ctx, { table: "chat_files", record: file._id });
+  if (!file.storageId) return;
   const remaining = await ctx.db
     .query("chat_files")
     .withIndex("by_storageId", (q) => q.eq("storageId", file.storageId))
@@ -247,7 +294,8 @@ export async function deleteChatFileBatch(ctx: MutationCtx, chat: Id<"aisdk_chat
  * Delete one batch of `_storage` files older than `cutoff` that no repository row references:
  * uploads never registered, or telemetry files whose blob write failed. A persisted cursor makes
  * each file checked once; files referenced then are deleted with their last reference instead.
- * Returns whether the scan reached `cutoff`.
+ * Historical sidecar envelopes are referenced through `e2ee_legacy_storage`, never by a source
+ * table's own index. Returns whether the scan reached `cutoff`.
  */
 async function sweepUnreferencedStorage(ctx: MutationCtx, cutoff: number) {
   const cursor = await ctx.db.query("storage_sweeps").first();
@@ -268,7 +316,8 @@ async function sweepUnreferencedStorage(ctx: MutationCtx, cutoff: number) {
           .query("telemetry_blobs")
           .withIndex("by_storage", (q) => q.eq("storage", file._id))
           .first();
-    if (!chatFile && !telemetryBlob) await ctx.storage.delete(file._id);
+    const legacyEnvelope = chatFile || telemetryBlob ? false : await isLegacyStorage(ctx, file._id);
+    if (!chatFile && !telemetryBlob && !legacyEnvelope) await ctx.storage.delete(file._id);
   }
 
   const last = files.at(-1);
@@ -305,12 +354,22 @@ export const prunePendingUploads = internalMutation({
   },
 });
 
-/** Storage IDs of this workspace's files among `urls`, for the chat action's model input. */
+/**
+ * Storage IDs of this workspace's files among `urls`, for the chat action's model input. A
+ * historical attachment has no plaintext storage left: it is reported as `historical` so the turn
+ * fails explicitly instead of sending its dead URL to a model.
+ */
 export const resolveStoredFiles = internalQuery({
   args: { workspace: v.id("workspaces"), urls: v.array(v.string()) },
-  returns: v.array(v.object({ url: v.string(), storageId: v.id("_storage") })),
+  returns: v.array(
+    v.object({
+      url: v.string(),
+      storageId: v.optional(v.id("_storage")),
+      historical: v.optional(v.boolean()),
+    }),
+  ),
   handler: async (ctx, args) => {
-    const resolved: Array<{ url: string; storageId: Id<"_storage"> }> = [];
+    const resolved: Array<{ url: string; storageId?: Id<"_storage">; historical?: boolean }> = [];
     for (const url of new Set(args.urls.map(stripFileFragment))) {
       const file = await ctx.db
         .query("chat_files")
@@ -318,7 +377,8 @@ export const resolveStoredFiles = internalQuery({
           q.eq("workspace", args.workspace).eq("url", url),
         )
         .first();
-      if (file) resolved.push({ url, storageId: file.storageId });
+      if (file?.legacyContent) resolved.push({ url, historical: true });
+      else if (file?.storageId) resolved.push({ url, storageId: file.storageId });
     }
     return resolved;
   },
@@ -351,8 +411,13 @@ export async function inlineStoredFiles(
     urls: urls.map(stripFileFragment),
   });
   const storageIds = new Map(resolved.map(({ url, storageId }) => [url, storageId]));
+  const historical = new Set(resolved.flatMap(({ url, historical }) => (historical ? [url] : [])));
   const bytesByUrl = new Map<string, Uint8Array>();
   for (const url of new Set(urls)) {
+    // Its plaintext no longer exists; sending the dead URL would fail silently at the provider.
+    if (historical.has(stripFileFragment(url))) {
+      throw new Error("Historical attachment must be re-encrypted before use");
+    }
     const fragment = parseFileFragment(url);
     fragment?.objectKey.fill(0);
     const storageId = storageIds.get(stripFileFragment(url));

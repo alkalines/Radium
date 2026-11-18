@@ -4,6 +4,7 @@ import type { AadParts } from "radium-crypto";
 import { workerCreatePatch, workerEditRequest, workerEditResult } from "./edit-contract";
 import { chatWorkerToolValidator } from "./chat-config";
 import { WORKER_BASH_TIMEOUT_SECONDS, workerBashRequest } from "./bash-contract";
+import { legacyBoxValidator } from "../e2ee/legacy-contract";
 
 /** Short-lived coordination state; durable chat-call receipts are stored separately. */
 export const workerTaskStatus = v.union(
@@ -73,6 +74,7 @@ export const workerSealedTask = v.object({
  */
 export const workerTaskFields = {
   workspace: v.id("workspaces"),
+  legacyContent: v.optional(legacyBoxValidator),
   workerId: v.string(),
   requestId: v.string(),
   operation: v.string(),
@@ -106,6 +108,7 @@ export const workerTaskRecord = v.object({
  */
 export const workerChatCallFields = {
   workspace: v.id("workspaces"),
+  legacyContent: v.optional(legacyBoxValidator),
   chatId: v.id("aisdk_chats"),
   userId: v.string(),
   workerId: v.string(),
@@ -280,7 +283,9 @@ export type WorkerToolAuthorization = z.infer<typeof workerToolAuthorizationSche
  * Plaintext of a sealed built-in task request (UTF-8 JSON, padded `content`, sealed with
  * `openRequestSender(...).seal` under {@link workerTaskAad} field `request`). `input` is the unsigned
  * Read input a grant covers. `receipt` names the chat key epoch (base64url public key) the Worker
- * seals the durable receipt to; chats without keys omit it and keep no receipt content.
+ * seals the durable receipt to, with the proof the Worker verifies before running anything: the
+ * epoch signature and the binding signature over this chat ID, scope, creator and raw picked
+ * members. Chats without keys omit it and keep no receipt content.
  */
 export const workerSealedTaskRequestSchema = z.object({
   v: z.literal(1),
@@ -301,6 +306,14 @@ export const workerSealedTaskRequestSchema = z.object({
       e2eeId: z.string().min(1).max(128),
       epoch: z.number().int().nonnegative(),
       publicKey: z.string().min(1).max(4096),
+      keyId: z.string().min(1).max(128),
+      suite: z.number().int().nonnegative(),
+      signerKeyId: z.string().min(1).max(128),
+      signature: z.string().min(1).max(128),
+      bindingSignature: z.string().min(1).max(128),
+      scope: z.enum(["personal", "shared", "workspace"]),
+      creatorId: z.string().min(1).max(128),
+      members: z.array(z.string().min(1).max(128)).max(200),
     })
     .optional(),
 });

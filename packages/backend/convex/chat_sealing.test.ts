@@ -102,6 +102,33 @@ test("sealed EditChat writes listed positions, bumps revisions, truncates and re
   ).rejects.toThrow();
 });
 
+test("sealed saves never replace or truncate history that is still in custody", async () => {
+  const t = makeTest();
+  const f = await fixture(t);
+  const custody = { kind: "custody" as const, keyId: "custody", epoch: 1, box: new ArrayBuffer(8) };
+  const held = await t.run((ctx) =>
+    ctx.db.insert("chat_messages", { chat: f.chat, position: 1, legacyContent: custody }),
+  );
+  const target = { workspace: f.workspace, e2eeId: f.e2eeId, epoch: 1, publicKey: f.key.publicKey };
+  const message = (id: string) => ({ id, role: "user", parts: [] });
+  // Truncation: one message would delete position 1.
+  const shorter = await sealChatMessages({ ...target, messages: [message("u")], heads: [], fileUrls: [] });
+  await expect(
+    t.mutation(internal.aisdk.EditChat, { chatId: f.chat, sealedWrites: shorter }),
+  ).rejects.toThrow();
+  // Replacement: position 1 would be overwritten.
+  const replacing = await sealChatMessages({
+    ...target,
+    messages: [message("u"), message("x")],
+    heads: [],
+    fileUrls: [],
+  });
+  await expect(
+    t.mutation(internal.aisdk.EditChat, { chatId: f.chat, sealedWrites: replacing }),
+  ).rejects.toThrow();
+  expect((await t.run((ctx) => ctx.db.get("chat_messages", held)))?.legacyContent).toEqual(custody);
+});
+
 test("keyed users cannot downgrade creation; keyless accounts retain plaintext creation", async () => {
   const t = makeTest();
   const f = await fixture(t);

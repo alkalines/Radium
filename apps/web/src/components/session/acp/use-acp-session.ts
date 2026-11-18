@@ -44,6 +44,12 @@ import {
   type AcpChatContext,
   type AcpFrameRow,
 } from "./acp-crypto";
+import {
+  isHistoricalFrame,
+  openHistoricalAcpFrames,
+  openHistoricalAcpSession,
+  type HistoricalAcpSession,
+} from "@/lib/crypto/legacy-relay";
 
 type Interactions = FunctionReturnType<typeof api.acp.OpenInteractions>;
 type WorkerStatus = FunctionReturnType<typeof api.acp.WorkerStatus>;
@@ -107,8 +113,48 @@ export function useAcpSession({
   chatId: Id<"aisdk_chats">;
   isVisible: boolean;
 }) {
-  const { data: session, error: sessionError } = useQuery(
+  const keyStatus = useKeyStatus();
+  const { data: liveSession, error: sessionError } = useQuery(
     convexQuery(api.acp.GetSession, { chat: chatId }),
+  );
+  // Migrated Sessions keep their former error, config, commands and draft in a sealed sidecar.
+  // They fill in only where live data is absent, so a Worker's newer values always win.
+  const [historicalSession, setHistoricalSession] = useState<HistoricalAcpSession>();
+  const historicalSource = liveSession?.legacyContent;
+  const liveRecord = liveSession?._id;
+  const liveWorkspace = liveSession?.workspace;
+  useEffect(() => {
+    if (!historicalSource || !liveRecord || !liveWorkspace) {
+      setHistoricalSession((current) => (current ? undefined : current));
+      return;
+    }
+    let cancelled = false;
+    openHistoricalAcpSession(
+      { _id: liveRecord, legacyContent: historicalSource },
+      { workspace: liveWorkspace, chatId },
+    ).then(
+      (value) => {
+        if (!cancelled) setHistoricalSession(value);
+      },
+      // Locked keys and recovery custody leave the sidecar unreadable; live fields are unaffected.
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, historicalSource, keyStatus, liveRecord, liveWorkspace]);
+  const session = useMemo(
+    () =>
+      liveSession && historicalSession
+        ? {
+            ...liveSession,
+            error: liveSession.error ?? historicalSession.error,
+            config: liveSession.config ?? historicalSession.config,
+            commands: liveSession.commands ?? historicalSession.commands,
+            draft: liveSession.draft ?? historicalSession.draft,
+          }
+        : liveSession,
+    [historicalSession, liveSession],
   );
   const [timeline, setTimeline] = useState(emptyAcpTimeline);
   const timelineRef = useRef(timeline);
@@ -165,7 +211,6 @@ export function useAcpSession({
 
   // Signed mode: the workspace has keys, so every command is sealed to the Worker and every Worker
   // object is verified and opened here instead of being read as the backend delivered it.
-  const keyStatus = useKeyStatus();
   const signed = session?.signed === true;
   const workspaceId = session?.workspace;
   const workerId = session?.agent.worker;
@@ -179,10 +224,23 @@ export function useAcpSession({
     source: AcpFrameRow[];
     frames: AcpFrame[] | Error;
   }>();
+  const hasHistoricalFrames =
+    !!rawFrames && !(rawFrames instanceof Error) && rawFrames.some(isHistoricalFrame);
   useEffect(() => {
-    if (!chatContext || !rawFrames || rawFrames instanceof Error || epoch === undefined) return;
+    if (!rawFrames || rawFrames instanceof Error || epoch === undefined || !workspaceId) return;
+    // Each row is routed by its own form: sealed history opens through its sidecar, native frames
+    // are verified against the roster Worker, and a plaintext stream is used as delivered.
+    const historical = rawFrames.filter(isHistoricalFrame);
+    const native = rawFrames.filter((row) => !isHistoricalFrame(row));
+    if (!signed && historical.length === 0) return;
+    if (signed && native.length > 0 && !chatContext) return;
     let cancelled = false;
-    openAcpFrames(chatContext, epoch, rawFrames).then(
+    void (async () => {
+      const history = await openHistoricalAcpFrames(historical, { workspace: workspaceId, chatId });
+      if (native.length === 0) return history;
+      if (!signed || !chatContext) return [...history, ...(native as AcpFrame[])];
+      return [...history, ...(await openAcpFrames(chatContext, epoch, native))];
+    })().then(
       (frames) => {
         if (!cancelled) setOpenedFrames({ source: rawFrames, frames });
       },
@@ -197,10 +255,10 @@ export function useAcpSession({
       cancelled = true;
     };
     // `keyStatus` re-runs a decryption that failed while the keys were locked.
-  }, [chatContext, epoch, rawFrames, keyStatus]);
+  }, [chatContext, chatId, epoch, rawFrames, keyStatus, signed, workspaceId]);
   let frames: AcpFrame[] | Error | undefined;
   if (rawFrames instanceof Error) frames = rawFrames;
-  else if (!signed) frames = rawFrames as AcpFrame[] | undefined;
+  else if (!signed && !hasHistoricalFrames) frames = rawFrames as AcpFrame[] | undefined;
   else if (openedFrames && openedFrames.source === rawFrames) frames = openedFrames.frames;
 
   const [openedInteractions, setOpenedInteractions] = useState<{

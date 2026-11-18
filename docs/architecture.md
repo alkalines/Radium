@@ -74,7 +74,7 @@ legacy-balance workspace with no local provider configuration rows. Any existing
 local row, including a disabled or tombstoned row, disables this fallback and
 restores the local-configuration invariant above.
 
-Provider, Exa, and MCP credentials are workspace-scoped and write-only through the Convex Secret Store component; ordinary configuration contains masked previews, not credentials. [End-to-end encryption](E2EE.md) additionally protects keyed Chatroom persistence, paired Worker/ACP traffic, new telemetry content and notifications. Owner-pinned Workers verify signed executable definitions, commands and approvals. Active actions still see plaintext needed to call models/tools and seal captures; long-term content decryption keys stay with clients. Legacy content and workspace/project metadata await phase 9.
+Provider, Exa, and MCP credentials are workspace-scoped and write-only through the Convex Secret Store component; ordinary configuration contains masked previews, not credentials. [End-to-end encryption](E2EE.md) protects keyed Chatroom persistence, paired Worker/ACP traffic, telemetry content and notifications. Owner-pinned Workers verify signed executable definitions, commands and approvals. Active actions still see plaintext needed to call models/tools and seal captures; long-term content decryption keys stay with clients. Phase 9 adds approval-gated legacy sealing/custody/release and encrypted workspace/project names, but has not run on a deployment. Execution directories remain the approved routing-metadata exception.
 
 Provider endpoint configuration is owner-only. Deliberately configured local and
 private endpoints are a required self-hosted use case, but the complete
@@ -134,6 +134,8 @@ the ownership backfill is pending; the migration does not literally delete the
 legacy tables. `@convex-dev/migrations` is mounted and `convex/migrations.ts`
 defines `runAll` plus paginated verification queries, but neither the runner nor
 deployment verification has been executed.
+
+E2EE content migration uses a separate action-driven runner (`convex/e2ee_migration.ts`) because sealing needs randomness and File Storage I/O. It records bounded progress, holds conflicts, preserves native ciphertext and requires current exhaustive verification before cutover/custody destruction. Historical sidecars are not live Worker commands. [Approval-gated runbook](deployment.md#e2ee-phase-9-rollout-approval-required).
 
 New workspace-only writes omit legacy required fields, so after those writes
 exist the parent schema cannot be redeployed. The cutover is forward-only rather

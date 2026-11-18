@@ -47,6 +47,7 @@ import {
   accessibleSession,
   acpError,
   admitWarm,
+  assertRelayPlaintextAllowed,
   enqueue,
   enqueueSigned,
   existingCommand,
@@ -68,6 +69,11 @@ import {
 import { acpAnswerStatement } from "radium-crypto";
 import { requireChatKeysForCreate, insertChatKeysSetup } from "../e2ee/chat-keys";
 import { chatKeysSetupValidator, type ChatKeysSetup } from "../e2ee/workspace-contract";
+import {
+  assertLegacyPlaintextAllowed,
+  assertLegacyWritesAllowed,
+  legacyPlaintextAllowed,
+} from "../e2ee/migration-contract";
 import { certifiedWorkerKeys } from "../e2ee/worker-keys";
 import { setChatMembers } from "../chatroom/members";
 import { validateChatBox } from "../chatroom/sealing";
@@ -105,12 +111,13 @@ async function insertAgentChat(
     if (!args.keys) acpError("ACP_E2EE_MODE");
     validateChatBox(args.sealedTitle, 1, 2048);
   }
+  const plaintextTitle = !args.keys && (await legacyPlaintextAllowed(ctx));
   const chat = await ctx.db.insert("aisdk_chats", {
     workspace: args.workspace._id,
     userId: args.userId,
     scope,
     project: args.project,
-    title: args.keys ? undefined : args.title,
+    title: plaintextTitle ? args.title : undefined,
     sealedTitle: args.sealedTitle,
     agent: {
       kind: "acp",
@@ -243,6 +250,7 @@ function indexedSessionRow(row: Doc<"acp_agent_sessions">, project: Id<"projects
     cwd: row.cwd,
     title: row.title,
     sealedTitle: row.sealedTitle,
+    legacyContent: row.legacyContent,
     updatedAt: row.updatedAt,
     chat: row.chat ?? null,
     project,
@@ -352,6 +360,7 @@ export const PublishBinding = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const { chat, session, userId, workspace } = await accessibleSession(ctx, args.chat);
     if (chat.userId !== userId) acpError("ACP_DENIED");
     await verifyNextBinding(ctx, {
@@ -388,6 +397,8 @@ export const Prompt = mutation({
   },
   returns: v.id("acp_commands"),
   handler: async (ctx, args) => {
+    // Signed commands are frozen too: admitting one makes the session busy and blocks sealing its rows.
+    await assertLegacyWritesAllowed(ctx);
     const { session, userId, chat } = await accessibleSession(ctx, args.chat);
     if (session.profile === "gateway") {
       const gateway = await findWorkerGateway(ctx, session.workspace, session.worker);
@@ -453,6 +464,8 @@ export const Cancel = mutation({
   args: { chat: v.id("aisdk_chats"), signed: v.optional(acpSignedCommandValidator) },
   returns: v.null(),
   handler: async (ctx, args) => {
+    // Cancelling rewrites a command and its session, so it is frozen with every other writer.
+    await assertLegacyWritesAllowed(ctx);
     const { session, userId, chat } = await accessibleSession(ctx, args.chat);
     const prompts = await ctx.db
       .query("acp_commands")
@@ -462,7 +475,8 @@ export const Cancel = mutation({
     if (prompts.length) {
       await ctx.db.patch(prompts[0]!._id, {
         status: "failed",
-        error: "Cancelled",
+        // A fixed code, never free text: verification must be able to reach zero plaintext after cutover.
+        error: "ACP_CANCELLED",
         payload: undefined,
         signed: undefined,
         finishedAt: Date.now(),
@@ -524,6 +538,7 @@ export const SetConfig = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const { session, userId, chat } = await accessibleSession(ctx, args.chat);
     if (session.status === "ended") acpError("ACP_SESSION_ENDED");
     const signedMode = await signedDispatch(ctx, session.workspace, session.worker);
@@ -532,6 +547,7 @@ export const SetConfig = mutation({
     } else {
       if (args.configId === undefined || args.value === undefined) acpError("ACP_INVALID_CONFIG");
       if (!session.sessionId) {
+        await assertRelayPlaintextAllowed(ctx, session);
         const agent = await findAgent(ctx, session.workspace, session.worker, session.agentId);
         validateConfig(agent?.defaults?.config, args.configId, args.value);
         const draft = session.draft ?? { config: [] };
@@ -568,6 +584,7 @@ export const SetMode = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const { session, userId, chat } = await accessibleSession(ctx, args.chat);
     if (session.status === "ended") acpError("ACP_SESSION_ENDED");
     const signedMode = await signedDispatch(ctx, session.workspace, session.worker);
@@ -576,6 +593,7 @@ export const SetMode = mutation({
     } else {
       if (args.modeId === undefined) acpError("ACP_INVALID_MODE");
       if (!session.sessionId) {
+        await assertRelayPlaintextAllowed(ctx, session);
         const agent = await findAgent(ctx, session.workspace, session.worker, session.agentId);
         validateMode(agent?.defaults?.config, args.modeId);
         await ctx.db.patch(session._id, {
@@ -614,6 +632,7 @@ export const Answer = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const row = await ctx.db.get(args.interaction);
     if (!row) acpError("ACP_INTERACTION_CLOSED");
     const { userId } = await accessibleSession(ctx, row.chat);
@@ -641,6 +660,8 @@ export const Answer = mutation({
       });
       return null;
     }
+    // Plaintext answers are a legacy writer: closed by the freeze and permanently after cutover.
+    await assertLegacyPlaintextAllowed(ctx);
     if (!row.request || !args.answer || args.sealed) acpError("ACP_E2EE_MODE");
     const message = acpAnswerError(row.request, args.answer);
     if (message) acpError("ACP_INVALID_ANSWER", message);
@@ -669,6 +690,7 @@ export const RequestHistory = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const { session, userId, chat } = await accessibleSession(ctx, args.chat);
     if (!session.warm || args.epoch !== session.epoch) return null;
     // Dedupe keys are Worker-scoped, so the chat must be part of the page's key.
@@ -718,6 +740,7 @@ export const Fork = mutation({
   },
   returns: v.id("aisdk_chats"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const { session, chat, userId, agent, workspace } = await accessibleSession(ctx, args.chat);
     const signedMode = await signedDispatch(ctx, session.workspace, session.worker);
     if (!signedMode) {
@@ -807,6 +830,7 @@ export const StartFork = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const { session, userId, chat } = await accessibleSession(ctx, args.chat);
     const existing = await existingCommand(
       ctx,
@@ -855,9 +879,11 @@ export const SetFallbackTitle = mutation({
   args: { chat: v.id("aisdk_chats"), sealedTitle: acpSealedBoxValidator },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const { chat, session } = await accessibleSession(ctx, args.chat);
     if (!chat.e2eeId || !chat.keyEpoch || chat.rekey) acpError("ACP_E2EE_MODE");
-    if (chat.sealedTitle || chat.title || session.userTitled) return null;
+    // A sidecar title is the chat's historical title; a prompt-derived fallback must not replace it.
+    if (chat.sealedTitle || chat.title || chat.legacyContent || session.userTitled) return null;
     validateChatBox(args.sealedTitle, chat.keyEpoch, 2048);
     await ctx.db.patch(chat._id, { sealedTitle: args.sealedTitle });
     return null;
@@ -1223,6 +1249,10 @@ export const GetCommand = query({
       status: command.status,
       ...(command.error !== undefined ? { error: command.error } : {}),
       ...(command.result !== undefined ? { result: command.result } : {}),
+      _id: command._id,
+      workspace: command.workspace,
+      chat: command.chat,
+      legacyContent: command.legacyContent,
     };
   },
 });
@@ -1310,6 +1340,8 @@ export const GetSession = query({
     const report = await findAgent(ctx, session.workspace, session.worker, session.agentId);
     return {
       agent,
+      _id: session._id,
+      legacyContent: session.legacyContent,
       workspace: session.workspace,
       profile: session.profile ?? "native",
       gateway:

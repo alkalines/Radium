@@ -614,3 +614,79 @@ test("capture refuses a request whose API key belongs to another workspace", asy
   );
   expect(requests).toHaveLength(0);
 });
+
+const custodyBox = { kind: "custody" as const, keyId: "k", epoch: 1, box: new ArrayBuffer(1) };
+
+/** Cutover is complete and one historical message blob of the workspace is held in custody. */
+async function holdCustodialMessage(t: TestConvex, workspace: Id<"workspaces">, message: Message) {
+  const hash = await blobHash(workspace, "message", canonicalJson(message));
+  await t.run(async (ctx) => {
+    await ctx.db.insert("e2ee_migration_state", {
+      key: "global", frozen: false, generation: 2, custodyState: "active", cutoverComplete: true, custodyWrites: 0,
+    });
+    const blob = await ctx.db.insert("telemetry_blobs", { workspace, hash, kind: "message", size: 10, legacyContent: custodyBox });
+    await ctx.db.insert("e2ee_legacy_custody", { table: "telemetry_blobs", record: blob, workspace });
+  });
+}
+
+async function proofActivity(t: TestConvex, workspace: Id<"workspaces">) {
+  return await t.run(async (ctx) => ({
+    revisions: (await ctx.db.query("e2ee_telemetry_revisions").collect()).map((row) => row.revision),
+    workspace: await ctx.db.get("workspaces", workspace),
+    state: await ctx.db.query("e2ee_migration_state").first(),
+    refreshes: (await ctx.db.system.query("_scheduled_functions").collect())
+      .filter((job) => job.name.includes("e2ee_telemetry")).length,
+  }));
+}
+
+test("capture after cutover leaves custody proofs alone unless a request reaches custodial history", async () => {
+  const t = makeTest();
+  const workspace = await makeWorkspace(t);
+  const legacy = user("historical question");
+  await holdCustodialMessage(t, workspace, legacy);
+
+  // Unrelated traffic: no revision, no workspace write, no refresh pass, however many requests.
+  const before = await proofActivity(t, workspace);
+  await record(t, { workspace, body: body([user("fresh one")], { tools: [{ type: "function", function: { name: "lookup" } }] }) });
+  await record(t, { workspace, body: body([user("fresh one"), assistant("a"), user("fresh two")]) });
+  const unrelated = await proofActivity(t, workspace);
+  expect(unrelated.revisions).toEqual([]);
+  expect(unrelated.workspace).toEqual(before.workspace);
+  expect(unrelated.state).toEqual(before.state);
+  expect(unrelated.refreshes).toBe(0);
+
+  // A request whose chain starts at the custodial message reaches custody: one revision, one pass.
+  await record(t, { workspace, body: body([legacy]) });
+  const related = await proofActivity(t, workspace);
+  expect(related.revisions).toEqual([1]);
+  expect(related.workspace).toEqual(before.workspace);
+  expect(related.state).toMatchObject({ telemetryRefreshPending: true, telemetryRefreshGeneration: 2 });
+  expect(related.refreshes).toBe(1);
+
+  // Continuing that conversation natively still reaches it through the hidden ancestor; the next
+  // unrelated request does not.
+  await record(t, { workspace, body: body([legacy, assistant("a"), user("continued")]) });
+  expect((await proofActivity(t, workspace)).revisions).toEqual([2]);
+  await record(t, { workspace, body: body([user("fresh three")]) });
+  expect((await proofActivity(t, workspace)).revisions).toEqual([2]);
+
+  // Reach is memoized on the nodes: the three on the custodial chain touch custody, the rest do not.
+  const nodes = await t.run((ctx) => ctx.db.query("telemetry_nodes").collect());
+  expect(nodes.filter((node) => node.custodyFree === false)).toHaveLength(3);
+  expect(nodes.filter((node) => node.custodyFree === true)).toHaveLength(nodes.length - 3);
+});
+
+test("a proof chain that cannot continue releases its coalescing flags instead of staying pending", async () => {
+  const t = makeTest();
+  // Writers reopened mid-chain: the freeze the proofs need is gone, so the step throws.
+  await t.run((ctx) => ctx.db.insert("e2ee_migration_state", {
+    key: "global", frozen: false, generation: 3, custodyState: "active", cutoverComplete: false, custodyWrites: 0,
+    telemetryRefreshPending: true, telemetryRefreshGeneration: 3, telemetryRefreshDirty: true,
+  }));
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  await t.mutation(internal.e2ee_telemetry.proveNext, { table: "telemetry_blobs" });
+  await t.mutation(internal.e2ee_telemetry.enqueueProofs, { table: "telemetry_blobs" });
+  errors.mockRestore();
+  const state = await t.run((ctx) => ctx.db.query("e2ee_migration_state").first());
+  expect(state).toMatchObject({ telemetryRefreshPending: false, telemetryRefreshDirty: false });
+});

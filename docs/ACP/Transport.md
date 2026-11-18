@@ -13,6 +13,8 @@ versions and agent quirks.
 
 For keyed workspaces, this relay carries ciphertext rather than readable ACP content. Paired Workers verify owner-signed launch definitions before probing, creator-signed session bindings, and audience-authorized command/answer signatures. Frame capsules are Worker-signed and opened once per epoch; routing metadata is authenticated inside the sealed frame. Config/command surfaces are decrypted from the timeline, not copied into plaintext `acp_sessions`. The sections below describe relay scheduling; plaintext shapes apply only to legacy keyless workspaces. Wire ownership and residual leakage: [E2EE ACP](../E2EE/Data.md#acp).
 
+Prepared phase 9 migration preserves old relay content in explicitly historical encrypted sidecars, without inventing Worker signatures or replaying commands. Pending legacy operations must drain before freeze; sidecar tasks/commands are excluded from machine claims. Native signed frames keep their format, and plaintext writers stay disabled after verified cutover. No migration has run; see the [approval-gated rollout](../deployment.md#e2ee-phase-9-rollout-approval-required).
+
 
 ## Connections
 

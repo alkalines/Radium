@@ -567,14 +567,12 @@ describe("moved HTTP handlers", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].errorText).toContain("provider_custom_limit");
 
-    // The failure outlives the page: the saved chat offers to continue with the same error.
+    // The failure outlives the page as a kind only: the saved chat never stores the error text.
     const saved = runMutation.mock.calls.findLast(
       ([fn]) => getFunctionName(fn) === getFunctionName(internal.aisdk.EditChat),
     );
-    expect(saved?.[1]).toMatchObject({
-      activeStream: false,
-      interruption: { kind: "failed", message: errors[0].errorText },
-    });
+    expect(saved?.[1]).toMatchObject({ activeStream: false, interruption: { kind: "failed" } });
+    expect(saved?.[1].interruption).not.toHaveProperty("message");
   });
 
   test("completion recording observes synchronous listener cancellation", async () => {

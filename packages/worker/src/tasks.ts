@@ -15,6 +15,7 @@ import {
   toolGrantStatement,
   unpad,
   utf8,
+  type ChatScopeName,
 } from "radium-crypto";
 import {
   WORKER_EDIT_OUTPUT_BYTES,
@@ -37,6 +38,7 @@ import {
   type WorkerSealedTaskRequest,
   type WorkerToolOperation,
 } from "backend/src/worker/task-contract";
+import { chatAudienceIncludes, verifyChatKey } from "./e2ee/chat-key.js";
 import type { WorkerTrust } from "./e2ee/trust.js";
 
 type Task = FunctionReturnType<typeof api.worker_tasks.assigned>[number];
@@ -328,6 +330,7 @@ type Refusal =
   | "INPUT_INVALID"
   | "PREVIEW_UNKNOWN"
   | "ALREADY_EXECUTED"
+  | "RECEIPT_KEY_INVALID"
   | "TRUST_UNAVAILABLE";
 
 const REFUSAL_MESSAGES: Record<Refusal, string> = {
@@ -343,6 +346,7 @@ const REFUSAL_MESSAGES: Record<Refusal, string> = {
   INPUT_INVALID: "The approved input is not a valid tool call.",
   PREVIEW_UNKNOWN: "This Worker did not stage a preview for this approved call.",
   ALREADY_EXECUTED: "This approved call already ran on the Worker.",
+  RECEIPT_KEY_INVALID: "The chat key for this call is not bound to this chat.",
   TRUST_UNAVAILABLE: "The Worker cannot verify the workspace roster.",
 };
 
@@ -506,7 +510,10 @@ async function runSealedTask(
     const parsed = workerSealedTaskRequestSchema.safeParse(parsedJson);
     if (!parsed.success) return failed;
     const request = parsed.data;
-    const receiptKey = request.receipt ? decodeReceiptKey(request.receipt.publicKey) : undefined;
+    // The recipient of the durable receipt is authenticated before anything runs.
+    const receiptKey = request.receipt
+      ? await verifyReceipt(request.receipt, request.chatId, trust)
+      : undefined;
     if (
       request.workspaceId !== trust.workspaceId ||
       request.workerId !== trust.workerId ||
@@ -525,9 +532,11 @@ async function runSealedTask(
 
     let result: WorkerEditResult;
     try {
-      result = await execute(request, trust, local);
+      result = await execute(request, trust, local, receiptKey ?? undefined);
     } catch (error) {
       if (!(error instanceof TaskRefusal)) throw error;
+      // An unauthorized recipient gets no receipt, and the dispatching action no result.
+      if (error.code === "RECEIPT_KEY_INVALID") return failed;
       result = {
         ok: false,
         code: error.code,
@@ -554,7 +563,7 @@ async function runSealedTask(
     let receipt: Uint8Array | undefined;
     if (request.receipt && receiptKey) {
       receipt = await sealBox({
-        recipientPublicKey: receiptKey,
+        recipientPublicKey: receiptKey.publicKey,
         plaintext: resultJson,
         aad: workerReceiptAad({
           workspaceId: request.workspaceId,
@@ -588,8 +597,22 @@ async function execute(
     bashExecutor?: BashExecutor;
     previews: Map<string, StagedPreview>;
   },
+  receipt?: VerifiedReceipt,
 ): Promise<WorkerEditResult> {
   const { operation, input, signerUserId, approvedAt } = await authorize(request, trust);
+  if (receipt) {
+    // The approving owner must belong to the chat's audience and nothing older than an epoch
+    // already seen may receive new content; the creator is pinned for the chat's lifetime.
+    const mark = `chat-receipt-epoch:${request.chatId}`;
+    if (
+      !chatAudienceIncludes(receipt, signerUserId) ||
+      !(await trust.pin(`chat-creator:${request.chatId}`, receipt.creatorId)) ||
+      receipt.epoch < trust.highWater(mark)
+    )
+      throw new TaskRefusal("RECEIPT_KEY_INVALID");
+    await trust.advanceHighWater(mark, receipt.epoch);
+    if (receipt.epoch < trust.highWater(mark)) throw new TaskRefusal("RECEIPT_KEY_INVALID");
+  }
   if (approvedAt !== undefined) {
     // Claimed before execution: an interrupted run has an unknown outcome and never reruns. The
     // claim outlives the approval window, after which the approval itself is refused.
@@ -716,6 +739,56 @@ function decodeReceiptKey(text: string): Uint8Array | null {
   } catch {
     return null;
   }
+}
+
+/** A receipt recipient whose epoch signature, binding signature and signer authority verified. */
+type VerifiedReceipt = {
+  publicKey: Uint8Array;
+  scope: ChatScopeName;
+  creatorId: string;
+  members: string[];
+  epoch: number;
+};
+
+/**
+ * Authenticate the chat key a request names for its durable receipt. The request is only as
+ * trustworthy as the server that assembled it, so the key must carry the roster-verified epoch
+ * signature and a binding signature over this exact chat; any substituted key (another chat's,
+ * another scope's, an unbound epoch) yields `null` and the task is not run.
+ */
+async function verifyReceipt(
+  receipt: NonNullable<WorkerSealedTaskRequest["receipt"]>,
+  chatId: string,
+  trust: TaskTrust,
+): Promise<VerifiedReceipt | null> {
+  const publicKey = decodeReceiptKey(receipt.publicKey);
+  if (!publicKey) return null;
+  try {
+    const signer = await verifyChatKey(trust, {
+      chatId,
+      e2eeId: receipt.e2eeId,
+      epoch: receipt.epoch,
+      keyId: receipt.keyId,
+      suite: receipt.suite,
+      publicKey,
+      signerKeyId: receipt.signerKeyId,
+      signature: fromBase64Url(receipt.signature),
+      bindingSignature: fromBase64Url(receipt.bindingSignature),
+      scope: receipt.scope,
+      creatorId: receipt.creatorId,
+      members: receipt.members,
+    });
+    if (!signer) return null;
+  } catch {
+    return null;
+  }
+  return {
+    publicKey,
+    scope: receipt.scope,
+    creatorId: receipt.creatorId,
+    members: receipt.members,
+    epoch: receipt.epoch,
+  };
 }
 
 /** Identify completion rejections that cannot be fixed by retrying the receipt. */

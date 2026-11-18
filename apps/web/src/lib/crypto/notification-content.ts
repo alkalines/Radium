@@ -1,5 +1,8 @@
 import { openBox } from "radium-crypto";
 import { notificationAad } from "backend/src/notifications/contract";
+import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+import type { Id } from "backend/convex/_generated/dataModel";
+import { openLegacyContent } from "./legacy-content";
 import { keyManager, useRememberedIdentity } from "./key-manager";
 
 type SealedNotification = {
@@ -7,6 +10,7 @@ type SealedNotification = {
   userId: string;
   workspace?: string;
   sealed?: { keyId: string; box: ArrayBuffer };
+  legacyContent?: LegacyBox;
 };
 
 /** Authenticate and parse notification content; never return partial or malformed plaintext. */
@@ -41,6 +45,26 @@ export async function openNotification(
   notification: SealedNotification,
   remembered = false,
 ): Promise<{ title: string; body: string } | null> {
+  if (!notification.sealed && notification.legacyContent) {
+    const legacy = notification.legacyContent;
+    if (remembered || legacy.kind !== "identity") return null;
+    const before = keyManager.getSnapshot();
+    if (before.state !== "unlocked" || before.userId !== notification.userId || before.keyId !== legacy.keyId) return null;
+    try {
+      // Identity boxes never use a workspace key; the id only binds the AAD string.
+      const value = await openLegacyContent<unknown>(legacy, {
+        table: "notifications", record: notification._id, workspace: notification.workspace as Id<"workspaces"> | undefined,
+      });
+      const after = keyManager.getSnapshot();
+      if (after.state !== "unlocked" || after.userId !== before.userId || after.keyId !== before.keyId ||
+          !value || typeof value !== "object") return null;
+      const content = value as Record<string, unknown>;
+      return typeof content.title === "string" && typeof content.body === "string"
+        ? { title: content.title, body: content.body } : null;
+    } catch {
+      return null;
+    }
+  }
   const sealed = notification.sealed;
   if (!sealed) return null;
   try {

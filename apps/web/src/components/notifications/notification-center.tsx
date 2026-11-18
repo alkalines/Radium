@@ -152,7 +152,7 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
         if (!latest.current.isAuthenticated) return;
         const status = keyManager.getSnapshot();
         const canShow = status.state === "unlocked" && status.userId === notification.userId &&
-          status.keyId === notification.sealed?.keyId;
+          status.keyId === (notification.sealed?.keyId ?? notification.legacyContent?.keyId);
         let display = canShow && content ? { ...notification, ...content } : notification;
         if (status.state === "unlocked" && status.userId === notification.userId &&
             notification.category === "limits" && notification.workspace) {
@@ -180,7 +180,7 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
               if (!isForeground) {
                 const now = keyManager.getSnapshot();
                 const safe = now.state === "unlocked" && now.userId === notification.userId &&
-                  now.keyId === notification.sealed?.keyId ? display : notification;
+                  now.keyId === (notification.sealed?.keyId ?? notification.legacyContent?.keyId) ? display : notification;
                 void showSystemNotification({ ...safe, id: notification._id }, () =>
                   latest.current.open(notification),
                 );

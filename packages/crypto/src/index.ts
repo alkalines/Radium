@@ -60,6 +60,7 @@ export {
   acpAnswerStatement,
   acpBindingStatement,
   acpCommandStatement,
+  chatKeyBindingStatement,
   chatKeyStatement,
   grantStatement,
   rosterStatement,

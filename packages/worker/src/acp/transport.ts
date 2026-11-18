@@ -128,9 +128,10 @@ export interface AcpAnsweredInteraction {
 }
 
 /**
- * Current chat key epoch as the server stores it; the Worker verifies the signature itself.
+ * Current chat key epoch as the server stores it; the Worker verifies the signatures itself.
  * `rekey` means the chat must replace the key (a recipient was removed) before anything new is
- * sealed to it.
+ * sealed to it. `bindingSignature` and `bindingMembers` bind the epoch to this chat ID and
+ * audience; an epoch without them (created before recipient binding) is never sealed to.
  */
 export interface AcpChatKey {
   e2eeId: string;
@@ -140,6 +141,9 @@ export interface AcpChatKey {
   publicKey: ArrayBuffer;
   signerKeyId: string | null;
   signature: ArrayBuffer | null;
+  bindingSignature: ArrayBuffer | null;
+  /** Raw picked members the binding signed; null unless the epoch was bound as shared. */
+  bindingMembers: string[] | null;
   rekey: boolean;
 }
 

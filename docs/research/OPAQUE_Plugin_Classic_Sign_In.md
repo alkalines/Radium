@@ -2,7 +2,7 @@
 
 Change request for the plugin, from Radium (2026-11-10). Plugin source: `/home/arthu/Projects/alkalines-better-auth-opaque`, 0.2.0. Consumer: Radium E2EE ([Authentication § Migrating Existing Accounts](../E2EE/Authentication.md#migrating-existing-accounts)).
 
-**Status (2026-11-11): implemented, unreleased.** Plugin branch `feat/classic-credential-signal` (uncommitted), CHANGELOG "Unreleased". Deviations from this request: an OPAQUE row that does not decode also keeps the OPAQUE path (any `opaque` row, not `readCredential(...) === null`), matching enrolment links; no construction warning for `hidesExistingEmails`, documented instead; option-off and cross-site `Origin` cases are covered by existing tests (`enumeration.test.ts`, `formCsrfMiddleware`). Radium adoption steps 2–3 are done against the local build.
+**Current status:** the consumed, pinned 0.2.0 package implements the classic-credential signal and Radium enables it. The original 2026-11-11 “unreleased/local branch” note was stale. The sections below retain the design request and rationale; they are not instructions to depend on an unpublished build. The deployed account-enrolment release path remains a separate migration verification boundary.
 
 ## Problem
 
@@ -66,13 +66,11 @@ State plainly:
 | Option on, cross-site `Origin`                                  | 403 from `formCsrfMiddleware`, as today                                                    |
 | Invalid option value                                            | Construction throws                                                                        |
 
-## Radium adoption (after the release)
+## Radium adoption
 
-The web client already handles the code (`apps/web/src/lib/auth/opaque-account.ts`, `signIn`); only the backend and the dependency change:
+The web client handles the code in `apps/web/src/lib/auth/opaque-account.ts`, and the backend enables it in `convex/auth.ts`. Both consumers pin 0.2.0; no pending dependency bump or local override is required.
 
-1. Bump `@alkalines/better-auth-opaque` in `apps/web` and `packages/backend`.
-2. `packages/backend/convex/auth.ts`: `opaque({ ..., signIn: { revealClassicCredential: true } })`. Radium's sign-up already reveals existing emails (`requireEmailVerification: false`, `autoSignIn` default), so the option adds only the classic-versus-encrypted bit for emails that are already enumerable.
-3. Verify in Chromium: a classic account signs in from the normal form and lands on "Set up encryption" without typing the password again; an encrypted account's wrong password still shows "Invalid email or password." and sends no `/sign-in/email` request.
-4. Switch the option off after the content cutover once no classic `credential` rows remain ([task 11 phase 9](../tasks/11_E2EE.md#phase-9-migration)).
+Deployment acceptance: in Chromium, a classic account should sign in from the normal form and reach setup without retyping the password; an encrypted account's wrong password must still show “Invalid email or password” with no `/sign-in/email` fallback.
+Switch the option off only once no classic `credential` rows remain, not merely because content sealing completed ([task 11 phase 9](../tasks/11_E2EE.md#phase-9-migration)).
 
-Until the release ships and Radium pins it, a plain `bun install` restores 0.2.0, whose types reject `signIn` in `convex/auth.ts`. Operators can still issue enrolment links (`auth:issuePasswordResetLink`) to classic users.
+The installed pinned 0.2.0 supports `signIn.revealClassicCredential`; a local plugin override is not required. Operators may also issue enrolment links with `auth:issuePasswordResetLink` to classic users. Do not downgrade an OPAQUE account merely because a challenge returns `INVALID_CREDENTIALS`.

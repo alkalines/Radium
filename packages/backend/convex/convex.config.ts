@@ -17,6 +17,8 @@ const app = defineApp({
     AUTH_PROXY_SECRET: v.optional(v.string()),
     /** Base64url 32-byte deployment secret for workspace-keyed telemetry/session hashes. */
     TELEMETRY_HASH_SECRET: v.optional(v.string()),
+    /** Optional exact operator-attested hash epochs, including any rollback intervals. */
+    TELEMETRY_HASH_PROVENANCE: v.optional(v.string()),
     AISDK_MaxRetries: v.optional(v.string()),
     LWC_SECRET: v.optional(v.string()),
     WORKER_AUTH_JWKS: v.optional(v.string()),

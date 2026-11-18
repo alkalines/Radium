@@ -19,6 +19,7 @@ import {
   type ResetPayloadWire,
   type SignInPayloadWire,
 } from "./contract";
+import { requestCustodyRelease } from "./migration-contract";
 
 /**
  * Account key records behind the OPAQUE payload hooks (audit I2). One `e2ee_key_bundles` row per
@@ -208,6 +209,7 @@ async function activateIdentity(ctx: MutationCtx, identity: Doc<"e2ee_identities
   if (identity.status !== "active") {
     await ctx.db.patch("e2ee_identities", identity._id, { status: "active" });
   }
+  await requestCustodyRelease(ctx, { userId: identity.userId });
 }
 
 /**

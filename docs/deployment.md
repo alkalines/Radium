@@ -187,7 +187,7 @@ the backend checks proofs against its own `CONVEX_SITE_URL`.
 
 Deploy matching browser, backend and Worker versions together for phase 7. Existing enrollment identities survive: pair each Worker from Workers → Pair using `radium-worker pair`, then let the unlocked owner certify its key in roster v2. In ACP settings, explicitly review and save existing launch definitions; paired Workers never probe unsigned definitions. Code/config changes are not evidence that stored legacy content has been encrypted.
 
-Legacy ACP session IDs without an authenticated proof are not silently adopted after pairing. Use owner-authorized agent-index re-import or a new Session; legacy plaintext migration remains phase 9. No migration or production deployment is implied by the phase-7 code. Standing Read grants and executable authorizations cannot provide instantaneous revocation across a partitioned or withholding relay; stop the local Worker when immediate revocation is required.
+Legacy ACP session IDs without an authenticated proof are not silently adopted after pairing. The owner who created the chat confirms it with "Authorize Session" on the chat (or opens it from the agent index); others start a new Session. No migration or production deployment is implied by the phase-7 code. Standing Read grants and executable authorizations cannot provide instantaneous revocation across a partitioned or withholding relay; stop the local Worker when immediate revocation is required.
 
 ### Initial Workspace Provisioning
 
@@ -380,3 +380,71 @@ It publishes:
 
 It also creates a GitHub release with generated notes. A release fails when
 the requested version does not match `package.json`.
+
+## E2EE Phase 9 Rollout (Approval Required)
+
+**Executed on the local deployment (2026-11-18) after an independent go/no-go review; custody retained.** Any other target needs its own explicit approval for the exact operation and target, a restorable backup, and a rehearsal on a restored copy whose counts the real run must match. Offline tests do not substitute for deployment-backed checks; never use production data for a smoke.
+
+### Preconditions
+
+- Confirm the exact Convex target and take a restorable backup. Preserve `SECRET_STORE_KEYS`, `OPAQUE_SERVER_SETUP` and `TELEMETRY_HASH_SECRET` with it. The custody seed is inside Secret Store and must survive restore while custody exists.
+- Deploy matching widened backend, browser **and Worker** builds only after approval. Upgrade connected Workers before resuming encrypted work: old Workers do not enforce the new chat-ID/audience recipient binding. Old unbound epochs remain historical/read-only; migration keeps their plaintext history in custody until an unlocked updated client creates a fresh authenticated bound epoch. **Do not narrow schema or remove indexes yet.**
+- Establish legacy ownership attribution before sealing. For embedded Chatroom history, prefer the existing `migrations:runChatMessages` before cutover; this avoids downloading a whole chat sidecar just to decrypt its title. Do not run old plaintext telemetry conversions after content has been sealed.
+- Drain Gateway/Chatroom requests, captures, exports, ACP turns, commands, interactions and Worker tasks before the freeze. Old in-flight deployment code must not keep writing during cutover. Active legacy work is reported by `e2ee_legacy_relay:relayAbandonScans` and paginated `staleRelayBlockers`; a Worker that is still active must drain or be explicitly revoked **before** freeze. Age/offline presence alone never authorizes abandoning work.
+- Require a valid `TELEMETRY_HASH_SECRET`. Exact stored content/chain/session evidence determines provenance. For otherwise ambiguous content-less rows only, `TELEMETRY_HASH_PROVENANCE` can attest at most 32 non-overlapping `{from,until,scheme:"keyed"|"unkeyed"}` epochs (milliseconds, `until` exclusive), including rollback periods. Gaps/conflicts block migration; the retired single `TELEMETRY_KEYED_HASH_SINCE` is ignored. Never guess an epoch from creation time alone.
+
+### Controlled Sequence
+
+Run commands from `packages/backend` against the approved target. Every entrypoint below is internal; browser callers cannot start jobs or obtain custody keys.
+
+```bash
+# Read-only preflight: records job progress and reads source files; does not change keys/content/storage.
+bunx convex run e2ee_migration:startJobs '{"kind":"seal"}'
+bunx convex run e2ee_migration:status '{}'
+
+# Only after reviewing every blocker and authorizing the freeze:
+bunx convex run e2ee_migration_node:createCustody '{}'
+bunx convex run e2ee_migration:setFrozen '{"frozen":true}'
+bunx convex run e2ee_migration:startJobs '{"kind":"seal","tables":["acp_sessions"],"dryRun":false,"batchSize":10}'
+bunx convex run e2ee_migration:status '{}'
+# Wait for the acp_sessions job to finish without blockers before starting the remaining tables:
+bunx convex run e2ee_migration:startJobs '{"kind":"seal","dryRun":false,"batchSize":10}'
+bunx convex run e2ee_migration:status '{}'
+```
+
+Jobs schedule bounded pages. Cryptographic/file actions run in the Node module (512 MiB), not 64 MiB default actions. Source bytes, encoding and memory bounds are checked; legitimate 20 MiB legacy attachments are supported. Conflicts keep the cursor and retry up to three times; blockers hold the page. Use `pauseJob` / `resumeJob` with `{"job":"<job-id>"}`; never skip a blocked cursor.
+
+For confirmed revoked/absent Workers, freeze first, then preview `e2ee_legacy_relay:abandonRelayRows` with `{"rows":[{"table":"worker_tasks","record":"<id>"}]}`. A real run needs `dryRun:false` and explicit selected rows; it changes only terminal status/codes, preserving payloads and frames for sealing. It never replays work or claims whether host-side effects occurred. Active Workers are refused. If one still needs revocation, abort/unfreeze, revoke, re-freeze, then abandon; owner mutations cannot revoke while frozen.
+
+Abort (`setFrozen {"frozen":false}` before completion) invalidates old proofs but does not decrypt sealed history. Row-local guards keep plaintext from being written beside existing sidecars during abort/retry. Revoking after a freeze requires that abort sequence; it is not a reason to weaken the freeze.
+
+While frozen, ACP browser writes are refused and Watch/retention sweeps preserve history. Already queued cold-chat/stream cleanup parks in a metadata-only journal; unfreeze or cutover resumes it without a polling retry loop. Explicit user deletion still deletes the requested chat.
+
+Enrolment/key creation while aborted intentionally cannot release custody. After re-freezing, start an **unscoped** real release (`e2ee_migration:startJobs '{"kind":"release","dryRun":false}'`) so keys created during the abort are not missed, then perform a fresh exhaustive verify. Refresh over-budget telemetry proofs first when their generation/revision changed; keep mixed/unknown rows in custody.
+
+Once sealing jobs finish, compute attribution proofs for large custodial telemetry graphs, release whatever now has a safe recipient, then verify **every** registered source table:
+
+```bash
+bunx convex run e2ee_telemetry:advanceProofs '{"table":"telemetry_blobs"}'
+bunx convex run e2ee_migration:startJobs '{"kind":"release","dryRun":false}'
+bunx convex run e2ee_migration:startJobs '{"kind":"verify"}'
+bunx convex run e2ee_migration:status '{}'
+```
+
+Wait for each job chain before proceeding to its dependent step; `advanceProofs` chains through blobs and nodes. A finished proof alone is not an encryption job. `e2ee_telemetry:listUnreleasable` takes `{"table":"telemetry_blobs"}` (or nodes); follow its opaque `cursor` until null. **Approved policy:** mixed/private/unknown-audience diagnostics stay encrypted in custody and flagged for review. Never hand them to a workspace owner merely to get the custody count to zero.
+
+`finishCutover {}` requires a current frozen-generation proof with zero plaintext and zero blockers across all tables. It resumes encrypted writes, permanently closes plaintext paths, blocks classic accounts on encryption setup, resumes pending notification sealing without pushing them again, and refreshes telemetry proofs at the new generation followed by release. It does **not** require zero custody. Relevant native references or chat-visibility changes invalidate a dedicated per-workspace proof revision; unrelated custody-free captures do not write the workspace document or trigger wholesale reproof. A stale wide proof is never a release authorization. Failed proof steps retain custody, clear the pending scheduler flag, and appear as failed in `listUnreleasable`; correct the failure and rerun `advanceProofs`.
+
+### Continued Release And Custody End
+
+Identity activation (including enrolment/reset), workspace keys and chat keys request scoped release when custody exists. Operators can preview/run release with `startJobs`, `kind:"release"`, optional `scope:{"userId":"…"}`, `{"workspace":"…"}` or `{"chat":"…"}`. Release defaults to dry run. The backend opens **only custody**; it never opens existing client ciphertext.
+
+All keyless chat scopes wait for native chat keys: workspace member keys are not used as a fallback that could survive narrowing a chat to personal. Any unlocked current authorized reader can create the initial key for the complete current audience, excluding departed workspace users; existing epochs cannot be replaced this way. Stale/revoked chat epochs also hold custody until a fresh epoch exists. Trace-derived span/payload custody entries carry chat hints, and large blob/node proofs add hints once their audience is proven.
+
+Legacy `msg:`+16hex session fingerprints (including affinity `::model` keys) are rekeyed once; native keyed/explicit IDs remain unchanged. Parent session keys use the same mapping. Unattributed old affinity fingerprints stay custodial until normal expiry/rebind cleanup removes their encrypted sidecars. Historical request grouping uses session IDs and survives; sampling decisions keyed by an old session string can change for future exports.
+
+Page `e2ee_migration:custodialRows` with `{"paginationOpts":{"numItems":50,"cursor":null}}` and optional scope; follow `continueCursor` until `isDone`. `pageCount` is the current page, not the account/global total.
+
+Before `endCustody {}`, run a fresh exhaustive `verify` and inspect `status`. Key deletion refuses nonzero custodial rows, plaintext, blockers, stale proofs or a nonempty custody registry. Custody-write counters serialize the proof against concurrent sealing. Uncertain records can deliberately keep custody active indefinitely; do not delete their key manually.
+
+Only after successful **deployment-backed** verification should a separate approved deploy remove compatibility fields/indexes. Historical ACP/Worker payloads remain read-only history, never forged live commands. Project/Worker/ACP execution directories remain the explicitly approved plaintext routing exception. Expire pre-cutover snapshots/backups under the operator's retention policy: encrypting current rows does not rewrite old backups.

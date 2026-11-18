@@ -37,13 +37,14 @@ import { sealTitle } from "@/lib/crypto/chat-content";
 import { createChatKeys, rememberChatSeed } from "@/lib/crypto/chat-keys";
 import { KeysLockedError } from "@/lib/crypto/key-manager";
 import { cryptoClient } from "@/lib/crypto/runtime";
+import { openHistoricalAgentTitle } from "@/lib/crypto/legacy-relay";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { formatRelativeTime, groupByRecency } from "./recency";
 
 /** One agent session index row, as `acp.ListAgentSessionIndex` and `ListUnopenedAgentSessions` return it. */
 export type IndexedAgentSession = Pick<
   FunctionReturnType<typeof api.acp.ListAgentSessionIndex>["page"][number],
-  "_id" | "worker" | "agentId" | "sessionId" | "chat" | "title" | "sealedTitle"
+  "_id" | "worker" | "agentId" | "sessionId" | "chat" | "title" | "sealedTitle" | "legacyContent"
 >;
 
 /** Searching keeps loading older pages until this many rows match (or the index is exhausted). */
@@ -79,6 +80,33 @@ export function useSyncAgentSessions() {
   );
 }
 
+/** The sealed box a row's title comes from; a Worker-sealed title supersedes a migrated one. */
+function indexTitleBox(row: IndexedAgentSession): ArrayBuffer | undefined {
+  if (row.sealedTitle) return row.sealedTitle.box;
+  return row.title ? undefined : row.legacyContent?.box;
+}
+
+/** Opens a row's title from its Worker-sealed box or, for migrated rows, its historical sidecar. */
+async function openIndexTitle(workspace: Id<"workspaces">, row: IndexedAgentSession) {
+  if (row.sealedTitle) {
+    return openAgentIndexTitle({
+      workspaceId: workspace,
+      workerId: row.worker,
+      agentId: row.agentId,
+      sessionId: row.sessionId,
+      sealedTitle: row.sealedTitle,
+    });
+  }
+  if (row.legacyContent) {
+    const title = await openHistoricalAgentTitle(
+      { _id: row._id, legacyContent: row.legacyContent },
+      workspace,
+    );
+    return title ?? "";
+  }
+  return row.title?.trim() ?? "";
+}
+
 /**
  * Titles of agent session index rows. Keyed workspaces store them sealed to the owner key, so
  * they open here (owner only) and only while unlocked; the result maps a row to its text, or
@@ -96,26 +124,19 @@ export function useAgentSessionTitles(
       setOpened((current) => (Object.keys(current).length ? {} : current));
       return;
     }
-    const pending = rows.flatMap((row) =>
-      row.sealedTitle && opened[row._id]?.box !== row.sealedTitle.box
-        ? [{ row, sealed: row.sealedTitle }]
-        : [],
-    );
+    const pending = rows.flatMap((row) => {
+      const box = indexTitleBox(row);
+      return box && opened[row._id]?.box !== box ? [{ row, box }] : [];
+    });
     if (pending.length === 0) return;
     let cancelled = false;
     void Promise.all(
-      pending.map(async ({ row, sealed }) => {
+      pending.map(async ({ row, box }) => {
         try {
-          const title = await openAgentIndexTitle({
-            workspaceId: workspace,
-            workerId: row.worker,
-            agentId: row.agentId,
-            sessionId: row.sessionId,
-            sealedTitle: sealed,
-          });
-          return [row._id, { box: sealed.box, title }] as const;
+          return [row._id, { box, title: await openIndexTitle(workspace, row) }] as const;
         } catch {
-          return [row._id, { box: sealed.box, title: "" }] as const;
+          // Locked keys, recovery custody and unverifiable boxes all read as an untitled session.
+          return [row._id, { box, title: "" }] as const;
         }
       }),
     ).then((entries) => {
@@ -128,7 +149,7 @@ export function useAgentSessionTitles(
   return (row: IndexedAgentSession): string | undefined => {
     const plain = row.title?.trim();
     if (plain) return plain;
-    if (!row.sealedTitle) return undefined;
+    if (!row.sealedTitle && !row.legacyContent) return undefined;
     if (!unlocked) return "Locked";
     return opened[row._id]?.title.trim() || undefined;
   };
@@ -146,15 +167,7 @@ export function useOpenAgentSession() {
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
 
   async function openKeyedChat(workspace: Id<"workspaces">, row: IndexedAgentSession) {
-    const title = row.sealedTitle
-      ? await openAgentIndexTitle({
-          workspaceId: workspace,
-          workerId: row.worker,
-          agentId: row.agentId,
-          sessionId: row.sessionId,
-          sealedTitle: row.sealedTitle,
-        })
-      : (row.title?.trim() ?? "");
+    const title = await openIndexTitle(workspace, row);
     const keys = await createChatKeys({ workspaceId: workspace, scope: "personal" });
     const sealedTitle = title
       ? await sealTitle(

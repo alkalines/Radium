@@ -291,6 +291,36 @@ test("cleanup bounds each terminal batch and subsequent ticks drain the backlog"
   expect(await f.t.mutation(internal.worker_tasks.prune, {})).toBe(2);
 });
 
+test("sealed historical tasks are never delivered, retried or claimed by a Worker", async () => {
+  const f = await fixture();
+  const taskId = await f.t.run((ctx) =>
+    ctx.db.insert("worker_tasks", {
+      workspace: f.workspace,
+      workerId: f.first.identity.workerId,
+      requestId: "historical",
+      operation: "edit",
+      legacyContent: { kind: "custody", keyId: "custody", epoch: 1, box: new ArrayBuffer(8) },
+      status: "failed",
+      revision: 3,
+      attempt: 1,
+      updatedAt: Date.now(),
+      terminalAt: Date.now(),
+    }),
+  );
+  expect(await f.first.machine.query(api.worker_tasks.assigned, { status: "failed" })).toEqual([]);
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.updateStatus, {
+      taskId,
+      expectedRevision: 3,
+      status: "retrying",
+    }),
+  ).rejects.toThrow();
+  await expect(
+    f.first.machine.mutation(api.worker_tasks.claimEdit, { taskId, claimId: "claim" }),
+  ).rejects.toThrow();
+  expect((await f.t.run((ctx) => ctx.db.get(taskId)))?.status).toBe("failed");
+});
+
 /** A plaintext edit task as `dispatchChatEdit` stores it for a keyless workspace. */
 async function insertEditTask(
   f: Awaited<ReturnType<typeof fixture>>,

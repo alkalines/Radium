@@ -49,6 +49,7 @@ export {
   deleteStream,
   prune,
   cleanupChat,
+  resumeDeferredCleanup,
 } from "../src/acp/retention";
 export {
   ListAgentDefinitions,

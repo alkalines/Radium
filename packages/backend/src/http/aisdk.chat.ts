@@ -13,6 +13,8 @@ import {
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
+import { ENCRYPTION_PUBLIC_KEY_BYTES } from "radium-crypto";
+import * as z from "zod";
 import { toExaCountry } from "../chatroom/user-location";
 import {
   EXA_TOOL_CREDENTIAL_PROVIDER,
@@ -58,6 +60,7 @@ import { sessionNotificationKind } from "../notifications/session";
 import { inlineStoredFiles, storedFileUrls } from "../chatroom/files";
 import { sealChatMessages, sealChatTitle } from "../chatroom/sealing";
 import { firstUserMessageText, generateChatTitle } from "../chatroom/titles";
+import { decodeExactBytes, toArrayBuffer } from "../e2ee/contract";
 
 /**
  * Model calls one chat request may make before it stops. A request still calling tools at the cap
@@ -78,7 +81,33 @@ type AISDKChatRequestBody = {
   chatId?: Id<"aisdk_chats">;
   /** User approval signatures by tool call ID (`parseWorkerApprovals`); paired Workers need them. */
   approvals?: unknown;
+  /** The chat key the client prepared this turn for (`parseRecipientKey`); encrypted chats need it. */
+  recipientKey?: unknown;
 };
+
+/** Wire bounds of `recipientKey`; the public key is unpadded base64url of exactly one key. */
+const recipientKeySchema = z.object({
+  e2eeId: z.string().min(1).max(128),
+  epoch: z.number().int().positive(),
+  publicKey: z.string().max(Math.ceil((ENCRYPTION_PUBLIC_KEY_BYTES * 4) / 3)),
+});
+
+/**
+ * Parse the chat request body's `recipientKey` (`{ e2eeId, epoch, publicKey }`): the exact current
+ * epoch public key the browser encrypted this turn's files to and expects the turn sealed to.
+ * Malformed input yields `null`; absent input yields `undefined`.
+ */
+function parseRecipientKey(
+  value: unknown,
+): { e2eeId: string; epoch: number; publicKey: ArrayBuffer } | null | undefined {
+  if (value === undefined) return undefined;
+  const parsed = recipientKeySchema.safeParse(value);
+  const publicKey =
+    parsed.success && decodeExactBytes(parsed.data.publicKey, ENCRYPTION_PUBLIC_KEY_BYTES);
+  return parsed.success && publicKey
+    ? { ...parsed.data, publicKey: toArrayBuffer(publicKey) }
+    : null;
+}
 
 /** Handles the authenticated AI SDK chat request body and stream lifecycle. */
 export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Response> {
@@ -103,7 +132,14 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
   const chatId = body?.chatId || body?.id;
 
   const approvals = parseWorkerApprovals(body?.approvals);
-  if (!chatId || !body.model || !Array.isArray(body.messages) || !approvals) {
+  const recipientKey = parseRecipientKey(body?.recipientKey);
+  if (
+    !chatId ||
+    !body.model ||
+    !Array.isArray(body.messages) ||
+    !approvals ||
+    recipientKey === null
+  ) {
     return Response.json(
       { error: { message: "Invalid chat request", code: 400 } },
       { status: 400 },
@@ -132,11 +168,29 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     );
   }
   const workspaceId = workspace._id;
-  // A stale chat key must be rotated by a client before this turn: failing here avoids a billed
-  // generation whose result can no longer be sealed.
-  if (chat.e2eeId && !(await ctx.runQuery(internal.aisdk.chatSealingInfo, { chatId }))) {
+  // Encrypted turns are sealed only to the exact key the sender's client prepared, checked again
+  // when saving: a rotation or audience change in between fails the turn instead of sealing to a
+  // key the client did not choose. Checked before a billed generation whose result could not be
+  // sealed; a client key for a chat the server sees as keyless would otherwise save plaintext.
+  const recipient = recipientKey ? { ...recipientKey, userId } : undefined;
+  if (
+    (chat.e2eeId || recipient) &&
+    !(
+      chat.e2eeId &&
+      recipient &&
+      (await ctx.runQuery(internal.aisdk.chatSealingInfo, { chatId, recipient }))
+    )
+  ) {
     return Response.json(
       { error: { message: "This chat's key must be rotated before sending.", code: 409 } },
+      { status: 409 },
+    );
+  }
+  // Historical plaintext moved into a sidecar; this turn can only be saved natively, so the
+  // browser must create the chat's keys first.
+  if (!chat.e2eeId && chat.legacyContent) {
+    return Response.json(
+      { error: { message: "Enable encryption for this chat before sending.", code: 409 } },
       { status: 409 },
     );
   }
@@ -270,14 +324,25 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     );
   }
 
-  await ctx.runMutation(internal.aisdk.EditChat, {
-    chatId,
-    activeStream: true,
-    messages_queue: null,
-  });
-  // Title work shares the first request's in-memory prompt, never scheduler arguments.
+  try {
+    await ctx.runMutation(internal.aisdk.EditChat, {
+      chatId,
+      activeStream: true,
+      messages_queue: null,
+    });
+  } catch (error) {
+    await closeTools();
+    if (chat.e2eeId) throw error;
+    // Plaintext saves are frozen; nothing was started.
+    return Response.json(
+      { error: { message: "This chat must be encrypted before it can continue.", code: 409 } },
+      { status: 409 },
+    );
+  }
+  // Title work shares the first request's in-memory prompt, never scheduler arguments. A chat
+  // whose historical title sits in a sidecar keeps it: the server cannot see it to know it exists.
   const titlePromise =
-    chat.e2eeId && !chat.sealedTitle && !chat.title
+    chat.e2eeId && !chat.sealedTitle && !chat.title && !chat.legacyContent
       ? (async () => {
           try {
             const info = await ctx.runQuery(internal.chatroom.titleModelForChat, { chatId });
@@ -333,7 +398,7 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
 
   const reasoningStarts = new Map<string, { startedAt: number; index: number }>();
   const reasoningDurations: number[] = [];
-  // Keep the error in memory for the response and interruption state.
+  // Streamed to the client only; the saved interruption never stores error text.
   let streamFailure: string | undefined;
 
   const uiStream = toUIMessageStream({
@@ -397,10 +462,13 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         failed: streamFailure !== undefined,
         responseMessage,
       };
-      const interruption = chatInterruption(end, streamFailure, stepLimitReached);
+      const interruption = chatInterruption(end, stepLimitReached);
       try {
         if (chat.e2eeId) {
-          const target = await ctx.runQuery(internal.aisdk.chatSealingInfo, { chatId });
+          const target = await ctx.runQuery(internal.aisdk.chatSealingInfo, {
+            chatId,
+            recipient,
+          });
           if (!target) {
             throw new Error("Chat sealing key unavailable");
           }

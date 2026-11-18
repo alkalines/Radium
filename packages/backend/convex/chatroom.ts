@@ -14,6 +14,7 @@ import {
   sanitizeTitle,
 } from "@/chatroom/titles";
 import { loadFirstUserMessage } from "@/chatroom/messages";
+import { assertPlaintextChatWriteAllowed } from "@/chatroom/legacy";
 import {
   chatModelIdentityValidator,
   DEFAULT_SYSTEM_PROMPT_SETTINGS,
@@ -433,7 +434,7 @@ export const titleGenerationInfo = internalQuery({
   ),
   handler: async (ctx, args) => {
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat || chat.e2eeId) return null;
+    if (!chat || chat.e2eeId || chat.legacyContent) return null;
 
     const firstUserMessage = await loadFirstUserMessage(ctx, chat);
     const initialUserMessage = firstUserMessageText({
@@ -514,7 +515,7 @@ export const acpTitleGenerationInfo = internalQuery({
   ),
   handler: async (ctx, args) => {
     const { chat, session, workspace } = await accessibleSession(ctx, args.chatId);
-    if (chat.e2eeId || chat.title || session.userTitled) return null;
+    if (chat.e2eeId || chat.legacyContent || chat.title || session.userTitled) return null;
     const settings = await loadWorkspaceSettings(ctx, workspace);
     const model = await firstAvailableModel(
       ctx,
@@ -536,7 +537,9 @@ export const saveGeneratedTitle = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat || chat.e2eeId || (!args.force && chat.title)) return null;
+    // Plaintext titles stop with legacy writers; a sidecar chat's title lives in the sidecar.
+    if (!chat || chat.e2eeId || chat.legacyContent || (!args.force && chat.title)) return null;
+    await assertPlaintextChatWriteAllowed(ctx, chat);
 
     await ctx.db.patch("aisdk_chats", args.chatId, sanitizeTitle(args));
     return null;

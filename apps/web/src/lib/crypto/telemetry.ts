@@ -12,6 +12,8 @@ import {
 import { keyManager, KeysLockedError } from "./key-manager";
 import { bytes } from "./runtime";
 import { trust } from "./trust-store";
+import { CustodialContentError, openLegacyContent } from "./legacy-content";
+import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
 import { getOwnerKey } from "./workspace-keys";
 
 type Sealed = {
@@ -71,7 +73,7 @@ export function hasSealedTelemetry(value: unknown): boolean {
   if (value instanceof ArrayBuffer || !value || typeof value !== "object") return false;
   if (Array.isArray(value)) return value.some(hasSealedTelemetry);
   const object = value as Record<string, unknown>;
-  return object.sealed !== undefined || object.sealedError !== undefined ||
+  return object.sealed !== undefined || object.sealedError !== undefined || object.legacyContent !== undefined ||
     Object.values(object).some(hasSealedTelemetry);
 }
 
@@ -166,6 +168,44 @@ export function openTelemetryData<T extends object>(source: T, workspace: Id<"wo
     if (value instanceof ArrayBuffer || !value || typeof value !== "object") return value;
     if (Array.isArray(value)) return Promise.all(value.map(visit));
     const object = value as Record<string, unknown>;
+    if (object.legacyContent !== undefined) {
+      const isBlob = typeof object.hash === "string" && typeof object.id === "string";
+      const isRequest = typeof object._id === "string" && Array.isArray(object.attempts);
+      if (!isBlob && !isRequest) throw new CryptoError("BAD_ENVELOPE", "Invalid legacy telemetry record");
+      let payload: Record<string, unknown> | undefined;
+      try {
+        payload = record(await openLegacyContent<unknown>(object.legacyContent as LegacyBox, {
+          table: isBlob ? "telemetry_blobs" : "telemetry_requests",
+          record: (isBlob ? object.id : object._id) as string,
+          workspace,
+        }));
+        if (!payload) throw new CryptoError("BAD_ENVELOPE", "Invalid legacy telemetry payload");
+      } catch (error) {
+        // Custody awaits release; the rest of the request stays readable and this part stays hidden.
+        if (!(error instanceof CustodialContentError)) throw error;
+      }
+      const clean = { ...object, legacyContent: undefined };
+      const result = await visit(clean) as Record<string, unknown>;
+      if (!payload) return isBlob ? { ...result, content: undefined, meta: undefined, redacted: true } : result;
+      if (isBlob) {
+        const legacy = blobPayload(payload);
+        return { ...result, content: result.content ?? legacy.content, meta: result.meta ?? legacy.meta,
+          redacted: result.content === undefined && legacy.content === undefined };
+      }
+      if (payload.error !== undefined && !record(payload.error)) throw new CryptoError("BAD_ENVELOPE", "Invalid legacy error");
+      const attemptMessages = payload.attempts;
+      if (attemptMessages !== undefined) {
+        if (!Array.isArray(attemptMessages) || attemptMessages.length !== (result.attempts as unknown[]).length ||
+            !attemptMessages.every((message) => message === null || typeof message === "string")) {
+          throw new CryptoError("BAD_ENVELOPE", "Invalid legacy attempt errors");
+        }
+        result.attempts = (result.attempts as unknown[]).map((attempt, index) => ({
+          ...record(attempt), message: record(attempt)?.message ?? (attemptMessages as (string | null)[])[index] ?? undefined,
+        }));
+      }
+      result.error ??= payload.error;
+      return result;
+    }
     if (object.sealed !== undefined) {
       if (typeof object.hash !== "string") throw new CryptoError("BAD_ENVELOPE", "Invalid telemetry blob");
       const payload = blobPayload(await openPayload(

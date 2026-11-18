@@ -12,8 +12,11 @@ import {
   validateChatWraps,
 } from "./chat-keys";
 import { invalidKeys, type ChatKeyInput, type WrapInput } from "./workspace-contract";
+import { invalidateTelemetryProofs } from "./migration-telemetry-proofs";
 /**
- * Creator-only scope transition; narrowing rotates, widening covers every historical epoch. An ACP
+ * Creator-only scope transition. Every actual scope or member change starts a fresh epoch signed
+ * and bound (`bindingSignature`) to the NEXT scope and members; widening additionally rewraps
+ * every historical epoch to the added readers, without re-signing or re-encrypting history. An ACP
  * chat whose binding was published must come with the creator's next binding version for exactly
  * the new audience, so its Worker authorizes the new members (or stops authorizing removed ones).
  */
@@ -67,12 +70,6 @@ export async function changeChatScope(
       invalidKeys();
     }
   } else {
-    const narrowing =
-      (oldScope === "workspace" && input.scope !== "workspace") ||
-      (oldScope === "shared" && input.scope === "personal") ||
-      (oldScope === "shared" &&
-        input.scope === "shared" &&
-        oldMembers.some((id) => !members.includes(id)));
     const added =
       input.scope === "shared"
         ? members.filter(
@@ -80,10 +77,13 @@ export async function changeChatScope(
           )
         : [];
     const widening = (input.scope === "workspace" && oldScope !== "workspace") || added.length > 0;
-    if ((narrowing || widening) && !input.keys) {
-      invalidKeys();
-    }
-    if (narrowing && !input.keys?.rotate) {
+    // Any actual audience change starts a fresh epoch bound to the NEXT scope and members, even a
+    // widening (old history is rewrapped below, never re-signed or re-encrypted).
+    const audienceChanged =
+      input.scope !== oldScope ||
+      (input.scope === "shared" &&
+        (oldMembers.length !== members.length || oldMembers.some((id) => !members.includes(id))));
+    if (audienceChanged && !input.keys?.rotate) {
       invalidKeys();
     }
     if (input.keys) {
@@ -103,7 +103,10 @@ export async function changeChatScope(
         ) {
           invalidKeys();
         }
-        await validateChatEpoch(ctx, workspace, chat.e2eeId, rotate, userId);
+        await validateChatEpoch(ctx, workspace, chat.e2eeId, rotate, userId, {
+          policy: { chat: chat._id, scope: input.scope, creatorId: chat.userId, members },
+          required: true,
+        });
       }
       const allowedEpochs = [...epochs.map((e) => e.epoch), ...(rotate ? [rotate.epoch] : [])];
       await validateChatWraps(
@@ -177,4 +180,5 @@ export async function changeChatScope(
     }
   }
   await ctx.db.patch("aisdk_chats", chat._id, { workspace: workspace._id, scope: input.scope });
+  await invalidateTelemetryProofs(ctx, workspace._id);
 }

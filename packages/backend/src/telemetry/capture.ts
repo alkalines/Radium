@@ -388,13 +388,13 @@ export class TelemetryCapture {
     };
 
     for (const blob of pending) {
-      let sealed = blob.canonical !== undefined
+      let sealed: (typeof batch)[number]["sealed"] = blob.canonical !== undefined
         ? await this.seal("telemetry_blobs", blob.hash, "content", { content: blob.canonical, meta: blob.meta })
         : undefined;
       let storage: Id<"_storage"> | undefined;
-      if (sealed && sealed.envelope.byteLength > INLINE_BLOB_LIMIT) {
+      if (sealed?.envelope && sealed.envelope.byteLength > INLINE_BLOB_LIMIT) {
         storage = await this.ctx.storage.store(new Blob([sealed.envelope], { type: "application/octet-stream" }));
-        sealed = { ...sealed, envelope: undefined } as typeof sealed;
+        sealed = { ...sealed, envelope: undefined };
       }
 
       const cost = (sealed?.envelope?.byteLength ?? 0) + 2048 + (blob.members?.length ?? 0) * 48;

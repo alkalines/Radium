@@ -13,6 +13,10 @@ import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
+import { legacyBoxValidator } from "../src/e2ee/legacy-contract";
+import { assertLegacyWritesAllowed, deleteLegacySidecar } from "../src/e2ee/migration-contract";
+import { assertPlaintextChatWriteAllowed } from "../src/chatroom/legacy";
+import { invalidateTelemetryProofs } from "../src/e2ee/migration-telemetry-proofs";
 import { internal } from "./_generated/api";
 import { requireAccessibleChat, requireChatManager, resolveWorkspaceForChat } from "./workspaces";
 import { workspaceMutation, workspaceQuery } from "./helpers";
@@ -49,7 +53,6 @@ import {
   wrapInputValidator,
 } from "../src/e2ee/workspace-contract";
 import {
-  chatKeyIsStale,
   currentChatPublicKey,
   insertChatKeysSetup,
   newestWorkspaceWrap,
@@ -132,6 +135,8 @@ export const CreateChat = workspaceMutation({
     if (args.messages_queue) {
       validatePlaintextAttachments(args.messages_queue.files);
     }
+    await assertLegacyWritesAllowed(ctx);
+    if (!args.e2ee) await assertPlaintextChatWriteAllowed(ctx);
     if (args.project) {
       await requireWorkspaceProject(ctx, args.project, ctx.workspace._id);
     }
@@ -237,6 +242,8 @@ export const ForkChat = workspaceMutation({
     if (args.messages_queue) {
       validatePlaintextAttachments(args.messages_queue.files);
     }
+    await assertLegacyWritesAllowed(ctx);
+    if (!args.e2ee) await assertPlaintextChatWriteAllowed(ctx);
     if (args.project) {
       await requireWorkspaceProject(ctx, args.project, ctx.workspace._id);
     }
@@ -338,8 +345,21 @@ export const EditChat = internalMutation({
     ) {
       invalidSealedContent();
     }
+    // Error text is never stored on the chat (`chatroom/interruption.ts`).
+    if (args.interruption?.message) {
+      invalidSealedContent();
+    }
     if (chat.e2eeId && args.messages_queue) {
       invalidSealedContent();
+    }
+    // The freeze holds every content write still, native ones included, so verification compares
+    // a stable generation; plaintext turns additionally stop for good after cutover. Ending a
+    // request (`activeStream: false`) always stays possible.
+    if (args.messages || args.sealedWrites || args.sealedTitle || args.activeStream === true) {
+      await assertLegacyWritesAllowed(ctx);
+    }
+    if (args.activeStream === true && !chat.e2eeId) {
+      await assertPlaintextChatWriteAllowed(ctx, chat);
     }
     if (args.sealedTitle) {
       if (!chat.e2eeId || chat.rekey) {
@@ -371,7 +391,9 @@ export const EditChat = internalMutation({
         ? {
             activeStream: args.activeStream,
             interruption: args.interruption,
-            messages_queue: args.messages_queue,
+            // The queue of a chat with a sidecar may live inside it, where the server cannot clear
+            // it: an explicit null records that the queued turn was consumed.
+            messages_queue: chat.legacyContent ? null : args.messages_queue,
             sealedQueue: undefined,
           }
         : {}),
@@ -399,6 +421,7 @@ export const GetChat = query({
       canManage: v.boolean(),
       canManageScope: v.boolean(),
       title: v.optional(v.string()),
+      legacyContent: v.optional(legacyBoxValidator),
       e2eeId: v.union(v.string(), v.null()),
       keyEpoch: v.union(v.number(), v.null()),
       rekey: v.boolean(),
@@ -424,6 +447,7 @@ export const GetChat = query({
       canManage,
       canManageScope: chat.userId === identity._id,
       title: chat.title,
+      legacyContent: chat.legacyContent,
       e2eeId: chat.e2eeId ?? null,
       keyEpoch: chat.keyEpoch ?? null,
       rekey: chat.rekey ?? false,
@@ -453,6 +477,8 @@ export const GetChatMessages = query({
         revision: v.optional(v.number()),
         message: v.optional(messageSchema),
         sealed: v.optional(v.object({ capsuleId: v.string(), envelope: v.bytes() })),
+        recordId: v.optional(v.string()),
+        legacyContent: v.optional(legacyBoxValidator),
       }),
     ),
     capsules: v.array(chatCapsuleValidator),
@@ -468,12 +494,14 @@ export const GetChatMessages = query({
               .query("chat_messages")
               .withIndex("by_chat_and_position", (q) => q.eq("chat", chat._id))
               .collect()
-          ).map(({ position, messageId, revision, message, sealed }) => ({
+          ).map(({ _id, position, messageId, revision, message, sealed, legacyContent }) => ({
             position,
             messageId,
             revision,
             message,
             sealed,
+            // The sidecar's AAD record; plain rows never need to reveal their identity.
+            ...(legacyContent ? { recordId: _id, legacyContent } : {}),
           }));
     const capsules = (
       await ctx.db
@@ -508,9 +536,25 @@ export const chatMessageHeads = internalQuery({
   },
 });
 
-/** Resolve the current public sealing key, optionally requiring authenticated chat management. */
+/**
+ * Resolve the current public sealing key, optionally requiring authenticated chat management.
+ * An HTTP turn passes the `recipient` its authenticated sender's client prepared: sealing then
+ * requires that exact current key (see `currentChatPublicKey`). Other writers pass none and get
+ * only a bound epoch.
+ */
 export const chatSealingInfo = internalQuery({
-  args: { chatId: v.id("aisdk_chats"), manager: v.optional(v.boolean()) },
+  args: {
+    chatId: v.id("aisdk_chats"),
+    manager: v.optional(v.boolean()),
+    recipient: v.optional(
+      v.object({
+        userId: v.string(),
+        e2eeId: v.string(),
+        epoch: v.number(),
+        publicKey: v.bytes(),
+      }),
+    ),
+  },
   returns: v.union(
     v.null(),
     v.object({
@@ -530,10 +574,10 @@ export const chatSealingInfo = internalQuery({
       return null;
     }
     const workspace = await resolveWorkspaceForChat(ctx, chat);
-    if (!workspace || (await chatKeyIsStale(ctx, chat, workspace))) {
+    if (!workspace) {
       return null;
     }
-    const key = await currentChatPublicKey(ctx, chat);
+    const key = await currentChatPublicKey(ctx, chat, workspace, args.recipient);
     return key ? { e2eeId: chat.e2eeId, workspace: workspace._id, ...key } : null;
   },
 });
@@ -711,6 +755,7 @@ export const RenameChat = mutation({
     if (!identity) return "Not logged in!";
 
     const { chat } = await requireChatActor(ctx, args.chatId);
+    await assertLegacyWritesAllowed(ctx);
     if (chat.e2eeId) {
       if (args.title !== undefined || !args.sealedTitle || chat.rekey) {
         invalidSealedContent();
@@ -735,6 +780,7 @@ export const RenameChat = mutation({
       .trim()
       .slice(0, 32);
     if (!title) return "Title is required.";
+    await assertPlaintextChatWriteAllowed(ctx, chat);
 
     await ctx.db.patch("aisdk_chats", args.chatId, { title });
     const session = await findSession(ctx, args.chatId);
@@ -770,9 +816,11 @@ export const RegenerateChatTitle = mutation({
     if (!identity) return "Not logged in!";
 
     const { chat } = await requireChatManager(ctx, args.chatId);
-    if (chat.e2eeId) {
+    // Historical content cannot be read here; its first prompt is titled only after the chat has keys.
+    if (chat.e2eeId || chat.legacyContent) {
       invalidSealedContent();
     }
+    await assertPlaintextChatWriteAllowed(ctx, chat);
     const firstUserMessage = await loadFirstUserMessage(ctx, chat);
     const prompt = firstUserMessageText({
       messages_queue: chat.messages_queue,
@@ -806,7 +854,11 @@ export const DeleteChat = mutation({
     const access = await requireChatActor(ctx, args.chatId);
     await queueChatDeletion(ctx, access.chat, identity._id, args.deleteInAgent, args.acpCommand);
 
+    if (access.chat.legacyContent) {
+      await deleteLegacySidecar(ctx, { table: "aisdk_chats", record: args.chatId });
+    }
     await ctx.db.delete("aisdk_chats", args.chatId);
+    await invalidateTelemetryProofs(ctx, access.workspace._id);
     await ctx.scheduler.runAfter(0, internal.worker_tasks.cleanupChatCalls, {
       chatId: args.chatId,
     });
@@ -909,6 +961,7 @@ async function chatRows(
         id: chat._id,
         title: chat.title,
         emoji: chat.emoji,
+        legacyContent: chat.legacyContent,
         scope: chat.scope ?? "personal",
         e2ee: chat.e2eeId ? { e2eeId: chat.e2eeId, title: chat.sealedTitle, wrap } : null,
         pinnedAt: chat.pinnedAt,

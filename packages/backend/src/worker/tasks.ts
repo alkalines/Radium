@@ -13,7 +13,11 @@ import {
   requireAccessibleChat,
   requireWorkspaceOwnedByUser,
 } from "../../convex/workspaces";
+import { chatMemberIds } from "../chatroom/members";
+import { chatKeyIsStale } from "../e2ee/chat-keys";
 import { requireDispatchableWorker } from "../e2ee/worker-keys";
+import { assertLegacyPlaintextAllowed, assertLegacyWritesAllowed } from "../e2ee/migration-contract";
+import { deleteRelayRow } from "../e2ee/migration-relay";
 import { workerMutation, workerQuery } from "./machine";
 import { chatWorkerSessionId, validChatWorkerDirectory } from "./chat-config";
 import {
@@ -116,6 +120,7 @@ export const create = internalMutation({
   },
   returns: v.id("worker_tasks"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     await authorizeDispatch(ctx, args);
     if (!args.operation.trim() || args.operation.length > 80) return taskDenied();
     const existing = await existingDispatch(ctx, args);
@@ -159,6 +164,8 @@ export const assigned = workerQuery({
           .eq("status", args.status);
         return args.operation ? scoped.eq("operation", args.operation) : scoped;
       })
+      // Sealed history is never delivered to a Worker as assignable work.
+      .filter((q) => q.eq(q.field("legacyContent"), undefined))
       .take(4),
 });
 
@@ -178,6 +185,7 @@ export const updateStatus = workerMutation({
     const task = await ctx.db.get(args.taskId);
     if (
       !task ||
+      task.legacyContent !== undefined ||
       task.editRequest !== undefined ||
       task.bashRequest !== undefined ||
       task.sealed !== undefined ||
@@ -316,6 +324,7 @@ async function boundChatCallStage(
     callStages.length > 3 ||
     callStages.some(
       (call) =>
+        call.legacyContent !== undefined ||
         call.workspace !== assignment.workspace._id ||
         call.userId !== args.userId ||
         call.workerId !== args.workerId ||
@@ -367,6 +376,8 @@ export const dispatchChatEdit = internalMutation({
   },
   returns: v.object({ taskId: v.id("worker_tasks") }),
   handler: async (ctx, args) => {
+    // The plaintext request stored below is a legacy writer, closed after the freeze permanently.
+    await assertLegacyPlaintextAllowed(ctx);
     if (!args.userId || !args.toolCallId || args.toolCallId.length > 128) return taskDenied();
 
     const assignment = await authorizeChatWorkerDispatch(ctx, args);
@@ -516,6 +527,70 @@ export const chatWorkerTarget = internalQuery({
 });
 
 /**
+ * The chat key epoch a Worker may seal a durable receipt to, with the proofs it verifies itself:
+ * epoch signature, binding signature, original raw picked members and the chat's current audience.
+ * Null (the call is blocked, never sealed to an unproven key) when the chat has no key, its current
+ * epoch is stale, unsigned or unbound (created before recipient binding; the browser must rotate),
+ * or its bound shared members differ from the chat's current raw members.
+ */
+export const chatReceiptKey = internalQuery({
+  args: { chatId: v.id("aisdk_chats"), userId: v.string() },
+  returns: v.union(
+    v.null(),
+    v.object({
+      e2eeId: v.string(),
+      epoch: v.number(),
+      keyId: v.string(),
+      suite: v.number(),
+      publicKey: v.bytes(),
+      signerKeyId: v.string(),
+      signature: v.bytes(),
+      bindingSignature: v.bytes(),
+      scope: v.union(v.literal("personal"), v.literal("shared"), v.literal("workspace")),
+      creatorId: v.string(),
+      members: v.array(v.string()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const { chat, workspace } = await authorizeChatOwner(ctx, args.chatId, args.userId);
+    if (!chat.e2eeId || !chat.keyEpoch || (await chatKeyIsStale(ctx, chat, workspace))) return null;
+    const key = await ctx.db
+      .query("e2ee_chat_keys")
+      .withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat._id).eq("epoch", chat.keyEpoch!))
+      .unique();
+    if (!key?.signerKeyId || !key.signature || !key.bindingSignature) return null;
+    const scope = chat.scope ?? "personal";
+    if (scope !== "shared" && key.bindingMembers?.length) return null;
+    let members: string[] = [];
+    if (scope === "shared") {
+      // Additions or removals since binding need a fresh bound epoch before anything is sealed.
+      const current = new Set(await chatMemberIds(ctx, chat._id));
+      const bound = new Set(key.bindingMembers ?? []);
+      if (
+        !key.bindingMembers ||
+        current.size !== bound.size ||
+        [...current].some((member) => !bound.has(member))
+      )
+        return null;
+      members = [...bound].sort();
+    }
+    return {
+      e2eeId: chat.e2eeId,
+      epoch: key.epoch,
+      keyId: key.keyId,
+      suite: key.suite,
+      publicKey: key.publicKey,
+      signerKeyId: key.signerKeyId,
+      signature: key.signature,
+      bindingSignature: key.bindingSignature,
+      scope,
+      creatorId: chat.userId,
+      members,
+    };
+  },
+});
+
+/**
  * Dispatch one sealed built-in tool stage to a paired Worker. The backend checks only metadata it
  * still sees (owner, chat, selected Worker/directory/tool, stage shape, byte bounds, the Worker's
  * current certified key) and stores bytes; the Worker opens the request and checks the user's
@@ -536,6 +611,7 @@ export const dispatchSealedChatTask = internalMutation({
   },
   returns: v.object({ taskId: v.id("worker_tasks"), replay: v.boolean() }),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     if (
       !args.userId ||
       !args.toolCallId ||
@@ -649,13 +725,14 @@ export const cleanupChatCalls = internalMutation({
   args: { chatId: v.id("aisdk_chats") },
   returns: v.union(v.null(), v.number()),
   handler: async (ctx, args) => {
+    // Deletion only, and scheduled once per chat, so it must not be lost to a freeze.
     if (await ctx.db.get("aisdk_chats", args.chatId)) return null;
 
     const calls = await ctx.db
       .query("worker_chat_calls")
       .withIndex("by_chat_call_stage", (q) => q.eq("chatId", args.chatId))
       .take(WORKER_CHAT_CALL_CLEANUP_BATCH);
-    for (const call of calls) await ctx.db.delete(call._id);
+    for (const call of calls) await deleteRelayRow(ctx, "worker_chat_calls", call);
 
     if (calls.length === WORKER_CHAT_CALL_CLEANUP_BATCH) {
       await ctx.scheduler.runAfter(0, internal.worker_tasks.cleanupChatCalls, args);
@@ -672,6 +749,7 @@ async function assignedToolTask(
   const task = await ctx.db.get(taskId);
   if (!task) return null;
   if (
+    task.legacyContent !== undefined ||
     (!task.editRequest && !task.bashRequest && !task.sealed) ||
     task.workspace !== ctx.worker.workspaceId ||
     task.workerId !== ctx.worker.workerId
@@ -746,6 +824,8 @@ export const completeEdit = workerMutation({
       return { receiptAcknowledged: true as const };
     }
     if (task.sealed || task.claimId !== args.claimId) return taskDenied();
+    // A plaintext result is a legacy writer: closed by the freeze and permanently after cutover.
+    await assertLegacyPlaintextAllowed(ctx);
     if (
       (args.result.output !== undefined &&
         new TextEncoder().encode(args.result.output).length >
@@ -764,7 +844,8 @@ export const completeEdit = workerMutation({
     ) {
       if (chatCall)
         await ctx.db.patch(chatCall._id, {
-          result: args.result,
+          // A receipt whose history moved into a sidecar never receives a plaintext result again.
+          ...(chatCall.legacyContent === undefined ? { result: args.result } : {}),
           completionClaimId: args.claimId,
           completionRevision: task.revision,
         });
@@ -784,7 +865,7 @@ export const completeEdit = workerMutation({
     await ctx.db.patch(task._id, patch);
     if (chatCall)
       await ctx.db.patch(chatCall._id, {
-        result: args.result,
+        ...(chatCall.legacyContent === undefined ? { result: args.result } : {}),
         completionClaimId: args.claimId,
         completionRevision: patch.revision,
       });
@@ -910,6 +991,7 @@ export const prune = internalMutation({
   args: {},
   returns: v.number(),
   handler: async (ctx) => {
+    await assertLegacyWritesAllowed(ctx);
     const cutoff = Date.now() - WORKER_TASK_RETENTION_MS;
     let deleted = 0;
 
@@ -921,7 +1003,7 @@ export const prune = internalMutation({
         )
         .take(WORKER_TASK_CLEANUP_BATCH);
       for (const task of tasks) {
-        await ctx.db.delete(task._id);
+        await deleteRelayRow(ctx, "worker_tasks", task);
         deleted += 1;
       }
     }

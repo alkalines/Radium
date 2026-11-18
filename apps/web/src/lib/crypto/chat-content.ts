@@ -450,3 +450,62 @@ export async function decryptFileUrl(url: string, workspaceId: Id<"workspaces">)
     fragment?.objectKey.fill(0);
   }
 }
+
+/** Registration metadata of one encrypted upload; contains no file name or object key. */
+export type EncryptedFileRegistration = {
+  fileId: string;
+  capsule: ArrayBuffer;
+  chatEpoch: number;
+  e2eeParent: string;
+};
+
+/** Convex calls an encrypted upload needs; callers bind them to their own client or hooks. */
+export type AttachmentTransport = {
+  generateUploadUrl: () => Promise<string>;
+  register: (args: {
+    storageId: Id<"_storage">;
+    mediaType?: string;
+    e2ee: EncryptedFileRegistration;
+  }) => Promise<{ url: string } | null>;
+};
+
+/**
+ * Encrypts `file` to the chat key, uploads the ciphertext and registers it. The returned part's
+ * URL carries the object key in its fragment; the backend registration never sees it. A rejected
+ * registration means the backend already removed the upload.
+ */
+export async function uploadEncryptedFile(
+  file: File,
+  chat: ChatContentKey,
+  transport: AttachmentTransport,
+): Promise<FileUIPart> {
+  const encrypted = await encryptFile(file, chat);
+  try {
+    const response = await fetch(await transport.generateUploadUrl(), {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: encrypted.body,
+    });
+    if (!response.ok) {
+      throw new Error(`Unable to upload ${file.name} (${response.status}).`);
+    }
+    const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
+    const registered = await transport.register({
+      storageId,
+      e2ee: encrypted.register,
+      // The stored bytes are ciphertext; the declared type is what the model needs.
+      ...(file.type ? { mediaType: file.type } : {}),
+    });
+    if (!registered) {
+      throw new Error("File could not be attached.");
+    }
+    return {
+      type: "file",
+      url: fileUrlWithKey(registered.url, encrypted.fileId, chat.e2eeId, encrypted.objectKey),
+      mediaType: file.type || "application/octet-stream",
+      filename: file.name,
+    };
+  } finally {
+    encrypted.objectKey.fill(0);
+  }
+}

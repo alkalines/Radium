@@ -16,4 +16,4 @@ export {
   unsubscribe,
 } from "../src/notifications/push";
 export { notifySession } from "../src/notifications/session";
-export { sealingInput, finishSealing, sealNotification } from "../src/notifications/sealing";
+export { sealingInput, finishSealing, resumeSealing, sealNotification } from "../src/notifications/sealing";

@@ -8,6 +8,7 @@ import {
   type QueryCtx,
 } from "../_generated/server";
 import { authorizeChatRecord, requireWorkspaceAccessForUser } from "../workspaces";
+import { assertLegacyWritesAllowed } from "../../src/e2ee/migration-contract";
 import {
   telemetryAttemptSchema,
   telemetryBlobKindSchema,
@@ -18,6 +19,12 @@ import {
   type TelemetryChanges,
   type TelemetryLineage,
 } from "../../src/telemetry/validators";
+import {
+  insertedNodeReachesCustody,
+  invalidateForCapturedRequest,
+  nodeReachesCustody,
+  trackedGeneration,
+} from "../../src/e2ee/migration-telemetry-reach";
 
 const sealedBlob = v.object({
   epoch: v.number(),
@@ -102,7 +109,7 @@ export const existingBlobs = internalQuery({
       found.push({
         hash,
         id: blob._id,
-        recorded: blob.content !== undefined || blob.storage !== undefined || blob.sealed !== undefined,
+        recorded: blob.content !== undefined || blob.storage !== undefined || blob.sealed !== undefined || blob.legacyContent !== undefined,
       });
     }
     return found;
@@ -129,13 +136,14 @@ export const ingestBlobs = internalMutation({
   args: { workspace: v.id("workspaces"), blobs: v.array(blobInput) },
   returns: v.array(v.object({ hash: v.string(), id: v.id("telemetry_blobs") })),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const ids: Array<{ hash: string; id: Id<"telemetry_blobs"> }> = [];
     for (const blob of args.blobs) {
       const existing = await blobByHash(ctx, args.workspace, blob.hash);
       const hasContent = blob.sealed !== undefined;
 
       if (existing) {
-        const existingRecorded = existing.content !== undefined || existing.storage !== undefined || existing.sealed !== undefined;
+        const existingRecorded = existing.content !== undefined || existing.storage !== undefined || existing.sealed !== undefined || existing.legacyContent !== undefined;
         if (!existingRecorded && hasContent) {
           await ctx.db.patch("telemetry_blobs", existing._id, {
             sealed: blob.sealed,
@@ -151,6 +159,7 @@ export const ingestBlobs = internalMutation({
       const id = await ctx.db.insert("telemetry_blobs", {
         workspace: args.workspace,
         hash: blob.hash,
+        legacyHashVersion: 1,
         kind: blob.kind,
         size: blob.size,
         sealed: blob.sealed,
@@ -191,11 +200,13 @@ export const ingestNodes = internalMutation({
   },
   returns: v.object({ node: v.id("telemetry_nodes"), forked: v.boolean() }),
   handler: async (ctx, args) => {
-    let last: { id: Id<"telemetry_nodes">; depth: number } | undefined;
+    await assertLegacyWritesAllowed(ctx);
+    const generation = await trackedGeneration(ctx, args.workspace);
+    let last: { id: Id<"telemetry_nodes">; depth: number; doc?: Doc<"telemetry_nodes">; reaches?: boolean } | undefined;
     if (args.parentHash !== undefined) {
       const parent = await nodeByHash(ctx, args.workspace, args.parentHash);
       if (!parent) throw new Error("Telemetry parent node not found.");
-      last = { id: parent._id, depth: parent.depth };
+      last = { id: parent._id, depth: parent.depth, doc: parent };
     }
 
     let inserted = false;
@@ -203,7 +214,7 @@ export const ingestNodes = internalMutation({
     for (const node of args.nodes) {
       const existing = await nodeByHash(ctx, args.workspace, node.hash);
       if (existing) {
-        last = { id: existing._id, depth: existing.depth };
+        last = { id: existing._id, depth: existing.depth, doc: existing };
         continue;
       }
       // Only the first insertion can join existing history; later nodes hang off new ones.
@@ -217,15 +228,26 @@ export const ingestNodes = internalMutation({
       }
       inserted = true;
       const depth = (last?.depth ?? 0) + 1;
+      // While unfrozen after cutover, stamp whether the new node's chain touches custodial history
+      // (valid only for this migration generation) so later requests need no ancestor walk. Node
+      // insertion alone changes no proof; `finishRequest` invalidates when a request reaches custody.
+      let reaches: boolean | undefined;
+      if (generation !== undefined) {
+        // A tracked run always has a stored parent doc or a freshly computed reach for `last`.
+        const parentReaches = last ? (last.reaches ?? await nodeReachesCustody(ctx, last.doc!, generation)) : false;
+        reaches = await insertedNodeReachesCustody(ctx, { workspace: args.workspace, blob: node.blob }, parentReaches);
+      }
       const id = await ctx.db.insert("telemetry_nodes", {
         workspace: args.workspace,
         hash: node.hash,
+        legacyHashVersion: 1,
         parent: last?.id,
         blob: node.blob,
         depth,
         origin: node.origin,
+        ...(reaches === undefined ? {} : { custodyFree: !reaches, custodyFreeGeneration: generation }),
       });
-      last = { id, depth };
+      last = { id, depth, reaches };
     }
     if (!last) throw new Error("Telemetry node run is empty.");
     return { node: last.id, forked };
@@ -403,6 +425,7 @@ export const finishRequest = internalMutation({
   },
   returns: v.id("telemetry_requests"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const existing = await ctx.db
       .query("telemetry_requests")
       .withIndex("by_workspace_and_requestId", (q) =>
@@ -427,7 +450,7 @@ export const finishRequest = internalMutation({
     } else if (args.source === "chatroom") {
       throw new Error("Chatroom telemetry requires chat attribution.");
     }
-    const [input, prefix] = await Promise.all([
+    const [input, prefix, output] = await Promise.all([
       requireWorkspaceNode(ctx, args.workspace, args.input),
       requireWorkspaceNode(ctx, args.workspace, args.prefix),
       requireWorkspaceNode(ctx, args.workspace, args.output),
@@ -486,6 +509,15 @@ export const finishRequest = internalMutation({
       session,
       lineage,
       changes,
+    });
+    // Only a request that reaches custodial history can change a finished custody proof. Reach is
+    // derived from the stored rows (`input`/`output` chains, blobs, toolset tools), never from a
+    // caller flag, so unrelated traffic neither bumps the proof revision nor schedules a refresh.
+    await invalidateForCapturedRequest(ctx, {
+      workspace: args.workspace,
+      chatId: args.chatId,
+      nodes: [input, output],
+      blobs: [args.system, args.params, args.headers, args.toolset],
     });
     await ctx.scheduler.runAfter(0, internal.observability.telemetryExport.deliver, { request });
     return request;

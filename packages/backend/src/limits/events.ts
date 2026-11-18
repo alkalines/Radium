@@ -74,11 +74,6 @@ export async function recordLimitEvent(
       workspace: event.workspace,
       kind: event.kind,
       limitEvent: id,
-      limitMetadata: {
-        provider: event.provider.name.slice(0, 80),
-        credential: event.credential.name.slice(0, 80),
-        ...(event.meter ? { meter: event.meter.label.slice(0, 80) } : {}),
-      },
       createdAt: event.occurredAt,
     });
   }

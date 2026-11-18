@@ -10,6 +10,7 @@ import { findWorkspaceForLegacyBalance, getDefaultWorkspaceForUser } from "./wor
 import { canonicalJson } from "../src/telemetry/canonical";
 import { blobHash, utf8Length } from "../src/telemetry/hash";
 import { INLINE_BLOB_LIMIT } from "../src/telemetry/store";
+import { assertPlaintextChatWriteAllowed } from "../src/chatroom/legacy";
 import {
   chatWorkspaceBackfillPatch,
   isLegacyChatOwnershipConsistent,
@@ -34,6 +35,7 @@ import { providerSnapshotFromCatalog } from "../src/workspaces/provider";
 import { MAX_PROVIDER_CREDENTIALS, credentialSecretName } from "../src/workspaces/credentials";
 import { loadSnapshotTarget, recordLoginPlan } from "../src/limits/store";
 import { OPENAI_CODEX_SLUG } from "../src/provider_slugs";
+import { assertLegacyPlaintextAllowed } from "../src/e2ee/migration-contract";
 
 export const migrations = new Migrations(components.migrations, { schema });
 
@@ -96,6 +98,8 @@ async function workspaceForUser(ctx: MutationCtx, userId: string) {
   const existing = await getDefaultWorkspaceForUser(ctx, userId);
   if (existing) return existing;
 
+  // The default name counts as legacy plaintext once the migration starts.
+  await assertLegacyPlaintextAllowed(ctx);
   const workspaceId = await ctx.db.insert("workspaces", {
     ownerType: "user",
     ownerId: userId,
@@ -693,6 +697,7 @@ export const workspacesFromBalances = migrations.define({
   table: "balances",
   batchSize: 1,
   migrateOne: async (ctx, balance) => {
+    await assertLegacyPlaintextAllowed(ctx);
     const mapping = await workspaceForBalance(ctx, balance._id);
     if (mapping.workspace) return;
 
@@ -712,6 +717,7 @@ export const workspacesFromSettings = migrations.define({
   table: "chatroom_settings",
   batchSize: 10,
   migrateOne: async (ctx, settings) => {
+    await assertLegacyPlaintextAllowed(ctx);
     await workspaceForUser(ctx, settings.userId);
   },
 });
@@ -994,7 +1000,11 @@ export const chatMessagesToTable = migrations.define({
   // Legacy chats can approach the 1 MiB document limit; keep each batch's writes small.
   batchSize: 5,
   migrateOne: async (ctx, chat) => {
+    await assertLegacyPlaintextAllowed(ctx);
     if (chat.messages === undefined && chat.chat_completions === undefined) return;
+    // Re-materializing embedded plaintext history is a legacy write; clearing the deprecated
+    // `chat_completions` ids alone writes no content.
+    if (chat.messages !== undefined) await assertPlaintextChatWriteAllowed(ctx, chat);
 
     // A save clears `messages` in the same transaction that writes rows, so a chat that still
     // has the field has no rows yet.
@@ -1014,6 +1024,7 @@ async function legacyBlob(
   value: unknown,
   truncated: boolean,
 ): Promise<Id<"telemetry_blobs">> {
+  await assertLegacyPlaintextAllowed(ctx);
   const canonical = canonicalJson(value);
   const hash = await blobHash(workspace, "legacy", canonical);
   const existing = await ctx.db
@@ -1026,6 +1037,7 @@ async function legacyBlob(
   return await ctx.db.insert("telemetry_blobs", {
     workspace,
     hash,
+    legacyHashVersion: 1,
     kind: "legacy",
     size,
     // Content that cannot be stored inline is dropped rather than failing the migration.
@@ -1055,6 +1067,8 @@ export const telemetryTracesToRequests = migrations.define({
   table: "telemetry_traces",
   batchSize: 10,
   migrateOne: async (ctx, trace) => {
+    await assertLegacyPlaintextAllowed(ctx);
+    if (trace.legacyContent) throw new Error("Encrypted historical traces cannot be converted by the plaintext migration.");
     let workspaceId = trace.workspace;
     if (!workspaceId && trace.balance) {
       workspaceId = (await findWorkspaceForLegacyBalance(ctx, trace.balance))?._id;
@@ -1069,6 +1083,9 @@ export const telemetryTracesToRequests = migrations.define({
       .query("telemetry_payloads")
       .withIndex("by_trace", (q) => q.eq("trace", trace._id))
       .collect();
+    if (spans.some((row) => row.legacyContent) || payloads.some((row) => row.legacyContent)) {
+      throw new Error("Encrypted historical spans or payloads cannot be converted by the plaintext migration.");
+    }
 
     if (workspace) {
       const existing = await ctx.db

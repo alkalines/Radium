@@ -37,6 +37,7 @@ import {
   validAcpAgentId,
   validAcpToken,
   type AcpAgentReport,
+  type AcpAgentSessionEntry,
   ACP_SEALED_FRAME_BYTES,
   ACP_SEALED_INTERACTION_BYTES,
   ACP_SEALED_SHORT_BYTES,
@@ -60,6 +61,8 @@ import {
   samePayload,
   workspaceHasKeys,
 } from "./sealed";
+import { assertLegacyPlaintextAllowed, legacyPlaintextAllowed } from "../e2ee/migration-contract";
+import { deleteRelayRow } from "../e2ee/migration-relay";
 
 /** Pending intent for this verified machine, without transient prompt payloads. */
 export const assignedCommands = workerQuery({
@@ -74,7 +77,7 @@ export const assignedCommands = workerQuery({
           .eq("status", "pending"),
       )
       .take(16);
-    return rows.map((row) => ({
+    return rows.filter((row) => !row.legacyContent).map((row) => ({
       _id: row._id,
       kind: row.kind,
       chat: row.chat ?? null,
@@ -109,7 +112,7 @@ export const claimCommand = workerMutation({
     const row = await ctx.db.get(command);
     if (!row) return null;
     checkWorker(ctx, row);
-    if (row.status !== "pending") return null;
+    if (row.legacyContent || row.status !== "pending") return null;
     const session = row.chat ? await findSession(ctx, row.chat) : null;
     const chat = row.chat ? await ctx.db.get(row.chat) : null;
     if (row.chat && (!session || !chat)) {
@@ -195,7 +198,7 @@ export const finishCommand = workerMutation({
     if (args.result !== undefined && utf8Bytes(args.result) > ACP_COMMAND_RESULT_BYTES)
       acpError("ACP_RESULT_TOO_LARGE");
     if (
-      (await workspaceHasKeys(ctx, row.workspace)) &&
+      ((await workspaceHasKeys(ctx, row.workspace)) || !(await legacyPlaintextAllowed(ctx))) &&
       (args.result !== undefined || (args.error !== undefined && !isWorkerErrorCode(args.error)))
     )
       acpError("ACP_PLAINTEXT_REFUSED");
@@ -304,6 +307,8 @@ export const openInteraction = workerMutation({
       acpError("ACP_SESSION_NOT_RUNNING");
     const keyed = await workspaceHasKeys(ctx, session.workspace);
     requireMode(keyed, args.sealed !== undefined, args.request !== undefined);
+    // Plaintext requests are a legacy writer: closed by the freeze and permanently after cutover.
+    if (args.request !== undefined) await assertLegacyPlaintextAllowed(ctx);
     let kind: "permission" | "elicitation";
     if (args.sealed) {
       const chat = await ctx.db.get(args.chat);
@@ -498,6 +503,7 @@ export const appendFrames = workerMutation({
       let size: number;
       if (typeof frame.payload === "string") {
         if (keyed) acpError("ACP_PLAINTEXT_REFUSED");
+        await assertLegacyPlaintextAllowed(ctx);
         size = utf8Bytes(frame.payload);
         if (size > ACP_FRAME_BYTES) acpError("ACP_FRAME_TOO_LARGE");
       } else {
@@ -577,6 +583,14 @@ export const updateSession = workerMutation({
   handler: async (ctx, args) => {
     const session = await machineSession(ctx, args.chat);
     const { patch } = args;
+    if (
+      !(await legacyPlaintextAllowed(ctx)) &&
+      (patch.title !== undefined ||
+        typeof patch.error === "string" ||
+        patch.config !== undefined ||
+        patch.commands !== undefined)
+    )
+      acpError("ACP_PLAINTEXT_REFUSED");
     if (await workspaceHasKeys(ctx, session.workspace)) {
       if (patch.title !== undefined || typeof patch.error === "string" ||
           patch.config !== undefined || patch.commands !== undefined)
@@ -620,6 +634,8 @@ export const chatKey = workerQuery({
       publicKey: key.publicKey,
       signerKeyId: key.signerKeyId ?? null,
       signature: key.signature ?? null,
+      bindingSignature: key.bindingSignature ?? null,
+      bindingMembers: key.bindingMembers ?? null,
       // A key the chat must replace before anything is sealed to it (removed recipient).
       rekey: await chatKeyIsStale(ctx, chat, workspace),
     };
@@ -650,10 +666,14 @@ export const reportAgents = workerMutation({
       )
       .take(ACP_AGENT_DEFINITIONS_MAX + 1);
     const defaults: Record<string, NonNullable<AcpAgentReport["defaults"]>> = {};
+    const plaintext = await legacyPlaintextAllowed(ctx);
     for (const agent of agents) {
       const existing = rows.find((row) => row.agentId === agent.agentId);
       const report = {
         ...agent,
+        // Free-text reasons can carry local paths; they stop being written after the cutover, and
+        // never land beside a historical sidecar even when an aborted cutover reopened the writers.
+        error: plaintext && !existing?.legacyContent ? agent.error : undefined,
         defaults: agent.defaults ?? existing?.defaults,
         checkedAt: Date.now(),
       };
@@ -667,7 +687,8 @@ export const reportAgents = workerMutation({
         });
     }
     for (const row of rows)
-      if (!agents.some((agent) => agent.agentId === row.agentId)) await ctx.db.delete(row._id);
+      if (!agents.some((agent) => agent.agentId === row.agentId))
+        await deleteRelayRow(ctx, "worker_agents", row);
     return defaults;
   },
 });
@@ -717,10 +738,15 @@ export const syncAgentSessions = workerMutation({
     if (!agent) acpError("ACP_AGENT_UNAVAILABLE");
     // A paired Worker's titles are sealed to the owner key and its sync errors are fixed codes.
     const keyed = await workspaceHasKeys(ctx, ctx.worker.workspaceId);
+    // Unpaired Workers cannot add plaintext titles or error text after the cutover.
+    const closed = !keyed && !(await legacyPlaintextAllowed(ctx));
+    const upserts: AcpAgentSessionEntry[] = closed
+      ? args.upserts.map(({ title: _title, ...entry }) => entry)
+      : args.upserts;
     if (
-      args.upserts.length > ACP_AGENT_SESSIONS_SYNC_CHUNK ||
+      upserts.length > ACP_AGENT_SESSIONS_SYNC_CHUNK ||
       args.removals.length > ACP_AGENT_SESSIONS_SYNC_CHUNK ||
-      args.upserts.some(
+      upserts.some(
         (row) =>
           !validAcpToken(row.sessionId) ||
           !validChatWorkerDirectory(row.cwd) ||
@@ -743,7 +769,7 @@ export const syncAgentSessions = workerMutation({
         args.finish.count > ACP_AGENT_SESSIONS_MAX)
     )
       acpError("ACP_INVALID_AGENT_SESSIONS");
-    for (const entry of args.upserts) {
+    for (const entry of upserts) {
       const row = await ctx.db
         .query("acp_agent_sessions")
         .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
@@ -755,18 +781,20 @@ export const syncAgentSessions = workerMutation({
         )
         .first();
       if (row) {
+        // A row whose titles moved into a sidecar takes no plaintext title, only native sealed ones.
+        const next = row.legacyContent ? { ...entry, title: undefined } : entry;
         if (
-          row.cwd !== entry.cwd ||
-          row.title !== entry.title ||
-          row.titleTag !== entry.titleTag ||
-          row.sealedTitle?.epoch !== entry.sealedTitle?.epoch ||
-          row.updatedAt !== entry.updatedAt
+          row.cwd !== next.cwd ||
+          row.title !== next.title ||
+          row.titleTag !== next.titleTag ||
+          row.sealedTitle?.epoch !== next.sealedTitle?.epoch ||
+          row.updatedAt !== next.updatedAt
         )
           await ctx.db.patch(row._id, {
-            ...entry,
-            title: entry.title,
-            sealedTitle: entry.sealedTitle,
-            titleTag: entry.titleTag,
+            ...next,
+            title: next.title,
+            sealedTitle: next.sealedTitle,
+            titleTag: next.titleTag,
           });
       } else {
         const bound = await ctx.db
@@ -799,10 +827,14 @@ export const syncAgentSessions = workerMutation({
             .eq("sessionId", sessionId),
         )
         .first();
-      if (row) await ctx.db.delete(row._id);
+      if (row) await deleteRelayRow(ctx, "acp_agent_sessions", row);
     }
     if (args.finish) {
-      const finish = args.finish;
+      // Sync errors beside a historical sidecar are fixed codes as well.
+      const finish =
+        (closed || agent.legacyContent !== undefined) && "error" in args.finish
+          ? { error: "ACP_FAILED" }
+          : args.finish;
       await ctx.db.patch(agent._id, {
         sessionsSync:
           "error" in finish
@@ -820,7 +852,9 @@ export const syncAgentSessions = workerMutation({
 export const recoverWorker = workerMutation({
   args: {},
   handler: async (ctx) => {
-    const keyed = await workspaceHasKeys(ctx, ctx.worker.workspaceId);
+    // Free-text failure reasons are plaintext; keyed workspaces and the post-cutover relay use codes.
+    const generic =
+      (await workspaceHasKeys(ctx, ctx.worker.workspaceId)) || !(await legacyPlaintextAllowed(ctx));
     const commands = await ctx.db
       .query("acp_commands")
       .withIndex("by_worker_and_status", (q) =>
@@ -833,7 +867,7 @@ export const recoverWorker = workerMutation({
     for (const row of commands) {
       await ctx.db.patch(row._id, {
         status: "failed",
-        error: keyed ? "ACP_FAILED" : "Worker restarted",
+        error: generic ? "ACP_FAILED" : "Worker restarted",
         finishedAt: Date.now(),
       });
       if (row.kind === "prompt" || row.kind === "fork") {
@@ -845,7 +879,7 @@ export const recoverWorker = workerMutation({
         if (session?.status === "starting") {
           checkWorker(ctx, session);
           if (await ctx.db.get(session.chat))
-            await applySessionPatch(ctx, session, keyed
+            await applySessionPatch(ctx, session, generic
               ? { status: "failed", sealedError: null }
               : { status: "failed", error: "Worker restarted" });
         }
@@ -864,13 +898,17 @@ export const recoverWorker = workerMutation({
         .take(32);
       for (const row of rows) {
         if (await ctx.db.get(row.chat))
-          await applySessionPatch(ctx, row, keyed
+          await applySessionPatch(ctx, row, generic
             ? { status: "failed", sealedError: null }
             : { status: "failed", error: "Worker restarted" });
         else
           await ctx.db.patch(row._id, {
             status: "failed",
-            error: keyed ? undefined : "Worker restarted",
+            ...(generic
+              ? { error: undefined }
+              : row.legacyContent
+                ? {}
+                : { error: "Worker restarted" }),
             updatedAt: Date.now(),
           });
       }

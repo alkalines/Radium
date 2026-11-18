@@ -46,6 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const name of Object.keys(vapidEnv)) delete process.env[name];
 });
 
@@ -129,16 +130,14 @@ describe("session outcomes", () => {
     expect(chatInterruption(end({ isCancelled: true, outcome: { status: "unknown" } }))).toEqual({
       kind: "interrupted",
     });
-    expect(chatInterruption(end({ isAborted: true, failed: true }), "Upstream failed")).toEqual({
+    expect(chatInterruption(end({ isAborted: true, failed: true }))).toEqual({
       kind: "interrupted",
     });
-    expect(chatInterruption(end({ failed: true }), "Quota reached")).toEqual({
-      kind: "failed",
-      message: "Quota reached",
-    });
+    // A failure records only its kind; provider error text is never persisted.
+    expect(chatInterruption(end({ failed: true }))).toEqual({ kind: "failed" });
     // Hitting the step cap mid-work is continuable, but a stop or failure still wins.
-    expect(chatInterruption(end({}), undefined, true)).toEqual({ kind: "step_limit" });
-    expect(chatInterruption(end({ isAborted: true }), undefined, true)).toEqual({
+    expect(chatInterruption(end({}), true)).toEqual({ kind: "step_limit" });
+    expect(chatInterruption(end({ isAborted: true }), true)).toEqual({
       kind: "interrupted",
     });
   });
@@ -466,5 +465,229 @@ describe("push subscriptions", () => {
     // Another user cannot remove it.
     await harness.member.mutation(api.notifications.unsubscribe, { device: device!._id });
     expect(await harness.owner.query(api.notifications.listDevices, {})).toHaveLength(1);
+  });
+});
+
+describe("sealing and the encryption cutover freeze", () => {
+  const ROTATION_KEY_ID = toBase64Url(new Uint8Array(16).fill(9));
+  const KEY_ID = toBase64Url(new Uint8Array(16).fill(7));
+
+  async function activeIdentity(harness: Harness, keyId = KEY_ID) {
+    const pair = await generateEncryptionKeyPair();
+    await harness.t.run((ctx) => ctx.db.insert("e2ee_identities", {
+      userId: "member", keyId, suite: 1,
+      encryptionPublicKey: pair.publicKey.slice().buffer,
+      signingPublicKey: new ArrayBuffer(32),
+      secrets: new ArrayBuffer(1), selfSignature: new ArrayBuffer(1),
+      recoveryWrapper: new ArrayBuffer(1), status: "active", createdAt: Date.now(),
+    }));
+    return pair;
+  }
+
+  async function setFrozenState(harness: Harness, frozen: boolean) {
+    await harness.t.run(async (ctx) => {
+      const state = await ctx.db.query("e2ee_migration_state").first();
+      if (state) await ctx.db.patch("e2ee_migration_state", state._id, { frozen, generation: state.generation + 1 });
+      else await ctx.db.insert("e2ee_migration_state", {
+        key: "global", frozen, generation: 1, custodyState: "none", custodyWrites: 0, cutoverComplete: false,
+      });
+    });
+  }
+
+  async function pendingRow(harness: Harness) {
+    await harness.t.mutation(internal.notifications.notifySession, {
+      userId: "member", chat: harness.chat, kind: "session_finished",
+    });
+    return await harness.t.run(async (ctx) => (await ctx.db.query("notifications").order("desc").first())!);
+  }
+
+  const readRow = (harness: Harness, id: Id<"notifications">) =>
+    harness.t.run((ctx) => ctx.db.get("notifications", id));
+
+  async function scheduledCount(harness: Harness, name: string) {
+    return (await scheduledNames(harness)).filter((scheduled) => scheduled === name).length;
+  }
+
+  test("sealing held by a freeze resumes after unfreeze with the original body and no second push", async () => {
+    vi.useFakeTimers();
+    const harness = await setup();
+    process.env = { ...process.env, ...vapidEnv };
+    await subscribeDevice(harness);
+    const identity = await activeIdentity(harness);
+    const row = await pendingRow(harness);
+    expect(row.sealingPending).toBe(true);
+
+    await setFrozenState(harness, true);
+    await harness.t.action(internal.notifications.sealNotification, { notification: row._id });
+    // Frozen: nothing is sealed, and the marker survives instead of being dropped.
+    expect(await readRow(harness, row._id)).toMatchObject({ sealingPending: true });
+    expect((await readRow(harness, row._id))?.sealed).toBeUndefined();
+
+    // The push fallback may run during the freeze; it must not clear the marker.
+    await harness.t.mutation(internal.notifications.deliverFallback, { notification: row._id });
+    vi.advanceTimersByTime(0);
+    await harness.t.finishInProgressScheduledFunctions();
+    const delivered = await readRow(harness, row._id);
+    expect(delivered).toMatchObject({ sealingPending: true, delivery: { channel: "web_push" } });
+    expect(await scheduledCount(harness, "notifications_push:send")).toBe(1);
+
+    // Resuming while still frozen schedules nothing.
+    const sealingJobs = await scheduledCount(harness, "notifications:sealNotification");
+    await harness.t.mutation(internal.notifications.resumeSealing, {});
+    expect(await scheduledCount(harness, "notifications:sealNotification")).toBe(sealingJobs);
+
+    await setFrozenState(harness, false);
+    await harness.t.mutation(internal.notifications.resumeSealing, {});
+    expect(await scheduledCount(harness, "notifications:sealNotification")).toBe(sealingJobs + 1);
+    await harness.t.action(internal.notifications.sealNotification, { notification: row._id });
+
+    const sealed = await readRow(harness, row._id);
+    expect(sealed?.sealingPending).toBe(false);
+    expect(sealed?.delivery).toEqual(delivered?.delivery);
+    expect(await scheduledCount(harness, "notifications_push:send")).toBe(1);
+    const plaintext = await openBox({
+      seed: identity.seed,
+      box: new Uint8Array(sealed!.sealed!.box),
+      aad: notificationAad("member", harness.workspace, row._id),
+      pad: "short",
+    });
+    expect(JSON.parse(new TextDecoder().decode(plaintext))).toEqual({
+      title: "Session finished", body: "Refactor routing",
+    });
+    expect(JSON.stringify(sealed)).not.toContain("Refactor routing");
+
+    // A duplicate resume (cutover hook plus safety net) leaves the envelope byte-identical.
+    const before = new Uint8Array(sealed!.sealed!.box);
+    await harness.t.mutation(internal.notifications.resumeSealing, {});
+    await harness.t.action(internal.notifications.sealNotification, { notification: row._id });
+    const after = (await readRow(harness, row._id))!;
+    expect(new Uint8Array(after.sealed!.box)).toEqual(before);
+    expect(after.sealed!.keyId).toBe(KEY_ID);
+  });
+
+  test("resume pages by opaque cursor, only over pending rows", async () => {
+    const harness = await setup();
+    await activeIdentity(harness);
+    await harness.t.run(async (ctx) => {
+      const member = await ctx.db.query("aisdk_chats").first();
+      for (let index = 0; index < 51; index += 1) {
+        await ctx.db.insert("notifications", {
+          userId: "member", kind: "session_finished", title: "Session finished", body: "Session",
+          chat: member!._id, createdAt: index, sealingPending: true,
+        });
+      }
+      await ctx.db.insert("notifications", {
+        userId: "member", kind: "session_finished", title: "Session finished", body: "Session",
+        createdAt: 99, sealingPending: false,
+      });
+    });
+    await harness.t.mutation(internal.notifications.resumeSealing, {});
+    expect(await scheduledCount(harness, "notifications:sealNotification")).toBe(50);
+    expect(await scheduledCount(harness, "notifications:resumeSealing")).toBe(1);
+    const jobs = await harness.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    const continuation = jobs.find((job) => job.name === "notifications:resumeSealing");
+    const [first] = continuation?.args ?? [];
+    const cursor = first && typeof first === "object" && "cursor" in first ? first.cursor : undefined;
+    expect(typeof cursor).toBe("string");
+    if (typeof cursor !== "string") return;
+    await harness.t.mutation(internal.notifications.resumeSealing, { cursor });
+    expect(await scheduledCount(harness, "notifications:sealNotification")).toBe(51);
+  });
+
+  test("an existing native envelope or historical content is never wrapped, replaced or shadowed", async () => {
+    const harness = await setup();
+    await activeIdentity(harness);
+    const native = await pendingRow(harness);
+    const existing = { keyId: KEY_ID, box: new Uint8Array([1, 2, 3, 4]).buffer };
+    await harness.t.run((ctx) => ctx.db.patch("notifications", native._id, { sealed: existing }));
+    await harness.t.action(internal.notifications.sealNotification, { notification: native._id });
+    const kept = (await readRow(harness, native._id))!;
+    expect(new Uint8Array(kept.sealed!.box)).toEqual(new Uint8Array([1, 2, 3, 4]));
+    expect(kept.sealingPending).toBe(false);
+
+    // Historical content (here a custody sidecar) would be shadowed by a generic native box.
+    const historic = await pendingRow(harness);
+    const legacyContent = { kind: "custody" as const, keyId: "custody", epoch: 1, box: new Uint8Array([9, 8, 7]).buffer };
+    await harness.t.run((ctx) => ctx.db.patch("notifications", historic._id, { legacyContent }));
+    await harness.t.action(internal.notifications.sealNotification, { notification: historic._id });
+    const custody = (await readRow(harness, historic._id))!;
+    expect(custody.sealed).toBeUndefined();
+    expect(custody.legacyContent).toEqual(legacyContent);
+    expect(custody.sealingPending).toBe(false);
+  });
+
+  test("a chat title moved into a migration sidecar is never invented or read back", async () => {
+    const harness = await setup();
+    const identity = await activeIdentity(harness);
+    const row = await pendingRow(harness);
+    await harness.t.run((ctx) => ctx.db.patch("aisdk_chats", harness.chat, {
+      title: undefined,
+      legacyContent: { kind: "custody", keyId: "custody", epoch: 1, box: new Uint8Array([1]).buffer },
+    }));
+    await harness.t.action(internal.notifications.sealNotification, { notification: row._id });
+    const sealed = (await readRow(harness, row._id))!;
+    const plaintext = await openBox({
+      seed: identity.seed,
+      box: new Uint8Array(sealed.sealed!.box),
+      aad: notificationAad("member", harness.workspace, row._id),
+      pad: "short",
+    });
+    expect(JSON.parse(new TextDecoder().decode(plaintext))).toEqual({ title: "Session finished", body: "Session" });
+  });
+
+  test("an identity rotation between sealing and commit stores no box and no plaintext", async () => {
+    const harness = await setup();
+    await activeIdentity(harness);
+    const row = await pendingRow(harness);
+    const input = await harness.t.query(internal.notifications.sealingInput, { notification: row._id });
+    expect(input?.keyId).toBe(KEY_ID);
+
+    await harness.t.run(async (ctx) => {
+      const old = await ctx.db.query("e2ee_identities").first();
+      await ctx.db.patch("e2ee_identities", old!._id, { status: "retired", retiredAt: Date.now() });
+    });
+    await activeIdentity(harness, ROTATION_KEY_ID);
+    await harness.t.mutation(internal.notifications.finishSealing, {
+      notification: row._id,
+      sealed: { keyId: input!.keyId, box: new Uint8Array([5, 5, 5]).buffer },
+    });
+    const after = (await readRow(harness, row._id))!;
+    expect(after.sealed).toBeUndefined();
+    expect(after.sealingPending).toBe(false);
+    expect(JSON.stringify(after)).not.toContain("Refactor routing");
+    expect(after).toMatchObject({ title: "Session finished", body: "Session" });
+  });
+
+  test("no recipient key keeps the generic notification and ends the marker", async () => {
+    const harness = await setup();
+    await activeIdentity(harness);
+    const row = await pendingRow(harness);
+    await harness.t.run(async (ctx) => {
+      const identity = await ctx.db.query("e2ee_identities").first();
+      await ctx.db.patch("e2ee_identities", identity!._id, { status: "retired", retiredAt: Date.now() });
+    });
+    await harness.t.action(internal.notifications.sealNotification, { notification: row._id });
+    const after = (await readRow(harness, row._id))!;
+    expect(after.sealed).toBeUndefined();
+    expect(after.sealingPending).toBe(false);
+    expect(JSON.stringify(after)).not.toContain("Refactor routing");
+  });
+
+  test("hourly prune restarts sealing only for stalled pending rows and never while frozen", async () => {
+    const harness = await setup();
+    await activeIdentity(harness);
+    const fresh = await pendingRow(harness);
+    await harness.t.mutation(internal.notifications.prune, {});
+    expect(await scheduledCount(harness, "notifications:resumeSealing")).toBe(0);
+
+    // An in-flight row is never restarted; a row stalled past the browser grace is.
+    await harness.t.run((ctx) => ctx.db.patch("notifications", fresh._id, { createdAt: Date.now() - 60_000 }));
+    await setFrozenState(harness, true);
+    await harness.t.mutation(internal.notifications.prune, {});
+    expect(await scheduledCount(harness, "notifications:resumeSealing")).toBe(0);
+
+    await setFrozenState(harness, false);
+    await harness.t.mutation(internal.notifications.prune, {});
+    expect(await scheduledCount(harness, "notifications:resumeSealing")).toBe(1);
   });
 });

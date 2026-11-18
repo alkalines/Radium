@@ -28,7 +28,12 @@ export const rosterInputValidator = v.object({
   signature: v.bytes(),
   signerKeyId: v.string(),
 });
-/** Chat epoch, optionally unsigned when created on a locked device. */
+/**
+ * Chat epoch, optionally unsigned when created on a locked device. `bindingSignature` is the
+ * signer's `chatKeyBindingStatement` proof over the server-assigned chat ID and current audience;
+ * it needs the original signature, is absent at chat creation (the ID is unknown), and is required
+ * for every epoch created after setup.
+ */
 export const chatKeyInputValidator = v.object({
   epoch: v.number(),
   keyId: v.string(),
@@ -36,6 +41,9 @@ export const chatKeyInputValidator = v.object({
   publicKey: v.bytes(),
   signerKeyId: v.optional(v.string()),
   signature: v.optional(v.bytes()),
+  bindingSignature: v.optional(v.bytes()),
+  /** Canonical raw picked members the binding signed; present exactly for `shared` bindings. */
+  bindingMembers: v.optional(v.array(v.string())),
 });
 /** A chat seed sealed to a workspace epoch or one identity. */
 export const wrapInputValidator = v.union(

@@ -3,7 +3,6 @@ import {
   acpAnswerStatement,
   acpBindingStatement,
   acpCommandStatement,
-  chatKeyStatement,
   createCapsule,
   encodeCapsule,
   equalBytes,
@@ -29,6 +28,7 @@ import {
   type AcpSignedBinding,
 } from "backend/src/acp/contract";
 import { WorkerTrustError, type WorkerTrust } from "../e2ee/trust.js";
+import { verifyChatKey } from "../e2ee/chat-key.js";
 import type { AcpFrameSealer } from "./relay.js";
 import type {
   AcpAnsweredInteraction,
@@ -550,21 +550,39 @@ export class AcpSigned {
     const key = await this.transport.chatKey({ chat: binding.chat });
     if (!key || key.e2eeId !== binding.e2eeId || key.rekey) throw new AcpRefusal("ACP_FORBIDDEN");
     if (!key.signature || !key.signerKeyId) throw new AcpRefusal("ACP_UNSIGNED");
+    // An epoch without a binding predates recipient binding: readable, never sealed to.
+    if (!key.bindingSignature) throw new AcpRefusal("ACP_FORBIDDEN");
     const publicKey = new Uint8Array(key.publicKey);
-    const signer = await this.trust.verifyUser({
+    // The creator-signed ACP binding is the authority for scope, creator and members; the key's
+    // own signed member list must equal it exactly. A narrower or wider list means the audience
+    // changed since the epoch was bound, so it must rotate before anything new is sealed to it.
+    const members = binding.scope === "shared" ? [...new Set(binding.members)].sort() : [];
+    const bound =
+      binding.scope === "shared"
+        ? key.bindingMembers && [...new Set(key.bindingMembers)].sort()
+        : (key.bindingMembers ?? []);
+    if (
+      !bound ||
+      bound.length !== members.length ||
+      bound.some((member, index) => member !== members[index])
+    )
+      throw new AcpRefusal("ACP_FORBIDDEN");
+    const signerUserId = await verifyChatKey(this.trust, {
+      chatId: binding.chat,
+      e2eeId: key.e2eeId,
+      epoch: key.epoch,
+      keyId: key.keyId,
+      suite: key.suite,
+      publicKey,
       signerKeyId: key.signerKeyId,
-      message: chatKeyStatement({
-        workspaceId: this.workspace,
-        chatE2eeId: key.e2eeId,
-        epoch: key.epoch,
-        keyId: key.keyId,
-        suite: key.suite,
-        publicKey,
-      }),
       signature: new Uint8Array(key.signature),
+      bindingSignature: new Uint8Array(key.bindingSignature),
+      scope: binding.scope,
+      creatorId: binding.creatorUserId,
+      members,
     });
-    if (!signer) throw new AcpRefusal("ACP_UNSIGNED");
-    if (!inAudience(binding, signer.userId)) throw new AcpRefusal("ACP_FORBIDDEN");
+    if (!signerUserId) throw new AcpRefusal("ACP_UNSIGNED");
+    if (!inAudience(binding, signerUserId)) throw new AcpRefusal("ACP_FORBIDDEN");
     const mark = `acp-chat-epoch:${binding.chat}`;
     if (key.epoch < this.trust.highWater(mark)) throw new AcpRefusal("ACP_FORBIDDEN");
     await this.trust.advanceHighWater(mark, key.epoch);

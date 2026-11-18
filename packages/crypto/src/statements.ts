@@ -2,6 +2,7 @@ import { decimal, hmacSha256 } from "./box";
 import { lengthPrefixed, utf8 } from "./encoding";
 import { hkdf, LABELS } from "./kdf";
 import { signingMessage } from "./signatures";
+import { CryptoError } from "./errors";
 
 /**
  * Bytes signed for workspace and chat key records (Keys.md "Workspaces", "Chats"). Each statement has
@@ -65,6 +66,44 @@ export function chatKeyStatement(input: {
 
 /** Audience of a chat (`aisdk_chats.scope`). */
 export type ChatScopeName = "personal" | "shared" | "workspace";
+
+/**
+ * Binds an epoch to the server-assigned chat ID and its declared audience. Native v1 epoch
+ * signatures remain readable; new encryption additionally requires this proof. Binding the chat
+ * ID prevents replay of a creator-signed key from another chat, including a formerly personal key
+ * whose seed was later shared. Shared member IDs are canonicalized; workspace membership remains
+ * governed by the owner-signed roster.
+ */
+export function chatKeyBindingStatement(input: {
+  chatId: string;
+  workspaceId: string;
+  chatE2eeId: string;
+  epoch: number;
+  keyId: string;
+  suite: number;
+  publicKey: Uint8Array;
+  scope: ChatScopeName;
+  creatorId: string;
+  members: readonly string[];
+}): Uint8Array {
+  if (input.scope === "shared" && input.members.length > 1000) {
+    throw new CryptoError("BAD_INPUT", "Too many chat members");
+  }
+  const members = input.scope === "shared" ? [...new Set(input.members)].sort() : [];
+  return signingMessage(
+    "radium/v2/chat-key-binding",
+    utf8(input.chatId),
+    utf8(input.workspaceId),
+    utf8(input.chatE2eeId),
+    decimal(input.epoch),
+    utf8(input.keyId),
+    decimal(input.suite),
+    input.publicKey,
+    utf8(input.scope),
+    utf8(input.creatorId),
+    ...members.map(utf8),
+  );
+}
 
 /**
  * A Worker's encryption and signing public keys (Keys.md "Workers"). The Worker signs it with its own

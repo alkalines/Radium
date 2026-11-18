@@ -17,6 +17,8 @@ import { isTileColorName } from "../workspaces/colors";
 import { isWorkspaceIconName } from "../workspaces/icons";
 import { normalizeDisplayName } from "../workspaces/names";
 import { canManageProject } from "../workspaces/policy";
+import { legacyBoxValidator } from "../e2ee/legacy-contract";
+import { assertLegacyWritesAllowed, assertLegacyPlaintextAllowed, deleteLegacySidecar } from "../e2ee/migration-contract";
 
 /**
  * Projects group chats inside a workspace. Any workspace member may read and create them; the
@@ -33,6 +35,7 @@ const projectSummaryValidator = v.object({
   _id: v.id("projects"),
   _creationTime: v.number(),
   name: v.string(),
+  legacyContent: v.optional(legacyBoxValidator),
   color: v.optional(v.string()),
   icon: v.optional(v.string()),
   folders: v.optional(v.array(projectFolderValidator)),
@@ -208,6 +211,7 @@ export const list = workspaceQuery({
       _id: project._id,
       _creationTime: project._creationTime,
       name: project.name,
+      legacyContent: project.legacyContent,
       color: project.color,
       icon: project.icon,
       ...(isOwner && project.folders ? { folders: project.folders } : {}),
@@ -232,6 +236,7 @@ export const create = workspaceMutation({
   },
   returns: v.id("projects"),
   handler: async (ctx, args): Promise<Id<"projects">> => {
+    if (args.name !== "Project" || args.icon !== undefined) await assertLegacyPlaintextAllowed(ctx);
     const name = normalizeDisplayName(args.name, "Project");
     validateProjectAppearance(args);
 
@@ -279,7 +284,10 @@ export const update = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
+    await assertLegacyWritesAllowed(ctx);
+    if (args.name !== undefined || args.icon !== undefined) await assertLegacyPlaintextAllowed(ctx);
     const { project, workspace, userId } = await requireManageableProject(ctx, args.project);
+    if (project.legacyContent && (args.name !== undefined || args.icon !== undefined)) throw new Error("Encrypted project names must be edited by an encryption-capable client.");
     validateProjectAppearance(args);
 
     const patch: Partial<Pick<Doc<"projects">, "name" | "color" | "icon">> & ProjectWorkerFields =
@@ -314,8 +322,10 @@ export const remove = mutation({
   args: { project: v.id("projects") },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
+    await assertLegacyWritesAllowed(ctx);
     const { project } = await requireManageableProject(ctx, args.project);
 
+    await deleteLegacySidecar(ctx, { table: "projects", record: project._id });
     await ctx.db.delete("projects", project._id);
     await detachProjectChats(ctx, project._id);
     return null;
@@ -327,6 +337,7 @@ export const detachChats = internalMutation({
   args: { project: v.id("projects") },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
+    await assertLegacyWritesAllowed(ctx);
     await detachProjectChats(ctx, args.project);
     return null;
   },

@@ -5,6 +5,7 @@ import {
 } from "radium-crypto";
 import { keyManager } from "./key-manager";
 import * as workspaceKeys from "./workspace-keys";
+import * as legacyContent from "./legacy-content";
 import { hasSealedTelemetry, openTelemetryData, telemetryContent } from "./telemetry";
 import { telemetryToolChanges } from "@/components/gateway/telemetry-utils";
 import type { LoadedBlob } from "backend/src/telemetry/store";
@@ -115,6 +116,27 @@ describe("owner-only telemetry content", () => {
     const swapped = { ...request, requestId: "different-request" };
     await openTelemetryData(swapped, workspace);
     expect(telemetryContent.get(swapped, workspace)?.failed).toBe(true);
+  });
+
+  test("opens historical sidecars by record and keeps custodial parts hidden without failing the request", async () => {
+    await fixture();
+    const box = (kind: "workspace_owner" | "custody") => ({ kind, keyId: "k", epoch: 3, box: new ArrayBuffer(1) });
+    spyOn(legacyContent, "openLegacyContent").mockImplementation(async (sealed, context) => {
+      if (sealed.kind === "custody") throw new legacyContent.CustodialContentError();
+      if (context.table === "telemetry_blobs") return { content: '"old"', meta: { role: "user" }, legacyHash: "old" } as never;
+      return { error: { message: "Old failure" }, attempts: ["Old attempt"] } as never;
+    });
+    const source = {
+      open: { id: "b1", hash: "h1", kind: "message", size: 1, redacted: true, legacyContent: box("workspace_owner") },
+      custodial: { id: "b2", hash: "h2", kind: "message", size: 1, redacted: true, legacyContent: box("custody") },
+      request: { _id: "r1", requestId: "r1", attempts: [{ provider: "p" }], legacyContent: box("workspace_owner") },
+    };
+    expect(hasSealedTelemetry(source)).toBe(true);
+    await openTelemetryData(source, workspace);
+    const opened = telemetryContent.get(source, workspace)?.data;
+    expect(opened?.open).toMatchObject({ content: '"old"', meta: { role: "user" }, redacted: false });
+    expect(opened?.custodial).toMatchObject({ content: undefined, redacted: true });
+    expect(opened?.request).toMatchObject({ error: { message: "Old failure" }, attempts: [{ provider: "p", message: "Old attempt" }] });
   });
 
   test("tool diffs compare decrypted names but keyed definition hashes", () => {

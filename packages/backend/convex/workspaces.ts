@@ -18,6 +18,8 @@ import { normalizeDisplayName } from "../src/workspaces/names";
 import { isChatMember } from "../src/chatroom/members";
 import { workspaceKeysValidator, invalidKeys } from "../src/e2ee/workspace-contract";
 import { clearWorkspaceJoins, insertWorkspaceEpoch } from "../src/e2ee/workspace-keys";
+import { legacyBoxValidator } from "../src/e2ee/legacy-contract";
+import { assertLegacyWritesAllowed, assertLegacyPlaintextAllowed } from "../src/e2ee/migration-contract";
 
 const MAX_WORKSPACES = 100;
 const MAX_MEMBERS = 200;
@@ -28,6 +30,7 @@ const workspaceSummaryValidator = v.object({
   _id: v.id("workspaces"),
   _creationTime: v.number(),
   name: v.string(),
+  legacyContent: v.optional(legacyBoxValidator),
   icon: v.optional(v.string()),
   color: v.optional(v.string()),
   ownerType: v.literal("user"),
@@ -174,6 +177,7 @@ function workspaceSummary(workspace: WorkspaceRecord, role: WorkspaceRole) {
     _id: workspace._id,
     _creationTime: workspace._creationTime,
     name: workspace.name,
+    legacyContent: workspace.legacyContent,
     icon: workspace.icon,
     color: workspace.color,
     ownerType: workspace.ownerType,
@@ -453,6 +457,8 @@ export const ensurePersonalWorkspace = mutation({
   args: { name: v.optional(v.string()) },
   returns: v.id("workspaces"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
+    if (args.name && args.name !== "Workspace") await assertLegacyPlaintextAllowed(ctx);
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) throw new Error("Not logged in.");
 
@@ -487,7 +493,7 @@ export const ensurePersonalWorkspace = mutation({
           await ctx.db.insert("workspaces", {
             ownerType: "user",
             ownerId: identity._id,
-            name: normalizeDisplayName(args.name ?? "Personal workspace", "Workspace"),
+            name: normalizeDisplayName(args.name ?? "Workspace", "Workspace"),
             legacyBalance: balance._id,
             legacyOrganizationId: balance.organizationId,
             legacyTeamId: balance.teamId,
@@ -500,7 +506,7 @@ export const ensurePersonalWorkspace = mutation({
     return await ctx.db.insert("workspaces", {
       ownerType: "user",
       ownerId: identity._id,
-      name: normalizeDisplayName(args.name ?? "Personal workspace", "Workspace"),
+      name: normalizeDisplayName(args.name ?? "Workspace", "Workspace"),
     });
   },
 });
@@ -510,6 +516,7 @@ export const ensureForLegacyBalance = internalMutation({
   args: { balance: v.id("balances") },
   returns: v.id("workspaces"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const balance = await ctx.db.get("balances", args.balance);
     if (!balance) throw new Error("Legacy API-key owner not found.");
 
@@ -525,7 +532,7 @@ export const ensureForLegacyBalance = internalMutation({
     return await ctx.db.insert("workspaces", {
       ownerType: "user",
       ownerId: balance.userId,
-      name: "Personal workspace",
+      name: "Workspace",
       legacyBalance: balance._id,
       legacyOrganizationId: balance.organizationId,
       legacyTeamId: balance.teamId,
@@ -538,6 +545,8 @@ export const create = mutation({
   args: { name: v.string() },
   returns: v.id("workspaces"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
+    if (args.name !== "Workspace") await assertLegacyPlaintextAllowed(ctx);
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) throw new Error("Not logged in.");
 
@@ -559,7 +568,9 @@ export const rename = mutation({
   args: { workspace: v.id("workspaces"), name: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyPlaintextAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    if (workspace.legacyContent) throw new Error("Encrypted workspace names must be edited by an encryption-capable client.");
     await ctx.db.patch("workspaces", workspace._id, {
       name: normalizeDisplayName(args.name, "Workspace"),
     });
@@ -571,7 +582,9 @@ export const setIcon = mutation({
   args: { workspace: v.id("workspaces"), icon: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyPlaintextAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    if (workspace.legacyContent) throw new Error("Encrypted workspace icons must be edited by an encryption-capable client.");
     if (!isWorkspaceIconName(args.icon)) throw new Error("Unsupported workspace icon.");
     await ctx.db.patch("workspaces", workspace._id, { icon: args.icon });
     return null;
@@ -583,6 +596,7 @@ export const setColor = mutation({
   args: { workspace: v.id("workspaces"), color: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     if (!isTileColorName(args.color)) throw new Error("Unsupported workspace color.");
     await ctx.db.patch("workspaces", workspace._id, { color: args.color });
@@ -648,6 +662,7 @@ export const addMember = mutation({
   args: { workspace: v.id("workspaces"), email: v.string() },
   returns: v.id("workspace_members"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     const user = await findBetterAuthUserByEmail(ctx, args.email);
     if (!user) throw new Error("User not found.");
@@ -729,6 +744,7 @@ export const continueMemberRemoval = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     await revokeMemberChats(ctx, args.workspace, args.userId, args.cursor);
     return null;
   },
@@ -743,6 +759,7 @@ export const removeMember = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     const user = await findBetterAuthUserByEmail(ctx, args.email);
     if (!user) throw new Error("User not found.");
@@ -779,6 +796,7 @@ export const archive = mutation({
   args: { workspace: v.id("workspaces") },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     const activeWorkspaces = await ctx.db
       .query("workspaces")
@@ -812,6 +830,7 @@ export const restore = mutation({
   args: { workspace: v.id("workspaces") },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) throw new Error("Not logged in.");
 

@@ -30,6 +30,8 @@ and component watchers continue.
 Restarts discard in-memory edit snapshots and previews, and claimed tasks with
 unknown outcomes are not automatically rerun.
 
+Phase-9 recipient bindings require matching Web, backend and Worker upgrades before normal encrypted work resumes. New Worker ACP output and durable tool receipts refuse unbound current chat epochs; opening the chat in an unlocked updated browser creates a fresh bound epoch. Historical ciphertext is not rewritten. Older Workers do not enforce the new chat-ID/audience binding and must not remain connected after this rollout.
+
 Run `bun run --cwd packages/worker cli` for an interactive command menu, or
 `bun run --cwd packages/worker cli --help` for command/option help.
 

@@ -6,6 +6,11 @@ import { requireAccessibleChat } from "../../convex/workspaces";
 import type { WorkerMutationCtx, WorkerQueryCtx } from "../worker/machine";
 import { logger } from "../logging/server";
 import { recordAcpTurn } from "../usage/acp";
+import {
+  assertLegacyPlaintextAllowed,
+  legacyPlaintextAllowed,
+  readMigrationState,
+} from "../e2ee/migration-contract";
 import type {
   AcpCommandKind,
   AcpCommandPayload,
@@ -28,6 +33,29 @@ type ReadCtx = QueryCtx | MutationCtx;
 /** Caller-visible ACP failure, without leaking another Worker's binding. */
 export function acpError(code: string, message?: string): never {
   throw new ConvexError(message ? { code, message } : { code });
+}
+
+/**
+ * Gate for a plaintext relay write to a row that may already carry a historical sidecar. Plaintext
+ * stops when cutover freezes or completes, and a row whose plaintext moved into a sidecar must never
+ * receive plaintext again, not even after an aborted cutover re-enabled the keyless writers: new
+ * plaintext beside a sidecar would conflict with the sealed history and block its migration forever.
+ */
+export async function assertRelayPlaintextAllowed(
+  ctx: MutationCtx,
+  row: { legacyContent?: unknown },
+): Promise<void> {
+  await assertLegacyPlaintextAllowed(ctx);
+  if (row.legacyContent !== undefined) acpError("ACP_PLAINTEXT_REFUSED");
+}
+
+/**
+ * Whether the encryption cutover freeze is on. Background relay maintenance (retention, cooling,
+ * viewer warming) consults it so a frozen window keeps every legacy relay row and frame in place
+ * until the seal run has captured it; it resumes by itself once the freeze lifts.
+ */
+export async function relayFrozen(ctx: ReadCtx): Promise<boolean> {
+  return (await readMigrationState(ctx))?.frozen === true;
 }
 
 /** Single indexed metadata lookup; no presence or transcript reads. */
@@ -152,6 +180,7 @@ export async function enqueue(
   chat?: Id<"aisdk_chats">,
   clientId: string = crypto.randomUUID(),
 ) {
+  await assertLegacyPlaintextAllowed(ctx);
   const existing = await existingCommand(ctx, binding.workspace, binding.worker, clientId, by);
   if (existing) return existing._id;
   return ctx.db.insert("acp_commands", {
@@ -292,11 +321,23 @@ export async function applySessionPatch(
     sealedError,
     indexTitle,
     sessionProof,
+    config,
+    commands,
     ...fields
   } = patch;
   const updates: Partial<Doc<"acp_sessions">> = { ...fields, updatedAt: now };
+  // Free text is never stored once plaintext relay writes are closed; the status stays generic.
+  const plaintext = await legacyPlaintextAllowed(ctx);
+  // A session whose history already lives in a sidecar takes no plaintext either, even when an
+  // aborted cutover re-enabled keyless writers. Native sealed fields and the status still apply.
+  const sidecar = session.legacyContent !== undefined;
+  if (plaintext && !sidecar) {
+    if (config !== undefined) updates.config = config;
+    if (commands !== undefined) updates.commands = commands;
+  }
   if (error !== undefined) {
-    updates.error = error === null ? undefined : error.slice(0, 500);
+    if (error === null || !plaintext) updates.error = undefined;
+    else if (!sidecar) updates.error = error.slice(0, 500);
     if (error === null) updates.sealedError = undefined;
   }
   if (sealedError === null) {
@@ -338,8 +379,9 @@ export async function applySessionPatch(
     if (!session.sessionProof || sessionId !== undefined)
       updates.sessionProof = { kind: "worker", signature: sessionProof };
   }
-  // Plaintext titles never land on a chat whose title is sealed.
-  if (title !== undefined && !session.userTitled && !chat.e2eeId) {
+  // Plaintext titles never land on a chat whose title is sealed, whose history moved into a
+  // sidecar (new plaintext would conflict with it), or after the plaintext cutover.
+  if (title !== undefined && !session.userTitled && !chat.e2eeId && !chat.legacyContent && plaintext) {
     const normalized = title.replace(/\s+/g, " ").trim().slice(0, 80);
     if (normalized) chatPatch.title = normalized;
   }
@@ -379,7 +421,10 @@ export async function applySessionPatch(
     } else if (chat.e2eeId) {
       indexed = { title: undefined, sealedTitle: row?.sealedTitle, titleTag: row?.titleTag };
     } else {
-      indexed = { title: chatPatch.title ?? chat.title ?? row?.title };
+      // Once plaintext relay writes close, an existing title is retained but never refreshed.
+      indexed = {
+        title: plaintext && !row?.legacyContent ? (chatPatch.title ?? chat.title ?? row?.title) : row?.title,
+      };
     }
     if (row) await ctx.db.patch(row._id, { chat: chat._id, ...indexed });
     else {
@@ -415,19 +460,16 @@ export async function applySessionPatch(
       notification = "session_finished";
   } else if (patch.status === "failed") {
     const reason = patch.stopReason ?? session.stopReason;
-    const reported = error === null ? undefined : (error ?? session.error);
     const fixed = (reason && STOP_REASON_FAILURES[reason]) || "Agent failed";
-    // A chat with keys never gets Worker free text in plaintext: its error is sealed or generic.
-    if (chat.e2eeId) {
-      const sealed = sealedError === undefined ? !!session.sealedError : sealedError !== null;
-      detail = sealed ? ACP_SEALED_ERROR_TEXT : fixed;
-    } else {
-      detail = reported || fixed;
-    }
+    // Raw agent error text never reaches the chat row or scheduler arguments: the chat keeps only
+    // the generic kind, and the notification carries fixed text. The session's own error (sealed
+    // or generic) is what a viewer reads.
+    const sealed = sealedError === undefined ? !!session.sealedError : sealedError !== null;
+    detail = sealed ? ACP_SEALED_ERROR_TEXT : fixed;
     Object.assign(chatPatch, {
       activeStream: false,
       lastInteractionAt: now,
-      interruption: { kind: "failed", message: detail },
+      interruption: { kind: "failed" },
     });
     if (session.status !== "failed") notification = "session_failed";
   } else if (patch.status === "ended") chatPatch.activeStream = false;

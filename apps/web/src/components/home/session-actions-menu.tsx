@@ -54,7 +54,9 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
 import { openMessages, sealTitle } from "@/lib/crypto/chat-content";
-import { writableChatKey } from "@/lib/crypto/chat-keys";
+import { ensureChatKeys, writableChatKey } from "@/lib/crypto/chat-keys";
+import { ChatKeysRequiredError, openHistoricalChat } from "@/lib/crypto/legacy-chat";
+import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
 import { signAcpCommand } from "@/components/session/acp/acp-crypto";
 import { getMessageText } from "@/components/session/message-parts";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
@@ -69,6 +71,8 @@ export type SessionActionsTarget = {
   id: Id<"aisdk_chats">;
   workspace: Id<"workspaces">;
   e2ee?: { e2eeId: string } | null;
+  /** Historical content moved into a sidecar; rename/regenerate must create chat keys first. */
+  legacyContent?: LegacyBox;
   title?: string;
   pinnedAt?: number;
   project?: Id<"projects">;
@@ -159,23 +163,34 @@ export function SessionActionsMenu({
 
   async function regenerate() {
     const succeeded = await run("regenerate", async () => {
-      if (!session.e2ee) {
+      const keyed = session.e2ee || (await ensureChatKeys(session.id));
+      if (!keyed) {
+        if (session.legacyContent) throw new ChatKeysRequiredError();
         return regenerateTitle({ chatId: session.id });
       }
       const content = await client.query(api.aisdk.GetChatMessages, { chatId: session.id });
-      const { messages } = await openMessages(content.entries, content.capsules, {
+      const chatKey = await writableChatKey(session.id);
+      // History may be sealed natively or sit in sidecars; either way it is opened locally.
+      const historical = await openHistoricalChat(
+        {
+          chatId: session.id,
+          workspaceId: session.workspace,
+          legacyContent: session.legacyContent,
+          wants: { title: false, queue: true },
+        },
+        content.entries,
+      );
+      const { messages } = await openMessages(historical.entries, content.capsules, {
         workspaceId: session.workspace,
-        e2eeId: session.e2ee.e2eeId,
+        e2eeId: chatKey.e2eeId,
         chatId: session.id,
       });
       const firstUser = messages.find((message) => message.role === "user");
-      if (!firstUser) {
+      const prompt = firstUser ? getMessageText(firstUser) : historical.queue?.text;
+      if (!prompt?.trim()) {
         throw new Error("No user message to generate a title from.");
       }
-      return regenerateEncryptedTitle({
-        chatId: session.id,
-        prompt: getMessageText(firstUser).slice(0, 8000),
-      });
+      return regenerateEncryptedTitle({ chatId: session.id, prompt: prompt.slice(0, 8000) });
     });
     if (succeeded) toast.success("Regenerating the session title.");
   }
@@ -208,7 +223,11 @@ export function SessionActionsMenu({
     if (!trimmed) return;
 
     const succeeded = await run("rename", async () => {
-      if (!session.e2ee) {
+      // A keyless chat gets keys so the new title is sealed; only a chat without history to
+      // protect may still fall back to plaintext (which the backend refuses after cutover).
+      const keyed = session.e2ee || (await ensureChatKeys(session.id));
+      if (!keyed) {
+        if (session.legacyContent) throw new ChatKeysRequiredError();
         return renameChat({ chatId: session.id, title: trimmed });
       }
       const chatKey = await writableChatKey(session.id);

@@ -52,6 +52,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { newTabId } from "@/components/window/window-tabs";
 import { useFrontendLogger } from "@/lib/logging";
+import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 import { SessionActionsMenu } from "./session-actions-menu";
 import {
   AgentSessions,
@@ -65,6 +66,7 @@ import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { openRowSeed, type WrapWire } from "@/lib/crypto/chat-keys";
 import { openTitle } from "@/lib/crypto/chat-content";
 import { KeysLockedError } from "@/lib/crypto/key-manager";
+import { CustodialContentError, openLegacyContent } from "@/lib/crypto/legacy-content";
 
 type HomeSession = FunctionReturnType<typeof api.aisdk.ListPinnedChats>[number];
 type UnopenedAgentSession = FunctionReturnType<
@@ -148,7 +150,7 @@ export function HomeScreen() {
   const { data: projectsData, error: projectsError } = useQuery(
     convexQuery(api.projects.list, workspaceId ? { workspace: workspaceId } : "skip"),
   );
-  const projects = Array.isArray(projectsData) ? projectsData : [];
+  const projects = useDecryptedNames(Array.isArray(projectsData) ? projectsData : [], "projects", workspaceId);
   // A selection made in another workspace, or of a Project deleted since, shows all sessions.
   const isSelectionCurrent =
     projectSelection !== null && projectSelection.workspace === workspaceId;
@@ -594,6 +596,22 @@ function SessionList({
     let cancelled = false;
     void Promise.all(
       titleRows.map(async (session) => {
+        if (session.legacyContent && !session.e2ee?.title) {
+          const box = session.legacyContent.box;
+          if (openedTitles[session.id]?.box === box) return undefined;
+          try {
+            const value = await openLegacyContent<{ title?: string; emoji?: string }>(
+              session.legacyContent,
+              { table: "aisdk_chats", record: session.id, workspace: workspaceId, chatId: session.id },
+            );
+            return [session.id, { title: value.title ?? "Untitled session", emoji: value.emoji, box }] as const;
+          } catch (error) {
+            return [session.id, {
+              title: error instanceof CustodialContentError ? "History in recovery custody" : "Unable to decrypt",
+              box,
+            }] as const;
+          }
+        }
         const encrypted = session.e2ee;
         if (!encrypted?.title || !encrypted.wrap) {
           return undefined;
@@ -641,7 +659,7 @@ function SessionList({
     };
   }, [titleRows, workspaceId, keyStatus, openedTitles]);
   const displaySession = (session: HomeSession): HomeSession => {
-    if (!session.e2ee) {
+    if (!session.e2ee && !session.legacyContent) {
       return session;
     }
     const unlocked = keyStatus.state === "unlocked";

@@ -8,6 +8,7 @@ import type {
   AcpSignedCommand,
 } from "backend/src/acp/contract";
 import type { AcpFrame } from "backend/src/acp/fold";
+import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
 import {
   acpAnswerStatement,
   acpBindingStatement,
@@ -43,12 +44,17 @@ export type AcpChatContext = {
   workerId: string;
 };
 
-/** One `chatroom.LiveFrames` row; `payload` is bytes in a keyed workspace and text otherwise. */
+/**
+ * One `chatroom.LiveFrames` row; `payload` is bytes in a keyed workspace and text otherwise. A
+ * historical frame (`legacyContent`) keeps its JSON in the sealed sidecar and an empty payload.
+ */
 export type AcpFrameRow = {
+  _id?: Id<"chat_frames">;
   seqFrom: number;
   seqTo: number;
   kind: AcpFrame["kind"];
   payload: string | ArrayBuffer;
+  legacyContent?: LegacyBox;
 };
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -231,17 +237,36 @@ export async function publishAcpBinding(input: {
 /**
  * Repairs a chat that has keys but no binding (an older chat opened by its creator after the
  * workspace got keys): signs and publishes version 1 for the chat's current audience. Does nothing
- * for anyone but the creator.
+ * for anyone but the creator. An older chat already bound to an agent session (`sessionId`) also
+ * needs the owner's import proof; `authorizeSession` signs it, so call it only on the owner's
+ * explicit confirmation: the stored session ID is server data until the owner vouches for it.
  */
-export async function repairAcpBinding(chatId: Id<"aisdk_chats">): Promise<void> {
+export async function repairAcpBinding(
+  chatId: Id<"aisdk_chats">,
+  options: { authorizeSession?: boolean } = {},
+): Promise<void> {
   const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
   if (!state.e2eeId || state.creatorId !== currentUserId()) return;
+  let importProof: { signerKeyId: string; signature: ArrayBuffer } | undefined;
+  if (options.authorizeSession) {
+    const session = await cryptoClient().query(api.acp.GetSession, { chat: chatId });
+    if (session.agent.sessionId) {
+      importProof = await signImportProof({
+        workspaceId: session.workspace,
+        workerId: session.agent.worker,
+        chatId,
+        agentId: session.agent.agentId,
+        sessionId: session.agent.sessionId,
+      });
+    }
+  }
   await publishAcpBinding({
     chatId,
     e2eeId: state.e2eeId,
     scope: state.scope,
     members: state.scope === "shared" ? state.members : [],
     version: 1,
+    ...(importProof ? { importProof } : {}),
   });
 }
 

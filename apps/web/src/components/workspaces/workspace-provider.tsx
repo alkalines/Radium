@@ -16,6 +16,7 @@ import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { useConvexAuth } from "convex/react";
 import { selectWorkspace } from "backend/src/workspaces/selection";
+import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 
 type WorkspaceList = Exclude<FunctionReturnType<typeof api.workspaces.list>, string>;
 /** Workspace summary exposed to the active workspace context and its consumers. */
@@ -82,7 +83,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (stored) setPreferredId(stored);
   }, []);
 
-  const workspaces = Array.isArray(data) ? data : [];
+  const workspaces = useDecryptedNames(Array.isArray(data) ? data : [], "workspaces");
   // A create/restore mutation can resolve before the list subscription includes its result.
   // Keep the selection pending instead of immediately falling back to the old workspace.
   const workspace = selectWorkspace(workspaces, preferredId, pendingSelection.current);

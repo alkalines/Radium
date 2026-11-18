@@ -4,6 +4,8 @@ import { getFunctionName, type FunctionReturnType } from "convex/server";
 import { api } from "backend/convex/_generated/api";
 import {
   buildAad,
+  chatKeyBindingStatement,
+  chatKeyStatement,
   generateEncryptionKeyPair,
   generateSigningKeyPair,
   openBox,
@@ -16,6 +18,7 @@ import {
   toolGrantStatement,
   utf8,
   verify,
+  type ChatScopeName,
   type EncryptionKeyPair,
   type SigningKeyPair,
 } from "radium-crypto";
@@ -134,12 +137,63 @@ async function grant(signer: SigningKeyPair, issuedAt: number) {
   };
 }
 
+type ReceiptPolicy = {
+  chatId: string;
+  scope: ChatScopeName;
+  creatorId: string;
+  members: string[];
+};
+
+/**
+ * The receipt block a chat action serves: chat key epoch `epoch`, signed by `signer` (original
+ * signature plus, unless `unbound`, the binding signature over `signed`), while `claim` is the
+ * policy the request states. Honest requests state exactly what was signed.
+ */
+async function receiptProof(
+  f: Fixture,
+  input: {
+    epoch?: number;
+    signed?: Partial<ReceiptPolicy>;
+    claim?: Partial<Omit<ReceiptPolicy, "chatId">>;
+    unbound?: boolean;
+    signer?: { keys: SigningKeyPair; keyId: string };
+    publicKey?: Uint8Array;
+  } = {},
+): Promise<NonNullable<WorkerSealedTaskRequest["receipt"]>> {
+  const { epoch = 1, unbound = false, publicKey = f.chatKey.publicKey } = input;
+  const signer = input.signer ?? { keys: f.owner, keyId: "owner-key" };
+  const signed: ReceiptPolicy = {
+    chatId,
+    scope: "personal",
+    creatorId: "owner",
+    members: [],
+    ...input.signed,
+  };
+  const key = { workspaceId, chatE2eeId: "chat-e2ee", epoch, keyId: "chat-key", suite: 1, publicKey };
+  const signature = await sign(signer.keys.seed, chatKeyStatement(key));
+  const binding = await sign(signer.keys.seed, chatKeyBindingStatement({ ...key, ...signed }));
+  return {
+    e2eeId: "chat-e2ee",
+    epoch,
+    publicKey: toBase64Url(publicKey),
+    keyId: "chat-key",
+    suite: 1,
+    signerKeyId: signer.keyId,
+    signature: toBase64Url(signature),
+    bindingSignature: unbound ? "AAAA" : toBase64Url(binding),
+    scope: input.claim?.scope ?? signed.scope,
+    creatorId: input.claim?.creatorId ?? signed.creatorId,
+    members: input.claim?.members ?? signed.members,
+  };
+}
+
 /** Seal a request to the Worker exactly as the chat action does. */
 async function sealedTask(
   f: Fixture,
   call: Call,
   authorization: WorkerSealedTaskRequest["authorization"],
   id: string,
+  receipt?: WorkerSealedTaskRequest["receipt"],
 ) {
   const request: WorkerSealedTaskRequest = {
     v: 1,
@@ -152,7 +206,7 @@ async function sealedTask(
     stage: call.stage,
     authorization,
     ...(authorization.kind === "grant" ? { input: JSON.stringify(call.input) } : {}),
-    receipt: { e2eeId: "chat-e2ee", epoch: 1, publicKey: toBase64Url(f.chatKey.publicKey) },
+    receipt: receipt ?? (await receiptProof(f)),
   };
   const requestId = await workerChatTaskRequestId(chatId, call.toolCallId, call.stage);
   const sender = await openRequestSender(f.worker.publicKey);
@@ -542,4 +596,89 @@ test("a Code Mode approval over any other text than the presented one fails clos
   );
   expect(final).toMatchObject({ ok: false, code: "SIGNATURE_INVALID" });
   expect(bash.execute).not.toHaveBeenCalled();
+});
+
+/** Run one approved Bash call with the given receipt block; no result means the Worker refused it. */
+async function receiptOutcome(f: Fixture, receipt: WorkerSealedTaskRequest["receipt"], id: string) {
+  const call = { ...bashCall, toolCallId: `call-${id}` };
+  const task = await sealedTask(f, call, await approval(f.owner, "owner-key", call), id, receipt);
+  const { completions, bash } = await consume(f, [task.task]);
+  return { completion: completions.get(id)!, bash };
+}
+
+test("a receipt is sealed only to a chat key bound to this chat, scope and audience", async () => {
+  const cases: [
+    string,
+    (f: Fixture) => Promise<NonNullable<WorkerSealedTaskRequest["receipt"]>>,
+  ][] = [
+    ["another chat's key", (f) => receiptProof(f, { signed: { chatId: "other-chat" } })],
+    [
+      "a workspace-scope binding claimed as personal",
+      (f) => receiptProof(f, { signed: { scope: "workspace" }, claim: { scope: "personal" } }),
+    ],
+    ["a personal binding claimed as workspace", (f) => receiptProof(f, { claim: { scope: "workspace" } })],
+    [
+      "an enlarged shared member list",
+      (f) =>
+        receiptProof(f, {
+          signed: { scope: "shared", creatorId: "member", members: ["owner"] },
+          claim: { members: ["owner", "mallory"] },
+        }),
+    ],
+    ["a substituted creator", (f) => receiptProof(f, { claim: { creatorId: "member" } })],
+    ["an epoch without a binding", (f) => receiptProof(f, { unbound: true })],
+    [
+      "a personal chat created by someone else",
+      (f) =>
+        receiptProof(f, {
+          signed: { creatorId: "member" },
+          signer: { keys: f.member, keyId: "member-key" },
+        }),
+    ],
+    [
+      "a public key other than the signed one",
+      async (f) => ({
+        ...(await receiptProof(f)),
+        publicKey: toBase64Url((await generateEncryptionKeyPair()).publicKey),
+      }),
+    ],
+  ];
+  for (const [label, build] of cases) {
+    const f = await fixture();
+    const { completion, bash } = await receiptOutcome(f, await build(f), "refused");
+    expect(bash.execute, label).not.toHaveBeenCalled();
+    expect(completion.result, label).toBeUndefined();
+    expect(completion.receipt, label).toBeUndefined();
+  }
+});
+
+test("shared and workspace receipts bound to this chat are sealed and openable", async () => {
+  for (const signed of [
+    { scope: "shared" as const, creatorId: "member", members: ["owner", "zed"] },
+    { scope: "workspace" as const, creatorId: "member" },
+  ]) {
+    const f = await fixture();
+    const call = { ...bashCall, toolCallId: "bound" };
+    const { outcomes, bash } = await run(f, [
+      await sealedTask(
+        f,
+        call,
+        await approval(f.owner, "owner-key", call),
+        "bound",
+        await receiptProof(f, { signed }),
+      ),
+    ]);
+    expect(bash.execute).toHaveBeenCalledTimes(1);
+    expect(outcomes[0]).toMatchObject({ ok: true });
+  }
+});
+
+test("a receipt key older than an epoch already seen for the chat is refused", async () => {
+  const f = await fixture();
+  const newer = await receiptOutcome(f, await receiptProof(f, { epoch: 2 }), "new");
+  expect(newer.completion.receipt).toBeDefined();
+  const older = await receiptOutcome(f, await receiptProof(f, { epoch: 1 }), "old");
+  expect(older.completion.result).toBeUndefined();
+  expect(older.completion.receipt).toBeUndefined();
+  expect(older.bash.execute).not.toHaveBeenCalled();
 });
