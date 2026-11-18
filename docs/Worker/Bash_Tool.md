@@ -17,10 +17,13 @@ owner's signature over the exact tool input (see [Chatroom approvals](Chatroom.m
 inside a sealed request; the AI SDK HMAC is only a replay guard. A changed selection
 or issuer secret invalidates pending SDK approvals.
 
-`packages/backend/src/worker/chat-tools.ts` dispatches one `execute` stage through
-the existing `dispatchChatEdit` coordination entry point. Despite its historical
-name, it now validates both file and Bash requests. The backend rechecks current
-owner/private-chat access, active workspace Worker, directory and enabled tool.
+`packages/backend/src/worker/chat-tools.ts` dispatches one `execute` stage. For a
+paired Worker it seals the request to the Worker and calls the internal
+`dispatchSealedChatTask`; only an unpaired Worker that opted into plaintext, in a
+workspace without keys, goes through the legacy `dispatchChatEdit` entry point
+(despite its historical name, it validates both file and Bash requests). The backend
+rechecks current owner/private-chat access, active workspace Worker, directory and
+enabled tool.
 `bashRequest` is an optional widening of persisted task records; existing file
 tasks and chat selections need no backfill. Durable `worker_chat_calls` receipts
 prevent an approved call from running again after transient task cleanup. Shared

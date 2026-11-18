@@ -37,6 +37,9 @@ const DISCONNECT_GUIDANCE: Record<WorkerControlDisconnectReason, string> = {
   shutdown: "The Worker control connection has stopped.",
 };
 
+const UNPAIRED_GUIDANCE =
+  "This Worker is not paired, so the backend could run any command on it. Create a pairing code in Chatroom → Workers and run `radium-worker pair`, then start again. Only for a workspace without keys, run `radium-worker start --allow-plaintext` to accept unencrypted, unsigned commands.";
+
 /** Recover local enrollment before opening the authenticated outbound control client. */
 export async function startWorker(options: CliOptions): Promise<void> {
   let state = await readWorkerState(options.stateDirectory);
@@ -50,7 +53,12 @@ export async function startWorker(options: CliOptions): Promise<void> {
       "Encrypted Worker setup is incomplete; create a pairing code and run `radium-worker pair`",
     );
   }
+  // Unpaired, the backend fully controls what this machine runs; that takes an explicit opt-in.
+  if (!state.e2ee && !options.allowPlaintext) throw new WorkerProtocolError(UNPAIRED_GUIDANCE);
   console.info(storageDescription(state.credentialStoreMode));
+  if (state.e2ee && options.allowPlaintext) {
+    console.info("--allow-plaintext ignored: this Worker is paired and runs signed commands only.");
+  }
 
   let control: WorkerControlConnection | undefined;
   let editor: EditExecutor | undefined;
@@ -94,17 +102,20 @@ export async function startWorker(options: CliOptions): Promise<void> {
       console.info(formatControlStatus(status));
     });
     presence = startPresenceReporter(control.client, tempDirectory);
-    // Paired Workers verify every command against the pinned owner; unpaired ones stay plaintext.
+    // Paired Workers verify every command against the pinned owner; unpaired ones run plaintext
+    // only because the operator allowed it above.
     const client = control.client;
     trust = await WorkerTrust.open({
       stateDirectory: options.stateDirectory,
       state,
       transport: () => convexTrustTransport(client),
     });
+    if (!trust && !options.allowPlaintext) throw new WorkerProtocolError(UNPAIRED_GUIDANCE);
+    const mode = trust ?? "plaintext";
     console.info(
       trust
         ? "End-to-end encryption: paired; commands must be signed by workspace members."
-        : "End-to-end encryption: not paired; this Worker only serves workspaces without keys.",
+        : "End-to-end encryption: not paired (--allow-plaintext); this Worker only serves workspaces without keys, and the backend sees and controls everything it runs.",
     );
     // Report an owner-key change, rollback or missing certification at startup (fixed messages).
     void trust?.roster().catch(() => undefined);
@@ -117,7 +128,7 @@ export async function startWorker(options: CliOptions): Promise<void> {
       );
     }, 15_000);
     if (editor) {
-      tasks = consumeEditTasks(control.client, editor, bash, trust);
+      tasks = consumeEditTasks(control.client, editor, bash, mode);
       tasks.setAvailable(previousStatusKey === "connected");
       console.info("Worker edit and Bash task consumer enabled.");
     }
@@ -129,7 +140,7 @@ export async function startWorker(options: CliOptions): Promise<void> {
           keys: createGatewayKeyStore(options.stateDirectory),
         },
       },
-      trust,
+      mode,
     );
     acp.setAvailable(previousStatusKey === "connected");
     localUsage = startLocalUsageSync(convexLocalUsageTransport(control.client));

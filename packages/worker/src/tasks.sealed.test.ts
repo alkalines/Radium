@@ -19,10 +19,12 @@ import {
   utf8,
   verify,
   type ChatScopeName,
+  type ToolReceiptRecipient,
   type EncryptionKeyPair,
   type SigningKeyPair,
 } from "radium-crypto";
 import {
+  WORKER_GRANT_TTL_MS,
   workerChatTaskRequestId,
   workerReceiptAad,
   workerTaskAad,
@@ -99,11 +101,18 @@ type Call = {
   input: unknown;
 };
 
+/** The receipt recipient {@link receiptProof} serves by default, as the signing owner saw it. */
+const defaultRecipient = { chatE2eeId: "chat-e2ee", scope: "personal", creatorId: "owner" } as const;
+
 async function approval(
   signer: SigningKeyPair,
   signerKeyId: string,
   call: Call,
-  options: { approvedAt?: number; directory?: string } = {},
+  options: {
+    approvedAt?: number;
+    directory?: string;
+    receipt?: (NonNullable<ToolReceiptRecipient> & { keyId: string }) | null;
+  } = {},
 ): Promise<WorkerSealedTaskRequest["authorization"]> {
   const input = JSON.stringify(call.input);
   const approvedAt = options.approvedAt ?? Date.now();
@@ -118,15 +127,29 @@ async function approval(
       toolCallId: call.toolCallId,
       input: utf8(input),
       approvedAt,
+      receipt:
+        options.receipt === undefined ? { ...defaultRecipient, keyId: "chat-key" } : options.receipt,
     }),
   );
   return { kind: "approval", input, approvedAt, signature: toBase64Url(signature), signerKeyId };
 }
 
-async function grant(signer: SigningKeyPair, issuedAt: number) {
+async function grant(
+  signer: SigningKeyPair,
+  issuedAt: number,
+  receipt: ToolReceiptRecipient = defaultRecipient,
+) {
   const signature = await sign(
     signer.seed,
-    toolGrantStatement({ workspaceId, chatId, workerId, directory, tools: ["read"], issuedAt }),
+    toolGrantStatement({
+      workspaceId,
+      chatId,
+      workerId,
+      directory,
+      tools: ["read"],
+      issuedAt,
+      receipt,
+    }),
   );
   return {
     kind: "grant" as const,
@@ -187,13 +210,13 @@ async function receiptProof(
   };
 }
 
-/** Seal a request to the Worker exactly as the chat action does. */
+/** Seal a request to the Worker exactly as the chat action does; `receipt: null` omits it. */
 async function sealedTask(
   f: Fixture,
   call: Call,
   authorization: WorkerSealedTaskRequest["authorization"],
   id: string,
-  receipt?: WorkerSealedTaskRequest["receipt"],
+  receipt?: WorkerSealedTaskRequest["receipt"] | null,
 ) {
   const request: WorkerSealedTaskRequest = {
     v: 1,
@@ -206,7 +229,7 @@ async function sealedTask(
     stage: call.stage,
     authorization,
     ...(authorization.kind === "grant" ? { input: JSON.stringify(call.input) } : {}),
-    receipt: receipt ?? (await receiptProof(f)),
+    ...(receipt === null ? {} : { receipt: receipt ?? (await receiptProof(f)) }),
   };
   const requestId = await workerChatTaskRequestId(chatId, call.toolCallId, call.stage);
   const sender = await openRequestSender(f.worker.publicKey);
@@ -232,7 +255,7 @@ async function sealedTask(
       request: sealedRequest.slice().buffer,
     },
   } as unknown as Task;
-  return { task, responseKey: sender.responseKey, requestId, call };
+  return { task, responseKey: sender.responseKey, requestId, call, sealsReceipt: !!request.receipt };
 }
 
 /** Run raw tasks through a paired Worker's consumer; returns each `completeSealedTask` call. */
@@ -284,7 +307,7 @@ async function run(f: Fixture, tasks: Awaited<ReturnType<typeof sealedTask>>[]) 
     tasks.map((entry) => entry.task),
   );
   const outcomes = await Promise.all(
-    tasks.map(async ({ task, responseKey, requestId, call }) => {
+    tasks.map(async ({ task, responseKey, requestId, call, sealsReceipt }) => {
       const completion = completions.get(task._id)!;
       const aad = { workspaceId, chatId, requestId };
       const result = JSON.parse(
@@ -296,6 +319,10 @@ async function run(f: Fixture, tasks: Awaited<ReturnType<typeof sealedTask>>[]) 
           }),
         ),
       ) as { ok: boolean; code?: string; output?: string };
+      if (!sealsReceipt) {
+        expect(completion.receipt).toBeUndefined();
+        return { ok: completion.ok, result };
+      }
       const receipt = JSON.parse(
         new TextDecoder().decode(
           await openBox({
@@ -417,10 +444,11 @@ test("Read runs only under a current owner grant; older grants are refused after
   const f = await fixture();
   const read: Call = { tool: "read", stage: "read", toolCallId: "r-1", input: { path: "a.txt" } };
   const unsigned = await approval(f.owner, "owner-key", read);
+  const newer = Date.now();
   const { outcomes, editor } = await run(f, [
     await sealedTask(f, read, unsigned, "t-no-grant"),
-    await sealedTask(f, { ...read, toolCallId: "r-2" }, await grant(f.owner, 20), "t-new"),
-    await sealedTask(f, { ...read, toolCallId: "r-3" }, await grant(f.owner, 10), "t-old"),
+    await sealedTask(f, { ...read, toolCallId: "r-2" }, await grant(f.owner, newer), "t-new"),
+    await sealedTask(f, { ...read, toolCallId: "r-3" }, await grant(f.owner, newer - 10), "t-old"),
   ]);
   expect(outcomes.map((outcome) => outcome.result.code)).toEqual([
     "GRANT_MISSING_TOOL",
@@ -431,17 +459,80 @@ test("Read runs only under a current owner grant; older grants are refused after
   expect(editor.execute).toHaveBeenCalledWith(
     expect.objectContaining({ directory, action: expect.objectContaining({ path: "a.txt" }) }),
   );
-  expect(f.marks.get(`tool-grant:${chatId}`)).toBe(20);
+  expect(f.marks.get(`tool-grant:${chatId}`)).toBe(newer);
+});
+
+test("expired and far-future grants are refused without advancing the grant high-water", async () => {
+  const f = await fixture();
+  const read: Call = { tool: "read", stage: "read", toolCallId: "ttl-1", input: { path: "a.txt" } };
+  const now = Date.now();
+  const { outcomes, editor } = await run(f, [
+    await sealedTask(f, read, await grant(f.owner, now - WORKER_GRANT_TTL_MS - 60_000), "expired"),
+    await sealedTask(
+      f,
+      { ...read, toolCallId: "ttl-2" },
+      await grant(f.owner, now + 60 * 60_000),
+      "future",
+    ),
+    // A forged far-future grant must not supersede the owner's current one.
+    await sealedTask(f, { ...read, toolCallId: "ttl-3" }, await grant(f.owner, now), "current"),
+  ]);
+  expect(outcomes.map((outcome) => outcome.result.code)).toEqual([
+    "GRANT_EXPIRED",
+    "GRANT_EXPIRED",
+    undefined,
+  ]);
+  expect(editor.execute).toHaveBeenCalledTimes(1);
+  expect(f.marks.get(`tool-grant:${chatId}`)).toBe(now);
+});
+
+test("an approval or grant never covers a receipt recipient other than the signed one", async () => {
+  const f = await fixture();
+  const read: Call = { tool: "read", stage: "read", toolCallId: "rr-1", input: { path: "a.txt" } };
+  const approve = (id: string, receipt?: NonNullable<Parameters<typeof approval>[3]>["receipt"]) =>
+    approval(f.owner, "owner-key", { ...bashCall, toolCallId: id }, { receipt });
+  const bash = (id: string) => ({ ...bashCall, toolCallId: id });
+  // A validly bound shared-chat key the server swaps in for the one the owner signed.
+  const shared = await receiptProof(f, {
+    signed: { scope: "shared", creatorId: "owner", members: ["owner"] },
+  });
+  const now = Date.now();
+  const { outcomes, editor, bash: shell } = await run(f, [
+    await sealedTask(f, bash("stripped"), await approve("stripped"), "stripped", null),
+    await sealedTask(f, bash("swapped"), await approve("swapped"), "swapped", shared),
+    // Signed for another epoch of the same chat.
+    await sealedTask(
+      f,
+      bash("epoch"),
+      await approve("epoch", { ...defaultRecipient, keyId: "older-chat-key" }),
+      "epoch",
+    ),
+    // Signed for a keyless chat; the server adds a receipt.
+    await sealedTask(f, bash("added"), await approve("added", null), "added"),
+    await sealedTask(f, read, await grant(f.owner, now), "grant-stripped", null),
+    await sealedTask(f, { ...read, toolCallId: "rr-2" }, await grant(f.owner, now), "grant-swapped", shared),
+  ]);
+  expect(outcomes.map((outcome) => outcome.result.code)).toEqual(Array(6).fill("SIGNATURE_INVALID"));
+  expect(shell.execute).not.toHaveBeenCalled();
+  expect(editor.execute).not.toHaveBeenCalled();
 });
 
 test("different grants with the same timestamp cannot replace one another", async () => {
   const f = await fixture();
   const read: Call = { tool: "read", stage: "read", toolCallId: "same-1", input: { path: "a.txt" } };
-  const issuedAt = 20;
+  const issuedAt = Date.now();
   const tools = ["read", "bash"] as const;
   const signature = await sign(
     f.owner.seed,
-    toolGrantStatement({ workspaceId, chatId, workerId, directory, tools: [...tools], issuedAt }),
+    toolGrantStatement({
+      workspaceId,
+      chatId,
+      workerId,
+      directory,
+      tools: [...tools],
+      issuedAt,
+      receipt: defaultRecipient,
+    }),
   );
   const conflicting = {
     kind: "grant" as const,
@@ -552,6 +643,8 @@ async function codeModeApproval(browserSigns: (shown: unknown) => string) {
             toolCallId: callId,
             input: utf8(browserSigns(shown)),
             approvedAt,
+            // This chat has no keys: the request names no receipt.
+            receipt: null,
           }),
         );
         return {
@@ -598,10 +691,21 @@ test("a Code Mode approval over any other text than the presented one fails clos
   expect(bash.execute).not.toHaveBeenCalled();
 });
 
-/** Run one approved Bash call with the given receipt block; no result means the Worker refused it. */
+/**
+ * Run one approved Bash call with the given receipt block, approved by an owner who signed exactly
+ * the recipient it names (so only the Worker's key checks can refuse it); no result means the
+ * Worker refused it.
+ */
 async function receiptOutcome(f: Fixture, receipt: WorkerSealedTaskRequest["receipt"], id: string) {
   const call = { ...bashCall, toolCallId: `call-${id}` };
-  const task = await sealedTask(f, call, await approval(f.owner, "owner-key", call), id, receipt);
+  const recipient = receipt && {
+    chatE2eeId: receipt.e2eeId,
+    scope: receipt.scope,
+    creatorId: receipt.creatorId,
+    keyId: receipt.keyId,
+  };
+  const authorization = await approval(f.owner, "owner-key", call, { receipt: recipient ?? null });
+  const task = await sealedTask(f, call, authorization, id, receipt);
   const { completions, bash } = await consume(f, [task.task]);
   return { completion: completions.get(id)!, bash };
 }
@@ -663,7 +767,14 @@ test("shared and workspace receipts bound to this chat are sealed and openable",
       await sealedTask(
         f,
         call,
-        await approval(f.owner, "owner-key", call),
+        await approval(f.owner, "owner-key", call, {
+          receipt: {
+            chatE2eeId: "chat-e2ee",
+            scope: signed.scope,
+            creatorId: signed.creatorId,
+            keyId: "chat-key",
+          },
+        }),
         "bound",
         await receiptProof(f, { signed }),
       ),

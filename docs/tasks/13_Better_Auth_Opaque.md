@@ -1,6 +1,6 @@
 # 13 `@alkalines/better-auth-opaque`
 
-Status: **not started.** Implements [task 11 phase 2](11_E2EE.md#phase-2-alkalinesbetter-auth-opaque) in the new repository `alkalines/better-auth-opaque`. Contract: [E2EE authentication](../E2EE/Authentication.md#plugin-alkalinesbetter-auth-opaque). Research: [OPAQUE](../research/OPAQUE_Authentication.md).
+Status: **done.** `@alkalines/better-auth-opaque` is published from `alkalines/better-auth-opaque`; Radium pins 0.2.0 ([task 11 phase 2](11_E2EE.md#phase-2-alkalinesbetter-auth-opaque)). Contract: [E2EE authentication](../E2EE/Authentication.md#plugin-alkalinesbetter-auth-opaque). Research: [OPAQUE](../research/OPAQUE_Authentication.md).
 
 This file holds the prompts for the sessions that create that repository. Each prompt is self-contained: agents there cannot read Radium unless `/home/arthu/Projects/alkalines-radium` exists on the same machine.
 

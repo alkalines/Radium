@@ -16,6 +16,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { legacyAad } from "../src/e2ee/legacy-contract";
 import { activeLegacyRecipient } from "../src/e2ee/legacy-crypto";
+import { currentChatPublicKey } from "../src/e2ee/chat-keys";
 import type { Doc, Id } from "./_generated/dataModel";
 
 vi.mock("./auth", () => ({
@@ -241,8 +242,10 @@ test("a shared chat's key is bound to its exact raw picked members and a signer 
   // Bound to a different member list.
   await install(f, chat, [await epochRow(f, chat, { signer: "owner", bind: { ...shared, members: [] } })]);
   expect(await recipient(f, "owner", chat)).toBeNull();
-  // A picked member may be the signer.
+  // A picked member may sign a bound epoch, but only the creator or owner's epoch receives history.
   await install(f, chat, [await epochRow(f, chat, { signer: "member", bind: shared })]);
+  expect(await recipient(f, "owner", chat)).toBeNull();
+  await install(f, chat, [await epochRow(f, chat, { signer: "owner", bind: shared })]);
   expect(await recipient(f, "owner", chat)).toMatchObject({ kind: "chat", epoch: 1 });
 
   // Any later difference in the raw list, even a user who already left, needs a fresh epoch.
@@ -291,29 +294,54 @@ test("a stale chat epoch holds history in custody until a fresh bound epoch exis
   expect(await recipient(f, "member", chat)).toMatchObject({ kind: "chat", keyId: keyId(42), epoch: 2 });
 });
 
-test("an unbound keyed chat stays in custody until a reader rotates it to a fresh bound epoch", async () => {
-  const f = await fixture();
-  await addIdentities(f);
-  const chat = await newChat(f, "owner", "shared");
-  await f.t.run(ctx => ctx.db.insert("chat_members", { chat, workspace: f.workspace, userId: "member", lastInteractionAt: 1 }));
-  // An earlier PR state: a creator-signed epoch with no binding proof.
-  await install(f, chat, [await epochRow(f, chat, { signer: "owner" })]);
-  const original = await f.t.run(ctx => ctx.db.query("e2ee_chat_keys").collect());
-  expect(await recipient(f, "owner", chat)).toBeNull();
+test("an unbound keyed chat stays in custody until its creator rotates it; another reader's epoch serves new content only", async () => {
+  vi.useFakeTimers();
+  try {
+    const f = await fixture();
+    await addIdentities(f);
+    const chat = await newChat(f, "owner", "shared");
+    await f.t.run(async ctx => {
+      await ctx.db.insert("chat_members", { chat, workspace: f.workspace, userId: "member", lastInteractionAt: 1 });
+      // Cutover with history of this chat held in custody: a chat epoch may request its release.
+      await ctx.db.insert("e2ee_migration_state", { key: "global", frozen: true, generation: 0, custodyState: "active" });
+      await ctx.db.insert("e2ee_legacy_custody", { table: "aisdk_chats", record: chat, chat });
+    });
+    const releaseJobs = async () =>
+      (await f.t.run(ctx => ctx.db.query("e2ee_migration_jobs").collect())).filter(job => job.kind === "release");
+    // An earlier PR state: a creator-signed epoch with no binding proof.
+    await install(f, chat, [await epochRow(f, chat, { signer: "owner" })]);
+    const original = await f.t.run(ctx => ctx.db.query("e2ee_chat_keys").collect());
+    expect(await recipient(f, "owner", chat)).toBeNull();
 
-  const shared: Policy = { chat, scope: "shared", creatorId: "owner", members: ["member"] };
-  const next = await epochRow(f, chat, { signer: "member", epoch: 2, bind: shared });
-  const { chat: _chat, workspace: _workspace, createdAt: _createdAt, signerUserId: _signer, ...epoch } = next;
-  const wraps = (["owner", "member"] as const).map(userId => ({
-    chatEpoch: 2, recipient: "identity" as const, userId, recipientKeyId: identityKeyId[userId], sealed: new ArrayBuffer(1200),
-  }));
-  await f.member.mutation(api.e2ee.rotateChatKey, { chatId: chat, epoch, wraps });
+    const shared: Policy = { chat, scope: "shared", creatorId: "owner", members: ["member"] };
+    const rotate = async (as: Signer, epochNumber: number) => {
+      const next = await epochRow(f, chat, { signer: as, epoch: epochNumber, bind: shared });
+      const { chat: _chat, workspace: _workspace, createdAt: _createdAt, signerUserId: _signer, ...epoch } = next;
+      const wraps = (["owner", "member"] as const).map(userId => ({
+        chatEpoch: epochNumber, recipient: "identity" as const, userId, recipientKeyId: identityKeyId[userId], sealed: new ArrayBuffer(1200),
+      }));
+      await f.t.withIdentity({ subject: as }).mutation(api.e2ee.rotateChatKey, { chatId: chat, epoch, wraps });
+    };
 
-  expect(await recipient(f, "owner", chat)).toMatchObject({ kind: "chat", keyId: keyId(42), epoch: 2 });
-  // History of the old epoch is untouched.
-  const rows = await f.t.run(ctx => ctx.db.query("e2ee_chat_keys").collect());
-  expect(rows).toHaveLength(2);
-  expect(rows.find(row => row.epoch === 1)).toEqual(original[0]);
+    // A picked member's bound epoch carries new content, but its wraps are unverifiable: no release.
+    await rotate("member", 2);
+    const sealing = await f.t.run(async ctx =>
+      currentChatPublicKey(ctx, (await ctx.db.get("aisdk_chats", chat))!, (await ctx.db.get("workspaces", f.workspace))!));
+    expect(sealing).toMatchObject({ epoch: 2, keyId: keyId(42) });
+    expect(await recipient(f, "owner", chat)).toBeNull();
+    expect(await releaseJobs()).toEqual([]);
+
+    // The creator's epoch requests the release and receives the history.
+    await rotate("owner", 3);
+    expect(await releaseJobs()).toMatchObject([{ scope: { chat } }]);
+    expect(await recipient(f, "owner", chat)).toMatchObject({ kind: "chat", keyId: keyId(43), epoch: 3 });
+    // History of the old epoch is untouched.
+    const rows = await f.t.run(ctx => ctx.db.query("e2ee_chat_keys").collect());
+    expect(rows).toHaveLength(3);
+    expect(rows.find(row => row.epoch === 1)).toEqual(original[0]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("certifying the current epoch with its binding makes it sealable; replayed, wrong or old proofs are refused", async () => {
@@ -425,4 +453,20 @@ test("reset identities cannot authorize workspace migration through retired gran
   expect(await selected("owner")).toBeNull();
   await regrant("owner", "owner");
   expect(await selected("owner")).toMatchObject({ kind: "workspace_owner" });
+});
+
+test("only an owner-issued member grant makes the member key available for release", async () => {
+  const f = await fixture();
+  await addIdentities(f);
+  const memberGrant = await f.t.run(async ctx => {
+    const grants = await ctx.db.query("e2ee_workspace_grants").collect();
+    // Leave the member's grant as the only route to the member key.
+    await ctx.db.delete("e2ee_workspace_grants", grants.find(g => g.userId === "owner" && g.purpose === "member")!._id);
+    return grants.find(g => g.userId === "member")!._id;
+  });
+  const selected = () => f.t.run(ctx => activeLegacyRecipient(ctx, { workspace: f.workspace, purpose: "member" }));
+  expect(await selected()).toMatchObject({ kind: "workspace_member" });
+  // A join self-grant or another member's re-grant is not owner-endorsed.
+  await f.t.run(ctx => ctx.db.patch("e2ee_workspace_grants", memberGrant, { granterUserId: "member", granterKeyId: identityKeyId.member }));
+  expect(await selected()).toBeNull();
 });

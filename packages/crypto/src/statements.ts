@@ -294,11 +294,33 @@ export function workerObjectStatement(input: {
 }
 
 /**
+ * The chat audience a Worker seals a call's durable receipt to (`WorkerSealedTaskRequest.receipt`), as
+ * the signing user saw it, or `null` for a chat without keys (no receipt content). Signing it stops a
+ * server from redirecting the receipt to another chat object, scope or creator, or dropping it.
+ */
+export type ToolReceiptRecipient = {
+  chatE2eeId: string;
+  scope: ChatScopeName;
+  creatorId: string;
+} | null;
+
+function receiptRecipientPart(
+  recipient: (NonNullable<ToolReceiptRecipient> & { keyId?: string }) | null,
+): Uint8Array {
+  // An empty part (no receipt) can never equal a non-empty length-prefixed list.
+  if (!recipient) return new Uint8Array(0);
+  const parts = [recipient.chatE2eeId, recipient.scope, recipient.creatorId];
+  if (recipient.keyId !== undefined) parts.push(recipient.keyId);
+  return lengthPrefixed(parts.map(utf8));
+}
+
+/**
  * A user's approval of exactly one built-in agent Worker tool call: `input` is the UTF-8 JSON of the
  * tool input the user saw (`JSON.stringify` of the AI SDK tool part input) and `approvedAt` the
- * approving client's clock (milliseconds). The Worker runs the call only if the operation it derives
- * from that input is the one it was asked to run, only within a fixed window after `approvedAt`, and
- * at most once (it remembers executed approvals for that window only).
+ * approving client's clock (milliseconds). `receipt` additionally names the exact chat key epoch
+ * (`keyId`) the Worker must seal the receipt to. The Worker runs the call only if the operation it
+ * derives from that input is the one it was asked to run, only within a fixed window after
+ * `approvedAt`, and at most once (it remembers executed approvals for that window only).
  */
 export function toolApprovalStatement(input: {
   workspaceId: string;
@@ -309,9 +331,10 @@ export function toolApprovalStatement(input: {
   toolCallId: string;
   input: Uint8Array;
   approvedAt: number;
+  receipt: (NonNullable<ToolReceiptRecipient> & { keyId: string }) | null;
 }): Uint8Array {
   return signingMessage(
-    "radium/v1/tool-approval",
+    "radium/v2/tool-approval",
     utf8(input.workspaceId),
     utf8(input.chatId),
     utf8(input.workerId),
@@ -320,13 +343,16 @@ export function toolApprovalStatement(input: {
     utf8(input.toolCallId),
     input.input,
     decimal(input.approvedAt),
+    receiptRecipientPart(input.receipt),
   );
 }
 
 /**
  * A standing, user-signed permission for the built-in agent to run `tools` without a per-call approval
- * in one chat, Worker and directory. It has no expiry: a newer grant (`issuedAt`, milliseconds) for the
- * same chat replaces it, and the Worker refuses grants older than the newest it has seen.
+ * in one chat, Worker and directory, with receipts sealed only to the chat's signed audience
+ * (`receipt`; not an epoch, so key rotation keeps the grant). Workers accept it for
+ * `WORKER_GRANT_TTL_MS` after `issuedAt` (milliseconds); a newer grant for the same chat replaces it,
+ * and the Worker refuses grants older than the newest it has seen.
  */
 export function toolGrantStatement(input: {
   workspaceId: string;
@@ -335,14 +361,16 @@ export function toolGrantStatement(input: {
   directory: string;
   tools: string[];
   issuedAt: number;
+  receipt: ToolReceiptRecipient;
 }): Uint8Array {
   return signingMessage(
-    "radium/v1/tool-grant",
+    "radium/v2/tool-grant",
     utf8(input.workspaceId),
     utf8(input.chatId),
     utf8(input.workerId),
     utf8(input.directory),
     lengthPrefixed([...input.tools].sort().map(utf8)),
     decimal(input.issuedAt),
+    receiptRecipientPart(input.receipt),
   );
 }

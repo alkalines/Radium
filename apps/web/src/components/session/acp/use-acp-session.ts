@@ -34,6 +34,7 @@ import { sealTitle } from "@/lib/crypto/chat-content";
 import { cryptoClient, currentUserId } from "@/lib/crypto/runtime";
 import { KeysLockedError } from "@/lib/crypto/key-manager";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
+import { KeylessDowngradeError, workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
 import {
   acpFallbackTitle,
   openAcpError,
@@ -62,6 +63,7 @@ export type AcpInteractionView = Omit<Interactions[number], "request" | "sealed"
 const noInteractions: AcpInteractionView[] = [];
 /** Quiet time after which a history request counts as finished (or failed, if nothing came). */
 const HISTORY_STALL_MS = 15_000;
+const downgradeMessage = new KeylessDowngradeError().message;
 
 /** Read structured Convex errors instead of showing their serialized server envelope. */
 export function acpActionError(error: unknown): string | undefined {
@@ -211,8 +213,11 @@ export function useAcpSession({
   if (worker && !(worker instanceof Error)) lastWorker.current = worker;
 
   // Signed mode: the workspace has keys, so every command is sealed to the Worker and every Worker
-  // object is verified and opened here instead of being read as the backend delivered it.
-  const signed = session?.signed === true;
+  // object is verified and opened here instead of being read as the backend delivered it. A
+  // workspace this device verified as keyed stays in signed mode when the server calls it keyless,
+  // and its commands are refused: nothing is sent or shown in plaintext.
+  const downgraded = !!session && session.signed !== true && workspaceKnownKeyed(session.workspace);
+  const signed = session?.signed === true || downgraded;
   const workspaceId = session?.workspace;
   const workerId = session?.agent.worker;
   const e2eeId = session?.e2eeId ?? undefined;
@@ -360,15 +365,18 @@ export function useAcpSession({
   // A Worker re-reporting an error seals it into a new box each time; the last opened text stays
   // until the new box opens, so the generic server text only stands in before the first one does.
   const openedMessage = sealedError ? openedError?.message : undefined;
-  const errorMessage = openedMessage ?? session?.error ?? keyError;
+  const errorMessage = downgraded
+    ? downgradeMessage
+    : (openedMessage ?? session?.error ?? keyError);
 
   /** Seals and signs a command for this chat's Worker; never used outside signed mode. */
   const signCommand = useCallback(
     (command: AcpCommandPayload, clientId?: string) => {
+      if (downgraded) throw new KeylessDowngradeError();
       if (!workspaceId || !workerId) throw new Error("This agent Session is still loading.");
       return signAcpCommand({ workspaceId, workerId, chatId, command, clientId });
     },
-    [chatId, workerId, workspaceId],
+    [chatId, downgraded, workerId, workspaceId],
   );
 
   useEffect(() => {
@@ -619,6 +627,7 @@ export function useAcpSession({
   const fork = useCallback(async () => {
     try {
       const clientId = crypto.randomUUID();
+      if (downgraded) throw new KeylessDowngradeError();
       if (!signed) return await forkMutation({ chat: chatId, clientId });
       if (!session) throw new Error("This agent Session is still loading.");
       // The fork keeps the source's audience but belongs to the caller, who is not a member.
@@ -660,7 +669,7 @@ export function useAcpSession({
       showActionError(error);
       return undefined;
     }
-  }, [chatId, forkMutation, session, signCommand, signed, startForkMutation]);
+  }, [chatId, downgraded, forkMutation, session, signCommand, signed, startForkMutation]);
   const [buildView] = useState(createAcpViewModel);
   const view = useMemo(
     () => buildView(timeline, session?.status, shownFrom),

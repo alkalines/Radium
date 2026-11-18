@@ -27,7 +27,7 @@ import {
 import { openChatSeed } from "@/lib/crypto/chat-keys";
 import { buffer, bytes, cryptoClient, currentUserId, onSecretsCleared } from "@/lib/crypto/runtime";
 import { signAsUser, trustedWorker, WorkerNotPairedError } from "@/lib/crypto/workers";
-import { getOwnerKey } from "@/lib/crypto/workspace-keys";
+import { getOwnerKey, keyedWorkspaceClaim } from "@/lib/crypto/workspace-keys";
 
 /**
  * Browser side of ACP end-to-end encryption (`docs/E2EE/Data.md#acp`): signed and sealed commands,
@@ -130,11 +130,12 @@ export async function signAgentCommands(input: {
 
 /**
  * Whether a workspace has encryption keys. Keyed workspaces only accept signed ACP commands, so
- * agent-level actions choose their wire from this answer.
+ * agent-level actions choose their wire from this answer. Throws `KeylessDowngradeError` when the
+ * server calls a workspace keyless that this device verified as keyed.
  */
 export async function isKeyedWorkspace(workspaceId: Id<"workspaces">): Promise<boolean> {
   const state = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
-  return state.keyEpoch !== null;
+  return keyedWorkspaceClaim(workspaceId, state.keyEpoch !== null);
 }
 
 /** Everything `acpBindingStatement` covers, except the signature. */

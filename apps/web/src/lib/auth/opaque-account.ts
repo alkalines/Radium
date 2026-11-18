@@ -14,6 +14,7 @@ import { authClient } from "@/lib/auth-client";
 import {
   buildNewKeysPayload,
   buildRewrapPayload,
+  copyAccount,
   KeyBundleError,
   openSignInPayload,
   parseResetPayload,
@@ -215,13 +216,20 @@ export async function changePasswordRewrap(input: {
   currentPassword: string;
   newPassword: string;
 }): Promise<FlowResult> {
-  const result = await keyManager.useAmk((amk, identity) =>
-    authClient.opaque.changePassword({
-      currentPassword: input.currentPassword,
-      newPassword: input.newPassword,
-      payload: (exportKey: string) => buildRewrapPayload({ exportKey, account: { amk, identity } }),
-    }),
-  );
+  // A lock (or other tab) may wipe the key manager's buffers while OPAQUE runs; the new wrapper
+  // must hold the AMK as it was, never zeroes, so the flow works on its own copy.
+  const result = await keyManager.useAmk(async (amk, identity) => {
+    const account = copyAccount({ amk, identity });
+    try {
+      return await authClient.opaque.changePassword({
+        currentPassword: input.currentPassword,
+        newPassword: input.newPassword,
+        payload: (exportKey: string) => buildRewrapPayload({ exportKey, account }),
+      });
+    } finally {
+      wipeAccount(account);
+    }
+  });
   if (result.error) return { ok: false, message: errorMessage(result.error) };
   return { ok: true, data: undefined };
 }

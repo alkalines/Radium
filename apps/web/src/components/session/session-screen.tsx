@@ -123,7 +123,15 @@ import {
   type ChatContentKey,
   type ChatQueue,
 } from "@/lib/crypto/chat-content";
-import { signToolApproval, signToolGrant } from "./worker-authorization";
+import {
+  forgetWorkerApproval,
+  recordWorkerApproval,
+  signToolApproval,
+  signToolGrant,
+  workerGrantAction,
+  type WorkerAuthorizationTarget,
+} from "./worker-authorization";
+import { keyedWorkspaceClaim, workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
 
 // A stable identity while the Projects list loads, so the name decryption effect does not restart.
 const NO_PROJECTS: never[] = [];
@@ -936,13 +944,14 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     if (changed) setHiddenInteractions(new Set(submittedInteractions.current));
   }, [messages]);
 
-  const workerTarget =
+  const workerTarget: WorkerAuthorizationTarget | undefined =
     chatId && chat?.worker?.workerId && chat.worker.directory
       ? {
           workspaceId: chat.workspace,
           chatId,
           workerId: chat.worker.workerId,
           directory: chat.worker.directory,
+          e2eeId: chat.e2eeId ?? null,
         }
       : undefined;
 
@@ -959,7 +968,12 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         input: part.input,
       });
     } catch (error) {
-      if (workspaceKeyState?.keyEpoch === null && !chat?.e2eeId) return null;
+      if (
+        workspaceKeyState?.keyEpoch === null &&
+        !chat?.e2eeId &&
+        !workspaceKnownKeyed(workerTarget.workspaceId)
+      )
+        return null;
       toast.error(
         error instanceof KeysLockedError
           ? "Unlock this device to approve Worker tools."
@@ -1007,37 +1021,50 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     });
   }
 
-  // Refresh standing Read authority when the owner opens or unlocks the visible chat, and when its
-  // selection or verified workspace roster changes. Hidden Tabs do not sign or write grants.
+  // Standing Read authority is signed only for a Worker selection the owner approved on this
+  // device by confirming the prompt that names its directory, and re-signed for exactly that
+  // selection before half of `WORKER_GRANT_TTL_MS` has passed. A selection served by the server
+  // alone is never signed. Hidden Tabs do not sign or write grants.
   const grantedSelection = useRef<{ key: string } | undefined>(undefined);
   useEffect(() => {
     const selection = chat?.worker;
-    if (!chatId || !chat || !isActive || !isOwner || keyStatus.state !== "unlocked") {
+    const reset = () => {
       grantedSelection.current = undefined;
+      if (chatId) toast.dismiss(`worker-grant:${chatId}`);
+    };
+    if (!chatId || !chat || !isActive || !isOwner || keyStatus.state !== "unlocked") {
+      reset();
       return;
     }
     if (!selection?.workerId || !selection.directory || !selection.tools.includes("read")) {
-      grantedSelection.current = undefined;
+      reset();
       return;
     }
-    const key = JSON.stringify([
-      chatId,
-      selection.workerId,
-      selection.directory,
-      selection.tools,
-      keyStatus.keyId,
-      workspaceKeyState?.roster?.version,
-    ]);
-    if (grantedSelection.current?.key === key) return;
-    const attempt = { key };
-    grantedSelection.current = attempt;
-    const target = {
+    const target: WorkerAuthorizationTarget = {
       workspaceId: chat.workspace,
       chatId,
       workerId: selection.workerId,
       directory: selection.directory,
+      e2eeId: chat.e2eeId ?? null,
     };
-    void (async () => {
+    const { userId, keyId } = keyStatus;
+    const action = workerGrantAction({
+      userId,
+      signerKeyId: keyId,
+      target,
+      selection,
+      now: Date.now(),
+    });
+    if (action === "none") {
+      reset();
+      return;
+    }
+    const confirm = action === "confirm";
+    const key = JSON.stringify([target, [...selection.tools].sort(), keyId, confirm]);
+    if (grantedSelection.current?.key === key) return;
+    const attempt = { key };
+    grantedSelection.current = attempt;
+    const authorize = async () => {
       try {
         const grant = await signToolGrant(target, selection);
         if (grantedSelection.current !== attempt || keyManager.getSnapshot() !== keyStatus) return;
@@ -1053,8 +1080,25 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           toast.error("Could not authorize Worker reads. Reopen this session to try again.");
         }
       }
-    })();
-  }, [chat, chatId, isActive, isOwner, keyStatus, workspaceKeyState?.roster?.version, setChatWorkerGrant]);
+    };
+    if (!confirm) {
+      void authorize();
+      return;
+    }
+    toast("Allow Worker reads in this chat?", {
+      id: `worker-grant:${chatId}`,
+      description: `The agent may read files in ${target.directory} on this chat's Worker without asking.`,
+      duration: Infinity,
+      action: {
+        label: "Allow",
+        onClick: () => {
+          if (grantedSelection.current !== attempt) return;
+          recordWorkerApproval(userId, target, selection.tools);
+          void authorize();
+        },
+      },
+    });
+  }, [chat, chatId, isActive, isOwner, keyStatus, setChatWorkerGrant]);
 
   async function respondToCodeMode(id: string, response: CodeModeInteractionResponse) {
     if (submittedInteractions.current.has(id)) return;
@@ -1281,8 +1325,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       try {
         // A keyed workspace takes only keyed Sessions: chat keys, then the creator's signed binding
         // and sealed, signed commands. A keyless workspace keeps the plaintext path unchanged.
-        const keyed = workspaceKeyState?.keyEpoch != null;
         if (!workspaceKeyState) throw new Error("Waiting for workspace encryption keys.");
+        const keyed = keyedWorkspaceClaim(settingsWorkspaceId, workspaceKeyState.keyEpoch != null);
         const keys = keyed ? await getDraftKeys() : undefined;
         if (keyed && !keys) throw new Error("Unlock to create encryption keys.");
         const members = draftScope === "shared" ? sharedMembers : [];
@@ -1449,6 +1493,10 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     if (keyStatus.state === "signed-out") {
       throw new Error("Waiting for encryption status.");
     }
+    // A workspace this device verified as keyed never gets a plaintext chat, whatever the server
+    // reports.
+    if (hasAccountKeys && workspaceKeyState)
+      keyedWorkspaceClaim(settingsWorkspaceId, workspaceKeyState.keyEpoch !== null);
     if (!needsNewChatKeys) {
       return undefined;
     }
@@ -1583,6 +1631,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
               : undefined,
             webSearch: false,
           };
+    if (hasAccountKeys && workspaceKeyState)
+      keyedWorkspaceClaim(settingsWorkspaceId, workspaceKeyState.keyEpoch !== null);
     const encrypted =
       Boolean(chat?.e2eeId) ||
       (hasAccountKeys && !(scope === "workspace" && workspaceKeyState?.keyEpoch === null));
@@ -1672,6 +1722,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     if (!chat?.canManage || isWorkerSaving) return;
     setIsWorkerSaving(true);
     try {
+      // A new pick drops the old approval; its server-derived directory needs a fresh confirmation.
+      if ("userId" in keyStatus) forgetWorkerApproval(keyStatus.userId, chat.workspace, chatId);
       await setChatWorker({ chatId, selection: next });
     } catch (caughtError) {
       toast.error(caughtError instanceof Error ? caughtError.message : "Failed to update Worker.");

@@ -1,6 +1,6 @@
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
 import type { Id } from "../../convex/_generated/dataModel";
-import { chatEpochIsBound, chatKeyIsStale } from "./chat-keys";
+import { chatEpochCanReleaseCustody, chatKeyIsStale } from "./chat-keys";
 import type { LegacyRecipient } from "./legacy-contract";
 import { workspaceKeyAvailable } from "./workspace-key-availability";
 
@@ -8,10 +8,13 @@ import { workspaceKeyAvailable } from "./workspace-key-availability";
  * Chat history uses its native chat key only when clients can open it and the key is the chat's
  * authentic writable epoch: right suite and size, an original signature by an active recorded
  * signer with authority over the current scope, and a binding proof over this exact chat and its
- * current audience (`chatEpochIsBound`). Keyless chats of every scope, stale epochs (a revoked
+ * current audience (`chatEpochIsBound`). The signer must also be the chat creator or the workspace
+ * owner (`chatEpochCanReleaseCustody`): another reader's wraps are unverifiable, so their epoch
+ * never receives released history. Keyless chats of every scope, stale epochs (a revoked
  * recipient or a rotated workspace key can still open them) and unsigned, unbound or forged
- * epochs stay in custody, never deleting plaintext into a copy no reader would accept. Creating or
- * certifying a bound epoch (`insertChatEpoch`, `signChatKey`) requests the release.
+ * epochs stay in custody, never deleting plaintext into a copy no reader would accept. Creating a
+ * creator- or owner-signed epoch (`insertChatEpoch`) or certifying one (`signChatKey`) requests
+ * the release.
  */
 export async function activeLegacyRecipient(ctx: QueryCtx | MutationCtx, input: {
   userId?: string;
@@ -32,7 +35,7 @@ export async function activeLegacyRecipient(ctx: QueryCtx | MutationCtx, input: 
       if (chat.scope === "workspace" && !(await workspaceKeyAvailable(ctx, workspace, "member"))) return undefined;
       const key = await ctx.db.query("e2ee_chat_keys").withIndex("by_chat_and_epoch", q => q.eq("chat", chat._id).eq("epoch", chat.keyEpoch!)).unique();
       if (!key) throw new Error("Legacy chat key is missing");
-      if (!(await chatEpochIsBound(ctx, chat, workspace, key))) return undefined;
+      if (!(await chatEpochCanReleaseCustody(ctx, chat, workspace, key))) return undefined;
       return { kind: "chat", keyId: key.keyId, epoch: key.epoch, publicKey: key.publicKey };
     }
     // Only a chat seed can be rewrapped when visibility changes; workspace fallback would survive narrowing.

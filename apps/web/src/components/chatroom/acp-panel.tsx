@@ -76,6 +76,7 @@ import { formatAgentCommandLine, parseAgentCommandLine } from "./agent-command-l
 import { acpAgentDefinitionStatement } from "radium-crypto";
 import { buffer, cryptoClient } from "@/lib/crypto/runtime";
 import { signAsUser } from "@/lib/crypto/workers";
+import { keyedWorkspaceClaim } from "@/lib/crypto/workspace-keys";
 
 type AgentDefinition = FunctionReturnType<typeof api.acp.ListAgentDefinitions>[number];
 type RegistryAgent = FunctionReturnType<typeof api.acp.RegistryAgents>[number];
@@ -98,7 +99,7 @@ async function authorizeDefinition(
   previousIssuedAt = 0,
 ): Promise<AcpAgentDefinition> {
   const state = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
-  if (state.keyEpoch === null) return definition;
+  if (!keyedWorkspaceClaim(workspaceId, state.keyEpoch !== null)) return definition;
   const issuedAt = Math.max(Date.now(), previousIssuedAt + 1);
   const signed = await signAsUser(acpAgentDefinitionStatement({ workspaceId, issuedAt, definition }));
   return {

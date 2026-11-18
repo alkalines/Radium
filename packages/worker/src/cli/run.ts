@@ -73,7 +73,7 @@ export async function runCli(args: string[]): Promise<void> {
       pairWorker(options.stateDirectory, state, pairing.pairing),
     );
     console.info(
-      "Worker keys published. Open the Workers page while unlocked to certify this Worker; a running Worker restarts with encryption on its own.",
+      "Worker keys published. Open the Workers page while unlocked to certify this Worker. If this Worker is already running, restart it (`radium-worker start`) to use the new keys.",
     );
   } else if (command === "start") {
     await startWorker(options);

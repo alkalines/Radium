@@ -28,6 +28,7 @@ import { toArrayBuffer } from "backend/src/e2ee/contract";
 import {
   parseWorkerToolInput,
   WORKER_APPROVAL_CLOCK_SKEW_MS,
+  WORKER_GRANT_TTL_MS,
   WORKER_APPROVAL_WINDOW_MS,
   WORKER_SEALED_RESULT_PLAINTEXT_BYTES,
   workerChatStageMatchesTool,
@@ -97,16 +98,18 @@ type StagedPreview = { previewId: string; sessionId: string; directory: string; 
  * flush, and then closes the edit executor. A process crash can leave an operation's
  * outcome unknown; receipts are in memory and are not replayed after restart.
  *
- * A paired Worker (`trust` set) runs only sealed tasks and refuses plaintext ones; it executes a
- * sealed task only under the workspace owner's signature (see {@link runSealedTask}). An unpaired
- * Worker runs plaintext tasks only.
+ * `mode` is a paired Worker's trust anchor, or `"plaintext"` only for an unpaired Worker whose
+ * operator explicitly allowed it (`start --allow-plaintext`). A paired Worker runs only sealed
+ * tasks and refuses plaintext ones; it executes a sealed task only under the workspace owner's
+ * signature (see {@link runSealedTask}). A plaintext Worker runs plaintext tasks only.
  */
 export function consumeEditTasks(
   client: ConvexClient,
   executor: EditExecutor,
-  bashExecutor?: BashExecutor,
-  trust?: TaskTrust | null,
+  bashExecutor: BashExecutor | undefined,
+  mode: TaskTrust | "plaintext",
 ) {
+  const trust = mode === "plaintext" ? null : mode;
   const claimId = crypto.randomUUID();
   let available = false;
   let stopped = false;
@@ -326,6 +329,7 @@ type Refusal =
   | "SIGNER_NOT_OWNER"
   | "GRANT_SUPERSEDED"
   | "GRANT_MISSING_TOOL"
+  | "GRANT_EXPIRED"
   | "APPROVAL_EXPIRED"
   | "INPUT_INVALID"
   | "PREVIEW_UNKNOWN"
@@ -342,6 +346,8 @@ const REFUSAL_MESSAGES: Record<Refusal, string> = {
   GRANT_SUPERSEDED:
     "This chat's Worker authorization was replaced. Open this chat unlocked to authorize the Worker.",
   GRANT_MISSING_TOOL: "Open this chat unlocked to authorize the Worker.",
+  GRANT_EXPIRED:
+    "This chat's Worker authorization expired (or is dated in the future). Open this chat unlocked and approve the Worker selection again.",
   APPROVAL_EXPIRED: "This approval is too old (or from a clock far ahead); approve the call again.",
   INPUT_INVALID: "The approved input is not a valid tool call.",
   PREVIEW_UNKNOWN: "This Worker did not stage a preview for this approved call.",
@@ -363,9 +369,10 @@ function grantMark(chatId: string): string {
 
 /**
  * Check that the owner authorized exactly this request and derive the operation from signed data.
- * Edit/Create/Bash need a per-call approval over the input; Read needs the chat's standing grant
- * that is not older than the newest grant this Worker has seen for the chat. Directory, chat,
- * Worker, tool and call ID come from the signed statement, never from unsigned task fields.
+ * Edit/Create/Bash need a per-call approval over the input; Read needs the chat's standing grant,
+ * at most {@link WORKER_GRANT_TTL_MS} old and not older than the newest grant this Worker has seen
+ * for the chat. Directory, chat, Worker, tool, call ID and the receipt recipient come from the
+ * signed statement, never from unsigned task fields.
  */
 async function authorize(
   request: WorkerSealedTaskRequest,
@@ -377,6 +384,16 @@ async function authorize(
   approvedAt?: number;
 }> {
   const { authorization } = request;
+  // The statement is rebuilt from the request's receipt: a dropped, swapped or redirected receipt
+  // no longer matches what the owner signed.
+  const recipient = request.receipt
+    ? {
+        chatE2eeId: request.receipt.e2eeId,
+        scope: request.receipt.scope,
+        creatorId: request.receipt.creatorId,
+      }
+    : null;
+  const now = Date.now();
   let message: Uint8Array;
   let input: string;
   if (request.tool === "read") {
@@ -384,6 +401,14 @@ async function authorize(
       throw new TaskRefusal("GRANT_MISSING_TOOL");
     }
     if (!authorization.tools.includes("read")) throw new TaskRefusal("GRANT_MISSING_TOOL");
+    // Bound the issue time before any high-water read or write: a far-future grant must not
+    // supersede every later one.
+    if (
+      authorization.issuedAt > now + WORKER_APPROVAL_CLOCK_SKEW_MS ||
+      now - authorization.issuedAt > WORKER_GRANT_TTL_MS
+    ) {
+      throw new TaskRefusal("GRANT_EXPIRED");
+    }
     if (authorization.issuedAt < trust.highWater(grantMark(request.chatId))) {
       throw new TaskRefusal("GRANT_SUPERSEDED");
     }
@@ -394,6 +419,7 @@ async function authorize(
       directory: request.directory,
       tools: authorization.tools,
       issuedAt: authorization.issuedAt,
+      receipt: recipient,
     });
     input = request.input;
   } else {
@@ -407,6 +433,7 @@ async function authorize(
       toolCallId: request.toolCallId,
       input: utf8(authorization.input),
       approvedAt: authorization.approvedAt,
+      receipt: recipient && request.receipt ? { ...recipient, keyId: request.receipt.keyId } : null,
     });
     input = authorization.input;
   }
@@ -442,7 +469,6 @@ async function authorize(
     return { operation, input, signerUserId: signer.userId };
   }
   // The window bounds how long executed approvals must be remembered to refuse replays.
-  const now = Date.now();
   if (
     authorization.approvedAt > now + WORKER_APPROVAL_CLOCK_SKEW_MS ||
     now - authorization.approvedAt > WORKER_APPROVAL_WINDOW_MS

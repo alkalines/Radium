@@ -77,6 +77,20 @@ export function wipeAccount(account: UnlockedAccount) {
   account.identity.signing.seed.fill(0);
 }
 
+/** Copies the secret bytes of an account so a later {@link wipeAccount} of the source spares them. */
+export function copyAccount(account: UnlockedAccount): UnlockedAccount {
+  const { identity } = account;
+  return {
+    amk: account.amk.slice(),
+    identity: {
+      ...identity,
+      keyId: identity.keyId.slice(),
+      encryption: { ...identity.encryption, seed: identity.encryption.seed.slice() },
+      signing: { ...identity.signing, seed: identity.signing.seed.slice() },
+    },
+  };
+}
+
 /** Thrown when a server-supplied bundle does not have the exact contract shape. */
 export class KeyBundleError extends Error {
   constructor() {

@@ -67,6 +67,12 @@ const NODE_BATCH = 500;
 const BLOB_BATCH_COUNT = 200;
 const BLOB_BATCH_BYTES = 4 * 1024 * 1024;
 const EXISTING_BATCH = 100;
+/**
+ * Longest the response path waits for content export after the request row is written. Each
+ * destination may take up to its own delivery timeout; a slower one keeps sending only while the
+ * action is still alive, so its content may be lost (export is best-effort, never replayed).
+ */
+const CONTENT_EXPORT_WAIT_MS = 1_000;
 
 type PreparedBlob = {
   hash: string;
@@ -512,14 +518,21 @@ export class TelemetryCapture {
       recordsOutputs: settings.recordOutputs,
     });
     const parts = decomposeRequest(this.options.rawBody, this.options.headers);
-    await deliverFromMemory(this.ctx, request, {
+    const delivery = deliverFromMemory(this.ctx, request, {
       parts,
       output: this.responseOutput ? this.responseOutput.message : this.streamOutput.message(),
       error: result.error,
       attempts: this.attempts,
       recordInputs: settings.recordInputs,
       recordOutputs: settings.recordOutputs,
+    }).catch(() => {
+      console.error("Telemetry export failed");
     });
+    // Destinations must not hold the client's response or stream close for their full timeout.
+    const waited = Promise.withResolvers<void>();
+    const timer = setTimeout(waited.resolve, CONTENT_EXPORT_WAIT_MS);
+    await Promise.race([delivery, waited.promise]);
+    clearTimeout(timer);
   }
 }
 

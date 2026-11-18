@@ -330,10 +330,31 @@ export async function chatEpochIsBound(
   );
 }
 /**
+ * Whether custody history may be released to (resealed under, then deleted from custody) this
+ * epoch: it must be bound (`chatEpochIsBound`) and signed by the chat creator or the workspace
+ * owner. Any reader may set up or rotate an epoch whose wraps the server cannot verify; such an
+ * epoch still carries new content, but releasing custody to it could leave history readable only
+ * by that reader, so the release waits for a creator- or owner-signed epoch.
+ */
+export async function chatEpochCanReleaseCustody(
+  ctx: ReadCtx,
+  chat: Doc<"aisdk_chats">,
+  workspace: Doc<"workspaces">,
+  key: Doc<"e2ee_chat_keys">,
+): Promise<boolean> {
+  if (key.signerUserId !== chat.userId && key.signerUserId !== workspace.ownerId) {
+    return false;
+  }
+  return await chatEpochIsBound(ctx, chat, workspace, key);
+}
+/**
  * Creators may always rotate. Other accessors may only when the key is stale or its current
  * epoch is not bound (`chatEpochIsBound`: unsigned, retired signer, pre-binding PR epoch or an
- * invalid proof); otherwise any member could rotate a chat to a key only they hold. The new epoch
- * must be bound and cover the full current audience, and the old epoch is never replaced.
+ * invalid proof); otherwise any member could rotate a chat to a key only they hold. The workspace
+ * owner may also replace a bound epoch that custody cannot be released to
+ * (`chatEpochCanReleaseCustody`), so history held for a chat set up by another reader can still
+ * be released. The new epoch must be bound and cover the full current audience, and the old
+ * epoch is never replaced.
  */
 export async function canRotateChatKey(
   ctx: ReadCtx,
@@ -350,7 +371,13 @@ export async function canRotateChatKey(
         .withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat._id).eq("epoch", chat.keyEpoch!))
         .unique()
     : null;
-  return !!current && !(await chatEpochIsBound(ctx, chat, workspace, current));
+  if (!current) {
+    return false;
+  }
+  if (userId === workspace.ownerId) {
+    return !(await chatEpochCanReleaseCustody(ctx, chat, workspace, current));
+  }
+  return !(await chatEpochIsBound(ctx, chat, workspace, current));
 }
 /**
  * Validates a public epoch and any supplied signatures against the authenticated signer. A
@@ -566,7 +593,12 @@ export async function insertChatWraps(
   }
   return inserted;
 }
-/** Inserts a verified chat epoch; callers enforce epoch monotonicity and authorization. */
+/**
+ * Inserts a verified chat epoch; callers enforce epoch monotonicity and authorization. Only an
+ * epoch signed by the chat creator or the workspace owner asks for a custody release
+ * (`chatEpochCanReleaseCustody`, re-checked by the release job); another reader's epoch serves new
+ * content only.
+ */
 export async function insertChatEpoch(
   ctx: MutationCtx,
   chat: Doc<"aisdk_chats">,
@@ -581,7 +613,9 @@ export async function insertChatEpoch(
     signerUserId: epoch.signature ? userId : undefined,
     createdAt: Date.now(),
   });
-  await requestCustodyRelease(ctx, { chat: chat._id });
+  if (epoch.signature && (userId === chat.userId || userId === workspace.ownerId)) {
+    await requestCustodyRelease(ctx, { chat: chat._id });
+  }
 }
 /**
  * Atomically validates initial scope coverage, stores epoch one and marks the chat encrypted.
@@ -666,15 +700,16 @@ export const chatKeys = query({
 });
 /**
  * Gives an existing keyless chat its initial key epoch without rewriting its historical plaintext.
- * Any current reader may do this (the policy for migrated history whose creator is unavailable):
- * `requireAccessibleChat` refuses removed users, outsiders and other users' personal chats. The
- * epoch must be signed by the caller's active identity, so readers authenticate who created it,
- * and must carry a binding proof over this chat's ID, scope, creator and picked members. Its wraps
- * must cover exactly the chat's current audience (`validateChatWraps`): nobody gains
- * access and a creator who left the workspace receives nothing. Recipients without an active
- * identity, or a workspace chat in a workspace without keys, make setup impossible, so history
- * stays in custody until they enrol. Never replaces an existing epoch; the loser of a concurrent
- * setup fails and must read the winner's.
+ * Any current reader may do this: `requireAccessibleChat` refuses removed users, outsiders and
+ * other users' personal chats. The epoch must be signed by the caller's active identity, so
+ * readers authenticate who created it, and must carry a binding proof over this chat's ID, scope,
+ * creator and picked members. Its wraps must cover exactly the chat's current audience
+ * (`validateChatWraps`): nobody gains access and a creator who left the workspace receives
+ * nothing. Recipients without an active identity, or a workspace chat in a workspace without keys,
+ * make setup impossible, so history stays in custody until they enrol. Custody history is released
+ * only to an epoch the creator or workspace owner signed (`chatEpochCanReleaseCustody`); another
+ * reader's epoch carries new content until one of them rotates. Never replaces an existing epoch;
+ * the loser of a concurrent setup fails and must read the winner's.
  */
 export const setupChatKeys = mutation({
   args: { chatId: v.id("aisdk_chats"), keys: chatKeysSetupValidator },

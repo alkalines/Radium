@@ -60,6 +60,7 @@ import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
 import { signAcpCommand } from "@/components/session/acp/acp-crypto";
 import { getMessageText } from "@/components/session/message-parts";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
+import { workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
 /** Matches the backend's title length limit for user-chosen titles. */
 const maxTitleLength = 32;
 
@@ -252,8 +253,10 @@ export function SessionActionsMenu({
     // when the Worker sees it, so the command carries the session it targets.
     const succeeded = await run("delete", async () => {
       const agentSession = acpSession?.agent;
+      // A workspace this device verified as keyed gets a signed command whatever the server says.
+      const signed = acpSession && (acpSession.signed || workspaceKnownKeyed(acpSession.workspace));
       const acpCommand =
-        acpSession?.signed && agentSession?.sessionId
+        signed && agentSession?.sessionId
           ? await signAcpCommand({
               workspaceId: acpSession.workspace,
               workerId: agentSession.worker,

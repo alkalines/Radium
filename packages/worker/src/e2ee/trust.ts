@@ -100,7 +100,8 @@ export function convexTrustTransport(client: ConvexClient): WorkerTrustTransport
  * Trust anchor of a paired Worker (Keys.md "Workers", "Trust System"): its own E2EE keys, the owner
  * pinned from the setup or pairing code, and persisted rollback marks. Everything the backend serves
  * (roster, epochs, identities) is verified here before the Worker acts on it. Constructed in
- * `cli/start.ts` only when the Worker is paired; unpaired Workers pass `null` to consumers.
+ * `cli/start.ts` only when the Worker is paired; an unpaired Worker passes `"plaintext"` to
+ * consumers, and only when started with `--allow-plaintext`.
  */
 export class WorkerTrust {
   readonly workerId: string;

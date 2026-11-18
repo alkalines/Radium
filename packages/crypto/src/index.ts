@@ -70,6 +70,7 @@ export {
   workerObjectStatement,
   workerPairingMac,
   type ChatScopeName,
+  type ToolReceiptRecipient,
   type WorkspaceKeyPurpose,
 } from "./statements";
 export {

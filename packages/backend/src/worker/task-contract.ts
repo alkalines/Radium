@@ -255,6 +255,15 @@ export const WORKER_APPROVAL_WINDOW_MS = 24 * 60 * 60_000;
 export const WORKER_APPROVAL_CLOCK_SKEW_MS = 5 * 60_000;
 
 /**
+ * How long after `issuedAt` a Worker accepts a standing Read grant (`toolGrantStatement`). The
+ * browser re-signs a selection the user approved on this device before it expires; afterwards Read
+ * calls are refused until the user re-approves. Grants (and ACP definitions) issued more than
+ * {@link WORKER_APPROVAL_CLOCK_SKEW_MS} in the Worker's future are refused, so a forged far-future
+ * `issuedAt` cannot advance a high-water mark.
+ */
+export const WORKER_GRANT_TTL_MS = 7 * 24 * 60 * 60_000;
+
+/**
  * Who authorized a sealed task, signed by the workspace owner's identity key (base64url
  * `signature`, identity key ID `signerKeyId`):
  * - `approval`: Edit/Create/Bash; over `toolApprovalStatement` with `input` = the exact UTF-8 JSON

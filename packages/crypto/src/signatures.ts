@@ -98,7 +98,10 @@ const nativeEd25519: Ed25519Implementation = {
   },
 };
 
-/** `@noble/curves` Ed25519 with RFC 8032 verification (not ZIP-215), matching WebCrypto's acceptance rules. */
+/**
+ * `@noble/curves` Ed25519 with RFC 8032 verification (not ZIP-215). Acceptance of small-order public
+ * keys differs between backends (WebCrypto accepts them), so `verify` rejects those before dispatch.
+ */
 const nobleEd25519: Ed25519Implementation = {
   name: "noble",
   async publicKeyFromSeed(seed) {
@@ -173,7 +176,9 @@ export async function sign(seed: Uint8Array, message: Uint8Array): Promise<Uint8
 
 /**
  * Verifies an Ed25519 signature under RFC 8032 rules. Returns `false` (never throws) for a wrong
- * signature, malformed key or wrong lengths, so untrusted inputs can be passed directly. Deterministic:
+ * signature, malformed key or wrong lengths, so untrusted inputs can be passed directly. Small-order
+ * public keys (which verify forged signatures over any message, and which the two backends treat
+ * differently) are always rejected, so both backends accept exactly the same inputs. Deterministic:
  * usable in Convex queries and mutations.
  */
 export async function verify(
@@ -182,6 +187,12 @@ export async function verify(
   signature: Uint8Array,
 ): Promise<boolean> {
   if (publicKey.length !== SIGNING_PUBLIC_KEY_BYTES || signature.length !== SIGNATURE_BYTES) {
+    return false;
+  }
+  try {
+    if (ed25519.Point.fromBytes(publicKey, false).isSmallOrder()) return false;
+  } catch {
+    // Not a canonical curve point encoding.
     return false;
   }
   return (await getEd25519()).verify(publicKey, message, signature);

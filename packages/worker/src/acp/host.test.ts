@@ -278,9 +278,11 @@ async function startGateway(
       },
     },
   ];
-  const host = new AcpHost(transport, {
-    gateway: { url: "https://radium.example/api/openai/v1", keys },
-  });
+  const host = new AcpHost(
+    transport,
+    { gateway: { url: "https://radium.example/api/openai/v1", keys } },
+    "plaintext",
+  );
   hosts.push(host);
   host.setAvailable(true);
   await until(() => transport.reports.length > 0);
@@ -312,7 +314,7 @@ function definition(args: string[] = []): AcpAgentDefinition {
 }
 async function start(transport: FakeTransport, args: string[] = []) {
   transport.definitions = [definition(args)];
-  const host = new AcpHost(transport);
+  const host = new AcpHost(transport, {}, "plaintext");
   hosts.push(host);
   host.setAvailable(true);
   const previousSyncs = transport.syncs.length;

@@ -67,7 +67,11 @@ import {
   workspaceHasKeys,
 } from "./sealed";
 import { acpAnswerStatement } from "radium-crypto";
-import { requireChatKeysForCreate, insertChatKeysSetup } from "../e2ee/chat-keys";
+import {
+  chatKeyIsStale,
+  requireChatKeysForCreate,
+  insertChatKeysSetup,
+} from "../e2ee/chat-keys";
 import { chatKeysSetupValidator, type ChatKeysSetup } from "../e2ee/workspace-contract";
 import {
   assertLegacyPlaintextAllowed,
@@ -75,7 +79,7 @@ import {
   legacyPlaintextAllowed,
 } from "../e2ee/migration-contract";
 import { certifiedWorkerKeys } from "../e2ee/worker-keys";
-import { setChatMembers } from "../chatroom/members";
+import { setChatMembers, touchChatMembers } from "../chatroom/members";
 import { validateChatBox } from "../chatroom/sealing";
 
 /**
@@ -452,6 +456,7 @@ export const Prompt = mutation({
       ...(await admitWarm(ctx, session, now)),
     });
     await ctx.db.patch(chat._id, { lastInteractionAt: now, interruption: undefined });
+    await touchChatMembers(ctx, chat._id, now);
     return command;
   },
 });
@@ -481,16 +486,18 @@ export const Cancel = mutation({
         signed: undefined,
         finishedAt: Date.now(),
       });
+      const now = Date.now();
       await ctx.db.patch(session._id, {
         status: "idle",
         stopReason: "cancelled",
-        updatedAt: Date.now(),
+        updatedAt: now,
       });
       await ctx.db.patch(args.chat, {
         activeStream: false,
-        lastInteractionAt: Date.now(),
+        lastInteractionAt: now,
         interruption: { kind: "interrupted" },
       });
+      await touchChatMembers(ctx, args.chat, now);
     } else if (ACP_BUSY_STATUSES.includes(session.status)) {
       const pending = await ctx.db
         .query("acp_commands")
@@ -880,8 +887,10 @@ export const SetFallbackTitle = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await assertLegacyWritesAllowed(ctx);
-    const { chat, session } = await accessibleSession(ctx, args.chat);
-    if (!chat.e2eeId || !chat.keyEpoch || chat.rekey) acpError("ACP_E2EE_MODE");
+    const { chat, session, workspace } = await accessibleSession(ctx, args.chat);
+    // A stale epoch (revoked reader or rotated workspace key) must be replaced before new sealing.
+    if (!chat.e2eeId || !chat.keyEpoch || (await chatKeyIsStale(ctx, chat, workspace)))
+      acpError("ACP_E2EE_MODE");
     // A sidecar title is the chat's historical title; a prompt-derived fallback must not replace it.
     if (chat.sealedTitle || chat.title || chat.legacyContent || session.userTitled) return null;
     validateChatBox(args.sealedTitle, chat.keyEpoch, 2048);

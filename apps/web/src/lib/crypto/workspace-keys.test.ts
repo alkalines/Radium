@@ -23,6 +23,8 @@ import {
   sealInvitePayload,
 } from "./workspace-proofs";
 import { verifyChatEpoch } from "./chat-keys";
+import { advanceHighWater } from "./runtime";
+import { KeylessDowngradeError, keyedWorkspaceClaim, workspaceKnownKeyed } from "./workspace-keys";
 
 async function account(userId: string) {
   const keys = await createAccountKeys();
@@ -174,5 +176,34 @@ describe("workspace trust boundaries", () => {
     await verifyChatEpoch({ ...input, signature });
     signature[0] ^= 1;
     expect(verifyChatEpoch({ ...input, signature })).rejects.toThrow();
+  });
+});
+
+describe("keyless downgrade", () => {
+  test("a workspace this device verified as keyed refuses the server's keyless claim", () => {
+    const values = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (name: string) => values.get(name) ?? null,
+        setItem: (name: string, value: string) => void values.set(name, value),
+      },
+    });
+    try {
+      // Never verified here: the server's answer stands either way.
+      expect(workspaceKnownKeyed("ws")).toBe(false);
+      expect(keyedWorkspaceClaim("ws", false)).toBe(false);
+      expect(keyedWorkspaceClaim("ws", true)).toBe(true);
+
+      // Roster verification leaves the device marker; from then on keyless is a downgrade.
+      advanceHighWater("radium.e2ee.roster.v1:ws", 3);
+      expect(workspaceKnownKeyed("ws")).toBe(true);
+      expect(keyedWorkspaceClaim("ws", true)).toBe(true);
+      expect(() => keyedWorkspaceClaim("ws", false)).toThrow(KeylessDowngradeError);
+      // Other workspaces are unaffected.
+      expect(keyedWorkspaceClaim("other", false)).toBe(false);
+    } finally {
+      Reflect.deleteProperty(globalThis, "localStorage");
+    }
   });
 });

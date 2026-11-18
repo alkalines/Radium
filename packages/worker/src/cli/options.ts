@@ -8,6 +8,11 @@ export type Command = "setup" | "pair" | "start" | "status" | "refresh" | "forge
 export interface CliOptions {
   stateDirectory: string;
   yes: boolean;
+  /**
+   * `start --allow-plaintext`: let an unpaired Worker serve a workspace without keys over the
+   * plaintext paths. Never persisted; a paired Worker ignores it.
+   */
+  allowPlaintext: boolean;
 }
 
 /** CLI usage text, including credential-store choices and aliases. */
@@ -16,7 +21,7 @@ export const HELP = `Radium Worker
   setup        Enroll using a masked prompt or stdin
   add-token    Alias for setup (the one-time code is never saved)
   pair         Pair an enrolled Worker with E2EE keys from a pairing code (masked prompt or stdin)
-  start        Run the authenticated outbound Convex control subscription
+  start        Run the authenticated outbound Convex control subscription (pair first)
   status       Show local enrollment metadata, without making network requests
   refresh      Recover pending enrollment and verify a fresh access-token exchange
   forget       Delete this machine's saved identity (does not revoke it remotely)
@@ -25,6 +30,8 @@ export const HELP = `Radium Worker
 Options:
   --state-dir PATH    State directory (default: ~/.radium-worker)
   --yes              Confirm local removal, forget only
+  --allow-plaintext  start only: run an unpaired Worker for a workspace without keys. The backend
+                     then sees and controls every command, file edit and prompt; prefer \`pair\`.
   --help             Show this help
 
 Credential storage:
@@ -47,7 +54,11 @@ export function normalizeCommand(command: string): Command {
 /** Parse only options supported by the selected command. */
 export function parseOptions(args: string[], command: Command): CliOptions {
   if (args[0] === "--") args = args.slice(1);
-  const options: CliOptions = { stateDirectory: defaultStateDirectory(), yes: false };
+  const options: CliOptions = {
+    stateDirectory: defaultStateDirectory(),
+    yes: false,
+    allowPlaintext: false,
+  };
 
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
@@ -55,6 +66,8 @@ export function parseOptions(args: string[], command: Command): CliOptions {
 
     if (flag === "--yes" && command === "forget") {
       options.yes = true;
+    } else if (flag === "--allow-plaintext" && command === "start") {
+      options.allowPlaintext = true;
     } else if (value && !value.startsWith("--") && flag === "--state-dir") {
       options.stateDirectory = value;
       index += 1;

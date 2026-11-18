@@ -3,6 +3,8 @@ import { equalBytes, utf8 } from "./encoding";
 import { chatKeyBindingStatement, toolApprovalStatement, toolGrantStatement } from "./statements";
 import { sign, signingPublicKeyFromSeed, verify } from "./signatures";
 
+const receipt = { chatE2eeId: "object", scope: "shared" as const, creatorId: "creator" };
+
 const approval = {
   workspaceId: "ws",
   chatId: "chat",
@@ -12,10 +14,11 @@ const approval = {
   toolCallId: "call",
   input: utf8('{"command":"ls"}'),
   approvedAt: 1_700_000_000_000,
+  receipt: { ...receipt, keyId: "epoch-key" },
 };
 
 describe("tool authorization statements", () => {
-  it("binds an approval to every scope field, the input and the approval time", () => {
+  it("binds an approval to every scope field, the input, the approval time and the receipt key", () => {
     const base = toolApprovalStatement(approval);
     const variants = [
       { ...approval, chatId: "other" },
@@ -25,13 +28,18 @@ describe("tool authorization statements", () => {
       { ...approval, toolCallId: "other" },
       { ...approval, input: utf8('{"command":"rm"}') },
       { ...approval, approvedAt: approval.approvedAt + 1 },
+      { ...approval, receipt: null },
+      { ...approval, receipt: { ...approval.receipt, keyId: "other-key" } },
+      { ...approval, receipt: { ...approval.receipt, chatE2eeId: "other-object" } },
+      { ...approval, receipt: { ...approval.receipt, scope: "workspace" as const } },
+      { ...approval, receipt: { ...approval.receipt, creatorId: "other-creator" } },
     ];
     for (const variant of variants) {
       expect(equalBytes(toolApprovalStatement(variant), base)).toBe(false);
     }
   });
 
-  it("signs a grant's tools independent of order, and its issuance time", () => {
+  it("signs a grant's tools independent of order, its issuance time and its receipt audience", () => {
     const grant = {
       workspaceId: "ws",
       chatId: "chat",
@@ -39,6 +47,7 @@ describe("tool authorization statements", () => {
       directory: "/repo",
       tools: ["read", "bash"],
       issuedAt: 1,
+      receipt,
     };
     expect(
       equalBytes(
@@ -46,9 +55,14 @@ describe("tool authorization statements", () => {
         toolGrantStatement({ ...grant, tools: ["bash", "read"] }),
       ),
     ).toBe(true);
-    expect(
-      equalBytes(toolGrantStatement(grant), toolGrantStatement({ ...grant, issuedAt: 2 })),
-    ).toBe(false);
+    for (const variant of [
+      { ...grant, issuedAt: 2 },
+      { ...grant, receipt: null },
+      { ...grant, receipt: { ...receipt, creatorId: "other-creator" } },
+      { ...grant, receipt: { ...receipt, scope: "personal" as const } },
+    ]) {
+      expect(equalBytes(toolGrantStatement(grant), toolGrantStatement(variant))).toBe(false);
+    }
   });
 });
 

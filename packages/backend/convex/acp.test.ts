@@ -745,6 +745,20 @@ test("frames enforce exact retries, conflicts, continuity, stale epochs and cold
   ).rejects.toThrow("ACP_STALE_EPOCH");
 });
 
+test("a plaintext stream started before workspace keys refuses plaintext frames once keyed", async () => {
+  const f = await fixture();
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 });
+  await f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 1, frames: [frame] });
+  // The owner bootstraps workspace keys while the capsule-less stream is still open.
+  await f.t.run((ctx) => ctx.db.patch(f.workspace, { keyEpoch: 1 }));
+  const next = { ...frame, seqFrom: 2, seqTo: 2 };
+  await expect(
+    f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 1, frames: [next] }),
+  ).rejects.toThrow("ACP_PLAINTEXT_REFUSED");
+  expect(await f.t.run((ctx) => ctx.db.query("chat_frames").collect())).toHaveLength(1);
+});
+
 test("watch warms; cooling removes transient content after five minutes but retains metadata", async () => {
   const f = await fixture();
   vi.useFakeTimers();

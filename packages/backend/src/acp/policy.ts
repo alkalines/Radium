@@ -11,6 +11,8 @@ import {
   legacyPlaintextAllowed,
   readMigrationState,
 } from "../e2ee/migration-contract";
+import { chatKeyIsStale } from "../e2ee/chat-keys";
+import { touchChatMembers } from "../chatroom/members";
 import type {
   AcpCommandKind,
   AcpCommandPayload,
@@ -292,8 +294,16 @@ const STOP_REASON_FAILURES: Partial<Record<AcpStopReason, string>> = {
   refusal: "The model refused",
 };
 
-/** Bounds of a Worker-sealed title/error box addressed to the chat's current key epoch. */
-function requireChatBox(chat: Doc<"aisdk_chats">, value: { epoch: number; box: ArrayBuffer }) {
+/**
+ * Bounds of a Worker-sealed title/error box addressed to the chat's current key epoch. A stale
+ * epoch (revoked reader or rotated workspace key) is refused: the chat must rotate first.
+ */
+async function requireChatBox(
+  ctx: ReadCtx,
+  chat: Doc<"aisdk_chats">,
+  workspaceId: Id<"workspaces">,
+  value: { epoch: number; box: ArrayBuffer },
+) {
   if (
     !chat.e2eeId ||
     value.epoch !== chat.keyEpoch ||
@@ -301,6 +311,8 @@ function requireChatBox(chat: Doc<"aisdk_chats">, value: { epoch: number; box: A
     value.box.byteLength > ACP_SEALED_SHORT_BYTES
   )
     acpError("ACP_INVALID_SEALED");
+  const workspace = await ctx.db.get(workspaceId);
+  if (!workspace || (await chatKeyIsStale(ctx, chat, workspace))) acpError("ACP_INVALID_SEALED");
 }
 
 /** Mirror boundaries atomically; frame writes deliberately never call this policy. */
@@ -344,7 +356,7 @@ export async function applySessionPatch(
     updates.error = undefined;
     updates.sealedError = undefined;
   } else if (sealedError) {
-    requireChatBox(chat, sealedError);
+    await requireChatBox(ctx, chat, session.workspace, sealedError);
     updates.sealedError = sealedError;
     updates.error = ACP_SEALED_ERROR_TEXT;
   }
@@ -386,7 +398,7 @@ export async function applySessionPatch(
     if (normalized) chatPatch.title = normalized;
   }
   if (sealedTitle) {
-    requireChatBox(chat, sealedTitle);
+    await requireChatBox(ctx, chat, session.workspace, sealedTitle);
     if (!session.userTitled)
       Object.assign(chatPatch, { sealedTitle, title: undefined, emoji: undefined });
   }
@@ -475,6 +487,8 @@ export async function applySessionPatch(
   } else if (patch.status === "ended") chatPatch.activeStream = false;
   await ctx.db.patch(session._id, updates);
   if (Object.keys(chatPatch).length) await ctx.db.patch(chat._id, chatPatch);
+  if (chatPatch.lastInteractionAt !== undefined)
+    await touchChatMembers(ctx, chat._id, chatPatch.lastInteractionAt);
   if (turn && (patch.status === "idle" || patch.status === "failed")) {
     // Usage is an operational estimate and must not reject the turn's state transition either;
     // the Worker would otherwise retry the whole patch.

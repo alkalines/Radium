@@ -20,7 +20,7 @@ import {
 import { keyManager } from "./key-manager";
 import { buffer, bytes, cryptoClient, currentUserId, newKeyId } from "./runtime";
 import { trust, workerPinKey } from "./trust-store";
-import { publishRosterWorkers, verifyWorkspaceState } from "./workspace-keys";
+import { keyedWorkspaceClaim, publishRosterWorkers, verifyWorkspaceState } from "./workspace-keys";
 
 /** A Worker's public E2EE keys after verification. */
 export type TrustedWorkerKeys = {
@@ -189,14 +189,15 @@ const encodeCode = (prefix: string, value: unknown) =>
 /**
  * Creates a Worker setup code. Keyless workspaces get the server's `radium-worker-v1.` code; keyed
  * ones a `radium-worker-v2.` code that adds the pairing secret and owner pin, built here so the
- * secret never reaches the backend. The returned code is secret: keep it out of logs.
+ * secret never reaches the backend. A workspace this device verified as keyed never gets a v1 code
+ * (`KeylessDowngradeError`). The returned code is secret: keep it out of logs.
  */
 export async function createWorkerSetupCode(
   workspaceId: Id<"workspaces">,
   name: string,
 ): Promise<{ code: string; enrollmentId: string; expiresAt: number }> {
-  const keyed = (await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId }))
-    .keyEpoch;
+  const state = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+  const keyed = keyedWorkspaceClaim(workspaceId, state.keyEpoch != null);
   const enrollment = await cryptoClient().action(api.workers.createEnrollment, {
     workspace: workspaceId,
     name,

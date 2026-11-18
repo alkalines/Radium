@@ -156,31 +156,43 @@ export class AcpHost {
   private gatewayKey: GatewayKey | null = null;
   private gatewayReconciliation?: Promise<void>;
   private gatewayDirty = false;
-  /** Signed-mode verification; null for an unpaired Worker, which keeps the plaintext path. */
+  /** Signed-mode verification; null only for an unpaired Worker run with `--allow-plaintext`. */
   private readonly signed: AcpSigned | null;
   /** Warm chats refused a moment ago (unverifiable binding or chat key), skipped until then. */
   private readonly warmCooldown = new Map<string, number>();
-  /** Enabled agents whose definition carries no verifiable owner authorization; they get no slot. */
-  private unauthorizedAgents = new Set<string>();
+  /**
+   * Enabled agents without a slot because of their authorization: `unauthorized` when verification
+   * definitively failed, `pending` while trust or transport failures keep it from completing.
+   */
+  private unverifiedAgents = new Map<string, "unauthorized" | "pending">();
+  /** The definition set whose verification hit a transient failure; re-verified on `retry`. */
+  private definitionsRetry?: {
+    revision: number;
+    definitions: AcpAgentDefinition[];
+    pending: AcpAgentDefinition[];
+    checking: boolean;
+  };
   /** Answered interactions being verified right now, by row ID. */
   private readonly answering = new Set<string>();
 
   /**
-   * @param trust Present when the Worker is paired: every command, answer, binding and chat key
-   *   is then verified against it and all content written to Convex is sealed. `null` keeps the
-   *   legacy plaintext behavior (keyless workspace).
+   * @param mode The paired Worker's trust anchor: every command, answer, binding and chat key
+   *   is then verified against it and all content written to Convex is sealed. `"plaintext"`
+   *   keeps the legacy plaintext behavior (keyless workspace) and is passed only when the
+   *   operator explicitly allowed it (`start --allow-plaintext`) on an unpaired Worker.
    */
   constructor(
     private readonly transport: AcpTransport,
-    private readonly options: AcpHostOptions = {},
-    trust: WorkerTrust | null = null,
+    private readonly options: AcpHostOptions,
+    mode: WorkerTrust | "plaintext",
   ) {
-    this.signed = trust ? new AcpSigned(trust, transport) : null;
+    this.signed = mode === "plaintext" ? null : new AcpSigned(mode, transport);
     this.retry = setInterval(() => {
       void this.connect();
       void this.pump();
       void this.syncWarm();
       if (this.gatewayDirty) void this.reconcileGateway();
+      void this.retryDefinitions();
     }, 1_000);
     this.idle = setInterval(() => {
       void this.stopIdleAgents();
@@ -195,9 +207,11 @@ export class AcpHost {
     if (value) {
       if (reconnected && this.initialized)
         void this.applyDefinitions(
-          [...this.slots.values()]
-            .filter((slot) => slot.profile === "native")
-            .map((slot) => slot.definition),
+          // Definitions still awaiting verification have no slot; keep them in the set.
+          this.definitionsRetry?.definitions ??
+            [...this.slots.values()]
+              .filter((slot) => slot.profile === "native")
+              .map((slot) => slot.definition),
         );
       void this.connect();
       void this.pump();
@@ -365,28 +379,68 @@ export class AcpHost {
     return secret;
   }
 
+  /**
+   * Verify one definition for a paired Worker. A trust or transport failure is `pending` (retried),
+   * never a refusal; only a definitive verification failure is `unauthorized`.
+   */
+  private async checkDefinition(
+    definition: AcpAgentDefinition,
+  ): Promise<"ok" | "unauthorized" | "pending"> {
+    try {
+      return (await this.signed!.verifyDefinition(definition)) ? "ok" : "unauthorized";
+    } catch {
+      return "pending";
+    }
+  }
+
+  /** Re-verify definitions a transient failure left pending; reapply once any of them resolves. */
+  private async retryDefinitions(): Promise<void> {
+    const retry = this.definitionsRetry;
+    if (!retry || retry.checking || !this.available || this.stopped) return;
+    retry.checking = true;
+    try {
+      const outcomes = await Promise.all(
+        retry.pending.map((definition) => this.checkDefinition(definition)),
+      );
+      if (this.definitionsRetry !== retry || retry.revision !== this.definitionsRevision) return;
+      // Reapplying re-probes every agent, so wait until verification can actually progress.
+      if (outcomes.some((outcome) => outcome !== "pending"))
+        await this.applyDefinitions(retry.definitions);
+    } finally {
+      retry.checking = false;
+    }
+  }
+
   private async applyDefinitions(definitions: AcpAgentDefinition[]): Promise<void> {
     const revision = ++this.definitionsRevision;
     this.definitionsReady = false;
+    this.definitionsRetry = undefined;
     const counts = new Map<string, number>();
     for (const definition of definitions)
       counts.set(definition.agentId, (counts.get(definition.agentId) ?? 0) + 1);
     // Definitions are executable code: authenticate before even probing the binary.
     const checks = this.signed
-      ? await Promise.all(definitions.map((definition) =>
-          counts.get(definition.agentId) === 1 && this.signed!.verifyDefinition(definition).catch(() => false),
-        ))
-      : definitions.map(() => true);
+      ? await Promise.all(
+          definitions.map((definition) =>
+            counts.get(definition.agentId) === 1
+              ? this.checkDefinition(definition)
+              : ("unauthorized" as const),
+          ),
+        )
+      : definitions.map(() => "ok" as const);
     if (revision !== this.definitionsRevision || this.stopped) return;
-    this.unauthorizedAgents = new Set(
-      definitions
-        .filter((definition, index) => definition.enabled && !checks[index])
-        .map((definition) => definition.agentId),
+    const pending = definitions.filter((_, index) => checks[index] === "pending");
+    if (pending.length) this.definitionsRetry = { revision, definitions, pending, checking: false };
+    this.unverifiedAgents = new Map(
+      definitions.flatMap((definition, index) => {
+        const check = checks[index]!;
+        return definition.enabled && check !== "ok" ? [[definition.agentId, check] as const] : [];
+      }),
     );
     const previous = new Map(this.slots);
     this.slots.clear();
     for (const [index, definition] of definitions.entries()) {
-      if (!checks[index]) continue;
+      if (checks[index] !== "ok") continue;
       if (!definition.enabled) continue;
       for (const profile of ["native", "gateway"] as const) {
         if (profile === "gateway" && !acpGatewayProfileOffered(definition)) continue;
@@ -681,7 +735,10 @@ export class AcpHost {
     }
   }
 
-  /** The plaintext path: an unpaired Worker in a keyless workspace executes the claimed payload. */
+  /**
+   * The plaintext path: an unpaired Worker run with `--allow-plaintext` (keyless workspace)
+   * executes the claimed payload. A paired Worker never reaches it.
+   */
   private legacyCommand(claim: AcpClaim): AuthorizedCommand {
     if (!claim.payload) throw new Error("Command has no payload");
     return { payload: claim.payload, binding: null, sessionId: claim.session?.sessionId ?? null };
@@ -872,7 +929,12 @@ export class AcpHost {
 
   /** Why an agent has no slot; the text reaches the Session as its (sealed) error. */
   private missingAgent(agentId: string, profile: AcpProfile): Error {
-    if (this.unauthorizedAgents.has(agentId))
+    const unverified = this.unverifiedAgents.get(agentId);
+    if (unverified === "pending")
+      return new Error(
+        "This Worker cannot verify the agent's authorization right now (workspace roster or connection unavailable); it retries automatically.",
+      );
+    if (unverified === "unauthorized")
       return new Error(
         "This agent is not authorized for paired Workers. The workspace owner must review and save it in Agents.",
       );

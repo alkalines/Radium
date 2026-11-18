@@ -17,6 +17,7 @@ import {
   LABELS,
   buildAad,
   encryptionPublicKeyFromSeed,
+  equalBytes,
   fingerprint,
   fromBase64Url,
   signingPublicKeyFromSeed,
@@ -24,7 +25,7 @@ import {
   type IdentityKeys,
 } from "radium-crypto";
 
-import { wipeAccount, type UnlockedAccount } from "./account-keys";
+import { copyAccount, wipeAccount, type UnlockedAccount } from "./account-keys";
 
 /** What the UI may know about this tab's keys. Never carries key material. */
 export type KeyStatus =
@@ -339,9 +340,20 @@ export function createKeyManager(deps: KeyManagerDeps): KeyManager {
       return;
     }
 
-    if (unlocked) wipeAccount(unlocked);
     const keyId = toBase64Url(keys.identity.keyId);
-    unlocked = { ...keys, userId, keyId, fingerprint: print, blob };
+    if (
+      unlocked?.userId === userId &&
+      unlocked.keyId === keyId &&
+      equalBytes(unlocked.amk, keys.amk)
+    ) {
+      // The same keys again (another tab unlocked or re-wrapped): a pending `useAmk` may still hold
+      // the current buffers, so keep them and wipe the duplicate.
+      wipeAccount(keys);
+      unlocked.blob = blob;
+    } else {
+      if (unlocked) wipeAccount(unlocked);
+      unlocked = { ...keys, userId, keyId, fingerprint: print, blob };
+    }
     lastActivity = deps.now();
     setStatus({ state: "unlocked", userId, keyId, fingerprint: print });
   }
@@ -542,18 +554,7 @@ export function createKeyManager(deps: KeyManagerDeps): KeyManager {
       attachedUserId = input.userId;
       const current = ++generation;
 
-      const keys: UnlockedAccount = {
-        amk: input.amk.slice(),
-        identity: {
-          ...input.identity,
-          keyId: input.identity.keyId.slice(),
-          encryption: {
-            ...input.identity.encryption,
-            seed: input.identity.encryption.seed.slice(),
-          },
-          signing: { ...input.identity.signing, seed: input.identity.signing.seed.slice() },
-        },
-      };
+      const keys = copyAccount({ amk: input.amk, identity: input.identity });
 
       // A fresh device key per unlock: blobs from before the last lock never open again.
       const wrappingKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [

@@ -216,7 +216,7 @@ describe("Worker CLI credential lifecycle", () => {
         client: {} as never,
         diagnostics,
       });
-      const running = runCli(["start"]);
+      const running = runCli(["start", "--allow-plaintext"]);
       const completion = fails
         ? expect(running).rejects.toThrow("close failed")
         : expect(running).resolves.toBeUndefined();
@@ -227,6 +227,23 @@ describe("Worker CLI credential lifecycle", () => {
       expect(serve).not.toHaveBeenCalled();
     },
   );
+
+  it("refuses to start an unpaired Worker without --allow-plaintext and points to pair", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const state = {
+      setup: { backendUrl: "https://backend.example" },
+      identity: { workerId: "worker-id" },
+    };
+    vi.mocked(readWorkerState).mockResolvedValue(state as never);
+    vi.mocked(recoverPendingIdentity).mockResolvedValue(state as never);
+    vi.mocked(connectWorkerControl).mockClear();
+    vi.mocked(consumeEditTasks).mockClear();
+    await expect(runCli(["start"])).rejects.toThrow("radium-worker pair");
+    expect(connectWorkerControl).not.toHaveBeenCalled();
+    expect(consumeEditTasks).not.toHaveBeenCalled();
+    // The opt-in belongs to start only.
+    await expect(runCli(["status", "--allow-plaintext"])).rejects.toThrow("Unsupported");
+  });
 
   it("consumes backend-directory tasks on start and drains tasks before closing control", async () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -244,9 +261,10 @@ describe("Worker CLI credential lifecycle", () => {
       onStatus({ status: "connected", worker: {} as never });
       return { client: {} as never, close, diagnostics };
     });
-    const running = runCli(["start"]);
+    const running = runCli(["start", "--allow-plaintext"]);
     await vi.waitFor(() => expect(consumeEditTasks).toHaveBeenCalled());
     expect(vi.mocked(consumeEditTasks).mock.calls[0]?.[1]).toBeInstanceOf(WorkerDirectoryEdits);
+    expect(vi.mocked(consumeEditTasks).mock.calls[0]?.[3]).toBe("plaintext");
     expect(tasks.setAvailable).toHaveBeenLastCalledWith(true);
     const presence = vi.mocked(startPresenceReporter).mock.results.at(-1)!.value;
     expect(vi.mocked(startPresenceReporter).mock.calls.at(-1)?.[1]).toBe("/tmp/radium");
@@ -274,7 +292,7 @@ describe("Worker CLI credential lifecycle", () => {
       return { client: {} as never, close: vi.fn().mockResolvedValue(undefined), diagnostics };
     });
 
-    const running = runCli(["start"]);
+    const running = runCli(["start", "--allow-plaintext"]);
     await vi.waitFor(() => expect(consumeEditTasks).toHaveBeenCalled());
     reportStatus?.({ status: "disconnected", reason: "token_http_failed" });
     reportStatus?.({ status: "disconnected", reason: "token_http_failed" });
@@ -314,7 +332,7 @@ describe("Worker CLI credential lifecycle", () => {
         close: vi.fn().mockResolvedValue(undefined),
       };
     });
-    const running = runCli(["start"]);
+    const running = runCli(["start", "--allow-plaintext"]);
     await vi.waitFor(() => expect(output).toHaveBeenCalledWith("Worker control connecting."));
     await vi.advanceTimersByTimeAsync(15_000);
     expect(output.mock.calls.flat().join("\n")).toContain(

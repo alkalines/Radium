@@ -27,6 +27,7 @@ import {
   type AcpSessionProof,
   type AcpSignedBinding,
 } from "backend/src/acp/contract";
+import { WORKER_APPROVAL_CLOCK_SKEW_MS } from "backend/src/worker/task-contract";
 import { WorkerTrustError, type WorkerTrust } from "../e2ee/trust.js";
 import { verifyChatKey } from "../e2ee/chat-key.js";
 import type { AcpFrameSealer } from "./relay.js";
@@ -251,11 +252,17 @@ export class AcpSigned {
   /**
    * Authorize every launch field before probing or spawning an agent. Monotonic owner-issued
    * timestamps and a per-timestamp statement pin prevent rollback and same-version equivocation.
+   * `false` is a definitive refusal (bad or non-owner signature, rollback, equivocation, issue time
+   * too far in the future).
+   * @throws WorkerTrustError, transport or state errors when trust cannot be established right now;
+   *   callers retry instead of refusing the agent.
    */
   public async verifyDefinition(definition: AcpAgentDefinition): Promise<boolean> {
     const authorization = definition.authorization;
     if (!authorization || !Number.isSafeInteger(authorization.issuedAt) || authorization.issuedAt <= 0)
       return false;
+    // A far-future issue time must never advance the high-water and lock out later definitions.
+    if (authorization.issuedAt > Date.now() + WORKER_APPROVAL_CLOCK_SKEW_MS) return false;
     const message = acpAgentDefinitionStatement({
       workspaceId: this.workspace,
       issuedAt: authorization.issuedAt,
@@ -482,6 +489,7 @@ export class AcpSigned {
         payload.sessionId === target.sessionId &&
         payload.agentId === target.agentId &&
         payload.profile === target.profile &&
+        payload.cwd === binding.cwd &&
         inAudience(binding, signer.userId) &&
         (await this.sessionProofValid(binding, target.sessionId, target.sessionProof));
       if (!bound) throw new AcpRefusal("ACP_FORBIDDEN");

@@ -23,8 +23,10 @@ same short retention; they are not durable conversation history.
 active assigned Worker. Optional `chatId` requires current chat visibility and
 matching workspace; owners cannot attach another user's personal chat. Optional
 `toolCallId` requires a chat. Creation is internal-only, with no browser dispatch
-endpoint or executable payload on this legacy metadata endpoint. The edit-only
-`dispatchEdit` endpoint described below is separate.
+endpoint or executable payload on this legacy metadata endpoint. There is no public
+dispatch endpoint: Chatroom tool calls are dispatched by backend actions through the
+internal `dispatchSealedChatTask` (paired Workers) or `dispatchChatEdit` (an unpaired
+Worker in a workspace without keys), described below.
 
 `api.worker_tasks.assigned({ status })` returns up to **four** matching assignments
 for the authenticated Worker, bounding payload reads. Optional `operation: "edit"`
@@ -205,10 +207,12 @@ backend checks owner, chat, selected Worker/directory/tool, stage shape and that
 the action reports a fixed "already executed" outcome. The request plaintext
 (`WorkerSealedTaskRequest` in `src/worker/task-contract.ts`) carries the user's
 authorization: a per-call approval signature (`toolApprovalStatement` over the exact
-input JSON and `approvedAt`) for Edit/Create/Bash, or the chat's standing grant
-(`toolGrantStatement`) for Read. The Worker (`packages/worker/src/tasks.ts`) opens it,
+input JSON, `approvedAt` and the receipt's chat key epoch) for Edit/Create/Bash, or the
+chat's standing grant (`toolGrantStatement`, binding the receipt audience) for Read. The
+Worker (`packages/worker/src/tasks.ts`) opens it,
 checks the signer is the pinned owner, that workspace/chat/Worker/directory/tool/call
-ID match, that the grant is not older than the newest it has seen for the chat, and that
+ID and the receipt recipient match the signed statement, that the grant is not older than
+the newest it has seen for the chat, at most 7 days old and not from the future, and that
 an approval is less than 24 hours old and unused (executed approvals are remembered
 only for that window). It derives the operation from the signed input alone; apply
 uses only a preview this process staged for the same signed call. It answers with

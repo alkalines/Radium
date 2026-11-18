@@ -433,11 +433,15 @@ export const startEpoch = workerMutation({
     if (keyed !== (args.capsule !== undefined)) acpError("ACP_E2EE_MODE");
     if (args.capsule) {
       const chat = await ctx.db.get(args.chat);
+      const workspace = await ctx.db.get(session.workspace);
       if (
         !chat?.keyEpoch ||
+        !workspace ||
         args.capsule.chatEpoch !== chat.keyEpoch ||
         args.capsule.capsule.byteLength !== CAPSULE_BYTES ||
-        args.capsule.signature.byteLength !== 64
+        args.capsule.signature.byteLength !== 64 ||
+        // A stale epoch (revoked reader or rotated workspace key) must rotate before new frames.
+        (await chatKeyIsStale(ctx, chat, workspace))
       )
         acpError("ACP_INVALID_SEALED");
     }
@@ -480,7 +484,8 @@ export const startEpoch = workerMutation({
 /**
  * Atomic ordered append with exact retries; only per-stream counters are patched. Frames of a
  * keyed workspace are sealed bytes (bounded by ciphertext length); a retry must resend the same
- * bytes, since the Worker seals each frame once.
+ * bytes, since the Worker seals each frame once. Plaintext frames are refused on a sealed stream
+ * and, once the workspace has keys, on a stream started before them.
  */
 export const appendFrames = workerMutation({
   args: { chat: v.id("aisdk_chats"), epoch: v.number(), frames: v.array(acpFrameInputValidator) },
@@ -502,7 +507,10 @@ export const appendFrames = workerMutation({
     for (const frame of args.frames) {
       let size: number;
       if (typeof frame.payload === "string") {
-        if (keyed) acpError("ACP_PLAINTEXT_REFUSED");
+        // A stream started before the workspace gained keys has no capsule; it must not keep
+        // accepting plaintext from then on.
+        if (keyed || (await workspaceHasKeys(ctx, session.workspace)))
+          acpError("ACP_PLAINTEXT_REFUSED");
         await assertLegacyPlaintextAllowed(ctx);
         size = utf8Bytes(frame.payload);
         if (size > ACP_FRAME_BYTES) acpError("ACP_FRAME_TOO_LARGE");

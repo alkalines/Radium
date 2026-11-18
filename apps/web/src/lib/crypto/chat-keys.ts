@@ -674,7 +674,10 @@ async function rotateChatEpoch(input: {
     e2eeId: input.e2eeId,
     workspaceId: input.workspaceId,
     epoch: input.epoch,
+    keyId: next.wire.keyId,
     publicKey: next.publicKey,
+    scope: input.policy.scope,
+    creatorId: input.policy.creatorId,
   };
 }
 
@@ -896,12 +899,16 @@ async function signOwnEpoch(
  * Produces the public key new content is encrypted to, starting a fresh bound epoch whenever the
  * current one is stale, unbound (other than this device's own new chat), signed by a retired or
  * unauthorized identity, or bound to members proven to have left. A binding that fails throws.
+ * `scope` and `creatorId` are the audience that epoch's binding proves.
  */
 export async function writableChatKey(chatId: Id<"aisdk_chats">): Promise<{
   e2eeId: string;
   workspaceId: Id<"workspaces">;
   epoch: number;
+  keyId: string;
   publicKey: Uint8Array;
+  scope: ChatScope;
+  creatorId: string;
 }> {
   const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
   if (!state.e2eeId || !state.keyEpoch) throw new CryptoError("BAD_INPUT", "Chat has no keys");
@@ -937,7 +944,10 @@ export async function writableChatKey(chatId: Id<"aisdk_chats">): Promise<{
     e2eeId: state.e2eeId,
     workspaceId: state.workspace,
     epoch: state.keyEpoch,
+    keyId: row.keyId,
     publicKey: bytes(row.publicKey),
+    scope: state.scope,
+    creatorId: state.creatorId,
   };
 }
 

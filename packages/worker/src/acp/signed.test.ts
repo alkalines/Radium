@@ -35,7 +35,7 @@ import type {
   AcpOp,
   AcpSignedBinding,
 } from "backend/src/acp/contract";
-import type { WorkerTrust } from "../e2ee/trust.js";
+import { WorkerTrustError, type WorkerTrust } from "../e2ee/trust.js";
 import { AcpHost } from "./host.js";
 import { AcpSigned, arrayBuffer } from "./signed.js";
 import type {
@@ -596,6 +596,52 @@ describe("paired ACP host refuses what the backend could have authored", () => {
     expect(await verifier.verifyDefinition(approved)).toBe(false);
   });
 
+  it("refuses a far-future launch definition without poisoning the high-water", async () => {
+    const { env, transport } = await setup();
+    const verifier = new AcpSigned(fakeTrust(env), transport);
+    const authorize = async (issuedAt: number) => {
+      const value = definition();
+      return {
+        ...value,
+        authorization: {
+          issuedAt,
+          signerKeyId: env.owner.keyId,
+          signature: arrayBuffer(await sign(env.owner.sign.seed,
+            acpAgentDefinitionStatement({ workspaceId: WORKSPACE, issuedAt, definition: value }))),
+        },
+      };
+    };
+    expect(await verifier.verifyDefinition(await authorize(Date.now() + 60 * 60_000))).toBe(false);
+    expect(await verifier.verifyDefinition(await authorize(Date.now()))).toBe(true);
+  });
+
+  it("retries a launch definition after a trust failure instead of disabling the agent", async () => {
+    const { env, transport } = await setup();
+    const trust = fakeTrust(env);
+    const verifyUser = trust.verifyUser.bind(trust);
+    let rosterAvailable = false;
+    trust.verifyUser = async (input) => {
+      if (!rosterAvailable) throw new WorkerTrustError("invalid");
+      return verifyUser(input);
+    };
+    const issuedAt = Date.now();
+    for (const value of transport.definitions) {
+      value.authorization = {
+        issuedAt,
+        signerKeyId: env.owner.keyId,
+        signature: arrayBuffer(await sign(env.owner.sign.seed,
+          acpAgentDefinitionStatement({ workspaceId: WORKSPACE, issuedAt, definition: value }))),
+      };
+    }
+    const host = new AcpHost(transport, {}, trust);
+    hosts.push(host);
+    host.setAvailable(true);
+    await until(() => transport.reportCount > 0);
+    expect(transport.reports).toEqual([]);
+    rosterAvailable = true;
+    await until(() => transport.reports.some((report) => report.agentId === "scripted"));
+  });
+
   it("rechecks previously seen bindings after rollback and creator revocation", async () => {
     const env = await environment();
     const first = await signedBinding(env);
@@ -634,6 +680,45 @@ describe("paired ACP host refuses what the backend could have authored", () => {
     const claim = transport.claims.get(id)!;
     await new AcpSigned(trust, transport).verifyCommand(claim);
     await expect(new AcpSigned(trust, transport).verifyCommand(claim)).rejects.toThrow("ACP_FORBIDDEN");
+  });
+
+  it("refuses a close whose directory differs from the signed target", async () => {
+    const { env, transport } = await setup();
+    const trust = fakeTrust(env);
+    const sessionId = "session-1";
+    const target = {
+      chat: CHAT,
+      e2eeId: E2EE_ID,
+      creatorUserId: env.creator.userId,
+      agentId: "scripted",
+      profile: "native" as const,
+      cwd: tmpdir(),
+      sessionId,
+      binding: await signedBinding(env),
+      sessionProof: {
+        kind: "worker" as const,
+        signature: arrayBuffer(await trust.signObject({
+          table: "acp_sessions",
+          parent: CHAT,
+          record: sessionId,
+          field: "sessionId",
+          object: utf8("scripted"),
+        })),
+      },
+    };
+    const close = async (cwd: string) => {
+      const command = await signedCommand(env, {
+        kind: "close",
+        agentId: "scripted",
+        profile: "native",
+        sessionId,
+        cwd,
+      });
+      const claim = transport.claims.get(transport.addSigned(command, "close"))!;
+      return new AcpSigned(trust, transport).verifyCommand({ ...claim, target });
+    };
+    await expect(close("/elsewhere")).rejects.toThrow("ACP_FORBIDDEN");
+    await expect(close(tmpdir())).resolves.toMatchObject({ sessionId });
   });
 
   it("fails an unsigned command and executes nothing", async () => {

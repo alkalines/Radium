@@ -17,13 +17,14 @@ import { type WorkerPairing, WorkerProtocolError } from "../protocol.js";
 
 /**
  * Pairs an enrolled Worker (Keys.md "Workers"): generates a new X-Wing encryption key and Ed25519
- * signing key under a random key ID, saves the seeds and the owner pin from the code locally
- * before anything is published, then publishes the public keys with the Worker's self-signature
- * and the pairing-secret MAC through `workers.publishKeys`. The owner's browser checks the MAC and
- * certifies the Worker in the roster; until then the Worker refuses commands.
+ * signing key under a random key ID, publishes the public keys with the Worker's self-signature
+ * and the pairing-secret MAC through `workers.publishKeys`, and only then saves the seeds and the
+ * owner pin from the code locally. The owner's browser checks the MAC and certifies the Worker in
+ * the roster; until then the Worker refuses commands.
  *
- * A failed publish leaves the Worker locally paired but uncertified; pairing again with a new code
- * replaces the keys. The pairing secret is zeroed and never persisted.
+ * A refused publish leaves the previous keys (or unpaired state) untouched. A local save that fails
+ * after a successful publish leaves the previous keys in the state; pairing again with a new code
+ * replaces the published ones. The pairing secret is zeroed and never persisted.
  */
 export async function pairWorker(
   stateDirectory: string,
@@ -53,22 +54,7 @@ export async function pairWorker(
   }
   const selfSignature = await sign(signing.seed, statement);
 
-  const paired = await saveWorkerE2ee(
-    stateDirectory,
-    state,
-    {
-      keyId,
-      suite: 1,
-      encryptionPublicKey: toBase64Url(encryption.publicKey),
-      signingPublicKey: toBase64Url(signing.publicKey),
-      owner: pairing.owner,
-      encryptionSeed: encryption.seed,
-      signingSeed: signing.seed,
-    },
-    options,
-  );
-
-  const { token } = await requestMachineToken(paired, options);
+  const { token } = await requestMachineToken(state, options);
   const client = new ConvexHttpClient(state.setup.convexUrl);
   client.setAuth(token);
   try {
@@ -82,12 +68,35 @@ export async function pairWorker(
       pairingMac: buffer(pairingMac),
     });
   } catch {
+    encryption.seed.fill(0);
+    signing.seed.fill(0);
     // Convex errors could echo arguments; report a fixed reason only.
     throw new WorkerProtocolError(
       "The backend refused this Worker's keys (expired or already used pairing code?). Create a new pairing code and run `pair`.",
     );
   }
-  return paired;
+
+  try {
+    return await saveWorkerE2ee(
+      stateDirectory,
+      state,
+      {
+        keyId,
+        suite: 1,
+        encryptionPublicKey: toBase64Url(encryption.publicKey),
+        signingPublicKey: toBase64Url(signing.publicKey),
+        owner: pairing.owner,
+        encryptionSeed: encryption.seed,
+        signingSeed: signing.seed,
+      },
+      options,
+    );
+  } catch (error) {
+    const reason = error instanceof WorkerProtocolError ? `${error.message}. ` : "";
+    throw new WorkerProtocolError(
+      `${reason}The new keys were published but could not be saved locally. Create a new pairing code and run \`pair\` again.`,
+    );
+  }
 }
 
 function buffer(bytes: Uint8Array): ArrayBuffer {

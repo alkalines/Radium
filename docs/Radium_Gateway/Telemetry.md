@@ -86,11 +86,11 @@ param key diffs.
    request row, in idempotent batches sized under Convex transaction limits.
 3. Every routing attempt (provider, credential, model, timing, outcome, status)
    is recorded. The committed output is assembled from the stream or JSON body.
-4. After the response finishes, `finishRequest` inserts the request row once per
+4. Once the output is complete (before the JSON response is returned or the stream closes), `finishRequest` inserts the request row once per
    `(workspace, requestId)`, computes lineage and changes, links the
    `chat_completions` usage record, and schedules metadata export. Explicit content destinations are sent from the active capture's memory, never scheduler arguments.
 
-Capture failures log only fixed messages and never fail the client response. Content export is best-effort in the completion path; there is no durable plaintext replay.
+Capture failures log only fixed messages and never fail the client response. Content export is best-effort in the completion path: the response (or stream close) waits at most one second for it after the request row is written, and a slower destination may be cut off when the action ends; there is no durable plaintext replay.
 Concurrent ingestion is safe: Convex mutations are serializable, so two requests
 inserting the same hash cannot both succeed; the loser re-runs and reuses the row.
 
@@ -122,7 +122,7 @@ request, child node, or toolset still references it, then walks up the tree.
 workspace, `otlp` (OTLP/HTTP JSON to `<endpoint>/v1/traces`) or `webhook` (same
 payload to the endpoint). New destinations default to privacy mode (metadata only), with session-stable sampling and API-key include/exclude filters (exclude wins). Header values are stored in Secret Store and never returned.
 
-Scheduled delivery is metadata-only and cannot open stored ciphertext. Turning privacy mode off explicitly authorizes plaintext content delivery from the capturing request's memory after the response completes, subject to input/output recording settings and private-chat visibility. A crash can lose content delivery; it cannot be replayed later from storage. The destination is a plaintext recipient by owner choice.
+Scheduled delivery is metadata-only and cannot open stored ciphertext. Turning privacy mode off explicitly authorizes plaintext content delivery from the capturing request's memory once the response output is complete, subject to input/output recording settings and private-chat visibility. The response waits at most one second for it (`CONTENT_EXPORT_WAIT_MS` in `src/telemetry/capture.ts`); a crash or a slower destination can lose content delivery, and it cannot be replayed later from storage. The destination is a plaintext recipient by owner choice.
 
 Spans use the OpenTelemetry GenAI semantic conventions
 (`gen_ai.request.*`, `gen_ai.usage.*`, `gen_ai.conversation.id`,

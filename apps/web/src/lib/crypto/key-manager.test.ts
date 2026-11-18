@@ -218,6 +218,36 @@ describe("key manager", () => {
     expect(profile.devices.has(USER)).toBe(false);
   });
 
+  test("a same-key blob from another tab keeps the buffers a pending useAmk holds", async () => {
+    const keys = await newKeys();
+    const first = profile.openTab();
+    const second = profile.openTab();
+    await first.manager.attachSession({ id: USER }, true);
+    await second.manager.attachSession({ id: USER }, true);
+    const unlockedInSecond = reachState(second.manager, "unlocked");
+    await first.manager.unlock({ userId: USER, ...keys });
+    await unlockedInSecond;
+
+    // A password change in the second tab holds the AMK across its OPAQUE round trip.
+    const gate = Promise.withResolvers<void>();
+    const pending = second.manager.useAmk(async (amk, identity) => {
+      await gate.promise;
+      return { amk: amk.slice(), signingSeed: identity.signing.seed.slice() };
+    });
+    // Meanwhile the first tab re-wraps the same keys and broadcasts the new blob.
+    const committed = Promise.withResolvers<void>();
+    const unsubscribe = second.manager.subscribe(() => committed.resolve());
+    await first.manager.setDevicePolicy(USER, { requirePassword: false, autoLockMinutes: 30 });
+    await committed.promise;
+    unsubscribe();
+
+    gate.resolve();
+    const seen = await pending;
+    expect(equalBytes(seen.amk, keys.amk)).toBe(true);
+    expect(equalBytes(seen.signingSeed, keys.identity.signing.seed)).toBe(true);
+    expect(equalBytes(await readAmk(second.manager), keys.amk)).toBe(true);
+  });
+
   test("a stale restored blob is discarded after the auto-lock time", async () => {
     const keys = await newKeys();
     const tab = profile.openTab();

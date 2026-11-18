@@ -128,6 +128,15 @@ describe("signing API", () => {
     expect(await verify(new Uint8Array(32).fill(0xff), utf8("m"), signature)).toBe(false);
   });
 
+  it("rejects small-order public keys on every backend", async () => {
+    // The identity point (y = 1) with R = identity and S = 0 satisfies [S]B = R + [k]A for any message.
+    const identity = new Uint8Array(32);
+    identity[0] = 1;
+    const forged = new Uint8Array(64);
+    forged[0] = 1;
+    expect(await verify(identity, utf8("any message"), forged)).toBe(false);
+  });
+
   it("puts the label first and length-prefixes every part", () => {
     expect(signingMessage("L", Uint8Array.of(7))).toEqual(
       Uint8Array.of(0, 0, 0, 1, 0x4c, 0, 0, 0, 1, 7),

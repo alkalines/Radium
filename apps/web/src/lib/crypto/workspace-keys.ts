@@ -92,6 +92,33 @@ async function requireTrust(identity: PublicIdentity) {
     await requestIdentityTrust(identity, state);
   }
 }
+/** Device marker holding the newest roster version this device verified for a workspace. */
+const rosterMarker = (workspaceId: string) => `radium.e2ee.roster.v1:${workspaceId}`;
+/**
+ * Whether this device has verified an owner-signed roster for the workspace. Workspace keys are never
+ * removed, so such a workspace stays keyed whatever the server later reports.
+ */
+export function workspaceKnownKeyed(workspaceId: string): boolean {
+  return highWater(rosterMarker(workspaceId)) > 0;
+}
+/** The server reported a workspace keyless that this device verified as keyed. */
+export class KeylessDowngradeError extends Error {
+  constructor() {
+    super(
+      "The server reports this workspace as unencrypted, but this device verified its encryption keys. Nothing was sent.",
+    );
+    this.name = "KeylessDowngradeError";
+  }
+}
+/**
+ * Resolves the server's keyed/keyless claim for a plaintext decision: `serverKeyed`, unless the
+ * server claims keyless for a workspace this device knows is keyed, which throws
+ * `KeylessDowngradeError` so the caller sends nothing in plaintext.
+ */
+export function keyedWorkspaceClaim(workspaceId: string, serverKeyed: boolean): boolean {
+  if (!serverKeyed && workspaceKnownKeyed(workspaceId)) throw new KeylessDowngradeError();
+  return serverKeyed;
+}
 /** Loads the current roster, requiring an explicitly pinned owner and checking every epoch hash. */
 export function verifyWorkspaceState(workspaceId: Id<"workspaces">): Promise<VerifiedState> {
   const pending = stateLoads.get(workspaceId);
@@ -132,7 +159,7 @@ async function verifyState(workspaceId: Id<"workspaces">, state: KeyState): Prom
   if (!owner || !state.roster || !state.keyEpoch)
     throw new CryptoError("DECRYPT_FAILED", "Workspace roster missing");
   await requireTrust(owner);
-  const marker = `radium.e2ee.roster.v1:${workspaceId}`;
+  const marker = rosterMarker(workspaceId);
   let roster = state.roster;
   if (roster.signerKeyId !== owner.keyId && state.ownerId === currentUserId()) {
     const historical = (await fetchHistoricalIdentities([roster.signerKeyId])).get(

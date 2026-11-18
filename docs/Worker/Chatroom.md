@@ -30,7 +30,8 @@ it does not establish that the process is online. The terminal must report
 4. Edit/Create/Bash return a Chatroom approval request before any task dispatch.
    For a paired Worker the browser signs the approval with the owner's identity key
    (`toolApprovalStatement` over the exact input JSON it showed, chat, Worker,
-   directory, tool, call ID and `approvedAt`; `components/session/worker-authorization.ts`).
+   directory, tool, call ID, `approvedAt` and the chat key epoch the receipt must be sealed
+   to; `components/session/worker-authorization.ts`).
    Direct calls send it in the next chat request's `approvals`; Code Mode sends only the
    signature with its answer, and the action pairs it with the input text it presented
    (`workerCodeModeInteractions`). The AI SDK approval HMAC (key HKDF-derived from
@@ -39,9 +40,15 @@ it does not establish that the process is online. The terminal must report
 5. Read needs no per-call approval but runs on a paired Worker only under the owner's
    standing grant (`toolGrantStatement`). This delegates reads within the signed directory
    to the Chatroom agent without further user presence, including while the browser is closed.
-   The grant has no expiry; the Worker remembers the newest valid `issuedAt` it has observed
-   and refuses older grants. A relay can withhold a newer grant, so disabling Read or changing
-   the selection does not by itself revoke a captured older grant on a disconnected Worker.
+   The browser signs a grant only after the owner confirms that exact Worker, directory and
+   tools on this device (an "Allow" prompt naming the directory; recorded locally), and
+   re-signs only that confirmed selection. Picking another Worker clears the confirmation. A
+   grant is accepted for 7 days after `issuedAt` (`WORKER_GRANT_TTL_MS`); the browser renews the
+   approved selection when the chat is open before then. The Worker remembers the newest valid
+   `issuedAt` it has observed, refuses older grants and refuses an `issuedAt` more than five
+   minutes in its future. A relay can withhold a newer grant, so disabling Read or changing
+   the selection does not by itself revoke a captured older grant on a disconnected Worker
+   until that grant expires.
    Without a grant, Read returns `WORKER_GRANT_MISSING` without dispatch. File paths and
    symlinks are confined by the native Worker, but the selected directory is not an OS sandbox.
 6. A paired Worker (or any encrypted chat) gets only sealed tasks: the action seals each
@@ -49,7 +56,8 @@ it does not establish that the process is online. The terminal must report
    an approval for 24 hours and once, derives the operation from the signed input only, and
    returns the result under the request key plus a receipt sealed to the chat key. See
    [sealed tasks](Tasks.md#sealed-tasks-paired-workers). Keyless workspaces with an unpaired
-   Worker keep the plaintext `worker_tasks.dispatchChatEdit` path, which rechecks visibility,
+   Worker that its operator started with `--allow-plaintext` keep the plaintext
+   `worker_tasks.dispatchChatEdit` path, which rechecks visibility,
    ownership, active Worker identity, exact configured directory and enabled tool at every
    stage. Write calls stage a preview and apply only that call's own preview. The native
    session ID is derived from chat and directory, so changing the root starts a separate

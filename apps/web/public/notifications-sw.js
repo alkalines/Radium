@@ -4946,6 +4946,12 @@ async function verify(publicKey, message, signature) {
   if (publicKey.length !== SIGNING_PUBLIC_KEY_BYTES || signature.length !== SIGNATURE_BYTES) {
     return false;
   }
+  try {
+    if (ed25519.Point.fromBytes(publicKey, false).isSmallOrder())
+      return false;
+  } catch {
+    return false;
+  }
   return (await getEd25519()).verify(publicKey, message, signature);
 }
 function signingMessage(label, ...parts) {
@@ -6072,6 +6078,18 @@ function wipeAccount(account) {
   account.identity.encryption.seed.fill(0);
   account.identity.signing.seed.fill(0);
 }
+function copyAccount(account) {
+  const { identity } = account;
+  return {
+    amk: account.amk.slice(),
+    identity: {
+      ...identity,
+      keyId: identity.keyId.slice(),
+      encryption: { ...identity.encryption, seed: identity.encryption.seed.slice() },
+      signing: { ...identity.signing, seed: identity.signing.seed.slice() }
+    }
+  };
+}
 
 // src/lib/crypto/key-manager.ts
 class KeysLockedError extends Error {
@@ -6200,10 +6218,15 @@ function createKeyManager(deps) {
       wipeAccount(keys);
       return;
     }
-    if (unlocked)
-      wipeAccount(unlocked);
     const keyId = toBase64Url(keys.identity.keyId);
-    unlocked = { ...keys, userId, keyId, fingerprint: print, blob };
+    if (unlocked?.userId === userId && unlocked.keyId === keyId && equalBytes(unlocked.amk, keys.amk)) {
+      wipeAccount(keys);
+      unlocked.blob = blob;
+    } else {
+      if (unlocked)
+        wipeAccount(unlocked);
+      unlocked = { ...keys, userId, keyId, fingerprint: print, blob };
+    }
     lastActivity = deps.now();
     setStatus({ state: "unlocked", userId, keyId, fingerprint: print });
   }
@@ -6377,18 +6400,7 @@ function createKeyManager(deps) {
       }
       attachedUserId = input.userId;
       const current = ++generation;
-      const keys = {
-        amk: input.amk.slice(),
-        identity: {
-          ...input.identity,
-          keyId: input.identity.keyId.slice(),
-          encryption: {
-            ...input.identity.encryption,
-            seed: input.identity.encryption.seed.slice()
-          },
-          signing: { ...input.identity.signing, seed: input.identity.signing.seed.slice() }
-        }
-      };
+      const keys = copyAccount({ amk: input.amk, identity: input.identity });
       const wrappingKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
         "encrypt",
         "decrypt"
@@ -7055,6 +7067,7 @@ async function requireTrust(identity) {
     await requestIdentityTrust(identity, state);
   }
 }
+var rosterMarker = (workspaceId) => `radium.e2ee.roster.v1:${workspaceId}`;
 function verifyWorkspaceState(workspaceId) {
   const pending = stateLoads.get(workspaceId);
   if (pending)
@@ -7091,7 +7104,7 @@ async function verifyState(workspaceId, state) {
   if (!owner || !state.roster || !state.keyEpoch)
     throw new CryptoError("DECRYPT_FAILED", "Workspace roster missing");
   await requireTrust(owner);
-  const marker = `radium.e2ee.roster.v1:${workspaceId}`;
+  const marker = rosterMarker(workspaceId);
   let roster = state.roster;
   if (roster.signerKeyId !== owner.keyId && state.ownerId === currentUserId()) {
     const historical = (await fetchHistoricalIdentities([roster.signerKeyId])).get(roster.signerKeyId);
