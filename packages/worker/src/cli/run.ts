@@ -73,7 +73,7 @@ export async function runCli(args: string[]): Promise<void> {
       pairWorker(options.stateDirectory, state, pairing.pairing),
     );
     console.info(
-      "Worker keys published. Open the Workers page while unlocked to certify this Worker, then restart it.",
+      "Worker keys published. Open the Workers page while unlocked to certify this Worker; a running Worker restarts with encryption on its own.",
     );
   } else if (command === "start") {
     await startWorker(options);

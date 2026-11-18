@@ -1306,6 +1306,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
             command,
             clientId,
           });
+        // The draft epoch was made before the chat ID existed; the Worker seals frames only to an
+        // epoch bound to this chat, so bind one before the first command reaches it.
+        let boundKey: ChatContentKey | undefined;
         if (keys) {
           rememberChatSeed(created, keys.e2eeId, keys.epoch, keys.seed);
           draftKeys.current = undefined;
@@ -1316,6 +1319,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
             members,
             version: 1,
           });
+          boundKey = await writableChatKey(created);
         }
         for (const option of acpDraft.config) {
           await setAcpConfig({
@@ -1341,20 +1345,14 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         }
         const prompt = [{ type: "text" as const, text }];
         const clientId = crypto.randomUUID();
-        if (keys) {
+        if (boundKey) {
           await promptAcp({
             chat: created,
             clientId,
             signed: await signCommand({ kind: "prompt", prompt }, clientId),
           });
           // Keyed Sessions never send the prompt to a title action: the fallback title is sealed here.
-          const fallbackTitle = {
-            workspaceId: settingsWorkspaceId,
-            e2eeId: keys.e2eeId,
-            epoch: keys.epoch,
-            publicKey: keys.publicKey,
-          };
-          void sealTitle({ title: acpFallbackTitle(text) }, fallbackTitle)
+          void sealTitle({ title: acpFallbackTitle(text) }, boundKey)
             .then((sealedTitle) => setAcpFallbackTitle({ chat: createdChat, sealedTitle }))
             .catch(() => {});
         } else {

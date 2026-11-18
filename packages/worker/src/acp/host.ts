@@ -96,6 +96,8 @@ interface LocalSession {
    * conversation into the same memory cap, so it cannot recover items evicted from it.
    */
   reopened?: AcpTimeline;
+  /** Error the last failed warm open reported; an identical failure on retry is not re-sent. */
+  warmError?: string;
 }
 interface AgentSlot {
   definition: AcpAgentDefinition;
@@ -158,6 +160,8 @@ export class AcpHost {
   private readonly signed: AcpSigned | null;
   /** Warm chats refused a moment ago (unverifiable binding or chat key), skipped until then. */
   private readonly warmCooldown = new Map<string, number>();
+  /** Enabled agents whose definition carries no verifiable owner authorization; they get no slot. */
+  private unauthorizedAgents = new Set<string>();
   /** Answered interactions being verified right now, by row ID. */
   private readonly answering = new Set<string>();
 
@@ -374,6 +378,11 @@ export class AcpHost {
         ))
       : definitions.map(() => true);
     if (revision !== this.definitionsRevision || this.stopped) return;
+    this.unauthorizedAgents = new Set(
+      definitions
+        .filter((definition, index) => definition.enabled && !checks[index])
+        .map((definition) => definition.agentId),
+    );
     const previous = new Map(this.slots);
     this.slots.clear();
     for (const [index, definition] of definitions.entries()) {
@@ -752,6 +761,8 @@ export class AcpHost {
     if (patch.status) local.binding.status = patch.status;
     if (patch.commands) local.timeline.sessionPatch.commands = patch.commands;
     if (patch.usage) local.timeline.sessionPatch.usage = patch.usage;
+    // Any other error write replaces what viewers see, so the next warm failure is new to them.
+    if (patch.error !== undefined) local.warmError = undefined;
     return this.writePatch(local.chat, patch, {
       binding: local.verified,
       agentId: local.binding.agentId,
@@ -784,10 +795,7 @@ export class AcpHost {
   ): Promise<AcpAgentProcess> {
     const key = slotKey(agentId, profile);
     const slot = this.slots.get(key);
-    if (!slot)
-      throw new Error(
-        profile === "gateway" ? "This agent does not offer a Gateway profile." : "Agent removed",
-      );
+    if (!slot) throw this.missingAgent(agentId, profile);
     if (profile === "gateway") {
       await this.reconcileGateway();
       this.activeGatewayKey();
@@ -862,6 +870,16 @@ export class AcpHost {
     return slot.starting;
   }
 
+  /** Why an agent has no slot; the text reaches the Session as its (sealed) error. */
+  private missingAgent(agentId: string, profile: AcpProfile): Error {
+    if (this.unauthorizedAgents.has(agentId))
+      return new Error(
+        "This agent is not authorized for paired Workers. The workspace owner must review and save it in Agents.",
+      );
+    if (profile === "gateway") return new Error("This agent does not offer a Gateway profile.");
+    return new Error("Agent removed");
+  }
+
   private processExited(slot: AgentSlot, process: AcpAgentProcess): void {
     if (slot.process === process) slot.process = undefined;
     slot.failures += 1;
@@ -915,7 +933,7 @@ export class AcpHost {
    */
   private async ensureSession(local: LocalSession, reloadEvicted = false): Promise<LocalSession> {
     const slot = this.slots.get(slotKey(local.binding.agentId, local.binding.profile));
-    if (!slot) throw new Error("Agent removed");
+    if (!slot) throw this.missingAgent(local.binding.agentId, local.binding.profile);
     if (local.binding.profile === "gateway") {
       await this.reconcileGateway();
       this.activeGatewayKey();
@@ -1102,21 +1120,27 @@ export class AcpHost {
             if (!this.warm.has(entry.chat) || this.stopped) return;
             await local.relay.start(Math.max(entry.epoch, local.binding.epoch));
             local.binding.epoch = local.relay.epoch;
+            local.warmError = undefined;
           } catch (error) {
-            // Retrying a refusal (no verifiable chat key yet) every second would only spam errors.
-            if (error instanceof AcpRefusal)
-              this.warmCooldown.set(entry.chat, Date.now() + WARM_REFUSAL_MS);
+            // Retrying a failed open (no verifiable chat key yet, agent unavailable) every second
+            // would only repeat the same failure.
+            this.warmCooldown.set(entry.chat, Date.now() + WARM_REFUSAL_MS);
             local.binding.warm = false;
             // Viewers wait for a snapshot that never comes unless the failure is reported. An
             // agent that no longer knows the session (-32002) cannot reopen it: the Session ends.
             const message = error instanceof Error ? error.message.slice(0, 400) : String(error);
             const gone = error instanceof RequestError && error.code === -32002;
-            await this.patch(
-              local,
-              gone
-                ? { status: "ended", error: `The agent no longer has this session: ${message}` }
-                : { error: `Could not open the session: ${message}` },
-            ).catch(() => {});
+            const report = gone
+              ? `The agent no longer has this session: ${message}`
+              : `Could not open the session: ${message}`;
+            // Each report is a Convex write (sealed anew in keyed workspaces); viewers already
+            // show an identical one.
+            if (report === local.warmError) return;
+            await this.patch(local, gone ? { status: "ended", error: report } : { error: report })
+              .then(() => {
+                local.warmError = report;
+              })
+              .catch(() => {});
           }
         })().finally(() => {
           local.warming = undefined;

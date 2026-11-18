@@ -293,7 +293,22 @@ export function AcpPanel() {
                       </TooltipContent>
                     </Tooltip>
                     {!agent.authorization ? (
-                      <span className="text-xs">Review and save this launch command to authorize paired Workers.</span>
+                      <span className="text-xs">
+                        Paired Workers skip this agent until its launch command is reviewed and
+                        saved.{" "}
+                        {canManage ? (
+                          <Button
+                            type="button"
+                            variant="link"
+                            size="sm"
+                            className="h-auto p-0 text-xs"
+                            disabled={pending !== null}
+                            onClick={() => openForm(agent)}
+                          >
+                            Review
+                          </Button>
+                        ) : null}
+                      </span>
                     ) : null}
                     <span className="flex flex-wrap gap-1 whitespace-normal">
                       {workerError || reportError ? (
@@ -312,6 +327,7 @@ export function AcpPanel() {
                             key={worker.workerId}
                             worker={worker}
                             enabled={agent.enabled}
+                            authorized={Boolean(agent.authorization)}
                             now={now}
                             report={reports.find(
                               (report) =>
@@ -544,6 +560,7 @@ export function AcpPanel() {
 function workerAvailability(
   worker: Worker,
   enabled: boolean,
+  authorized: boolean,
   now: number,
   report?: AgentReport,
 ): { label: string; state: RunState; detail: string } {
@@ -558,6 +575,14 @@ function workerAvailability(
       label: "Waiting",
       state: "queued",
       detail: "Enable this agent to check its availability on the Worker.",
+    };
+  // A paired Worker never launches an unauthorized definition, so it never reports it either; a
+  // Worker without encryption still runs and reports it.
+  if (!report && !authorized)
+    return {
+      label: "Needs review",
+      state: "awaiting",
+      detail: "Paired Workers run this agent only after an owner reviews and saves it.",
     };
   if (now <= 0 || !report)
     return { label: "Waiting", state: "queued", detail: "Worker has not reported this agent yet." };
@@ -592,15 +617,17 @@ function workerAvailability(
 function AgentWorkerPill({
   worker,
   enabled,
+  authorized,
   now,
   report,
 }: {
   worker: Worker;
   enabled: boolean;
+  authorized: boolean;
   now: number;
   report?: AgentReport;
 }) {
-  const availability = workerAvailability(worker, enabled, now, report);
+  const availability = workerAvailability(worker, enabled, authorized, now, report);
   return (
     <Tooltip>
       <TooltipTrigger asChild>

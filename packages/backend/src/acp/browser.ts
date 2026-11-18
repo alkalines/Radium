@@ -1111,8 +1111,10 @@ export const OpenAgentSession = ownedWorkspaceMutation({
     if ((await signedDispatch(ctx, ctx.workspace._id, args.worker)) && !args.e2ee)
       acpError("ACP_E2EE_REQUIRED");
     const agent = await findAgent(ctx, ctx.workspace._id, args.worker, args.agentId);
-    if (!agent || !(agent.capabilities.loadSession || agent.capabilities.resume))
-      acpError("ACP_UNSUPPORTED");
+    // No report: the Worker has not launched the agent (for a paired Worker, often an unreviewed
+    // definition), which is not the same as an agent that cannot reopen sessions.
+    if (!agent) acpError("ACP_AGENT_UNAVAILABLE");
+    if (!(agent.capabilities.loadSession || agent.capabilities.resume)) acpError("ACP_UNSUPPORTED");
     const bound = await ctx.db
       .query("acp_sessions")
       .withIndex("by_worker_and_agentId_and_sessionId", (q) =>

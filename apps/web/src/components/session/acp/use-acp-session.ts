@@ -32,6 +32,7 @@ import {
 } from "@/lib/crypto/chat-keys";
 import { sealTitle } from "@/lib/crypto/chat-content";
 import { cryptoClient, currentUserId } from "@/lib/crypto/runtime";
+import { KeysLockedError } from "@/lib/crypto/key-manager";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import {
   acpFallbackTitle,
@@ -324,9 +325,42 @@ export function useAcpSession({
       cancelled = true;
     };
   }, [chatContext, sealedError, keyStatus]);
-  // The generic server text stands in until (or unless) the sealed one opens.
-  const errorMessage =
-    sealedError && openedError?.source === sealedError ? openedError.message : session?.error;
+
+  // A paired Worker seals frames and errors only to a chat key epoch bound to this chat, and new
+  // chats start with an epoch made before their ID existed. Against an unbound (or rekey-pending)
+  // epoch the Worker refuses without a readable error, so the Session would wait for its snapshot
+  // forever; a reader starts a bound epoch here instead. Already-bound keys are verified from cache.
+  const [keyError, setKeyError] = useState<string>();
+  useEffect(() => {
+    if (!signed || !e2eeId || keyStatus.state !== "unlocked") return;
+    let cancelled = false;
+    writableChatKey(chatId)
+      .catch((error: unknown) => {
+        if (error instanceof KeysLockedError) throw error;
+        // Another reader (or tab) may have rotated first, which refuses this rotation; the
+        // re-read then finds that bound epoch and uses it.
+        return writableChatKey(chatId);
+      })
+      .then(
+        () => {
+          if (!cancelled) setKeyError(undefined);
+        },
+        (error: unknown) => {
+          if (cancelled || error instanceof KeysLockedError) return;
+          setKeyError(
+            "Could not prepare this Session's encryption key, so the agent cannot open it.",
+          );
+        },
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, e2eeId, keyStatus.state, signed]);
+
+  // A Worker re-reporting an error seals it into a new box each time; the last opened text stays
+  // until the new box opens, so the generic server text only stands in before the first one does.
+  const openedMessage = sealedError ? openedError?.message : undefined;
+  const errorMessage = openedMessage ?? session?.error ?? keyError;
 
   /** Seals and signs a command for this chat's Worker; never used outside signed mode. */
   const signCommand = useCallback(
@@ -602,6 +636,8 @@ export function useAcpSession({
         e2ee: { keys: keys.keys, ...(scope === "shared" ? { members } : {}) },
       });
       rememberChatSeed(target, keys.e2eeId, 1, keys.seed);
+      // The Worker seals the fork's frames only to a key epoch bound to the target chat.
+      await writableChatKey(target);
       await startForkMutation({
         chat: chatId,
         target,
