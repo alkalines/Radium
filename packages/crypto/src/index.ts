@@ -63,6 +63,7 @@ export {
   chatKeyBindingStatement,
   chatKeyStatement,
   grantStatement,
+  recoveryWrapperStatement,
   rosterStatement,
   toolApprovalStatement,
   toolGrantStatement,
@@ -74,8 +75,15 @@ export {
   type WorkspaceKeyPurpose,
 } from "./statements";
 export {
+  EMPTY_ROSTER_ARCHIVE,
+  extendRosterArchive,
+  ROSTER_EPOCH_WINDOW,
+  rosterEpochBytes,
   signRoster,
+  verifyArchivedEpochs,
   verifyRoster,
+  windowRosterEpochs,
+  type RosterArchive,
   type RosterEpoch,
   type RosterMember,
   type RosterOwner,

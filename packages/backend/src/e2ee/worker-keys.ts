@@ -109,7 +109,7 @@ function rosterWorkers(
   } catch {
     return invalidKeys();
   }
-  if (body.v !== 2) {
+  if (body.v !== 2 && body.v !== 3) {
     return workers;
   }
   if (!Array.isArray(body.workers) || body.workers.length > MAX_ROSTER_WORKERS) {
@@ -525,8 +525,9 @@ export const publishWorkerKeys = workerMutation({
 });
 
 /**
- * Machine-only: the signed roster and public workspace epochs of the calling Worker's workspace.
- * The Worker verifies the roster against its pinned owner and epoch keys against roster hashes.
+ * Machine-only: the signed roster and the current (newest) public workspace epoch of the calling
+ * Worker's workspace; Workers seal only to the current epoch. The Worker verifies the roster against
+ * its pinned owner and the epoch keys against roster hashes.
  */
 export const workerTrustState = workerQuery({
   args: {},
@@ -555,10 +556,8 @@ export const workerTrustState = workerQuery({
     const epochs = await ctx.db
       .query("e2ee_workspace_epochs")
       .withIndex("by_workspace_and_epoch", (q) => q.eq("workspace", ctx.worker.workspaceId))
-      .take(201);
-    if (epochs.length > 200) {
-      invalidKeys();
-    }
+      .order("desc")
+      .take(1);
     return {
       roster: roster
         ? {

@@ -1,6 +1,9 @@
 import { v } from "convex/values";
 import schema from "../../convex/schema";
-/** Public workspace key-state response; only the caller's own grants are returned. */
+/**
+ * Public workspace key-state response; only the caller's own grants are returned. `epochs` is the
+ * roster window and `myGrants`/`grantedEpoch` cover only window epochs.
+ */
 export const workspaceKeyStateValidator = v.object({
   role: v.union(v.literal("owner"), v.literal("member")),
   ownerId: v.string(),
@@ -25,7 +28,16 @@ export const workspaceKeyStateValidator = v.object({
     v.object({ inviteId: v.string(), invitedUserId: v.string(), expiresAt: v.number() }),
   ),
 });
-/** Authorized chat key metadata and recipient-filtered seed wraps. */
+/** One page of archived workspace epochs with the caller's grants and the claimed chain prefix. */
+export const workspaceArchivedEpochsValidator = v.object({
+  prefixHash: v.union(v.string(), v.null()),
+  epochs: v.array(schema.doc("e2ee_workspace_epochs")),
+  myGrants: v.array(schema.doc("e2ee_workspace_grants")),
+});
+/**
+ * Authorized chat key metadata and recipient-filtered seed wraps of the returned `epochs`: the
+ * newest epochs, or exactly the one requested (`chatKeys`).
+ */
 export const chatKeysResultValidator = v.object({
   chat: v.id("aisdk_chats"),
   workspace: v.id("workspaces"),

@@ -5,9 +5,9 @@ import type { AcpSignedBinding } from "../acp/contract";
 import { findSession } from "../acp/policy";
 import { verifyNextBinding } from "../acp/sealed";
 import {
+  chatEpochNumbers,
   insertChatEpoch,
   insertChatWraps,
-  MAX_CHAT_EPOCHS,
   validateChatEpoch,
   validateChatWraps,
 } from "./chat-keys";
@@ -87,20 +87,13 @@ export async function changeChatScope(
       invalidKeys();
     }
     if (input.keys) {
-      const epochs = await ctx.db
-        .query("e2ee_chat_keys")
-        .withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat._id))
-        .take(201);
-      if (epochs.length > 200) {
-        invalidKeys();
-      }
+      // Historical epochs are exactly 1..keyEpoch. A widening must wrap all of them in this one
+      // mutation, which the bounded wrap list (`validateChatWraps`) limits; rotation itself is
+      // not capped.
+      const epochs = chatEpochNumbers(chat);
       const rotate = input.keys.rotate;
       if (rotate) {
-        if (
-          rotate.epoch !== (chat.keyEpoch ?? 0) + 1 ||
-          rotate.epoch > MAX_CHAT_EPOCHS ||
-          !rotate.signature
-        ) {
+        if (rotate.epoch !== (chat.keyEpoch ?? 0) + 1 || !rotate.signature) {
           invalidKeys();
         }
         await validateChatEpoch(ctx, workspace, chat.e2eeId, rotate, userId, {
@@ -108,7 +101,7 @@ export async function changeChatScope(
           required: true,
         });
       }
-      const allowedEpochs = [...epochs.map((e) => e.epoch), ...(rotate ? [rotate.epoch] : [])];
+      const allowedEpochs = [...epochs, ...(rotate ? [rotate.epoch] : [])];
       await validateChatWraps(
         ctx,
         next,
@@ -135,8 +128,8 @@ export async function changeChatScope(
             next,
             workspace,
             members,
-            input.keys.wraps.filter((w) => epochs.some((e) => e.epoch === w.chatEpoch)),
-            epochs.map((e) => e.epoch),
+            input.keys.wraps.filter((w) => epochs.includes(w.chatEpoch)),
+            epochs,
           );
         } else {
           for (const epoch of epochs) {
@@ -144,9 +137,7 @@ export async function changeChatScope(
               if (
                 !input.keys.wraps.some(
                   (w) =>
-                    w.chatEpoch === epoch.epoch &&
-                    w.recipient === "identity" &&
-                    w.userId === userId,
+                    w.chatEpoch === epoch && w.recipient === "identity" && w.userId === userId,
                 )
               ) {
                 invalidKeys();
@@ -166,7 +157,7 @@ export async function changeChatScope(
           const stale = await ctx.db
             .query("e2ee_chat_key_wraps")
             .withIndex("by_chat_and_chatEpoch_and_workspaceEpoch", (q) =>
-              q.eq("chat", chat._id).eq("chatEpoch", epoch.epoch).gt("workspaceEpoch", 0),
+              q.eq("chat", chat._id).eq("chatEpoch", epoch).gt("workspaceEpoch", 0),
             )
             .take(201);
           if (stale.length > 200) {

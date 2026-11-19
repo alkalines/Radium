@@ -42,6 +42,29 @@ export function rosterStatement(input: { workspaceId: string; body: Uint8Array }
 }
 
 /**
+ * Replacement of an account's recovery-key wrapper (`e2ee_identities.recoveryWrapper`), signed by the
+ * identity `keyId` of `userId`. `previousWrapperHash` is the SHA-256 of the wrapper being replaced, so a
+ * captured request cannot later be replayed to roll the account back to an older recovery key.
+ */
+export function recoveryWrapperStatement(input: {
+  userId: string;
+  keyId: string;
+  wrapper: Uint8Array;
+  previousWrapperHash: Uint8Array;
+}): Uint8Array {
+  if (input.previousWrapperHash.length !== 32) {
+    throw new CryptoError("BAD_INPUT", "Invalid previous recovery wrapper hash");
+  }
+  return signingMessage(
+    "radium/v1/recovery-wrapper",
+    utf8(input.userId),
+    utf8(input.keyId),
+    input.wrapper,
+    input.previousWrapperHash,
+  );
+}
+
+/**
  * One chat key epoch: chat `chatE2eeId` in `workspaceId` uses `publicKey` (key ID `keyId`) from `epoch`
  * on. Signed by the identity that created the epoch.
  */

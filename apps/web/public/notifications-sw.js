@@ -5039,9 +5039,65 @@ function chatKeyStatement(input) {
   return signingMessage("radium/v1/chat-key", utf8(input.workspaceId), utf8(input.chatE2eeId), decimal(input.epoch), utf8(input.keyId), decimal(input.suite), input.publicKey);
 }
 // ../../packages/crypto/src/roster.ts
+var ROSTER_EPOCH_WINDOW = 32;
+var EMPTY_ROSTER_ARCHIVE = Object.freeze({
+  through: 0,
+  hash: toBase64Url(new Uint8Array(32))
+});
+function rosterEpochBytes(entry) {
+  return lengthPrefixed([
+    decimal(entry.epoch),
+    utf8(entry.memberKeyId),
+    utf8(entry.memberKeyHash),
+    utf8(entry.ownerKeyId),
+    utf8(entry.ownerKeyHash)
+  ]);
+}
+async function extendRosterArchive(archive, dropped) {
+  let hash = fromBase64Url(archive.hash);
+  let through = archive.through;
+  for (const entry of dropped) {
+    if (entry.epoch !== through + 1) {
+      throw new CryptoError("BAD_INPUT", "Archived roster epochs must be contiguous");
+    }
+    hash = await sha2562(lengthPrefixed([utf8("radium/v1/roster-archive"), hash, rosterEpochBytes(entry)]));
+    through = entry.epoch;
+  }
+  return { through, hash: toBase64Url(hash) };
+}
+async function verifyArchivedEpochs(input) {
+  const failed = new CryptoError("DECRYPT_FAILED", "Archived roster epochs differ from roster");
+  const first = input.entries[0];
+  if (!first || !isPositive(first.epoch) || input.claimedPrefixHash.length !== 32)
+    throw failed;
+  if (first.epoch === 1 && !equalBytes(input.claimedPrefixHash, new Uint8Array(32)))
+    throw failed;
+  let computed;
+  try {
+    computed = await extendRosterArchive({ through: first.epoch - 1, hash: toBase64Url(input.claimedPrefixHash) }, input.entries);
+  } catch {
+    throw failed;
+  }
+  if (computed.through !== input.archive.through || computed.hash !== input.archive.hash) {
+    throw failed;
+  }
+}
+async function windowRosterEpochs(input) {
+  const sorted = [...input.epochs].sort((a, b) => a.epoch - b.epoch);
+  const keep = Math.min(sorted.length, ROSTER_EPOCH_WINDOW);
+  const dropped = sorted.slice(0, sorted.length - keep);
+  return {
+    epochs: sorted.slice(sorted.length - keep),
+    archive: await extendRosterArchive(input.archive, dropped)
+  };
+}
 async function signRoster(body, signingSeed) {
+  const windowed = await windowRosterEpochs(body);
+  if (!isWindow(windowed.epochs, windowed.archive, body.epoch)) {
+    throw new CryptoError("BAD_INPUT", "Roster epochs are not a window ending at the current epoch");
+  }
   const canonical = {
-    v: 2,
+    v: 3,
     workspace: body.workspace,
     version: body.version,
     epoch: body.epoch,
@@ -5050,13 +5106,14 @@ async function signRoster(body, signingSeed) {
       keyId: body.owner.keyId,
       fingerprint: body.owner.fingerprint
     },
-    epochs: body.epochs.map((entry) => ({
+    epochs: windowed.epochs.map((entry) => ({
       epoch: entry.epoch,
       memberKeyId: entry.memberKeyId,
       memberKeyHash: entry.memberKeyHash,
       ownerKeyId: entry.ownerKeyId,
       ownerKeyHash: entry.ownerKeyHash
     })),
+    archive: { through: windowed.archive.through, hash: windowed.archive.hash },
     members: body.members.map((member) => ({
       userId: member.userId,
       keyId: member.keyId,
@@ -5097,6 +5154,12 @@ function isDigest(value) {
 function isPositive(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
 }
+function isWindow(epochs, archive, epoch) {
+  if (!archive || typeof archive !== "object" || !Number.isSafeInteger(archive.through) || archive.through < 0 || !isDigest(archive.hash) || archive.through === 0 && archive.hash !== EMPTY_ROSTER_ARCHIVE.hash || epochs.length !== Math.min(epoch, ROSTER_EPOCH_WINDOW) || archive.through !== epoch - epochs.length) {
+    return false;
+  }
+  return epochs.every((entry, index) => entry?.epoch === archive.through + 1 + index);
+}
 async function verifyRoster(input) {
   if (input.version < input.highWater || input.signerKeyId !== input.owner.keyId || !await verify(input.owner.signingPublicKey, rosterStatement({ workspaceId: input.workspaceId, body: input.body }), input.signature))
     throw new CryptoError("DECRYPT_FAILED", "Roster signature or version failed");
@@ -5106,7 +5169,7 @@ async function verifyRoster(input) {
   } catch {
     throw new CryptoError("BAD_ENVELOPE", "Invalid roster body");
   }
-  if (!body || typeof body !== "object" || body.v !== 1 && body.v !== 2 || body.workspace !== input.workspaceId || body.version !== input.version || !isPositive(body.version) || !isPositive(body.epoch) || !body.owner || body.owner.userId !== input.owner.userId || body.owner.keyId !== input.owner.keyId || body.owner.fingerprint !== input.owner.fingerprint || !Array.isArray(body.epochs) || !Array.isArray(body.members) || body.v === 2 && !Array.isArray(body.workers))
+  if (!body || typeof body !== "object" || body.v !== 1 && body.v !== 2 && body.v !== 3 || body.workspace !== input.workspaceId || body.version !== input.version || !isPositive(body.version) || !isPositive(body.epoch) || !body.owner || body.owner.userId !== input.owner.userId || body.owner.keyId !== input.owner.keyId || body.owner.fingerprint !== input.owner.fingerprint || !Array.isArray(body.epochs) || !Array.isArray(body.members) || body.v !== 1 && !Array.isArray(body.workers))
     throw new CryptoError("BAD_ENVELOPE", "Invalid roster body");
   const epochIds = new Set;
   for (const epoch of body.epochs) {
@@ -5116,20 +5179,23 @@ async function verifyRoster(input) {
   }
   if (!epochIds.has(body.epoch))
     throw new CryptoError("BAD_ENVELOPE", "Roster current epoch missing");
+  if (body.v === 3 && !isWindow(body.epochs, body.archive, body.epoch))
+    throw new CryptoError("BAD_ENVELOPE", "Invalid roster epoch window");
   const members = new Set;
   for (const member of body.members) {
     if (!member || typeof member.userId !== "string" || typeof member.fingerprint !== "string" || member.userId === body.owner.userId || members.has(member.userId) || !isKeyId(member.keyId))
       throw new CryptoError("BAD_ENVELOPE", "Invalid roster member");
     members.add(member.userId);
   }
-  const workers = body.v === 2 ? body.workers : [];
+  const workers = body.v === 1 ? [] : body.workers;
   const workerIds = new Set;
   for (const worker of workers) {
     if (!worker || typeof worker.workerId !== "string" || worker.workerId.length === 0 || typeof worker.fingerprint !== "string" || workerIds.has(worker.workerId) || !isKeyId(worker.keyId))
       throw new CryptoError("BAD_ENVELOPE", "Invalid roster worker");
     workerIds.add(worker.workerId);
   }
-  return { ...body, workers };
+  const archive = body.v === 3 ? { through: body.archive.through, hash: body.archive.hash } : { ...EMPTY_ROSTER_ARCHIVE };
+  return { ...body, archive, workers };
 }
 // ../../packages/crypto/src/account.ts
 var IDENTITY_STATEMENT = "radium/v1/identity";
@@ -6776,13 +6842,13 @@ async function verifyPublicIdentity(row) {
   }
   return { ...identity, fingerprint: await fingerprint(identity), status: row.status };
 }
-async function fetchHistoricalIdentities(keyIds, chatId) {
+async function fetchHistoricalIdentities(keyIds, chatEpoch) {
   const result = new Map;
   const unique = [...new Set(keyIds)];
   for (let start = 0;start < unique.length; start += 200) {
     const rows = await cryptoClient().query(api.e2ee.identityKeysByKeyId, {
       keyIds: unique.slice(start, start + 200),
-      chatId
+      chatEpoch
     });
     for (const row of rows) {
       if (!row)
@@ -7038,6 +7104,8 @@ async function openWorkspaceGrant(input) {
 var ring = new Map;
 var verifiedStates = new Map;
 var stateLoads = new Map;
+var archives = new Map;
+var ARCHIVED_EPOCH_PAGE = 64;
 var cacheKey = (workspaceId, epoch, purpose) => `${workspaceId}:${epoch}:${purpose}`;
 onSecretsCleared(() => {
   for (const key of ring.values())
@@ -7045,10 +7113,12 @@ onSecretsCleared(() => {
   ring.clear();
   verifiedStates.clear();
   stateLoads.clear();
+  archives.clear();
 });
 trust.subscribe(() => {
   verifiedStates.clear();
   stateLoads.clear();
+  archives.clear();
 });
 
 class TrustRequiredError extends Error {
@@ -7139,11 +7209,12 @@ async function verifyState(workspaceId, state) {
     owner,
     highWater: highWater(marker)
   });
-  if (verifiedRoster.epoch !== state.keyEpoch || state.epochs.length !== verifiedRoster.epochs.length)
+  const window2 = verifiedRoster.epochs.filter((entry) => entry.epoch > verifiedRoster.epoch - ROSTER_EPOCH_WINDOW);
+  if (verifiedRoster.epoch !== state.keyEpoch || state.epochs.length !== window2.length)
     throw new CryptoError("DECRYPT_FAILED", "Workspace epoch rollback or substitution");
   for (const epoch of state.epochs) {
-    const entry = verifiedRoster.epochs.find((row) => row.epoch === epoch.epoch);
-    if (!entry || entry.memberKeyId !== epoch.memberKeyId || entry.ownerKeyId !== epoch.ownerKeyId || entry.memberKeyHash !== toBase64Url(await sha2562(bytes(epoch.memberPublicKey))) || entry.ownerKeyHash !== toBase64Url(await sha2562(bytes(epoch.ownerPublicKey))))
+    const entry = window2.find((row) => row.epoch === epoch.epoch);
+    if (!entry || !sameRosterEpoch(entry, await rosterEpochOf(epoch)))
       throw new CryptoError("DECRYPT_FAILED", "Workspace epoch differs from signed roster");
   }
   if (secretGeneration() !== generation) {
@@ -7157,6 +7228,92 @@ async function verifyState(workspaceId, state) {
     publicKey: bytes(latest.memberPublicKey)
   });
   return { ...state, identities, verifiedRoster };
+}
+async function rosterEpochOf(row) {
+  return {
+    epoch: row.epoch,
+    memberKeyId: row.memberKeyId,
+    memberKeyHash: toBase64Url(await sha2562(bytes(row.memberPublicKey))),
+    ownerKeyId: row.ownerKeyId,
+    ownerKeyHash: toBase64Url(await sha2562(bytes(row.ownerPublicKey)))
+  };
+}
+function sameRosterEpoch(a, b) {
+  return a.epoch === b.epoch && a.memberKeyId === b.memberKeyId && a.memberKeyHash === b.memberKeyHash && a.ownerKeyId === b.ownerKeyId && a.ownerKeyHash === b.ownerKeyHash;
+}
+async function archivedEpochs(workspaceId, state, from) {
+  const roster = state.verifiedRoster;
+  const windowStart = state.epochs[0]?.epoch ?? 1;
+  if (!Number.isSafeInteger(from) || from < 1 || from >= windowStart)
+    throw new CryptoError("DECRYPT_FAILED", "Workspace epoch missing");
+  const key = `${roster.version}:${roster.archive.hash}`;
+  const cached = archives.get(workspaceId);
+  const known = cached?.key === key ? cached : undefined;
+  if (known && known.from <= from)
+    return known;
+  const end = known ? known.from - 1 : windowStart - 1;
+  const fetchPage = (start) => cryptoClient().query(api.e2ee.workspaceArchivedEpochs, {
+    workspace: workspaceId,
+    fromEpoch: start,
+    toEpoch: Math.min(start + ARCHIVED_EPOCH_PAGE - 1, end)
+  });
+  let start = from;
+  let page = await fetchPage(start);
+  if (roster.v === 3 && start > 1 && page.prefixHash === null) {
+    start = 1;
+    page = await fetchPage(start);
+  }
+  const prefixHash = page.prefixHash;
+  const rows = [...page.epochs];
+  const grants = [...page.myGrants];
+  for (let next = start + ARCHIVED_EPOCH_PAGE;next <= end; next += ARCHIVED_EPOCH_PAGE) {
+    const more = await fetchPage(next);
+    rows.push(...more.epochs);
+    grants.push(...more.myGrants);
+  }
+  const fetched = await Promise.all(rows.map(rosterEpochOf));
+  const entries = [...fetched, ...known?.entries ?? []];
+  if (roster.v === 3) {
+    let claimedPrefixHash = new Uint8Array(32);
+    if (start > 1) {
+      if (prefixHash === null)
+        throw new CryptoError("DECRYPT_FAILED", "Archived roster epochs differ from roster");
+      claimedPrefixHash = fromBase64Url(prefixHash);
+    }
+    await verifyArchivedEpochs({ archive: roster.archive, claimedPrefixHash, entries });
+  } else {
+    for (const entry of fetched) {
+      const listed = roster.epochs.find((row) => row.epoch === entry.epoch);
+      if (!listed || !sameRosterEpoch(listed, entry))
+        throw new CryptoError("DECRYPT_FAILED", "Workspace epoch differs from signed roster");
+    }
+    if (fetched.length !== end - start + 1)
+      throw new CryptoError("DECRYPT_FAILED", "Workspace epoch missing");
+  }
+  const verified = {
+    key,
+    from: start,
+    entries,
+    rows: new Map(known?.rows),
+    grants: [...grants, ...known?.grants ?? []]
+  };
+  rows.forEach((row, index) => verified.rows.set(row.epoch, { row, rosterEpoch: fetched[index] }));
+  archives.set(workspaceId, verified);
+  return verified;
+}
+async function epochRecord(workspaceId, state, epoch) {
+  const row = state.epochs.find((entry) => entry.epoch === epoch);
+  if (row) {
+    const rosterEpoch = state.verifiedRoster.epochs.find((entry) => entry.epoch === epoch);
+    if (!rosterEpoch)
+      throw new CryptoError("DECRYPT_FAILED", "Workspace epoch missing");
+    return { row, rosterEpoch, grants: state.myGrants };
+  }
+  const archived = await archivedEpochs(workspaceId, state, epoch);
+  const record = archived.rows.get(epoch);
+  if (!record)
+    throw new CryptoError("DECRYPT_FAILED", "Workspace epoch missing");
+  return { ...record, grants: archived.grants };
 }
 async function trustedIdentity(workspaceId, userId, allowPinnedCreator = false) {
   const state = await verifyWorkspaceState(workspaceId);
@@ -7192,13 +7349,10 @@ async function getWorkspaceKey(workspaceId, epoch, purpose) {
     return cached;
   const generation = secretGeneration();
   const state = await verifyWorkspaceState(workspaceId);
-  const row = state.epochs.find((entry) => entry.epoch === epoch);
-  const rosterEpoch = state.verifiedRoster.epochs.find((entry) => entry.epoch === epoch);
-  if (!row || !rosterEpoch)
-    throw new CryptoError("DECRYPT_FAILED", "Workspace epoch missing");
+  const { row, rosterEpoch, grants } = await epochRecord(workspaceId, state, epoch);
   return keyManager.useAmk(async (_, own) => {
     const recipientKeyId = toBase64Url(own.keyId);
-    const grant = state.myGrants.find((entry) => entry.epoch === epoch && entry.purpose === purpose && entry.recipientKeyId === recipientKeyId);
+    const grant = grants.find((entry) => entry.epoch === epoch && entry.purpose === purpose && entry.recipientKeyId === recipientKeyId);
     if (!grant)
       throw new CryptoError("DECRYPT_FAILED", "Workspace key not granted");
     let granter = state.identities.get(grant.granterUserId);
@@ -7336,13 +7490,13 @@ async function openCheckedChatSeed(chatId, epoch) {
   if (keyManager.getSnapshot().state !== "unlocked")
     throw new KeysLockedError;
   const generation = secretGeneration();
-  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId, epoch });
   if (!state.e2eeId)
     throw new CryptoError("BAD_INPUT", "Chat has no keys");
   const row = state.epochs.find((entry) => entry.epoch === epoch);
   if (!row || !row.signature || !row.signerKeyId)
     throw new CryptoError("DECRYPT_FAILED", "Chat key is unsigned");
-  const historical = (await fetchHistoricalIdentities([row.signerKeyId], chatId)).get(row.signerKeyId);
+  const historical = (await fetchHistoricalIdentities([row.signerKeyId], { chatId, epoch })).get(row.signerKeyId);
   if (!historical)
     throw new CryptoError("DECRYPT_FAILED", "Chat key signer unavailable");
   let signer;

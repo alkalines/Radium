@@ -143,8 +143,15 @@ async function ownUnsignedRootRecoverable(
     .first();
   return wrap?.recipient === "identity" && wrap.userId === userId;
 }
-/** Epoch cap that keeps `chatKeys` and scope changes within their bounded reads. */
-export const MAX_CHAT_EPOCHS = 200;
+/** Newest chat key epochs `chatKeys` returns without an explicit `epoch`. */
+export const CHAT_KEY_EPOCH_WINDOW = 32;
+/**
+ * Every key epoch number of a keyed chat. Epochs are contiguous: setup creates epoch 1 and every
+ * later epoch is exactly `keyEpoch + 1`, so membership needs no read of the epoch rows.
+ */
+export function chatEpochNumbers(chat: Doc<"aisdk_chats">): number[] {
+  return Array.from({ length: chat.keyEpoch ?? 0 }, (_, index) => index + 1);
+}
 /** Newest workspace wrap of one chat key epoch, read without scanning the others. */
 export async function newestWorkspaceWrap(
   ctx: ReadCtx,
@@ -656,18 +663,30 @@ export async function insertChatKeysSetup(
   await insertChatWraps(ctx, chat, workspace, keys.wraps, actor);
   await ctx.db.patch("aisdk_chats", chat._id, { e2eeId: keys.e2eeId, keyEpoch: 1 });
 }
-/** Returns authorized public epochs and only wraps usable by the caller. */
+/**
+ * Returns authorized public epochs and only wraps usable by the caller: exactly `epoch` when given
+ * (empty when it does not exist), otherwise the newest `CHAT_KEY_EPOCH_WINDOW` epochs ascending.
+ * Clients read older epochs one at a time by `epoch`.
+ */
 export const chatKeys = query({
-  args: { chatId: v.id("aisdk_chats") },
+  args: { chatId: v.id("aisdk_chats"), epoch: v.optional(v.number()) },
   returns: chatKeysResultValidator,
   handler: async (ctx, args) => {
     const { chat, workspace, userId } = await requireAccessibleChat(ctx, args.chatId);
-    const epochs = await ctx.db
-      .query("e2ee_chat_keys")
-      .withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat._id))
-      .take(201);
-    if (epochs.length > 200) {
-      invalidKeys();
+    let epochs: Doc<"e2ee_chat_keys">[];
+    if (args.epoch === undefined) {
+      const newestFirst = await ctx.db
+        .query("e2ee_chat_keys")
+        .withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat._id))
+        .order("desc")
+        .take(CHAT_KEY_EPOCH_WINDOW);
+      epochs = newestFirst.reverse();
+    } else {
+      const requested = args.epoch;
+      epochs = await ctx.db
+        .query("e2ee_chat_keys")
+        .withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat._id).eq("epoch", requested))
+        .take(1);
     }
     const wraps = [];
     for (const epoch of epochs) {
@@ -744,12 +763,7 @@ export const rotateChatKey = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const { chat, workspace, userId } = await requireAccessibleChat(ctx, args.chatId);
-    if (
-      !chat.e2eeId ||
-      args.epoch.epoch !== (chat.keyEpoch ?? 0) + 1 ||
-      args.epoch.epoch > MAX_CHAT_EPOCHS ||
-      !args.epoch.signature
-    ) {
+    if (!chat.e2eeId || args.epoch.epoch !== (chat.keyEpoch ?? 0) + 1 || !args.epoch.signature) {
       invalidKeys();
     }
     if (!(await canRotateChatKey(ctx, chat, workspace, userId))) {
@@ -773,11 +787,7 @@ export const addChatKeyWraps = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const { chat, workspace, userId } = await requireAccessibleChat(ctx, args.chatId);
-    const epochs = await ctx.db
-      .query("e2ee_chat_keys")
-      .withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat._id))
-      .take(201);
-    if (!chat.e2eeId || epochs.length > 200) {
+    if (!chat.e2eeId) {
       invalidKeys();
     }
     await validateChatWraps(
@@ -786,7 +796,7 @@ export const addChatKeyWraps = mutation({
       workspace,
       await chatMemberIds(ctx, chat._id),
       args.wraps,
-      epochs.map((e) => e.epoch),
+      chatEpochNumbers(chat),
       false,
     );
     await insertChatWraps(ctx, chat, workspace, args.wraps, userId);

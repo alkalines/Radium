@@ -16,6 +16,7 @@ export {
 } from "../src/e2ee/trust-store";
 export {
   workspaceKeyState,
+  workspaceArchivedEpochs,
   bootstrapWorkspaceKeys,
   addGrants,
   publishRoster,

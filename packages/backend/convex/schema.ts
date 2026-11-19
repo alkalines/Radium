@@ -611,6 +611,13 @@ export default defineSchema({
     ownerPublicKey: v.bytes(),
     createdBy: v.string(), // Better Auth ID
     createdAt: v.number(),
+    /**
+     * Roster archive chain value `A_epoch` (base64url, Keys.md "Roster") copied from the newest stored
+     * owner-signed roster whose `archive.through` is this epoch. Readers use it only as the claimed
+     * prefix for verifying newer archived epochs (`workspaceArchivedEpochs`); absent while the epoch
+     * is in the roster window and for epochs archived together by a version 1/2 → 3 conversion.
+     */
+    rosterArchiveHash: v.optional(v.string()),
   }).index("by_workspace_and_epoch", ["workspace", "epoch"]),
   /** A workspace private key sealed to one identity, signed by the granter's identity. */
   e2ee_workspace_grants: defineTable({

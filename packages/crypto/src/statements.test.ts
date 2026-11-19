@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { equalBytes, utf8 } from "./encoding";
-import { chatKeyBindingStatement, toolApprovalStatement, toolGrantStatement } from "./statements";
-import { sign, signingPublicKeyFromSeed, verify } from "./signatures";
+import {
+  chatKeyBindingStatement,
+  recoveryWrapperStatement,
+  rosterStatement,
+  toolApprovalStatement,
+  toolGrantStatement,
+} from "./statements";
+import { sign, signingMessage, signingPublicKeyFromSeed, verify } from "./signatures";
 
 const receipt = { chatE2eeId: "object", scope: "shared" as const, creatorId: "creator" };
 
@@ -102,5 +108,42 @@ describe("chat recipient bindings", () => {
     expect(() => chatKeyBindingStatement({
       ...input, members: Array.from({ length: 1001 }, (_, i) => `reader-${i}`),
     })).toThrow("Too many chat members");
+  });
+});
+
+describe("recovery wrapper statement", () => {
+  const input = {
+    userId: "user",
+    keyId: "key",
+    wrapper: new Uint8Array(79).fill(1),
+    previousWrapperHash: new Uint8Array(32).fill(2),
+  };
+
+  it("binds the user, identity, new wrapper and the wrapper it replaces", async () => {
+    const seed = new Uint8Array(32).fill(5);
+    const publicKey = await signingPublicKeyFromSeed(seed);
+    const signature = await sign(seed, recoveryWrapperStatement(input));
+    expect(await verify(publicKey, recoveryWrapperStatement(input), signature)).toBe(true);
+    for (const changed of [
+      { ...input, userId: "other" },
+      { ...input, keyId: "other" },
+      { ...input, wrapper: new Uint8Array(79).fill(3) },
+      { ...input, previousWrapperHash: new Uint8Array(32) },
+    ]) {
+      expect(await verify(publicKey, recoveryWrapperStatement(changed), signature)).toBe(false);
+    }
+    expect(() =>
+      recoveryWrapperStatement({ ...input, previousWrapperHash: new Uint8Array(31) }),
+    ).toThrow();
+  });
+
+  it("cannot be confused with another statement over the same parts", () => {
+    const statement = recoveryWrapperStatement(input);
+    const parts = [utf8(input.userId), utf8(input.keyId), input.wrapper, input.previousWrapperHash];
+    expect(equalBytes(statement, signingMessage("radium/v1/recovery-wrapper", ...parts))).toBe(true);
+    expect(equalBytes(statement, signingMessage("radium/v1/roster", ...parts))).toBe(false);
+    expect(
+      equalBytes(statement, rosterStatement({ workspaceId: input.userId, body: input.wrapper })),
+    ).toBe(false);
   });
 });

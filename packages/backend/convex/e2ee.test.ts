@@ -4,7 +4,14 @@ import type { OpaqueHookContext } from "@alkalines/better-auth-opaque";
 import type { GenericCtx } from "@convex-dev/better-auth";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { convexTest } from "convex-test";
-import { toBase64Url } from "radium-crypto";
+import {
+  fromBase64Url,
+  generateSigningKeyPair,
+  recoveryWrapperStatement,
+  sha256,
+  sign,
+  toBase64Url,
+} from "radium-crypto";
 import { expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { DataModel } from "./_generated/dataModel";
@@ -267,37 +274,100 @@ test("reset verify returns the current identity with its recovery wrapper", asyn
 
 test("key status and recovery wrapper updates are limited to the caller's active identity", async () => {
   const t = makeTest();
-  const keys = newKeys();
+  const signing = await generateSigningKeyPair();
+  const base = newKeys();
+  const keys = {
+    ...base,
+    identity: { ...base.identity, signingPublicKey: toBase64Url(signing.publicKey) },
+  };
   await opaqueAccount(t, "alice").register("sign-up", "v1", keys);
 
   expect(await t.query(api.e2ee.myKeyStatus, {})).toBeNull();
   expect(await asUser(t, "bob").query(api.e2ee.myKeyStatus, {})).toEqual({ state: "none" });
   const status = await asUser(t, "alice").query(api.e2ee.myKeyStatus, {});
-  expect(status).toMatchObject({ state: "ready", keyId: keys.identity.keyId });
+  const originalHash = await sha256(fromBase64Url(keys.recoveryWrapper));
+  expect(status).toMatchObject({
+    state: "ready",
+    keyId: keys.identity.keyId,
+    recoveryWrapperHash: toBase64Url(originalHash),
+  });
 
-  const wrapper = new Uint8Array(79).fill(9).buffer;
+  const keyId = keys.identity.keyId;
+  const wrapper = new Uint8Array(79).fill(9);
+  async function signed(seed: Uint8Array, next: Uint8Array, previousWrapperHash: Uint8Array) {
+    const statement = recoveryWrapperStatement({
+      userId: "alice",
+      keyId,
+      wrapper: next,
+      previousWrapperHash,
+    });
+    return (await sign(seed, statement)).slice().buffer;
+  }
+  const signature = await signed(signing.seed, wrapper, originalHash);
+
   await expect(
     asUser(t, "bob").mutation(api.e2ee.setRecoveryWrapper, {
-      keyId: keys.identity.keyId,
-      recoveryWrapper: wrapper,
+      keyId,
+      recoveryWrapper: wrapper.slice().buffer,
+      signature,
     }),
   ).rejects.toThrow();
   await expect(
     asUser(t, "alice").mutation(api.e2ee.setRecoveryWrapper, {
-      keyId: keys.identity.keyId,
+      keyId,
       recoveryWrapper: new Uint8Array(80).buffer,
+      signature,
+    }),
+  ).rejects.toThrow();
+  // A session alone (no signature, or one by another key) cannot replace the recovery factor.
+  await expect(
+    asUser(t, "alice").mutation(api.e2ee.setRecoveryWrapper, {
+      keyId,
+      recoveryWrapper: wrapper.slice().buffer,
+      signature: new Uint8Array(64).buffer,
+    }),
+  ).rejects.toThrow();
+  const stranger = await generateSigningKeyPair();
+  await expect(
+    asUser(t, "alice").mutation(api.e2ee.setRecoveryWrapper, {
+      keyId,
+      recoveryWrapper: wrapper.slice().buffer,
+      signature: await signed(stranger.seed, wrapper, originalHash),
     }),
   ).rejects.toThrow();
 
   await asUser(t, "alice").mutation(api.e2ee.setRecoveryWrapper, {
-    keyId: keys.identity.keyId,
-    recoveryWrapper: wrapper,
+    keyId,
+    recoveryWrapper: wrapper.slice().buffer,
+    signature,
   });
   const reset = await opaqueAccount(t, "alice").hooks.loadPayload!(
     { userId: "alice", credentialVersion: "v1", flow: "reset-password" },
     {} as OpaqueHookContext,
   );
-  expect(reset).toMatchObject({ recoveryWrapper: toBase64Url(new Uint8Array(wrapper)) });
+  expect(reset).toMatchObject({ recoveryWrapper: toBase64Url(wrapper) });
+  expect(await asUser(t, "alice").query(api.e2ee.myKeyStatus, {})).toMatchObject({
+    recoveryWrapperHash: toBase64Url(await sha256(wrapper)),
+  });
+
+  // A captured request stops verifying once the wrapper it replaced has changed, so neither it nor
+  // one signed over the original wrapper's state can roll the account back.
+  const original = fromBase64Url(keys.recoveryWrapper);
+  const rollback = await signed(signing.seed, original, originalHash);
+  await expect(
+    asUser(t, "alice").mutation(api.e2ee.setRecoveryWrapper, {
+      keyId,
+      recoveryWrapper: original.slice().buffer,
+      signature: rollback,
+    }),
+  ).rejects.toThrow();
+  await expect(
+    asUser(t, "alice").mutation(api.e2ee.setRecoveryWrapper, {
+      keyId,
+      recoveryWrapper: wrapper.slice().buffer,
+      signature,
+    }),
+  ).rejects.toThrow();
 });
 
 test("a device recovery offer is taken once and not after it expires", async () => {

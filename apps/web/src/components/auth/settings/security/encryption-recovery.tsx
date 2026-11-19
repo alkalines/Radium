@@ -1,6 +1,12 @@
 import { api } from "backend/convex/_generated/api";
-import { useMutation } from "convex/react";
-import { CryptoError, generateRecoveryKey } from "radium-crypto";
+import { useMutation, useQuery } from "convex/react";
+import {
+  CryptoError,
+  fromBase64Url,
+  generateRecoveryKey,
+  recoveryWrapperStatement,
+  sign,
+} from "radium-crypto";
 import { type SyntheticEvent, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -22,22 +28,31 @@ function discardRecovery(draft: RecoveryDraft | null) {
 
 /** Recovery-factor management for an unlocked account; generated words live only in a ref. */
 export function EncryptionRecoverySettings({
-  keyId,
+  account,
   reason,
 }: {
-  keyId: string | null;
+  account: { userId: string; keyId: string } | null;
   reason: string;
 }) {
   return (
     <>
-      <RecoveryKeyCard keyId={keyId} reason={reason} />
-      <DeviceRecoveryCard unlocked={keyId !== null} reason={reason} />
+      <RecoveryKeyCard account={account} reason={reason} />
+      <DeviceRecoveryCard unlocked={account !== null} reason={reason} />
     </>
   );
 }
 
-function RecoveryKeyCard({ keyId, reason }: { keyId: string | null; reason: string }) {
+function RecoveryKeyCard({
+  account,
+  reason,
+}: {
+  account: { userId: string; keyId: string } | null;
+  reason: string;
+}) {
   const setRecoveryWrapper = useMutation(api.e2ee.setRecoveryWrapper);
+  // The replacement is signed over the hash of the wrapper it replaces (`setRecoveryWrapper`).
+  const serverKeys = useQuery(api.e2ee.myKeyStatus, account ? {} : "skip");
+  const keyId = account?.keyId ?? null;
   const draft = useRef<RecoveryDraft | null>(null);
   const submitting = useRef(false);
   const [step, setStep] = useState<"idle" | "setup">("idle");
@@ -68,19 +83,37 @@ function RecoveryKeyCard({ keyId, reason }: { keyId: string | null; reason: stri
   }
 
   async function save() {
-    if (!keyId || !draft.current || submitting.current) return;
+    if (!account || !draft.current || submitting.current) return;
     const recovery = draft.current;
     submitting.current = true;
     setPending(true);
     setError(null);
     try {
-      const wrapper = await keyManager.useAmk((amk, identity) =>
-        buildRecoveryWrapper({ account: { amk, identity }, recoveryEntropy: recovery.entropy }),
-      );
+      if (serverKeys?.state !== "ready" || serverKeys.keyId !== account.keyId) {
+        throw new Error("Account key status is not loaded");
+      }
+      const previousWrapperHash = fromBase64Url(serverKeys.recoveryWrapperHash);
+      const signed = await keyManager.useAmk(async (amk, identity) => {
+        const wrapper = await buildRecoveryWrapper({
+          account: { amk, identity },
+          recoveryEntropy: recovery.entropy,
+        });
+        const statement = recoveryWrapperStatement({
+          userId: account.userId,
+          keyId: account.keyId,
+          wrapper,
+          previousWrapperHash,
+        });
+        return { wrapper, signature: await sign(identity.signing.seed, statement) };
+      });
       // Do not publish a completed wrap after this form was discarded by a lock/account change.
       if (draft.current !== recovery) return;
       // `v.bytes()` arguments are standalone ArrayBuffers.
-      await setRecoveryWrapper({ keyId, recoveryWrapper: wrapper.slice().buffer });
+      await setRecoveryWrapper({
+        keyId: account.keyId,
+        recoveryWrapper: signed.wrapper.slice().buffer,
+        signature: signed.signature.slice().buffer,
+      });
       cancel();
       toast.success(
         "Recovery key saved. The old recovery key no longer works for password resets.",

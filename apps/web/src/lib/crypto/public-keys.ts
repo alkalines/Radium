@@ -81,17 +81,21 @@ async function verifyPublicIdentity(row: PublicIdentityRow): Promise<PublicIdent
   return { ...identity, fingerprint: await fingerprint(identity), status: row.status };
 }
 
-/** Fetches self-authenticated historical signing keys; callers still enforce roster authorization. */
+/**
+ * Fetches self-authenticated historical signing keys; callers still enforce roster authorization.
+ * `chatEpoch` names the chat key epoch whose signer is requested, which the server also serves when
+ * that signer has since left the workspace.
+ */
 export async function fetchHistoricalIdentities(
   keyIds: string[],
-  chatId?: Id<"aisdk_chats">,
+  chatEpoch?: { chatId: Id<"aisdk_chats">; epoch: number },
 ): Promise<Map<string, PublicIdentity>> {
   const result = new Map<string, PublicIdentity>();
   const unique = [...new Set(keyIds)];
   for (let start = 0; start < unique.length; start += 200) {
     const rows = await cryptoClient().query(api.e2ee.identityKeysByKeyId, {
       keyIds: unique.slice(start, start + 200),
-      chatId,
+      chatEpoch,
     });
     for (const row of rows) {
       // The server never returns pending identities; a missing row is simply unknown.

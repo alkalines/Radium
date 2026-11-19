@@ -1,4 +1,5 @@
-import { fromBase64Url, utf8 } from "./encoding";
+import { decimal, sha256 } from "./box";
+import { equalBytes, fromBase64Url, lengthPrefixed, toBase64Url, utf8 } from "./encoding";
 import { CryptoError } from "./errors";
 import { sign, verify } from "./signatures";
 import { rosterStatement } from "./statements";
@@ -22,16 +23,39 @@ export type RosterEpoch = {
 };
 
 /**
- * Owner-signed public roster body, serialized in this declaration's property order. Version 1 bodies
- * (before Workers had keys) carry no `workers`; `verifyRoster` returns them with an empty list.
+ * Number of most recent epochs a version-3 roster lists itself. Older epochs leave the list for the
+ * hash-chained `archive`, so a roster (and every read of it) stays bounded however often keys rotate.
+ */
+export const ROSTER_EPOCH_WINDOW = 32;
+
+/**
+ * Commitment to every epoch older than a version-3 roster's window. `through` is the newest archived
+ * epoch (0: none) and `hash` the base64url chain value `A_through`, where `A_0` is 32 zero bytes and
+ * `A_n = SHA-256(lengthPrefixed("radium/v1/roster-archive", A_(n-1), rosterEpochBytes(e_n)))`.
+ */
+export type RosterArchive = { through: number; hash: string };
+
+/** The archive of a roster that has archived nothing (`A_0`); version 1 and 2 bodies read as this. */
+export const EMPTY_ROSTER_ARCHIVE: Readonly<RosterArchive> = Object.freeze({
+  through: 0,
+  hash: toBase64Url(new Uint8Array(32)),
+});
+
+/**
+ * Owner-signed public roster body, serialized in this declaration's property order. Version 3 lists
+ * only the newest `ROSTER_EPOCH_WINDOW` epochs, contiguous and ending at `epoch`, and commits to the
+ * rest through `archive`. Versions 1 and 2 list every epoch and are returned with
+ * `EMPTY_ROSTER_ARCHIVE`; version 1 bodies (before Workers had keys) also carry no `workers` and are
+ * returned with an empty list.
  */
 export type WorkspaceRoster = {
-  v: 1 | 2;
+  v: 1 | 2 | 3;
   workspace: string;
   version: number;
   epoch: number;
   owner: RosterMember;
   epochs: RosterEpoch[];
+  archive: RosterArchive;
   members: RosterMember[];
   workers: RosterWorker[];
 };
@@ -47,16 +71,106 @@ export type SignedRoster = {
   signerKeyId: string;
 };
 
+/** Canonical bytes of one roster epoch entry, the unit the archive chain hashes. */
+export function rosterEpochBytes(entry: RosterEpoch): Uint8Array {
+  return lengthPrefixed([
+    decimal(entry.epoch),
+    utf8(entry.memberKeyId),
+    utf8(entry.memberKeyHash),
+    utf8(entry.ownerKeyId),
+    utf8(entry.ownerKeyHash),
+  ]);
+}
+
 /**
- * Creates a canonical version-2 roster signed with the owner's identity signing seed. The caller must
- * have approved every listed identity and verified every listed Worker's pairing.
+ * Extends `archive` with `dropped`, which must be the contiguous epochs right after `archive.through`
+ * in ascending order. Throws `CryptoError` (`BAD_INPUT`) otherwise.
+ */
+export async function extendRosterArchive(
+  archive: RosterArchive,
+  dropped: readonly RosterEpoch[],
+): Promise<RosterArchive> {
+  let hash = fromBase64Url(archive.hash);
+  let through = archive.through;
+  for (const entry of dropped) {
+    if (entry.epoch !== through + 1) {
+      throw new CryptoError("BAD_INPUT", "Archived roster epochs must be contiguous");
+    }
+    hash = await sha256(
+      lengthPrefixed([utf8("radium/v1/roster-archive"), hash, rosterEpochBytes(entry)]),
+    );
+    through = entry.epoch;
+  }
+  return { through, hash: toBase64Url(hash) };
+}
+
+/**
+ * Verifies archived epochs served by an untrusted source against the signed `archive`: recomputes the
+ * chain from `claimedPrefixHash` (the server's claim for `A_(j-1)`, where `j` is the first entry's
+ * epoch; `A_0` is fixed) over `entries` = epochs `j..archive.through` and requires the signed
+ * `archive.hash`. Sound for any claimed prefix by SHA-256 collision resistance: a wrong prefix or
+ * entry cannot reproduce the signed value. Throws `CryptoError` (`DECRYPT_FAILED`) on any mismatch.
+ */
+export async function verifyArchivedEpochs(input: {
+  archive: RosterArchive;
+  claimedPrefixHash: Uint8Array;
+  entries: readonly RosterEpoch[];
+}): Promise<void> {
+  const failed = new CryptoError("DECRYPT_FAILED", "Archived roster epochs differ from roster");
+  const first = input.entries[0];
+  if (!first || !isPositive(first.epoch) || input.claimedPrefixHash.length !== 32) throw failed;
+  // A_0 is not a claim: epoch 1 always chains from 32 zero bytes.
+  if (first.epoch === 1 && !equalBytes(input.claimedPrefixHash, new Uint8Array(32))) throw failed;
+
+  let computed: RosterArchive;
+  try {
+    computed = await extendRosterArchive(
+      { through: first.epoch - 1, hash: toBase64Url(input.claimedPrefixHash) },
+      input.entries,
+    );
+  } catch {
+    throw failed;
+  }
+  if (computed.through !== input.archive.through || computed.hash !== input.archive.hash) {
+    throw failed;
+  }
+}
+
+/**
+ * Keeps the newest `ROSTER_EPOCH_WINDOW` of `epochs` and moves older ones into `archive`, which must
+ * end right before the oldest moved epoch. Converts a version 1/2 epoch list (with the empty archive)
+ * and appends to a version-3 window alike.
+ */
+export async function windowRosterEpochs(input: {
+  epochs: readonly RosterEpoch[];
+  archive: RosterArchive;
+}): Promise<{ epochs: RosterEpoch[]; archive: RosterArchive }> {
+  const sorted = [...input.epochs].sort((a, b) => a.epoch - b.epoch);
+  const keep = Math.min(sorted.length, ROSTER_EPOCH_WINDOW);
+  const dropped = sorted.slice(0, sorted.length - keep);
+  return {
+    epochs: sorted.slice(sorted.length - keep),
+    archive: await extendRosterArchive(input.archive, dropped),
+  };
+}
+
+/**
+ * Creates a canonical version-3 roster signed with the owner's identity signing seed. `epochs` may be
+ * longer than the window (a version 1/2 list being converted, or a window plus a new epoch): older
+ * entries move into `archive` (`windowRosterEpochs`). The result must list contiguous epochs ending at
+ * `epoch` right after the archive, or this throws `CryptoError` (`BAD_INPUT`). The caller must have
+ * approved every listed identity and verified every listed Worker's pairing.
  */
 export async function signRoster(
   body: Omit<WorkspaceRoster, "v">,
   signingSeed: Uint8Array,
 ): Promise<SignedRoster> {
+  const windowed = await windowRosterEpochs(body);
+  if (!isWindow(windowed.epochs, windowed.archive, body.epoch)) {
+    throw new CryptoError("BAD_INPUT", "Roster epochs are not a window ending at the current epoch");
+  }
   const canonical: WorkspaceRoster = {
-    v: 2,
+    v: 3,
     workspace: body.workspace,
     version: body.version,
     epoch: body.epoch,
@@ -65,13 +179,14 @@ export async function signRoster(
       keyId: body.owner.keyId,
       fingerprint: body.owner.fingerprint,
     },
-    epochs: body.epochs.map((entry) => ({
+    epochs: windowed.epochs.map((entry) => ({
       epoch: entry.epoch,
       memberKeyId: entry.memberKeyId,
       memberKeyHash: entry.memberKeyHash,
       ownerKeyId: entry.ownerKeyId,
       ownerKeyHash: entry.ownerKeyHash,
     })),
+    archive: { through: windowed.archive.through, hash: windowed.archive.hash },
     members: body.members.map((member) => ({
       userId: member.userId,
       keyId: member.keyId,
@@ -118,9 +233,31 @@ function isPositive(value: unknown): value is number {
 }
 
 /**
+ * Version-3 window shape: the newest `min(epoch, ROSTER_EPOCH_WINDOW)` epochs in ascending,
+ * contiguous order ending at `epoch`, right after `archive.through`; an archive of nothing is `A_0`.
+ */
+function isWindow(epochs: readonly RosterEpoch[], archive: RosterArchive, epoch: number): boolean {
+  if (
+    !archive ||
+    typeof archive !== "object" ||
+    !Number.isSafeInteger(archive.through) ||
+    archive.through < 0 ||
+    !isDigest(archive.hash) ||
+    (archive.through === 0 && archive.hash !== EMPTY_ROSTER_ARCHIVE.hash) ||
+    epochs.length !== Math.min(epoch, ROSTER_EPOCH_WINDOW) ||
+    archive.through !== epoch - epochs.length
+  ) {
+    return false;
+  }
+  return epochs.every((entry, index) => entry?.epoch === archive.through + 1 + index);
+}
+
+/**
  * Verifies a roster against the pinned owner: signer key, signature, workspace, owner binding, version
- * not below `highWater` (the reader's rollback mark), and the shape of every epoch, member and Worker.
- * Throws `CryptoError` (`DECRYPT_FAILED` for signature/version, `BAD_ENVELOPE` for the body).
+ * not below `highWater` (the reader's rollback mark), and the shape of every epoch, member and Worker,
+ * plus the window and archive fields of version 3. Archived epochs are verified separately
+ * (`verifyArchivedEpochs`). Throws `CryptoError` (`DECRYPT_FAILED` for signature/version,
+ * `BAD_ENVELOPE` for the body).
  */
 export async function verifyRoster(
   input: SignedRoster & { workspaceId: string; owner: RosterOwner; highWater: number },
@@ -145,7 +282,7 @@ export async function verifyRoster(
   if (
     !body ||
     typeof body !== "object" ||
-    (body.v !== 1 && body.v !== 2) ||
+    (body.v !== 1 && body.v !== 2 && body.v !== 3) ||
     body.workspace !== input.workspaceId ||
     body.version !== input.version ||
     !isPositive(body.version) ||
@@ -156,7 +293,7 @@ export async function verifyRoster(
     body.owner.fingerprint !== input.owner.fingerprint ||
     !Array.isArray(body.epochs) ||
     !Array.isArray(body.members) ||
-    (body.v === 2 && !Array.isArray(body.workers))
+    (body.v !== 1 && !Array.isArray(body.workers))
   )
     throw new CryptoError("BAD_ENVELOPE", "Invalid roster body");
 
@@ -177,6 +314,8 @@ export async function verifyRoster(
   }
   if (!epochIds.has(body.epoch))
     throw new CryptoError("BAD_ENVELOPE", "Roster current epoch missing");
+  if (body.v === 3 && !isWindow(body.epochs, body.archive, body.epoch))
+    throw new CryptoError("BAD_ENVELOPE", "Invalid roster epoch window");
 
   const members = new Set<string>();
   for (const member of body.members) {
@@ -192,7 +331,7 @@ export async function verifyRoster(
     members.add(member.userId);
   }
 
-  const workers = body.v === 2 ? body.workers : [];
+  const workers = body.v === 1 ? [] : body.workers;
   const workerIds = new Set<string>();
   for (const worker of workers) {
     if (
@@ -206,5 +345,9 @@ export async function verifyRoster(
       throw new CryptoError("BAD_ENVELOPE", "Invalid roster worker");
     workerIds.add(worker.workerId);
   }
-  return { ...body, workers };
+  const archive =
+    body.v === 3
+      ? { through: body.archive.through, hash: body.archive.hash }
+      : { ...EMPTY_ROSTER_ARCHIVE };
+  return { ...body, archive, workers };
 }

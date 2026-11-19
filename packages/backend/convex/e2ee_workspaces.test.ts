@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { expect, test, vi } from "vitest";
 import {
   grantStatement,
+  ROSTER_EPOCH_WINDOW,
   rosterStatement,
   sign,
   signingPublicKeyFromSeed,
@@ -131,6 +132,37 @@ async function rotation(workspace: Id<"workspaces">, epoch = 1) {
       await grant(workspace, "owner", epoch),
       await grant(workspace, "owner", epoch, "owner", "owner"),
     ],
+    roster: {
+      version: epoch,
+      body: body.buffer,
+      signature: (
+        await sign(seeds.owner, rosterStatement({ workspaceId: workspace, body }))
+      ).slice().buffer,
+      signerKeyId: keyId(1),
+    },
+  };
+}
+/** Stand-in roster archive chain value after `through`; the server stores it, readers verify it. */
+const archiveHash = (through: number) =>
+  toBase64Url(new Uint8Array(32).fill(through === 0 ? 0 : (through % 255) + 1));
+/** `rotation` with a version-3 roster body: an epoch window plus the archive commitment. */
+async function windowedRotation(workspace: Id<"workspaces">, epoch: number) {
+  const through = Math.max(0, epoch - ROSTER_EPOCH_WINDOW);
+  const body = new TextEncoder().encode(
+    JSON.stringify({
+      v: 3,
+      workspace,
+      version: epoch,
+      epoch,
+      owner: { userId: "owner", keyId: keyId(1), fingerprint: "owner" },
+      epochs: [],
+      archive: { through, hash: archiveHash(through) },
+      members: [],
+      workers: [],
+    }),
+  );
+  return {
+    ...(await rotation(workspace, epoch)),
     roster: {
       version: epoch,
       body: body.buffer,
@@ -361,6 +393,66 @@ test("member removal requires atomic rotation and revokes shared-chat membership
     expect((await ctx.db.get("aisdk_chats", chatId))?.rekey).toBe(true);
     expect((await ctx.db.get("workspaces", workspace))?.keyEpoch).toBe(2);
   });
+});
+
+test("workspace keys rotate past the roster window and the former 200-epoch cap", async () => {
+  const { t, workspace, owner, member } = await fixture();
+  await owner.mutation(api.e2ee.bootstrapWorkspaceKeys, {
+    workspace,
+    ...(await windowedRotation(workspace, 1)),
+  });
+  const last = ROSTER_EPOCH_WINDOW + 3;
+  for (let epoch = 2; epoch <= last; epoch++) {
+    await owner.mutation(api.e2ee.rotateWorkspaceEpoch, {
+      workspace,
+      ...(await windowedRotation(workspace, epoch)),
+    });
+  }
+
+  // Key state is the window only: the newest epochs and the grants of those epochs.
+  const state = await owner.query(api.e2ee.workspaceKeyState, { workspace });
+  const window = Array.from({ length: ROSTER_EPOCH_WINDOW }, (_, index) => index + 4);
+  expect(state.epochs.map((row) => row.epoch)).toEqual(window);
+  expect([...new Set(state.myGrants.map((row) => row.epoch))].sort((a, b) => a - b)).toEqual(window);
+
+  // Archived rows come with the caller's grants and the chain value the roster archived them at.
+  const page = await owner.query(api.e2ee.workspaceArchivedEpochs, {
+    workspace,
+    fromEpoch: 3,
+    toEpoch: 3,
+  });
+  expect(page.prefixHash).toBe(archiveHash(2));
+  expect(page.epochs.map((row) => row.epoch)).toEqual([3]);
+  expect(page.myGrants.map((row) => row.epoch)).toEqual([3, 3]);
+  const first = await member.query(api.e2ee.workspaceArchivedEpochs, {
+    workspace,
+    fromEpoch: 1,
+    toEpoch: 3,
+  });
+  expect(first.prefixHash).toBeNull();
+  expect(first.epochs.map((row) => row.epoch)).toEqual([1, 2, 3]);
+  expect(first.myGrants).toEqual([]);
+  await expect(
+    owner.query(api.e2ee.workspaceArchivedEpochs, { workspace, fromEpoch: last, toEpoch: last + 1 }),
+  ).rejects.toThrow("E2EE_KEYS_INVALID");
+
+  // Rotation and member removal continue beyond the former cap.
+  await t.run((ctx) => ctx.db.patch("workspaces", workspace, { keyEpoch: 200 }));
+  await owner.mutation(api.e2ee.rotateWorkspaceEpoch, {
+    workspace,
+    ...(await windowedRotation(workspace, 201)),
+  });
+  await owner.mutation(api.workspaces.removeMember, {
+    workspace,
+    email: "member@example.invalid",
+    rotation: await windowedRotation(workspace, 202),
+  });
+  await t.run(async (ctx) => {
+    expect((await ctx.db.get("workspaces", workspace))?.keyEpoch).toBe(202);
+  });
+  await expect(
+    owner.query(api.e2ee.workspaceArchivedEpochs, { workspace, fromEpoch: 1, toEpoch: 65 }),
+  ).rejects.toThrow("E2EE_KEYS_INVALID");
 });
 
 test("shared Home rows include only listed members and expose their encrypted title wrap", async () => {
@@ -1087,7 +1179,7 @@ test("member re-grants must target the identity pinned in the signed roster", as
   ).rejects.toThrow("E2EE_KEYS_INVALID");
 });
 
-test("non-creators rotate a chat key only when it needs rotation, and epochs are capped", async () => {
+test("non-creators rotate a chat key only when it needs rotation, and epochs are not capped", async () => {
   const f = await fixture();
   await f.owner.mutation(api.e2ee.bootstrapWorkspaceKeys, {
     workspace: f.workspace,
@@ -1121,11 +1213,16 @@ test("non-creators rotate a chat key only when it needs rotation, and epochs are
   );
   await f.member.mutation(api.e2ee.rotateChatKey, await rotate("member", 3));
 
-  await f.t.run((ctx) => ctx.db.patch("aisdk_chats", chat, { keyEpoch: 199 }));
-  await f.member.mutation(api.e2ee.rotateChatKey, await rotate("member", 200));
-  await expect(
-    f.member.mutation(api.e2ee.rotateChatKey, await rotate("member", 201)),
-  ).rejects.toThrow("E2EE_KEYS_INVALID");
+  // Past the former 200-epoch cap: rotation continues and `chatKeys` serves a bounded window, or
+  // exactly the epoch asked for.
+  await f.t.run((ctx) => ctx.db.patch("aisdk_chats", chat, { keyEpoch: 250 }));
+  await f.member.mutation(api.e2ee.rotateChatKey, await rotate("member", 251));
+  const window = await f.member.query(api.e2ee.chatKeys, { chatId: chat });
+  expect(window.keyEpoch).toBe(251);
+  expect(window.epochs.map((row) => row.epoch)).toEqual([1, 2, 3, 251]);
+  const single = await f.member.query(api.e2ee.chatKeys, { chatId: chat, epoch: 2 });
+  expect(single.epochs.map((row) => row.epoch)).toEqual([2]);
+  expect(single.wraps.every((wrap) => wrap.chatEpoch === 2)).toBe(true);
 });
 
 test("sealing info is withheld while a chat key predates the workspace key or awaits rekey", async () => {

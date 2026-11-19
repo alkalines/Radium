@@ -169,9 +169,16 @@ export const identityNames = query({
   },
 });
 
-/** Historical public keys verify old signatures after reset; pending keys never authenticate data. */
+/**
+ * Historical public keys verify old signatures after reset; pending keys never authenticate data.
+ * Keys of users the caller cannot see are refused, except the signer of `chatEpoch` (an epoch of a
+ * chat the caller can read), so a removed creator's historical signatures stay verifiable.
+ */
 export const identityKeysByKeyId = query({
-  args: { keyIds: v.array(v.string()), chatId: v.optional(v.id("aisdk_chats")) },
+  args: {
+    keyIds: v.array(v.string()),
+    chatEpoch: v.optional(v.object({ chatId: v.id("aisdk_chats"), epoch: v.number() })),
+  },
   returns: v.array(
     v.union(
       v.null(),
@@ -192,22 +199,15 @@ export const identityKeysByKeyId = query({
       invalidKeys();
     }
     const allowed = await accessibleIdentityUsers(ctx, user._id);
-    const chatSigners = new Set<string>();
-    if (args.chatId) {
-      // A removed creator's historical signatures remain verifiable by surviving readers.
-      const { chat } = await requireAccessibleChat(ctx, args.chatId);
-      const epochs = await ctx.db
+    let chatSigner: string | undefined;
+    if (args.chatEpoch) {
+      const { chatId, epoch } = args.chatEpoch;
+      const { chat } = await requireAccessibleChat(ctx, chatId);
+      const row = await ctx.db
         .query("e2ee_chat_keys")
-        .withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat._id))
-        .take(201);
-      if (epochs.length > 200) {
-        invalidKeys();
-      }
-      for (const epoch of epochs) {
-        if (epoch.signerKeyId) {
-          chatSigners.add(epoch.signerKeyId);
-        }
-      }
+        .withIndex("by_chat_and_epoch", (q) => q.eq("chat", chat._id).eq("epoch", epoch))
+        .unique();
+      chatSigner = row?.signerKeyId;
     }
     const results = [];
     for (const keyId of args.keyIds) {
@@ -220,7 +220,7 @@ export const identityKeysByKeyId = query({
         results.push(null);
         continue;
       }
-      if (!allowed.has(identity.userId) && !chatSigners.has(keyId)) {
+      if (!allowed.has(identity.userId) && chatSigner !== keyId) {
         invalidKeys();
       }
       results.push({

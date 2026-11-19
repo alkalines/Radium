@@ -1,6 +1,6 @@
-import { workspaceKeyStateValidator } from "./responses";
+import { workspaceArchivedEpochsValidator, workspaceKeyStateValidator } from "./responses";
 import { v } from "convex/values";
-import { grantStatement, rosterStatement, verify } from "radium-crypto";
+import { grantStatement, ROSTER_EPOCH_WINDOW, rosterStatement, verify } from "radium-crypto";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "../../convex/_generated/server";
 import { authComponent } from "../../convex/auth";
@@ -66,7 +66,12 @@ export function rosterMembers(roster: Doc<"e2ee_rosters"> | null): Map<string, s
     return invalidKeys();
   }
 }
-/** Verifies a monotonic roster against the owner's active signing identity and workspace binding. */
+/**
+ * Verifies a monotonic roster against the owner's active signing identity and workspace binding.
+ * Version 3 bodies list at most `ROSTER_EPOCH_WINDOW` epochs; their `archive.hash` is copied onto
+ * the epoch row `archive.through` (`rosterArchiveHash`) as the claimed prefix readers start
+ * archive verification from. Version 1/2 bodies (older clients) still list every epoch.
+ */
 export async function storeRoster(
   ctx: MutationCtx,
   workspace: Doc<"workspaces">,
@@ -92,10 +97,13 @@ export async function storeRoster(
   ) {
     invalidKeys();
   }
+  // Version 3 window commitment: the epoch row that leaves the window and its chain value.
+  let archive: { through: number; hash: string } | null = null;
   try {
     const body = JSON.parse(new TextDecoder().decode(roster.body));
+    const maxEpochs = body.v === 3 ? ROSTER_EPOCH_WINDOW : 200;
     if (
-      (body.v !== 1 && body.v !== 2) ||
+      (body.v !== 1 && body.v !== 2 && body.v !== 3) ||
       body.workspace !== workspace._id ||
       body.version !== roster.version ||
       body.epoch !== epoch ||
@@ -104,9 +112,24 @@ export async function storeRoster(
       !Array.isArray(body.members) ||
       body.members.length > 200 ||
       !Array.isArray(body.epochs) ||
-      body.epochs.length > 200
+      body.epochs.length > maxEpochs
     ) {
       invalidKeys();
+    }
+    if (body.v === 3) {
+      const through = body.archive?.through;
+      const hash = body.archive?.hash;
+      // Readers verify the chain; the server only bounds what it copies onto an epoch row.
+      if (
+        !Number.isSafeInteger(through) ||
+        through < 0 ||
+        through >= epoch! ||
+        typeof hash !== "string" ||
+        hash.length !== 43
+      ) {
+        invalidKeys();
+      }
+      archive = { through, hash };
     }
     const users = await workspaceUsers(ctx, workspace);
     const seen = new Set<string>();
@@ -124,7 +147,7 @@ export async function storeRoster(
       seen.add(member.userId);
     }
     // Version 1 rosters predate Worker keys and certify no Worker.
-    await admitRosterWorkers(ctx, workspace._id, body.v === 2 ? body.workers : []);
+    await admitRosterWorkers(ctx, workspace._id, body.v === 1 ? [] : body.workers);
   } catch {
     invalidKeys();
   }
@@ -133,6 +156,20 @@ export async function storeRoster(
     workspace: workspace._id,
     createdAt: Date.now(),
   });
+  if (archive && archive.through > 0) {
+    const through = archive.through;
+    const archived = await ctx.db
+      .query("e2ee_workspace_epochs")
+      .withIndex("by_workspace_and_epoch", (q) =>
+        q.eq("workspace", workspace._id).eq("epoch", through),
+      )
+      .unique();
+    if (archived && archived.rosterArchiveHash !== archive.hash) {
+      await ctx.db.patch("e2ee_workspace_epochs", archived._id, {
+        rosterArchiveHash: archive.hash,
+      });
+    }
+  }
 }
 /** Validates and stores a signed grant; self grants are allowed only by explicit join flows. */
 export async function storeGrant(
@@ -267,7 +304,6 @@ export async function insertWorkspaceEpoch(
   }
   if (
     epoch.epoch !== (workspace.keyEpoch ?? 0) + 1 ||
-    epoch.epoch > 200 ||
     epoch.suite !== 1 ||
     epoch.memberPublicKey.byteLength !== 1216 ||
     epoch.ownerPublicKey.byteLength !== 1216 ||
@@ -392,7 +428,11 @@ export const publishRoster = mutation({
     return null;
   },
 });
-/** Reads bounded key state, revealing admission proofs only to eligible granters. */
+/**
+ * Reads bounded key state, revealing admission proofs only to eligible granters. `epochs` is the
+ * roster window (the newest `ROSTER_EPOCH_WINDOW` epochs, ascending) and `myGrants`/`grantedEpoch`
+ * cover only those epochs; older epochs and their grants come from `workspaceArchivedEpochs`.
+ */
 export const workspaceKeyState = query({
   args: { workspace: v.id("workspaces") },
   returns: workspaceKeyStateValidator,
@@ -400,13 +440,13 @@ export const workspaceKeyState = query({
     const user = await authComponent.getAuthUser(ctx);
     const workspace = await requireWorkspaceAccessForUser(ctx, args.workspace, user._id);
     const owner = workspace.ownerId === user._id;
-    const epochs = await ctx.db
+    const newestFirst = await ctx.db
       .query("e2ee_workspace_epochs")
       .withIndex("by_workspace_and_epoch", (q) => q.eq("workspace", workspace._id))
-      .take(201);
-    if (epochs.length > 200) {
-      invalidKeys();
-    }
+      .order("desc")
+      .take(ROSTER_EPOCH_WINDOW);
+    const epochs = newestFirst.reverse();
+    const windowStart = epochs[0]?.epoch ?? 1;
     const roster = await latestRoster(ctx, workspace._id);
     const listed = rosterMembers(roster);
     const members = [];
@@ -416,7 +456,7 @@ export const workspaceKeyState = query({
       const grants = await ctx.db
         .query("e2ee_workspace_grants")
         .withIndex("by_workspace_and_userId_and_epoch", (q) =>
-          q.eq("workspace", workspace._id).eq("userId", userId),
+          q.eq("workspace", workspace._id).eq("userId", userId).gte("epoch", windowStart),
         )
         .take(401);
       if (grants.length > 400) {
@@ -484,5 +524,61 @@ export const workspaceKeyState = query({
           expiresAt: i.expiresAt,
         })),
     };
+  },
+});
+/** Most epochs `workspaceArchivedEpochs` returns per call. */
+export const ARCHIVED_EPOCH_PAGE = 64;
+/**
+ * Public rows of workspace epochs `fromEpoch..toEpoch` (at most `ARCHIVED_EPOCH_PAGE`), for epochs
+ * older than the `workspaceKeyState` window, with the caller's own grants of those epochs. Same
+ * access rule as `workspaceKeyState`. `prefixHash` is the server's claim for the roster archive
+ * chain value before `fromEpoch` (`rosterArchiveHash` of the previous row; null for epoch 1, whose
+ * prefix is fixed, or when unknown). Nothing here is trusted: clients verify the rows against the
+ * signed roster archive (`verifyArchivedEpochs`) and grants by signature.
+ */
+export const workspaceArchivedEpochs = query({
+  args: { workspace: v.id("workspaces"), fromEpoch: v.number(), toEpoch: v.number() },
+  returns: workspaceArchivedEpochsValidator,
+  handler: async (ctx, args) => {
+    const user = await authComponent.getAuthUser(ctx);
+    const workspace = await requireWorkspaceAccessForUser(ctx, args.workspace, user._id);
+    requirePositive(args.fromEpoch);
+    requirePositive(args.toEpoch);
+    if (
+      args.toEpoch < args.fromEpoch ||
+      args.toEpoch - args.fromEpoch >= ARCHIVED_EPOCH_PAGE ||
+      args.toEpoch > (workspace.keyEpoch ?? 0)
+    ) {
+      invalidKeys();
+    }
+    const epochs = await ctx.db
+      .query("e2ee_workspace_epochs")
+      .withIndex("by_workspace_and_epoch", (q) =>
+        q.eq("workspace", workspace._id).gte("epoch", args.fromEpoch).lte("epoch", args.toEpoch),
+      )
+      .take(ARCHIVED_EPOCH_PAGE);
+    const myGrants = await ctx.db
+      .query("e2ee_workspace_grants")
+      .withIndex("by_workspace_and_userId_and_epoch", (q) =>
+        q
+          .eq("workspace", workspace._id)
+          .eq("userId", user._id)
+          .gte("epoch", args.fromEpoch)
+          .lte("epoch", args.toEpoch),
+      )
+      .take(ARCHIVED_EPOCH_PAGE * 3 + 1);
+    if (myGrants.length > ARCHIVED_EPOCH_PAGE * 3) {
+      invalidKeys();
+    }
+    const previous =
+      args.fromEpoch > 1
+        ? await ctx.db
+            .query("e2ee_workspace_epochs")
+            .withIndex("by_workspace_and_epoch", (q) =>
+              q.eq("workspace", workspace._id).eq("epoch", args.fromEpoch - 1),
+            )
+            .unique()
+        : null;
+    return { prefixHash: previous?.rosterArchiveHash ?? null, epochs, myGrants };
   },
 });

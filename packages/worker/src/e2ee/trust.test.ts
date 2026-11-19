@@ -3,9 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  EMPTY_ROSTER_ARCHIVE,
   fingerprint,
   identitySelfSignature,
   randomBytes,
+  ROSTER_EPOCH_WINDOW,
+  sha256,
   sign,
   signingPublicKeyFromSeed,
   signRoster,
@@ -193,6 +196,7 @@ describe("WorkerTrust", () => {
         version: input.version,
         epoch: 1,
         owner: signer.binding,
+        archive: { ...EMPTY_ROSTER_ARCHIVE },
         epochs: [
           {
             epoch: 1,
@@ -271,6 +275,70 @@ describe("WorkerTrust", () => {
     await trust.roster();
     await serve(served, { version: 1, workers: [] });
     expect(await reason((await open()).roster())).toBe("invalid");
+  });
+
+  it("reads the current owner key from a roster whose older epochs left the window", async () => {
+    const { served, self, open } = await setup();
+    const trust = await open();
+    const current = ROSTER_EPOCH_WINDOW + 8;
+    const ownerPublicKey = randomBytes(1216);
+    const row = {
+      epoch: current,
+      memberKeyId: toBase64Url(randomBytes(16)),
+      memberPublicKey: randomBytes(1216),
+      ownerKeyId: toBase64Url(randomBytes(16)),
+      ownerPublicKey,
+    };
+    const epochs = Array.from({ length: current }, (_, index) => ({
+      epoch: index + 1,
+      memberKeyId: toBase64Url(randomBytes(16)),
+      memberKeyHash: toBase64Url(randomBytes(32)),
+      ownerKeyId: toBase64Url(randomBytes(16)),
+      ownerKeyHash: toBase64Url(randomBytes(32)),
+    }));
+    epochs[current - 1] = {
+      ...epochs[current - 1]!,
+      ownerKeyId: row.ownerKeyId,
+      ownerKeyHash: toBase64Url(await sha256(ownerPublicKey)),
+    };
+    const signed = await signRoster(
+      {
+        workspace: workspaceId,
+        version: 5,
+        epoch: current,
+        owner: owner.binding,
+        archive: { ...EMPTY_ROSTER_ARCHIVE },
+        epochs,
+        members: [],
+        workers: [self],
+      },
+      owner.seed,
+    );
+    served.state = {
+      roster: {
+        version: signed.version,
+        body: signed.body.slice().buffer,
+        signature: signed.signature.slice().buffer,
+        signerKeyId: signed.signerKeyId,
+      },
+      epochs: [
+        {
+          ...row,
+          memberPublicKey: row.memberPublicKey.slice().buffer,
+          ownerPublicKey: ownerPublicKey.slice().buffer,
+        },
+      ],
+    };
+
+    const roster = await trust.roster();
+    expect(roster.v).toBe(3);
+    expect(roster.epochs).toHaveLength(ROSTER_EPOCH_WINDOW);
+    expect(roster.archive.through).toBe(current - ROSTER_EPOCH_WINDOW);
+    expect(await trust.ownerPublicKey()).toEqual({
+      epoch: current,
+      keyId: row.ownerKeyId,
+      publicKey: ownerPublicKey,
+    });
   });
 
   it("verifies only the pinned owner and roster members as signers", async () => {

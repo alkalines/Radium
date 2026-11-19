@@ -505,14 +505,15 @@ async function openCheckedChatSeed(chatId: Id<"aisdk_chats">, epoch: number): Pr
   if (cached) return cached;
   if (keyManager.getSnapshot().state !== "unlocked") throw new KeysLockedError();
   const generation = secretGeneration();
-  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+  // Exactly this epoch: the default `chatKeys` answer lists only the newest epochs.
+  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId, epoch });
   if (!state.e2eeId) throw new CryptoError("BAD_INPUT", "Chat has no keys");
   const row = state.epochs.find((entry) => entry.epoch === epoch);
   if (!row || !row.signature || !row.signerKeyId)
     throw new CryptoError("DECRYPT_FAILED", "Chat key is unsigned");
-  const historical = (await fetchHistoricalIdentities([row.signerKeyId], chatId)).get(
-    row.signerKeyId,
-  );
+  const historical = (
+    await fetchHistoricalIdentities([row.signerKeyId], { chatId, epoch })
+  ).get(row.signerKeyId);
   if (!historical) throw new CryptoError("DECRYPT_FAILED", "Chat key signer unavailable");
   let signer: PublicIdentity | undefined;
   if (historical.status === "retired") {
@@ -717,9 +718,9 @@ async function currentBinding(
   const failed = new CryptoError("DECRYPT_FAILED", "Chat key binding failed");
   if (!row.bindingSignature || !row.signature || !row.signerKeyId || !state.e2eeId) throw failed;
   if (policy.scope !== "shared" && row.bindingMembers?.length) throw failed;
-  const identity = (await fetchHistoricalIdentities([row.signerKeyId], chatId)).get(
-    row.signerKeyId,
-  );
+  const identity = (
+    await fetchHistoricalIdentities([row.signerKeyId], { chatId, epoch: row.epoch })
+  ).get(row.signerKeyId);
   if (!identity) throw new CryptoError("DECRYPT_FAILED", "Chat key signer unavailable");
   // Historical signatures authenticate reads, never future writes.
   if (identity.status === "retired") return "rotate";
@@ -1104,13 +1105,15 @@ export async function changeChatScope(input: {
       seed: fresh.seed,
       audience,
     });
-    for (const row of state.epochs)
+    // Epochs are contiguous from 1; each is fetched and verified on its own (`openChatSeed`), as
+    // `chatKeys` lists only the newest ones.
+    for (let historical = 1; historical <= state.keyEpoch; historical++)
       wraps.push(
         ...(await wrapSeed({
           workspaceId: state.workspace,
           e2eeId: state.e2eeId,
-          epoch: row.epoch,
-          seed: await openChatSeed(input.chatId, row.epoch),
+          epoch: historical,
+          seed: await openChatSeed(input.chatId, historical),
           audience,
         })),
       );
@@ -1143,7 +1146,10 @@ export async function signUnsignedChatKeys(): Promise<void> {
   const remaining: UnsignedEpoch[] = [];
   for (const entry of entries) {
     const expected = { ...entry, policy: storedPolicy(entry.policy) };
-    const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId: expected.chatId });
+    const state = await cryptoClient().query(api.e2ee.chatKeys, {
+      chatId: expected.chatId,
+      epoch: expected.epoch,
+    });
     requireOwnUnsignedChat(state, expected);
     const row = state.epochs.find((epoch) => epoch.epoch === expected.epoch);
     if (!row || row.signature) continue;

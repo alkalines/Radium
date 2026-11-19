@@ -93,7 +93,7 @@ export function EncryptionSettings() {
       <EncryptedPasswordChange key={`password:${actionKey}`} unlocked={unlocked} reason={reason} />
       <EncryptionRecoverySettings
         key={`recovery:${actionKey}`}
-        keyId={unlocked ? status.keyId : null}
+        account={unlocked ? { userId: status.userId, keyId: status.keyId } : null}
         reason={reason}
       />
     </>

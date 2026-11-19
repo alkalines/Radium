@@ -1,18 +1,30 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import type { ConvexReactClient } from "convex/react";
+import { getFunctionName, type FunctionReference } from "convex/server";
+import type { Id } from "backend/convex/_generated/dataModel";
 import {
   chatKeyStatement,
   createAccountKeys,
+  EMPTY_ROSTER_ARCHIVE,
+  extendRosterArchive,
   fingerprint,
   generateEncryptionKeyPair,
   grantStatement,
+  identitySelfSignature,
   randomBytes,
+  ROSTER_EPOCH_WINDOW,
   sealBox,
+  sha256,
   sign,
+  signRoster,
   toBase64Url,
+  type RosterEpoch,
 } from "radium-crypto";
+import { keyManager } from "./key-manager";
 import {
   openTrustStore,
   sealTrustStore,
+  trust,
   type PublicIdentity,
   type TrustStore,
 } from "./trust-store";
@@ -23,8 +35,13 @@ import {
   sealInvitePayload,
 } from "./workspace-proofs";
 import { verifyChatEpoch } from "./chat-keys";
-import { advanceHighWater } from "./runtime";
-import { KeylessDowngradeError, keyedWorkspaceClaim, workspaceKnownKeyed } from "./workspace-keys";
+import { advanceHighWater, configureCryptoClient } from "./runtime";
+import {
+  getMemberKey,
+  KeylessDowngradeError,
+  keyedWorkspaceClaim,
+  workspaceKnownKeyed,
+} from "./workspace-keys";
 
 async function account(userId: string) {
   const keys = await createAccountKeys();
@@ -205,5 +222,206 @@ describe("keyless downgrade", () => {
     } finally {
       Reflect.deleteProperty(globalThis, "localStorage");
     }
+  });
+});
+
+describe("archived workspace epochs", () => {
+  afterEach(() => mock.restore());
+
+  /**
+   * A keyed workspace whose version-3 roster window no longer lists epochs 1..4, behind a fake
+   * backend that serves archived rows with `prefix` as its claimed chain value: the real one,
+   * none, or a wrong one. `tamper` substitutes the member key of one served archived row.
+   */
+  async function archivedWorkspace(input: {
+    workspace: string;
+    prefix: "stored" | "none" | "wrong";
+    tamper?: number;
+  }) {
+    const workspace = input.workspace as Id<"workspaces">;
+    const owner = await account("owner");
+    const total = ROSTER_EPOCH_WINDOW + 4;
+    const archivedEpoch = 2;
+    const member = await generateEncryptionKeyPair();
+    const rows: Array<{ epoch: number; memberPublicKey: ArrayBuffer; [field: string]: unknown }> =
+      [];
+    const entries: RosterEpoch[] = [];
+    for (let epoch = 1; epoch <= total; epoch++) {
+      const memberPublicKey = epoch === archivedEpoch ? member.publicKey : randomBytes(1216);
+      const ownerPublicKey = randomBytes(1216);
+      const row = {
+        _id: `epoch-${epoch}`,
+        _creationTime: 1,
+        workspace,
+        epoch,
+        suite: 1,
+        memberKeyId: id(),
+        memberPublicKey: memberPublicKey.slice().buffer,
+        ownerKeyId: id(),
+        ownerPublicKey: ownerPublicKey.slice().buffer,
+        createdBy: "owner",
+        createdAt: 1,
+      };
+      rows.push(row);
+      entries.push({
+        epoch,
+        memberKeyId: row.memberKeyId,
+        memberKeyHash: toBase64Url(await sha256(memberPublicKey)),
+        ownerKeyId: row.ownerKeyId,
+        ownerKeyHash: toBase64Url(await sha256(ownerPublicKey)),
+      });
+    }
+    const roster = await signRoster(
+      {
+        workspace,
+        version: 7,
+        epoch: total,
+        owner: { userId: "owner", keyId: owner.public.keyId, fingerprint: owner.public.fingerprint },
+        archive: { ...EMPTY_ROSTER_ARCHIVE },
+        epochs: entries,
+        members: [],
+        workers: [],
+      },
+      owner.identity.signing.seed,
+    );
+    const recipientKeyId = owner.public.keyId;
+    const sealed = await sealBox({
+      recipientPublicKey: owner.public.encryptionPublicKey,
+      plaintext: member.seed,
+      aad: {
+        table: "e2ee_workspace_grants",
+        workspace,
+        parent: "owner",
+        record: `${archivedEpoch}:member`,
+        field: recipientKeyId,
+      },
+      pad: "none",
+    });
+    const statement = grantStatement({
+      workspaceId: workspace,
+      epoch: archivedEpoch,
+      purpose: "member",
+      recipientUserId: "owner",
+      recipientKeyId,
+      sealed,
+    });
+    const grant = {
+      _id: "grant",
+      _creationTime: 1,
+      workspace,
+      epoch: archivedEpoch,
+      purpose: "member",
+      userId: "owner",
+      recipientKeyId,
+      granterUserId: "owner",
+      granterKeyId: owner.public.keyId,
+      sealed: sealed.slice().buffer,
+      signature: (await sign(owner.identity.signing.seed, statement)).slice().buffer,
+      createdAt: 1,
+    };
+    const selfSignature = await identitySelfSignature(owner.identity);
+    const archivedFrom: number[] = [];
+
+    spyOn(keyManager, "getSnapshot").mockImplementation(() => ({
+      state: "unlocked",
+      userId: "owner",
+      keyId: owner.public.keyId,
+      fingerprint: owner.public.fingerprint,
+    }));
+    spyOn(keyManager, "useAmk").mockImplementation(async (fn) => fn(owner.amk, owner.identity));
+    spyOn(trust, "check").mockImplementation(async () => "self");
+    configureCryptoClient({
+      query: async (fn: FunctionReference<"query">, args: Record<string, number>) => {
+        const name = getFunctionName(fn);
+        if (name === "e2ee:identityKeys") {
+          return [
+            {
+              userId: "owner",
+              keyId: owner.public.keyId,
+              suite: owner.public.suite,
+              encryptionPublicKey: owner.public.encryptionPublicKey.slice().buffer,
+              signingPublicKey: owner.public.signingPublicKey.slice().buffer,
+              selfSignature: selfSignature.slice().buffer,
+            },
+          ];
+        }
+        if (name === "e2ee:workspaceKeyState") {
+          return {
+            role: "owner",
+            ownerId: "owner",
+            keyEpoch: total,
+            epochs: rows.slice(-ROSTER_EPOCH_WINDOW),
+            roster: {
+              _id: "roster",
+              _creationTime: 1,
+              workspace,
+              version: roster.version,
+              body: roster.body.slice().buffer,
+              signature: roster.signature.slice().buffer,
+              signerKeyId: roster.signerKeyId,
+              createdAt: 1,
+            },
+            myGrants: [],
+            members: [{ userId: "owner", role: "owner", keyId: recipientKeyId, grantedEpoch: null }],
+            joinRequests: [],
+            phrase: null,
+            invites: [],
+          };
+        }
+        if (name === "e2ee:workspaceArchivedEpochs") {
+          const { fromEpoch, toEpoch } = args as { fromEpoch: number; toEpoch: number };
+          archivedFrom.push(fromEpoch);
+          let prefixHash: string | null = null;
+          if (fromEpoch > 1 && input.prefix === "stored") {
+            prefixHash = (await extendRosterArchive(EMPTY_ROSTER_ARCHIVE, entries.slice(0, fromEpoch - 1)))
+              .hash;
+          }
+          if (fromEpoch > 1 && input.prefix === "wrong") prefixHash = toBase64Url(randomBytes(32));
+          return {
+            prefixHash,
+            epochs: rows
+              .filter((row) => row.epoch >= fromEpoch && row.epoch <= toEpoch)
+              .map((row) =>
+                row.epoch === input.tamper
+                  ? { ...row, memberPublicKey: randomBytes(1216).slice().buffer }
+                  : row,
+              ),
+            myGrants: grant.epoch >= fromEpoch && grant.epoch <= toEpoch ? [grant] : [],
+          };
+        }
+        throw new Error(`Unexpected query ${name}`);
+      },
+    } as unknown as ConvexReactClient);
+    return { workspace, member, archivedFrom };
+  }
+
+  test("opens an archived epoch after checking the served rows against the signed archive", async () => {
+    const stored = await archivedWorkspace({ workspace: "archived-stored", prefix: "stored" });
+    const key = await getMemberKey(stored.workspace, 2);
+    expect(toBase64Url(key.seed)).toBe(toBase64Url(stored.member.seed));
+    // The stored chain value lets the client read from the requested epoch, not from epoch 1.
+    expect(stored.archivedFrom).toEqual([2]);
+
+    const unknown = await archivedWorkspace({ workspace: "archived-none", prefix: "none" });
+    expect(toBase64Url((await getMemberKey(unknown.workspace, 2)).seed)).toBe(
+      toBase64Url(unknown.member.seed),
+    );
+    expect(unknown.archivedFrom).toEqual([2, 1]);
+  });
+
+  test("refuses an archived epoch when a served row or the claimed prefix was substituted", async () => {
+    const tampered = await archivedWorkspace({
+      workspace: "archived-tampered",
+      prefix: "stored",
+      tamper: 3,
+    });
+    await expect(getMemberKey(tampered.workspace, 2)).rejects.toThrow(
+      "Archived roster epochs differ from roster",
+    );
+
+    const wrong = await archivedWorkspace({ workspace: "archived-wrong", prefix: "wrong" });
+    await expect(getMemberKey(wrong.workspace, 2)).rejects.toThrow(
+      "Archived roster epochs differ from roster",
+    );
   });
 });
