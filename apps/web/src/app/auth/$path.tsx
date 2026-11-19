@@ -3,10 +3,12 @@ import { magicLinkPlugin } from "@/lib/auth/magic-link-plugin";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 
 import { Auth } from "@/components/auth/auth";
+import { SETUP_ENCRYPTION_PATH } from "@/components/auth/setup-encryption";
 
 const validAuthPathSegments = new Set([
   ...Object.values(viewPaths.auth),
   magicLinkPlugin().viewPaths.auth.magicLink,
+  SETUP_ENCRYPTION_PATH,
 ]);
 
 export const Route = createFileRoute("/auth/$path")({

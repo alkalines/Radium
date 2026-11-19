@@ -1,7 +1,10 @@
 import { internal } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { ActionCtx } from "../../convex/_generated/server";
+import { createCapsule, encodeCapsule, sealWithCapsule, utf8 } from "radium-crypto";
+import { toArrayBuffer } from "@/e2ee/contract";
 import { boundedMessage } from "@/routing/failures";
+import { deliverFromMemory } from "../../convex/observability/telemetryExport";
 import type { RoutingSession } from "@/routing/session";
 import type { genCallbackType } from "@/translators/openai";
 import type {
@@ -64,6 +67,12 @@ const NODE_BATCH = 500;
 const BLOB_BATCH_COUNT = 200;
 const BLOB_BATCH_BYTES = 4 * 1024 * 1024;
 const EXISTING_BATCH = 100;
+/**
+ * Longest the response path waits for content export after the request row is written. Each
+ * destination may take up to its own delivery timeout; a slower one keeps sending only while the
+ * action is still alive, so its content may be lost (export is best-effort, never replayed).
+ */
+const CONTENT_EXPORT_WAIT_MS = 1_000;
 
 type PreparedBlob = {
   hash: string;
@@ -124,6 +133,12 @@ export class TelemetryCapture {
     | undefined;
   private chatCompletion: Id<"chat_completions"> | undefined;
   private readonly inputs: Promise<IngestedInputs | undefined>;
+  private readonly sealing: Promise<{
+    epoch: number;
+    capsule: ArrayBuffer;
+    capsuleId: Uint8Array;
+    key: Uint8Array;
+  } | null>;
   private finishing: Promise<void> | undefined;
 
   constructor(
@@ -131,8 +146,9 @@ export class TelemetryCapture {
     private readonly context: TelemetryRequestContext,
     private readonly options: StartCaptureOptions,
   ) {
-    this.inputs = this.ingestInputs().catch((error) => {
-      console.error("Telemetry input capture failed", error);
+    this.sealing = this.createSealing().catch(() => null);
+    this.inputs = this.ingestInputs().catch(() => {
+      console.error("Telemetry input capture failed");
       return undefined;
     });
   }
@@ -146,8 +162,8 @@ export class TelemetryCapture {
   outputChunk(chunk: ChatCompletions_Streaming_Chunk_Type) {
     try {
       this.streamOutput.push(chunk);
-    } catch (error) {
-      console.error("Telemetry output capture failed", error);
+    } catch {
+      console.error("Telemetry output capture failed");
     }
   }
 
@@ -159,8 +175,8 @@ export class TelemetryCapture {
         id: response.id || undefined,
         finishReason: response.choices?.[0]?.finish_reason ?? undefined,
       };
-    } catch (error) {
-      console.error("Telemetry output capture failed", error);
+    } catch {
+      console.error("Telemetry output capture failed");
     }
   }
 
@@ -199,10 +215,40 @@ export class TelemetryCapture {
    * promise. Never rejects.
    */
   finish(result: CaptureResult): Promise<void> {
-    this.finishing ??= this.finishRequest(result).catch((error) => {
-      console.error("Telemetry request capture failed", error);
+    this.finishing ??= this.finishRequest(result).catch(() => {
+      console.error("Telemetry request capture failed");
+    }).finally(async () => {
+      (await this.sealing)?.key.fill(0);
     });
     return this.finishing;
+  }
+
+  private async createSealing() {
+    const target = await this.ctx.runQuery(internal.observability.telemetryIngest.ownerKey, {
+      workspace: this.context.workspace,
+    });
+    if (!target) return null;
+    const { capsule, capsuleKey } = await createCapsule({
+      recipientPublicKey: new Uint8Array(target.publicKey),
+      aad: {
+        table: "telemetry_capsules", workspace: this.context.workspace,
+        parent: this.context.requestId, record: this.context.requestId, field: "capsule",
+      },
+    });
+    return { epoch: target.epoch, capsule: toArrayBuffer(encodeCapsule(capsule)), capsuleId: capsule.capsuleId, key: capsuleKey };
+  }
+
+  private async seal(table: string, record: string, field: string, value: unknown) {
+    const sealing = await this.sealing;
+    if (!sealing) return undefined;
+    const envelope = await sealWithCapsule({
+      capsuleKey: sealing.key,
+      capsuleId: sealing.capsuleId,
+      plaintext: utf8(JSON.stringify(value)),
+      pad: "content",
+      aad: { table, workspace: this.context.workspace, parent: this.context.requestId, record, field },
+    });
+    return { epoch: sealing.epoch, requestId: this.context.requestId, capsule: sealing.capsule, envelope: toArrayBuffer(envelope) };
   }
 
   private async ingestInputs(): Promise<IngestedInputs> {
@@ -214,9 +260,9 @@ export class TelemetryCapture {
       parts.system.length > 0
         ? prepareBlob(workspace, "system", parts.system, recordContent)
         : undefined,
-      prepareBlob(workspace, "params", parts.params, true),
+      prepareBlob(workspace, "params", parts.params, recordContent),
       Object.keys(parts.headers).length > 0
-        ? prepareBlob(workspace, "headers", parts.headers, true)
+        ? prepareBlob(workspace, "headers", parts.headers, recordContent)
         : undefined,
       Promise.all(
         parts.tools.map((tool) =>
@@ -256,11 +302,11 @@ export class TelemetryCapture {
           })
         : { depth: 0, node: undefined };
 
-    // Messages inside the stored prefix already have blobs; only the new tail needs storing.
+    // A previously redacted prefix may now be recordable; upgrade its blobs in place.
     const ids = new Map<string, Id<"telemetry_blobs">>();
-    const newMessages = messages.slice(prefix.depth);
+    const messagesToStore = recordContent ? messages : messages.slice(prefix.depth);
     await this.upsertBlobs(
-      [...tools, system, params, headers, ...newMessages].filter((blob) => blob !== undefined),
+      [...tools, system, params, headers, ...messagesToStore].filter((blob) => blob !== undefined),
       ids,
     );
     if (toolset) {
@@ -331,9 +377,8 @@ export class TelemetryCapture {
       hash: string;
       kind: TelemetryBlobKind;
       size: number;
-      content?: string;
+      sealed?: { epoch: number; requestId: string; capsule: ArrayBuffer; envelope?: ArrayBuffer };
       storage?: Id<"_storage">;
-      meta?: TelemetryBlobMeta;
       members?: Id<"telemetry_blobs">[];
     }> = [];
     let batchBytes = 0;
@@ -349,19 +394,16 @@ export class TelemetryCapture {
     };
 
     for (const blob of pending) {
-      let content: string | undefined;
+      let sealed: (typeof batch)[number]["sealed"] = blob.canonical !== undefined
+        ? await this.seal("telemetry_blobs", blob.hash, "content", { content: blob.canonical, meta: blob.meta })
+        : undefined;
       let storage: Id<"_storage"> | undefined;
-      if (blob.canonical !== undefined) {
-        if (blob.size > INLINE_BLOB_LIMIT) {
-          storage = await this.ctx.storage.store(
-            new Blob([blob.canonical], { type: "application/json" }),
-          );
-        } else {
-          content = blob.canonical;
-        }
+      if (sealed?.envelope && sealed.envelope.byteLength > INLINE_BLOB_LIMIT) {
+        storage = await this.ctx.storage.store(new Blob([sealed.envelope], { type: "application/octet-stream" }));
+        sealed = { ...sealed, envelope: undefined };
       }
 
-      const cost = (content === undefined ? 0 : blob.size) + 256 + (blob.members?.length ?? 0) * 48;
+      const cost = (sealed?.envelope?.byteLength ?? 0) + 2048 + (blob.members?.length ?? 0) * 48;
       if (
         batch.length > 0 &&
         (batch.length >= BLOB_BATCH_COUNT || batchBytes + cost > BLOB_BATCH_BYTES)
@@ -372,9 +414,8 @@ export class TelemetryCapture {
         hash: blob.hash,
         kind: blob.kind,
         size: blob.size,
-        content,
+        sealed,
         storage,
-        meta: blob.meta,
         members: blob.members,
       });
       batchBytes += cost;
@@ -416,18 +457,25 @@ export class TelemetryCapture {
     const { workspace, settings } = this.context;
     const endedAt = Date.now();
     const inputs = await this.inputs;
+    if (!inputs) return;
 
     let output: Id<"telemetry_nodes"> | undefined;
     if (inputs) {
       try {
         output = await this.ingestOutput(inputs);
-      } catch (error) {
-        console.error("Telemetry output capture failed", error);
+      } catch {
+        console.error("Telemetry output capture failed");
       }
     }
 
     const finalAttempt = this.attempts.at(-1);
-    await this.ctx.runMutation(internal.observability.telemetryIngest.finishRequest, {
+    const sealedError = settings.recordInputs || settings.recordOutputs
+      ? await this.seal("telemetry_requests", this.context.requestId, "error", {
+          error: result.error && { message: boundedMessage(result.error.message), status: result.error.status },
+          attempts: this.attempts.map((attempt) => attempt.message ?? null),
+        })
+      : undefined;
+    const request = await this.ctx.runMutation(internal.observability.telemetryIngest.finishRequest, {
       workspace,
       requestId: this.context.requestId,
       source: this.options.source,
@@ -455,12 +503,9 @@ export class TelemetryCapture {
       providerGenerationId:
         this.generation?.providerId ?? this.streamOutput.providerId ?? this.responseOutput?.id,
       chatCompletion: this.chatCompletion,
-      error: result.error && {
-        message: boundedMessage(result.error.message),
-        status: result.error.status,
-      },
+      sealedError,
       canceled: result.canceled,
-      attempts: this.attempts,
+      attempts: this.attempts.map(({ message: _message, ...attempt }) => attempt),
       input: inputs?.input,
       output,
       prefix: inputs?.prefix,
@@ -472,6 +517,22 @@ export class TelemetryCapture {
       recordsInputs: settings.recordInputs,
       recordsOutputs: settings.recordOutputs,
     });
+    const parts = decomposeRequest(this.options.rawBody, this.options.headers);
+    const delivery = deliverFromMemory(this.ctx, request, {
+      parts,
+      output: this.responseOutput ? this.responseOutput.message : this.streamOutput.message(),
+      error: result.error,
+      attempts: this.attempts,
+      recordInputs: settings.recordInputs,
+      recordOutputs: settings.recordOutputs,
+    }).catch(() => {
+      console.error("Telemetry export failed");
+    });
+    // Destinations must not hold the client's response or stream close for their full timeout.
+    const waited = Promise.withResolvers<void>();
+    const timer = setTimeout(waited.resolve, CONTENT_EXPORT_WAIT_MS);
+    await Promise.race([delivery, waited.promise]);
+    clearTimeout(timer);
   }
 }
 

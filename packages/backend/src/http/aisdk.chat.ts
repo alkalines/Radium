@@ -3,6 +3,7 @@ import { webSearch } from "@exalabs/ai-sdk";
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  generateId,
   isStepCount,
   streamText,
   toUIMessageStream,
@@ -12,6 +13,8 @@ import {
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
+import { ENCRYPTION_PUBLIC_KEY_BYTES } from "radium-crypto";
+import * as z from "zod";
 import { toExaCountry } from "../chatroom/user-location";
 import {
   EXA_TOOL_CREDENTIAL_PROVIDER,
@@ -30,7 +33,14 @@ import {
 } from "../../convex/secrets";
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
 import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
-import { buildWorkerChatTools, workerChatApprovalSecret } from "../worker/chat-tools";
+import {
+  buildWorkerChatTools,
+  parseWorkerApprovals,
+  resolveWorkerChatTransport,
+  workerChatApprovalSecret,
+  workerCodeModeInteractions,
+  type WorkerApprovalSignature,
+} from "../worker/chat-tools";
 import { buildSessionTools } from "../chatroom/session-tools";
 import { CODE_MODE_TOOL_SET_ID, QUESTION_TOOL_ID } from "../chatroom/tools";
 import { CODE_MODE_TOOL_NAME, type CodeModeInteractionKind } from "../chatroom/code-mode";
@@ -47,7 +57,10 @@ import { formatInferenceError } from "../chatroom/inference-errors";
 import { chatInterruption } from "../chatroom/interruption";
 import { logger } from "../logging/server";
 import { sessionNotificationKind } from "../notifications/session";
-import { inlineStoredFiles } from "../chatroom/files";
+import { inlineStoredFiles, storedFileUrls } from "../chatroom/files";
+import { sealChatMessages, sealChatTitle } from "../chatroom/sealing";
+import { firstUserMessageText, generateChatTitle } from "../chatroom/titles";
+import { decodeExactBytes, toArrayBuffer } from "../e2ee/contract";
 
 /**
  * Model calls one chat request may make before it stops. A request still calling tools at the cap
@@ -57,6 +70,7 @@ const MAX_CHAT_STEPS = 50;
 
 type AISDKChatRequestBody = {
   messages: UIMessage[];
+  revisions?: Record<string, number>;
   model: string;
   provider?: string;
   serviceTier?: string;
@@ -65,7 +79,35 @@ type AISDKChatRequestBody = {
   reasoningBudget?: number;
   id?: Id<"aisdk_chats">;
   chatId?: Id<"aisdk_chats">;
+  /** User approval signatures by tool call ID (`parseWorkerApprovals`); paired Workers need them. */
+  approvals?: unknown;
+  /** The chat key the client prepared this turn for (`parseRecipientKey`); encrypted chats need it. */
+  recipientKey?: unknown;
 };
+
+/** Wire bounds of `recipientKey`; the public key is unpadded base64url of exactly one key. */
+const recipientKeySchema = z.object({
+  e2eeId: z.string().min(1).max(128),
+  epoch: z.number().int().positive(),
+  publicKey: z.string().max(Math.ceil((ENCRYPTION_PUBLIC_KEY_BYTES * 4) / 3)),
+});
+
+/**
+ * Parse the chat request body's `recipientKey` (`{ e2eeId, epoch, publicKey }`): the exact current
+ * epoch public key the browser encrypted this turn's files to and expects the turn sealed to.
+ * Malformed input yields `null`; absent input yields `undefined`.
+ */
+function parseRecipientKey(
+  value: unknown,
+): { e2eeId: string; epoch: number; publicKey: ArrayBuffer } | null | undefined {
+  if (value === undefined) return undefined;
+  const parsed = recipientKeySchema.safeParse(value);
+  const publicKey =
+    parsed.success && decodeExactBytes(parsed.data.publicKey, ENCRYPTION_PUBLIC_KEY_BYTES);
+  return parsed.success && publicKey
+    ? { ...parsed.data, publicKey: toArrayBuffer(publicKey) }
+    : null;
+}
 
 /** Handles the authenticated AI SDK chat request body and stream lifecycle. */
 export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Response> {
@@ -89,7 +131,15 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
   const body = (await req.json()) as AISDKChatRequestBody;
   const chatId = body?.chatId || body?.id;
 
-  if (!chatId || !body.model || !Array.isArray(body.messages)) {
+  const approvals = parseWorkerApprovals(body?.approvals);
+  const recipientKey = parseRecipientKey(body?.recipientKey);
+  if (
+    !chatId ||
+    !body.model ||
+    !Array.isArray(body.messages) ||
+    !approvals ||
+    recipientKey === null
+  ) {
     return Response.json(
       { error: { message: "Invalid chat request", code: 400 } },
       { status: 400 },
@@ -118,16 +168,50 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     );
   }
   const workspaceId = workspace._id;
+  // Encrypted turns are sealed only to the exact key the sender's client prepared, checked again
+  // when saving: a rotation or audience change in between fails the turn instead of sealing to a
+  // key the client did not choose. Checked before a billed generation whose result could not be
+  // sealed; a client key for a chat the server sees as keyless would otherwise save plaintext.
+  const recipient = recipientKey ? { ...recipientKey, userId } : undefined;
+  if (
+    (chat.e2eeId || recipient) &&
+    !(
+      chat.e2eeId &&
+      recipient &&
+      (await ctx.runQuery(internal.aisdk.chatSealingInfo, { chatId, recipient }))
+    )
+  ) {
+    return Response.json(
+      { error: { message: "This chat's key must be rotated before sending.", code: 409 } },
+      { status: 409 },
+    );
+  }
+  // Historical plaintext moved into a sidecar; this turn can only be saved natively, so the
+  // browser must create the chat's keys first.
+  if (!chat.e2eeId && chat.legacyContent) {
+    return Response.json(
+      { error: { message: "Enable encryption for this chat before sending.", code: 409 } },
+      { status: 409 },
+    );
+  }
+  if (chat.e2eeId) {
+    for (const message of body.messages) {
+      if (!message.id) {
+        message.id = generateId();
+      }
+    }
+  }
 
   const previousPerformance = getLastAssistantPerformance(body.messages);
   const telemetrySettings = await ctx.runQuery(
     internal.observability.telemetry.getSettingsForWorkspace,
     { workspace: workspaceId },
   );
-  // Workspace owners can read owner-managed telemetry, so member-owned personal
-  // chats must not contribute prompt or response content to that channel.
+  // Workspace owners can read telemetry, but another creator's personal/shared conversation must
+  // never contribute content to that owner-managed channel. Keyed chats never record content
+  // until telemetry content is sealed: captured text would be plaintext of an encrypted chat.
   const telemetrySettingsForRequest =
-    (chat.scope ?? "personal") === "personal" && chat.userId !== workspace.ownerId
+    chat.e2eeId || ((chat.scope ?? "personal") !== "workspace" && chat.userId !== workspace.ownerId)
       ? { ...telemetrySettings, recordInputs: false, recordOutputs: false }
       : telemetrySettings;
   const generations: Array<{ completionTokens: number; generationTimeMs: number }> = [];
@@ -200,6 +284,8 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         workspaceId,
         ownerId: workspace.ownerId,
         selection: chat.worker,
+        encrypted: Boolean(chat.e2eeId),
+        approvals,
       },
       { systemPrompt: systemPrompt !== null },
     );
@@ -238,11 +324,49 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
     );
   }
 
-  await ctx.runMutation(internal.aisdk.EditChat, {
-    chatId,
-    activeStream: true,
-    messages_queue: null,
-  });
+  try {
+    await ctx.runMutation(internal.aisdk.EditChat, {
+      chatId,
+      activeStream: true,
+      messages_queue: null,
+    });
+  } catch (error) {
+    await closeTools();
+    if (chat.e2eeId) throw error;
+    // Plaintext saves are frozen; nothing was started.
+    return Response.json(
+      { error: { message: "This chat must be encrypted before it can continue.", code: 409 } },
+      { status: 409 },
+    );
+  }
+  // Title work shares the first request's in-memory prompt, never scheduler arguments. A chat
+  // whose historical title sits in a sidecar keeps it: the server cannot see it to know it exists.
+  const titlePromise =
+    chat.e2eeId && !chat.sealedTitle && !chat.title && !chat.legacyContent
+      ? (async () => {
+          try {
+            const info = await ctx.runQuery(internal.chatroom.titleModelForChat, { chatId });
+            const prompt = firstUserMessageText({ messages: body.messages });
+            if (!info || !prompt) {
+              return undefined;
+            }
+            const titleProvider = createInternalGatewayProvider(
+              ctx,
+              workspaceId,
+              {},
+              undefined,
+              undefined,
+              { userId, chatId },
+            );
+            return await generateChatTitle({
+              model: titleProvider(info.model),
+              initialUserMessage: prompt.slice(0, 8000),
+            });
+          } catch {
+            return undefined;
+          }
+        })()
+      : Promise.resolve(undefined);
 
   let inferenceError: GatewayErrorPayload | undefined;
   let stepCount = 0;
@@ -274,7 +398,7 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
 
   const reasoningStarts = new Map<string, { startedAt: number; index: number }>();
   const reasoningDurations: number[] = [];
-  // Formatted message of the error chunk the client was sent, for the failure notification.
+  // Streamed to the client only; the saved interruption never stores error text.
   let streamFailure: string | undefined;
 
   const uiStream = toUIMessageStream({
@@ -338,14 +462,58 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
         failed: streamFailure !== undefined,
         responseMessage,
       };
-      const interruption = chatInterruption(end, streamFailure, stepLimitReached);
-      await ctx.runMutation(internal.aisdk.EditChat, {
-        chatId,
-        messages: messagesWithDuration,
-        activeStream: false,
-        ...(interruption ? { interruption } : {}),
-      });
-      await closeTools();
+      const interruption = chatInterruption(end, stepLimitReached);
+      try {
+        if (chat.e2eeId) {
+          const target = await ctx.runQuery(internal.aisdk.chatSealingInfo, {
+            chatId,
+            recipient,
+          });
+          if (!target) {
+            throw new Error("Chat sealing key unavailable");
+          }
+          const heads = await ctx.runQuery(internal.aisdk.chatMessageHeads, { chatId });
+          const sealedWrites = await sealChatMessages({
+            ...target,
+            publicKey: new Uint8Array(target.publicKey),
+            messages: messagesWithDuration,
+            heads,
+            revisions: body.revisions,
+            responseMessageId: responseMessage.id,
+            fileUrls: [...storedFileUrls(messagesWithDuration)],
+          });
+          await ctx.runMutation(internal.aisdk.EditChat, {
+            chatId,
+            sealedWrites,
+            activeStream: false,
+            ...(interruption ? { interruption } : {}),
+          });
+          try {
+            const title = await titlePromise;
+            if (title) {
+              const sealedTitle = await sealChatTitle(
+                { ...target, publicKey: new Uint8Array(target.publicKey) },
+                title,
+              );
+              await ctx.runMutation(internal.aisdk.EditChat, { chatId, sealedTitle });
+            }
+          } catch {
+            logger.warn("chat.title_generation_failed");
+          }
+        } else {
+          await ctx.runMutation(internal.aisdk.EditChat, {
+            chatId,
+            messages: messagesWithDuration,
+            activeStream: false,
+            ...(interruption ? { interruption } : {}),
+          });
+        }
+      } catch {
+        await ctx.runMutation(internal.aisdk.EditChat, { chatId, activeStream: false });
+        throw new Error("The chat response could not be saved securely.");
+      } finally {
+        await closeTools();
+      }
 
       // Notifications are a side channel: a failure here must not fail the saved request.
       const kind = sessionNotificationKind(end);
@@ -355,7 +523,6 @@ export async function handleAISDKChat(ctx: ActionCtx, req: Request): Promise<Res
             userId,
             chat: chatId,
             kind,
-            ...(kind === "session_failed" && streamFailure ? { detail: streamFailure } : {}),
           });
         } catch {
           logger.warn("notifications.session_notify_failed");
@@ -473,6 +640,10 @@ async function buildChatTools(
     ownerId: string;
     workspaceId: Id<"workspaces">;
     selection?: ChatWorkerSelection;
+    /** The chat has keys: Worker receipts are sealed to it and plaintext dispatch is refused. */
+    encrypted: boolean;
+    /** Approval signatures from the request body; Code Mode approvals are added as answered. */
+    approvals: Map<string, WorkerApprovalSignature>;
   },
   options: { systemPrompt: boolean },
 ): Promise<{
@@ -528,11 +699,19 @@ async function buildChatTools(
           workerId: id,
         }),
     );
+    const transport = await resolveWorkerChatTransport(ctx, {
+      chatId,
+      userId: worker.userId,
+      workerId,
+      encrypted: worker.encrypted,
+    });
     const scope = {
       chatId,
       workspaceId: worker.workspaceId,
       userId: worker.userId,
       selection: { ...selection, workerId },
+      transport,
+      approvals: worker.approvals,
     };
     const workerTools = buildWorkerChatTools(ctx, scope);
     Object.assign(tools, workerTools.tools);
@@ -615,23 +794,27 @@ async function buildChatTools(
       const codeMode = await createCodeMode({
         inventory: { tools: directTools, namespaces },
         catalogInDescription: !options.systemPrompt,
-        interactions: {
-          open: (kind) =>
-            ctx.runMutation(internal.code_mode.openInteraction, {
-              chatId,
-              userId: worker.userId,
-              kind,
-            }),
-          response: (id) =>
-            ctx.runQuery(internal.code_mode.interactionResponse, {
-              interaction: id as Id<"codemode_interactions">,
-            }),
-          close: async (id) => {
-            await ctx.runMutation(internal.code_mode.closeInteraction, {
-              interaction: id as Id<"codemode_interactions">,
-            });
+        // Inner approvals reach paired Workers as user signatures keyed by the inner call ID.
+        interactions: workerCodeModeInteractions(
+          {
+            open: (kind) =>
+              ctx.runMutation(internal.code_mode.openInteraction, {
+                chatId,
+                userId: worker.userId,
+                kind,
+              }),
+            response: (id) =>
+              ctx.runQuery(internal.code_mode.interactionResponse, {
+                interaction: id as Id<"codemode_interactions">,
+              }),
+            close: async (id) => {
+              await ctx.runMutation(internal.code_mode.closeInteraction, {
+                interaction: id as Id<"codemode_interactions">,
+              });
+            },
           },
-        },
+          worker.approvals,
+        ),
       });
       if (codeMode) {
         tools[CODE_MODE_TOOL_NAME] = codeMode.tool;

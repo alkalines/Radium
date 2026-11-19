@@ -29,7 +29,7 @@ export type LegacyOwnershipRecord = {
 /** Existing chat fields that the personal-workspace backfill is allowed to fill. */
 export type ChatWorkspaceBackfillRecord<WorkspaceId extends string = string> = {
   workspace?: WorkspaceId;
-  scope?: "personal" | "workspace";
+  scope?: "personal" | "shared" | "workspace";
   balance?: string;
 };
 

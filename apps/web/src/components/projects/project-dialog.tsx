@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/select";
 import { WorkerPresence, useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { cn } from "@/lib/utils";
+import { setEncryptedName } from "@/lib/crypto/names";
 import { ProjectGlyph, type ProjectSummary } from "./project-glyph";
 
 /** Matches the backend's Project name limit. */
@@ -159,21 +160,20 @@ function ProjectForm({
         const isDefaultChanged = isOwner && nextDefault !== savedDefaultWorkerId;
         await updateProject({
           project: project._id,
-          name: trimmedName,
           color,
-          icon,
           ...(areFoldersChanged ? { folders } : {}),
           ...(isDefaultChanged ? { defaultWorkerId: nextDefault ?? null } : {}),
         });
+        await setEncryptedName({ target: project._id, workspace: workspaceId, table: "projects", name: trimmedName === project.name ? undefined : trimmedName, icon });
         toast.success("Project saved.");
       } else {
         const created = await createProject({
           workspace: workspaceId,
-          name: trimmedName,
+          name: "Project",
           color,
-          icon,
           ...(isOwner && folders.length > 0 ? { folders, defaultWorkerId: nextDefault } : {}),
         });
+        await setEncryptedName({ target: created, workspace: workspaceId, table: "projects", name: trimmedName, icon });
         toast.success("Project created.");
         onCreated?.(created);
       }

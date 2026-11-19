@@ -333,13 +333,6 @@ test("opening an indexed agent session creates and links a personal chat while o
     paginationOpts: { cursor: null, numItems: 30 },
   });
   expect(rows.page).toMatchObject([{ chat, project, sessionId: "outside-session" }]);
-  expect(
-    await f.owner.query(api.acp.SearchAgentSessionIndex, {
-      workspace: f.workspace,
-      agentId: agent.agentId,
-      query: "Earlier",
-    }),
-  ).toMatchObject([{ chat, project, sessionId: "outside-session" }]);
   expect(await f.owner.mutation(api.acp.OpenAgentSession, binding)).toBe(chat);
   await f.first.machine.mutation(api.acp.updateSession, {
     chat,
@@ -439,27 +432,17 @@ test("the agent session index hides sessions linked to another member's personal
         chat,
       });
   });
-  const sessions = async () => ({
-    list: (
+  const sessions = async () =>
+    (
       await f.owner.query(api.acp.ListAgentSessionIndex, {
         workspace: f.workspace,
         agentId: agent.agentId,
         paginationOpts: { cursor: null, numItems: 30 },
       })
-    ).page.map((row) => row.sessionId),
-    search: (
-      await f.owner.query(api.acp.SearchAgentSessionIndex, {
-        workspace: f.workspace,
-        agentId: agent.agentId,
-        query: "Indexed",
-      })
-    ).map((row) => row.sessionId),
-  });
-  expect(await sessions()).toEqual({ list: ["unopened-session"], search: ["unopened-session"] });
+    ).page.map((row) => row.sessionId);
+  expect(await sessions()).toEqual(["unopened-session"]);
   await f.t.run((ctx) => ctx.db.patch(f.chat, { scope: "workspace" }));
-  const shared = await sessions();
-  expect(shared.list.sort()).toEqual(["private-session", "unopened-session"]);
-  expect(shared.search.sort()).toEqual(["private-session", "unopened-session"]);
+  expect((await sessions()).sort()).toEqual(["private-session", "unopened-session"]);
 });
 
 test("Home lists unopened agent sessions by Project folder, either spelling, until opened", async () => {
@@ -762,6 +745,20 @@ test("frames enforce exact retries, conflicts, continuity, stale epochs and cold
   ).rejects.toThrow("ACP_STALE_EPOCH");
 });
 
+test("a plaintext stream started before workspace keys refuses plaintext frames once keyed", async () => {
+  const f = await fixture();
+  await f.owner.mutation(api.chatroom.Watch, { chat: f.chat, tab: "tab" });
+  await f.first.machine.mutation(api.acp.startEpoch, { chat: f.chat, epoch: 1 });
+  await f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 1, frames: [frame] });
+  // The owner bootstraps workspace keys while the capsule-less stream is still open.
+  await f.t.run((ctx) => ctx.db.patch(f.workspace, { keyEpoch: 1 }));
+  const next = { ...frame, seqFrom: 2, seqTo: 2 };
+  await expect(
+    f.first.machine.mutation(api.acp.appendFrames, { chat: f.chat, epoch: 1, frames: [next] }),
+  ).rejects.toThrow("ACP_PLAINTEXT_REFUSED");
+  expect(await f.t.run((ctx) => ctx.db.query("chat_frames").collect())).toHaveLength(1);
+});
+
 test("watch warms; cooling removes transient content after five minutes but retains metadata", async () => {
   const f = await fixture();
   vi.useFakeTimers();
@@ -962,10 +959,11 @@ test("lifecycle mirrors boundaries, preserves user titles and writes the ACP ses
   });
   await f.first.machine.mutation(api.acp.updateSession, {
     chat: f.chat,
-    patch: { status: "failed", stopReason: "max_tokens", error: null },
+    patch: { status: "failed", stopReason: "max_tokens", error: "provider echoed a prompt" },
   });
-  expect(await f.owner.query(api.aisdk.GetChat, { chatId: f.chat })).toMatchObject({
-    interruption: { kind: "failed", message: "Output limit reached" },
+  // The chat keeps only the generic kind; error text never lands on it.
+  expect((await f.owner.query(api.aisdk.GetChat, { chatId: f.chat }))?.interruption).toEqual({
+    kind: "failed",
   });
   await expect(
     f.owner.mutation(api.aisdk.SetChatWorker, { chatId: f.chat, selection: null }),
@@ -1484,7 +1482,7 @@ test("definition capacity is per workspace and updates still work at capacity", 
   );
 });
 
-test("machine definition subscriptions expose only enabled definitions in their workspace", async () => {
+test("machines receive workspace definitions including disables, but never foreign definitions", async () => {
   const f = await fixture();
   await f.owner.mutation(api.acp.SaveAgentDefinition, { workspace: f.workspace, definition });
   await f.owner.mutation(api.acp.SaveAgentDefinition, {
@@ -1498,8 +1496,9 @@ test("machine definition subscriptions expose only enabled definitions in their 
     workspace: foreignWorkspace,
     definition: { ...definition, name: "Foreign agent" },
   });
-  expect(await f.first.machine.query(api.acp.agentDefinitions, {})).toEqual([definition]);
-  expect(await f.second.machine.query(api.acp.agentDefinitions, {})).toEqual([definition]);
+  const expected = [definition, { ...definition, agentId: "disabled", enabled: false }];
+  expect(await f.first.machine.query(api.acp.agentDefinitions, {})).toEqual(expected);
+  expect(await f.second.machine.query(api.acp.agentDefinitions, {})).toEqual(expected);
   await expect(f.owner.query(api.acp.agentDefinitions, {})).rejects.toThrow(/WORKER_AUTH_DENIED/);
 });
 

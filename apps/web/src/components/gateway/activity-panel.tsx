@@ -38,6 +38,7 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { Progress } from "@/components/ui/progress";
+import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 import {
   Select,
   SelectContent,
@@ -148,9 +149,10 @@ export function ActivityPanel({
   useEffect(() => setSources(readSources()), []);
   const since = useMemo(() => Date.now() - Number(range) * DAY, [range]);
   const { workspaceId } = useWorkspace();
-  const { data: projects } = useQuery(
+  const { data: projectsData } = useQuery(
     convexQuery(api.projects.list, workspaceId ? { workspace: workspaceId } : "skip"),
   );
+  const projects = useDecryptedNames(projectsData ?? [], "projects", workspaceId);
   const projectFilter =
     project === "none" || projects?.some((candidate) => candidate._id === project)
       ? (project as Id<"projects"> | "none")

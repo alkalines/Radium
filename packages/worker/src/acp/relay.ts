@@ -8,7 +8,7 @@ import {
   type AcpOp,
 } from "backend/src/acp/contract";
 import type { AcpTimeline } from "./timeline";
-import type { AcpTransport } from "./transport";
+import type { AcpEpochCapsule, AcpTransport } from "./transport";
 
 type Queued = { kind: AcpFrameKind; op: AcpOp; bytes: number };
 const RESTART_CODES: Record<string, true> = {
@@ -25,6 +25,23 @@ export interface AcpRelayOptions {
   random?: () => number;
   outageBytes?: number;
   rolloverBytes?: number;
+}
+
+/** One relay epoch's frame encryption: its capsule for `startEpoch` and a per-frame sealer. */
+export interface AcpEpochSealer {
+  /** Created once per epoch; `startEpoch` retries send these exact bytes. */
+  readonly capsule: AcpEpochCapsule;
+  /** Seals one frame's JSON. A frame is sealed once when taken; its bytes are resent on retry. */
+  seal(frame: { seqFrom: number; seqTo: number; kind: AcpFrameKind; payload: string }): Promise<ArrayBuffer>;
+}
+
+/**
+ * Frame encryption of a keyed workspace. `openEpoch` reads the current chat key (so a rotation
+ * takes effect at the next epoch) and creates that epoch's capsule. A rejection with an
+ * `ACP_`-prefixed `code` is permanent and stops the relay; any other failure is retried.
+ */
+export interface AcpFrameSealer {
+  openEpoch(epoch: number): Promise<AcpEpochSealer>;
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -49,7 +66,13 @@ function backlog(entry: Queued): number {
   return entry.kind === "history" ? 0 : entry.bytes;
 }
 
-/** Ordered warm-only frame writer; uncertain appends retry identical ranges before any later write. */
+type PlainFrame = Omit<AcpFrameInput, "payload"> & { payload: string };
+
+/**
+ * Ordered warm-only frame writer; uncertain appends retry identical ranges before any later write.
+ * With a `sealer` (paired Worker) frames travel as ciphertext sealed once per frame; without one
+ * they are plaintext JSON strings.
+ */
 export class AcpRelay {
   /** Current (or currently opening) epoch; increases on warm-up, repair and rollover. */
   public epoch = 0;
@@ -73,6 +96,8 @@ export class AcpRelay {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private wakeRetry: (() => void) | undefined;
   private draining: Promise<void> | undefined;
+  /** The current epoch's encryption, created once so `startEpoch` retries are byte-identical. */
+  private epochSealer: { epoch: number; sealer: AcpEpochSealer } | undefined;
 
   /** Bind one chat to its local timeline; this class never mutates lifecycle metadata. */
   public constructor(
@@ -80,6 +105,7 @@ export class AcpRelay {
     private readonly chat: string,
     private readonly timeline: AcpTimeline,
     options: AcpRelayOptions = {},
+    private readonly sealer?: AcpFrameSealer,
   ) {
     this.options = {
       textFlushMs: 300,
@@ -222,7 +248,16 @@ export class AcpRelay {
       }
       try {
         if (this.opening) {
-          const result = await this.transport.startEpoch({ chat: this.chat, epoch: this.epoch });
+          // Created once per epoch: a retried `startEpoch` must carry identical capsule bytes.
+          if (this.sealer && this.epochSealer?.epoch !== this.epoch) {
+            this.epochSealer = { epoch: this.epoch, sealer: await this.sealer.openEpoch(this.epoch) };
+            if (!this.streaming || this.generation !== generation) return;
+          }
+          const result = await this.transport.startEpoch({
+            chat: this.chat,
+            epoch: this.epoch,
+            ...(this.sealer ? { capsule: this.epochSealer!.sealer.capsule } : {}),
+          });
           if (!this.streaming || this.generation !== generation) return;
           if (!result.accepted) {
             this.stop();
@@ -236,14 +271,28 @@ export class AcpRelay {
             this.ready = false;
             return;
           }
-          frames = this.takeFrames();
-          turnEnd = frames.some((frame) =>
+          const taken = this.takeFrames();
+          turnEnd = taken.some((frame) =>
             (JSON.parse(frame.payload) as AcpOp[]).some((op) => op.op === "turn.end"),
           );
-          this.inFlightBytes = frames.reduce(
-            (sum, frame) => sum + (frame.kind === "history" ? 0 : utf8Bytes(frame.payload)),
-            0,
-          );
+          // The taken ops left the queue: if sealing fails they are gone, so the epoch restarts
+          // from a fresh snapshot instead of leaving a sequence gap.
+          try {
+            frames = this.sealer ? await this.seal(taken) : taken;
+          } catch (error) {
+            this.restart = true;
+            throw error;
+          }
+          if (!this.streaming || this.generation !== generation) return;
+          // Ciphertext length is what Convex stores and bounds, so the outage budget counts it.
+          this.inFlightBytes = frames.reduce((sum, frame) => {
+            if (frame.kind === "history") return sum;
+            const size =
+              typeof frame.payload === "string"
+                ? utf8Bytes(frame.payload)
+                : frame.payload.byteLength;
+            return sum + size;
+          }, 0);
         }
         const result = await this.transport.appendFrames({
           chat: this.chat,
@@ -277,8 +326,15 @@ export class AcpRelay {
     }
   }
 
-  private takeFrames(): AcpFrameInput[] {
-    const frames: AcpFrameInput[] = [];
+  private async seal(plain: PlainFrame[]): Promise<AcpFrameInput[]> {
+    const sealer = this.epochSealer!.sealer;
+    const sealed: AcpFrameInput[] = [];
+    for (const frame of plain) sealed.push({ ...frame, payload: await sealer.seal(frame) });
+    return sealed;
+  }
+
+  private takeFrames(): PlainFrame[] {
+    const frames: PlainFrame[] = [];
     while (this.queue.length && frames.length < ACP_FRAMES_PER_APPEND) {
       const first = this.queue[0]!;
       if (first.bytes + 2 > ACP_FRAME_BYTES) {

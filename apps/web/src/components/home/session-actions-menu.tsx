@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { useMutation } from "convex/react";
+import { useAction, useConvex, useMutation } from "convex/react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -53,6 +53,14 @@ import {
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
+import { openMessages, sealTitle } from "@/lib/crypto/chat-content";
+import { ensureChatKeys, writableChatKey } from "@/lib/crypto/chat-keys";
+import { ChatKeysRequiredError, openHistoricalChat } from "@/lib/crypto/legacy-chat";
+import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+import { signAcpCommand } from "@/components/session/acp/acp-crypto";
+import { getMessageText } from "@/components/session/message-parts";
+import { useKeyStatus } from "@/lib/crypto/use-key-status";
+import { workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
 /** Matches the backend's title length limit for user-chosen titles. */
 const maxTitleLength = 32;
 
@@ -62,6 +70,10 @@ const noProject = "none";
 /** What the actions need to know about one session; `ListChats` items satisfy it. */
 export type SessionActionsTarget = {
   id: Id<"aisdk_chats">;
+  workspace: Id<"workspaces">;
+  e2ee?: { e2eeId: string } | null;
+  /** Historical content moved into a sidecar; rename/regenerate must create chat keys first. */
+  legacyContent?: LegacyBox;
   title?: string;
   pinnedAt?: number;
   project?: Id<"projects">;
@@ -88,6 +100,9 @@ export function SessionActionsMenu({
   session: SessionActionsTarget;
   projects: ProjectSummary[];
 }) {
+  const client = useConvex();
+  const keyStatus = useKeyStatus();
+  const regenerateEncryptedTitle = useAction(api.aisdk.regenerateTitle);
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [deleteInAgentStep, setDeleteInAgentStep] = useState(false);
@@ -112,6 +127,12 @@ export function SessionActionsMenu({
   useEffect(() => {
     if (!isRenameOpen) setTitle(session.title?.trim() ?? "");
   }, [session.title, isRenameOpen]);
+  useEffect(() => {
+    if (session.e2ee && keyStatus.state !== "unlocked") {
+      setTitle("");
+      setIsRenameOpen(false);
+    }
+  }, [session.e2ee, keyStatus]);
 
   const isBusy = pendingAction !== null;
   const displayTitle = session.title?.trim() || "Untitled session";
@@ -142,7 +163,36 @@ export function SessionActionsMenu({
   }
 
   async function regenerate() {
-    const succeeded = await run("regenerate", () => regenerateTitle({ chatId: session.id }));
+    const succeeded = await run("regenerate", async () => {
+      const keyed = session.e2ee || (await ensureChatKeys(session.id));
+      if (!keyed) {
+        if (session.legacyContent) throw new ChatKeysRequiredError();
+        return regenerateTitle({ chatId: session.id });
+      }
+      const content = await client.query(api.aisdk.GetChatMessages, { chatId: session.id });
+      const chatKey = await writableChatKey(session.id);
+      // History may be sealed natively or sit in sidecars; either way it is opened locally.
+      const historical = await openHistoricalChat(
+        {
+          chatId: session.id,
+          workspaceId: session.workspace,
+          legacyContent: session.legacyContent,
+          wants: { title: false, queue: true },
+        },
+        content.entries,
+      );
+      const { messages } = await openMessages(historical.entries, content.capsules, {
+        workspaceId: session.workspace,
+        e2eeId: chatKey.e2eeId,
+        chatId: session.id,
+      });
+      const firstUser = messages.find((message) => message.role === "user");
+      const prompt = firstUser ? getMessageText(firstUser) : historical.queue?.text;
+      if (!prompt?.trim()) {
+        throw new Error("No user message to generate a title from.");
+      }
+      return regenerateEncryptedTitle({ chatId: session.id, prompt: prompt.slice(0, 8000) });
+    });
     if (succeeded) toast.success("Regenerating the session title.");
   }
 
@@ -173,7 +223,20 @@ export function SessionActionsMenu({
     const trimmed = title.trim();
     if (!trimmed) return;
 
-    const succeeded = await run("rename", () => renameChat({ chatId: session.id, title: trimmed }));
+    const succeeded = await run("rename", async () => {
+      // A keyless chat gets keys so the new title is sealed; only a chat without history to
+      // protect may still fall back to plaintext (which the backend refuses after cutover).
+      const keyed = session.e2ee || (await ensureChatKeys(session.id));
+      if (!keyed) {
+        if (session.legacyContent) throw new ChatKeysRequiredError();
+        return renameChat({ chatId: session.id, title: trimmed });
+      }
+      const chatKey = await writableChatKey(session.id);
+      return renameChat({
+        chatId: session.id,
+        sealedTitle: await sealTitle({ title: trimmed }, chatKey),
+      });
+    });
     if (succeeded) {
       toast.success("Session renamed.");
       setIsRenameOpen(false);
@@ -185,8 +248,34 @@ export function SessionActionsMenu({
       setDeleteInAgentStep(true);
       return;
     }
-    // An open Tab for this session drops itself once the chat is gone (spec §4).
-    const succeeded = await run("delete", () => deleteChat({ chatId: session.id, deleteInAgent }));
+    // An open Tab for this session drops itself once the chat is gone (spec §4). In a keyed
+    // workspace the agent-side close/delete is a sealed command signed here: the chat row is gone
+    // when the Worker sees it, so the command carries the session it targets.
+    const succeeded = await run("delete", async () => {
+      const agentSession = acpSession?.agent;
+      // A workspace this device verified as keyed gets a signed command whatever the server says.
+      const signed = acpSession && (acpSession.signed || workspaceKnownKeyed(acpSession.workspace));
+      const acpCommand =
+        signed && agentSession?.sessionId
+          ? await signAcpCommand({
+              workspaceId: acpSession.workspace,
+              workerId: agentSession.worker,
+              chatId: session.id,
+              command: {
+                kind: deleteInAgent && acpSession.capabilities?.delete ? "delete" : "close",
+                agentId: agentSession.agentId,
+                profile: agentSession.profile,
+                sessionId: agentSession.sessionId,
+                cwd: agentSession.cwd,
+              },
+            })
+          : undefined;
+      return deleteChat({
+        chatId: session.id,
+        deleteInAgent,
+        ...(acpCommand ? { acpCommand } : {}),
+      });
+    });
     if (succeeded) {
       toast.success("Session deleted.");
       setIsDeleteOpen(false);
@@ -212,13 +301,19 @@ export function SessionActionsMenu({
               {session.pinnedAt ? <PinOffIcon /> : <PinIcon />}
               {session.pinnedAt ? "Unpin" : "Pin"}
             </DropdownMenuItem>
-            <DropdownMenuItem disabled={isBusy} onSelect={() => setIsRenameOpen(true)}>
+            <DropdownMenuItem
+              disabled={isBusy || Boolean(session.e2ee && keyStatus.state !== "unlocked")}
+              onSelect={() => setIsRenameOpen(true)}
+            >
               <PencilIcon />
               Rename
             </DropdownMenuItem>
             {/* ACP prompts are not stored in Radium, so there is no first message to title from. */}
             {session.agent || !session.canManage ? null : (
-              <DropdownMenuItem disabled={isBusy} onSelect={() => void regenerate()}>
+              <DropdownMenuItem
+                disabled={isBusy || Boolean(session.e2ee && keyStatus.state !== "unlocked")}
+                onSelect={() => void regenerate()}
+              >
                 <SparklesIcon />
                 Regenerate title
               </DropdownMenuItem>

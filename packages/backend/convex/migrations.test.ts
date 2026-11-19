@@ -125,7 +125,7 @@ test("chatMessagesToTable moves embedded histories out of chat documents in orde
       .withIndex("by_chat_and_position", (q) => q.eq("chat", chat))
       .collect(),
   );
-  expect(rows.map((row) => [row.position, row.message.id])).toEqual([
+  expect(rows.map((row) => [row.position, row.message?.id])).toEqual([
     [0, "m0"],
     [1, "m1"],
   ]);

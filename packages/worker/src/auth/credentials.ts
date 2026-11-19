@@ -19,7 +19,8 @@ export type WorkerCredentialStorePreference = "auto" | WorkerCredentialStoreMode
 
 /**
  * Durable storage for the Worker's P-256 private JWK, addressed by the stable
- * enrollment request ID. Machine JWTs are intentionally never stored here.
+ * enrollment request ID, and for a paired Worker's E2EE seeds, addressed by
+ * `e2eeCredentialAccount`. Machine JWTs are intentionally never stored here.
  */
 export interface WorkerCredentialStore {
   readonly mode: WorkerCredentialStoreMode;
@@ -242,9 +243,17 @@ async function nativeKeyringEntry(account: string): Promise<KeyringEntry> {
   return new AsyncEntry(KEYRING_SERVICE, account, options);
 }
 
-function credentialPath(stateDirectory: string, requestId: string): string {
-  if (!isRequestId(requestId)) throw new WorkerProtocolError("Worker state is invalid");
-  return join(stateDirectory, `.worker-credential-${requestId}.json`);
+/**
+ * Credential entry of one E2EE key set, next to the machine key entry of `requestId`. Each key set
+ * has its own entry, so replacing keys never overwrites the seeds the saved state still names.
+ */
+export function e2eeCredentialAccount(requestId: string, keyId: string): string {
+  return `${requestId}.e2ee-${keyId}`;
+}
+
+function credentialPath(stateDirectory: string, account: string): string {
+  if (!isCredentialAccount(account)) throw new WorkerProtocolError("Worker state is invalid");
+  return join(stateDirectory, `.worker-credential-${account}.json`);
 }
 
 class CredentialStoreUnavailableError extends WorkerProtocolError {}
@@ -267,8 +276,10 @@ function unavailableKeyringError(
   );
 }
 
-function isRequestId(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+function isCredentialAccount(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(\.e2ee-[A-Za-z0-9_-]{22})?$/i.test(
+    value,
+  );
 }
 
 function isMissing(error: unknown): boolean {

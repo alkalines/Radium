@@ -4,6 +4,7 @@ import { convexTest } from "convex-test";
 import { APICallError } from "ai";
 import { getFunctionName, type FunctionReference } from "convex/server";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { generateEncryptionKeyPair } from "radium-crypto";
 import { ConvexError } from "convex/values";
 import { api, internal } from "../../convex/_generated/api";
 import type { ActionCtx } from "../../convex/_generated/server";
@@ -269,12 +270,21 @@ describe("moved HTTP handlers", () => {
   });
 
   test("a captured streaming request stores its failover attempts, input, and output", async () => {
+    vi.stubEnv("TELEMETRY_HASH_SECRET", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    const keys = await generateEncryptionKeyPair();
     const t = convexTest({ schema, modules });
     const { workspace, apiKey } = await t.run(async (db) => {
       const workspace = await db.db.insert("workspaces", {
         ownerType: "user",
         ownerId: "authenticated-user",
         name: "Workspace",
+        keyEpoch: 1,
+      });
+      await db.db.insert("e2ee_workspace_epochs", {
+        workspace, epoch: 1, suite: 1, memberKeyId: "member", ownerKeyId: "owner",
+        memberPublicKey: keys.publicKey.slice().buffer as ArrayBuffer,
+        ownerPublicKey: keys.publicKey.slice().buffer as ArrayBuffer,
+        createdBy: "authenticated-user", createdAt: 1,
       });
       const apiKey = await db.db.insert("api_keys", { workspace, name: "key", hash: "hash" });
       return { workspace, apiKey };
@@ -376,15 +386,13 @@ describe("moved HTTP handlers", () => {
       { provider: "second-provider", outcome: "ok" },
     ]);
     expect(captured.outputNode?.parent).toBe(request.input);
-    expect(JSON.parse(captured.outputBlob!.content!)).toEqual({
-      role: "assistant",
-      content: "served",
-    });
-    // Supported request parameters are captured, but credentials never are.
-    expect(JSON.parse(captured.params!.content!)).toMatchObject({
-      prompt_cache_key: "capture-cache-key",
-    });
-    expect(JSON.parse(captured.headers!.content!)).toEqual({ "x-title": "Radium test" });
+    for (const blob of [captured.outputBlob, captured.params, captured.headers]) {
+      expect(blob?.content).toBeUndefined();
+      expect(blob?.meta).toBeUndefined();
+      expect(blob?.sealed?.envelope).toBeDefined();
+    }
+    expect(request.attempts.every((attempt) => attempt.message === undefined)).toBe(true);
+    vi.unstubAllEnvs();
   });
 
   test("a failure after output is reported in-stream and never retried", async () => {
@@ -559,14 +567,12 @@ describe("moved HTTP handlers", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].errorText).toContain("provider_custom_limit");
 
-    // The failure outlives the page: the saved chat offers to continue with the same error.
+    // The failure outlives the page as a kind only: the saved chat never stores the error text.
     const saved = runMutation.mock.calls.findLast(
       ([fn]) => getFunctionName(fn) === getFunctionName(internal.aisdk.EditChat),
     );
-    expect(saved?.[1]).toMatchObject({
-      activeStream: false,
-      interruption: { kind: "failed", message: errors[0].errorText },
-    });
+    expect(saved?.[1]).toMatchObject({ activeStream: false, interruption: { kind: "failed" } });
+    expect(saved?.[1].interruption).not.toHaveProperty("message");
   });
 
   test("completion recording observes synchronous listener cancellation", async () => {

@@ -2,11 +2,24 @@ import type { TelemetryBlobKind } from "./validators";
 
 const encoder = new TextEncoder();
 
-async function sha256Hex(text: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(text)));
-  let hex = "";
-  for (const byte of digest) hex += byte.toString(16).padStart(2, "0");
-  return hex;
+/** Derive a deployment-secret keyed, workspace-isolated fingerprint. */
+export async function workspaceHash(workspace: string, domain: string, value: string): Promise<string> {
+  const secret = process.env.TELEMETRY_HASH_SECRET;
+  if (!secret || !/^[A-Za-z0-9_-]{43}$/.test(secret)) {
+    throw new Error("TELEMETRY_HASH_SECRET must be a base64url-encoded 32-byte key.");
+  }
+  const bytes = Uint8Array.from(atob(secret.replace(/-/g, "+").replace(/_/g, "/") + "="), (c) => c.charCodeAt(0));
+  if (bytes.length !== 32) throw new Error("Invalid TELEMETRY_HASH_SECRET.");
+  const root = await crypto.subtle.importKey("raw", bytes, "HKDF", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: encoder.encode(workspace), info: encoder.encode("radium/v1/telemetry-hash") },
+    root,
+    { name: "HMAC", hash: "SHA-256", length: 256 },
+    false,
+    ["sign"],
+  );
+  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(`${domain}\u0000${value}`)));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /**
@@ -19,7 +32,7 @@ export function blobHash(
   kind: TelemetryBlobKind,
   canonical: string,
 ): Promise<string> {
-  return sha256Hex(`blob\u0000${workspace}\u0000${kind}\u0000${canonical}`);
+  return workspaceHash(workspace, "blob", `${kind}\u0000${canonical}`);
 }
 
 /**
@@ -32,7 +45,7 @@ export function nodeHash(
   parent: string | undefined,
   message: string,
 ): Promise<string> {
-  return sha256Hex(`node\u0000${workspace}\u0000${parent ?? ""}\u0000${message}`);
+  return workspaceHash(workspace, "node", `${parent ?? ""}\u0000${message}`);
 }
 
 /** UTF-8 byte length, used to decide inline versus file-storage blob placement. */

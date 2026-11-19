@@ -276,23 +276,17 @@ describe("routing sessions", () => {
       ...fields,
     }) as ChatCompletions_RequestBody_Type;
 
-  test("chat context, then client headers, then body identifiers win", () => {
+  test("chat context, then client headers, then body identifiers win", async () => {
     const headers = new Headers({ "X-Session-ID": "client-session" });
-    expect(
-      extractRoutingSession(request({ prompt_cache_key: "pck" }), headers, "chat-1")?.primary,
-    ).toBe("chat:chat-1");
-    expect(extractRoutingSession(request({ prompt_cache_key: "pck" }), headers)?.primary).toBe(
-      "header:client-session",
-    );
-    expect(
-      extractRoutingSession(request({ session_id: "s", prompt_cache_key: "pck" }))?.primary,
-    ).toBe("session:s");
-    expect(extractRoutingSession(request({ prompt_cache_key: "pck" }))?.primary).toBe("pck:pck");
+    expect((await extractRoutingSession(request({ prompt_cache_key: "pck" }), headers, "chat-1"))?.primary).toBe("chat:chat-1");
+    expect((await extractRoutingSession(request({ prompt_cache_key: "pck" }), headers))?.primary).toBe("header:client-session");
+    expect((await extractRoutingSession(request({ session_id: "s", prompt_cache_key: "pck" })))?.primary).toBe("session:s");
+    expect((await extractRoutingSession(request({ prompt_cache_key: "pck" })))?.primary).toBe("pck:pck");
   });
 
-  test("a parent session header makes the request a subagent of the parent", () => {
+  test("a parent session header makes the request a subagent of the parent", async () => {
     const headers = new Headers({ "X-Session-ID": "child", "X-Parent-Session-ID": "parent" });
-    expect(extractRoutingSession(request({}), headers)).toEqual({
+    expect(await extractRoutingSession(request({}), headers)).toEqual({
       primary: "header:child",
       fallback: "header:parent",
       isSubagent: true,
@@ -307,16 +301,18 @@ describe("routing sessions", () => {
     expect(clientSessionId(request({}))).toBeUndefined();
   });
 
-  test("the first-turn message hash carries over once an assistant reply exists", () => {
-    const firstTurn = extractRoutingSession(
+  test("the first-turn message hash carries over once an assistant reply exists", async () => {
+    const prior = process.env.TELEMETRY_HASH_SECRET;
+    process.env.TELEMETRY_HASH_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const firstTurn = (await extractRoutingSession(
       request({
         messages: [
           { role: "system", content: "sys" },
           { role: "user", content: "hi" },
         ],
-      }),
-    )!;
-    const secondTurn = extractRoutingSession(
+      }), undefined, undefined, "workspace-a",
+    ))!;
+    const secondTurn = (await extractRoutingSession(
       request({
         messages: [
           { role: "system", content: "sys" },
@@ -324,11 +320,22 @@ describe("routing sessions", () => {
           { role: "assistant", content: "hello" },
           { role: "user", content: "more" },
         ],
-      }),
-    )!;
-    expect(firstTurn.primary).toMatch(/^msg:[0-9a-f]{16}$/);
+      }), undefined, undefined, "workspace-a",
+    ))!;
+    expect(firstTurn.primary).toMatch(/^msg:[0-9a-f]{64}$/);
     expect(secondTurn.fallback).toBe(firstTurn.primary);
     expect(secondTurn.primary).not.toBe(firstTurn.primary);
+    const sameInput = request({ messages: [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+    ] });
+    const other = await extractRoutingSession(sameInput, undefined, undefined, "workspace-b");
+    expect(other?.primary).not.toBe(firstTurn.primary);
+    delete process.env.TELEMETRY_HASH_SECRET;
+    expect(await extractRoutingSession(sameInput, undefined, undefined, "workspace-a")).toBeUndefined();
+    expect((await extractRoutingSession(request({ prompt_cache_key: "explicit" })))?.primary).toBe("pck:explicit");
+    if (prior === undefined) delete process.env.TELEMETRY_HASH_SECRET;
+    else process.env.TELEMETRY_HASH_SECRET = prior;
   });
 });
 

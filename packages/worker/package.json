@@ -7,6 +7,7 @@
     "dev": "bun --watch src/cli.ts start",
     "setup": "bun src/cli.ts setup",
     "add-token": "bun src/cli.ts add-token",
+    "pair": "bun src/cli.ts pair",
     "start": "bun src/cli.ts start",
     "status": "bun src/cli.ts status",
     "refresh": "bun src/cli.ts refresh",
@@ -27,7 +28,8 @@
     "backend": "workspace:*",
     "ccusage": "20.0.48",
     "convex": "^1.46.0",
-    "jose": "^6.1.3"
+    "jose": "^6.1.3",
+    "radium-crypto": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "latest",

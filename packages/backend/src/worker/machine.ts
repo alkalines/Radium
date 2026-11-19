@@ -4,6 +4,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { components } from "../../convex/_generated/api";
 import { mutation, query, type MutationCtx, type QueryCtx } from "../../convex/_generated/server";
 import { backendOrigin, workerIssuer } from "./auth";
+import { assertLegacyWritesAllowed } from "../e2ee/migration-contract";
 
 /** Keep machine authorization failures indistinguishable from HTTP proof denials. */
 export function denyWorkerAuth(): never {
@@ -31,7 +32,7 @@ export type WorkerMutationCtx = MutationCtx & { worker: WorkerScope };
  * workspace and key relation makes revocation and epoch changes effective inside
  * each query or mutation, even while the token's signature remains valid.
  */
-const workerContext = customCtx(async (ctx: QueryCtx) => {
+async function resolveWorkerContext(ctx: QueryCtx) {
   const identity = await ctx.auth.getUserIdentity();
 
   if (
@@ -69,14 +70,17 @@ const workerContext = customCtx(async (ctx: QueryCtx) => {
       identityEpoch: key.identityEpoch,
     },
   };
-});
+}
 
 /** Machine-only reads with server-derived scope in `ctx.worker`. */
-export const workerQuery = customQuery(query, workerContext);
+export const workerQuery = customQuery(query, customCtx(resolveWorkerContext));
 
 /**
  * Machine-only writes; authorization is rechecked in the state-transition transaction.
  * This grants identity authority only. Execution handlers must additionally check
  * capabilities and job assignments before admitting privileged operations.
  */
-export const workerMutation = customMutation(mutation, workerContext);
+export const workerMutation = customMutation(mutation, customCtx(async (ctx: MutationCtx) => {
+  await assertLegacyWritesAllowed(ctx);
+  return resolveWorkerContext(ctx);
+}));

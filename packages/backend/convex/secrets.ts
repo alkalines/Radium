@@ -17,10 +17,11 @@ export type SecretNamespace =
   | `workspace:${string}:provider:${string}`
   | `workspace:${string}:tools`
   | `workspace:${string}:mcp:${string}`
-  | `workspace:${string}:telemetry:${string}`;
+  | `workspace:${string}:telemetry:${string}`
+  | "e2ee:custody";
 
 export type SecretMetadata = {
-  kind: "provider" | "exa" | "mcp";
+  kind: "provider" | "exa" | "mcp" | "e2ee";
   preview?: Record<string, string>;
   provider?: string;
   balance?: string;

@@ -1,4 +1,5 @@
 import type { ChatCompletions_RequestBody_Type } from "@/types/openai/types";
+import { workspaceHash } from "../telemetry/hash";
 
 /**
  * Session identity used by session-affinity routing. `primary` is bound to a provider;
@@ -33,11 +34,12 @@ const PARENT_HEADERS = ["x-parent-session-id", "x-claude-code-parent-agent-id"];
  * `prompt_cache_key`, deprecated `user`, then a first-messages hash. Returns undefined when
  * the request has no user message to hash.
  */
-export function extractRoutingSession(
+export async function extractRoutingSession(
   request: ChatCompletions_RequestBody_Type,
   headers?: Headers,
   chatId?: string,
-): RoutingSession | undefined {
+  workspace?: string,
+): Promise<RoutingSession | undefined> {
   const explicit = explicitSessionId(request, headers, chatId);
 
   if (explicit) {
@@ -49,7 +51,13 @@ export function extractRoutingSession(
     return { primary: explicit.key, isSubagent: false };
   }
 
-  return messageHashSession(request);
+  if (!workspace) return undefined;
+  try {
+    return await messageHashSession(request, workspace);
+  } catch {
+    // Missing deployment hash key disables affinity rather than persisting guessable hashes.
+    return undefined;
+  }
 }
 
 /**
@@ -98,11 +106,10 @@ function firstValidHeader(headers: Headers, names: string[]) {
 }
 
 /**
- * CLIProxyAPI's fallback: FNV-1a 64 over the first 100 bytes of the system prompt, first
- * user message, and first assistant message. Later turns also carry the first turn's key
- * as `fallback`, so the binding made on turn one carries over once an assistant reply exists.
+ * Hash bounded first messages with a workspace-specific secret. Later turns retain the first
+ * turn's key as fallback so the initial binding can be reused.
  */
-function messageHashSession(request: ChatCompletions_RequestBody_Type): RoutingSession | undefined {
+async function messageHashSession(request: ChatCompletions_RequestBody_Type, workspace: string): Promise<RoutingSession | undefined> {
   let system: string | undefined;
   let user: string | undefined;
   let assistant: string | undefined;
@@ -120,17 +127,10 @@ function messageHashSession(request: ChatCompletions_RequestBody_Type): RoutingS
   }
 
   if (!user) return undefined;
-  const firstTurn = `msg:${fnv1a64([
-    ["sys", system],
-    ["usr", user],
-  ])}`;
+  const first = JSON.stringify([truncateBytes(system ?? "", HASH_PART_BYTES), truncateBytes(user, HASH_PART_BYTES)]);
+  const firstTurn = `msg:${await workspaceHash(workspace, "routing-session", first)}`;
   if (!assistant) return { primary: firstTurn, isSubagent: false };
-
-  const withReply = `msg:${fnv1a64([
-    ["sys", system],
-    ["usr", user],
-    ["ast", assistant],
-  ])}`;
+  const withReply = `msg:${await workspaceHash(workspace, "routing-session", JSON.stringify([first, truncateBytes(assistant, HASH_PART_BYTES)]))}`;
   return { primary: withReply, fallback: firstTurn, isSubagent: false };
 }
 
@@ -147,24 +147,6 @@ function messageText(content: unknown): string | undefined {
   return texts.length > 0 ? texts.join(" ") : undefined;
 }
 
-const FNV_OFFSET = 0xcbf29ce484222325n;
-const FNV_PRIME = 0x100000001b3n;
-const UINT64_MASK = 0xffffffffffffffffn;
-
-function fnv1a64(parts: Array<[label: string, text: string | undefined]>) {
-  const encoder = new TextEncoder();
-  let hash = FNV_OFFSET;
-
-  for (const [label, text] of parts) {
-    if (!text) continue;
-    const bytes = encoder.encode(`${label}:${truncateBytes(text, HASH_PART_BYTES)}\n`);
-    for (const byte of bytes) {
-      hash ^= BigInt(byte);
-      hash = (hash * FNV_PRIME) & UINT64_MASK;
-    }
-  }
-  return hash.toString(16).padStart(16, "0");
-}
 
 /** Truncate to a byte budget without splitting a UTF-8 code point. */
 function truncateBytes(text: string, maxBytes: number) {

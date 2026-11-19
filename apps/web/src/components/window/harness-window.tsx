@@ -1,3 +1,4 @@
+import { EncryptionCutoverGate } from "@/components/auth/encryption-cutover-gate";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useRouterState, useSearch } from "@tanstack/react-router";
 import { AnimatePresence, Reorder } from "motion/react";
@@ -15,8 +16,10 @@ import { SettingsLayout } from "@/components/settings/settings-layout";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WorkspaceSwitcher } from "@/components/workspaces/workspace-switcher";
+import { EncryptionNotice } from "@/components/auth/encryption-notice";
 import { spring, transitions } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { keyManager } from "@/lib/crypto/key-manager";
 import {
   newTabId,
   readPersistedTabs,
@@ -78,7 +81,17 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
   const [tabs, setTabs] = useState<SessionTab[]>([]);
   const [isRestored, setIsRestored] = useState(false);
   const [runStates, setRunStates] = useState<Record<string, RunState>>({});
+  const [contentTitles, setContentTitles] = useState<Record<string, string>>({});
   const [lastAppHref, setLastAppHref] = useState("/");
+  useEffect(
+    () =>
+      keyManager.subscribe(() => {
+        if (keyManager.getSnapshot().state !== "unlocked") {
+          setContentTitles({});
+        }
+      }),
+    [],
+  );
 
   const isSessionScreen = screen === "session";
   const routeChatId = isSessionScreen ? params.chatId : undefined;
@@ -137,7 +150,9 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
     if (settledHref && (screen === "home" || isSessionScreen)) setLastAppHref(settledHref);
   }, [settledHref, isSessionScreen, screen]);
 
-  const activeTitle = plainTitle(activeTab ? tabTitle(activeTab) : pageTitle);
+  const activeTitle = plainTitle(
+    activeTab ? (contentTitles[activeTab.id] ?? tabTitle(activeTab)) : pageTitle,
+  );
   useEffect(() => {
     document.title = activeTitle ? `${activeTitle} · Radium` : "Radium";
   }, [activeTitle]);
@@ -190,12 +205,19 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
   // Callers report on every change; return the same state when nothing differs so a re-render
   // never feeds back into another report.
   const handleTabHint = useCallback((tabId: string, hint: SessionTabHint) => {
+    setContentTitles((current) => {
+      if (!hint.encrypted || hint.title === undefined || current[tabId] === hint.title) {
+        return current;
+      }
+      return { ...current, [tabId]: hint.title };
+    });
     setTabs((current) => {
       const tab = current.find((item) => item.id === tabId);
       if (!tab) return current;
 
       // A chat that is still loading reports no title or Project; keep the persisted hints.
-      const title = hint.title ?? tab.title;
+      const title =
+        hint.encrypted && hint.title !== undefined ? "Locked" : (hint.title ?? tab.title);
       let project = tab.project;
       if (hint.project !== undefined) project = hint.project ?? undefined;
       const isSameProject =
@@ -288,7 +310,7 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
           <AnimatePresence mode="popLayout" initial={false}>
             {panelTabs.map((tab) => {
               const isActive = tab.id === activeTabId;
-              const title = tabTitle(tab);
+              const title = contentTitles[tab.id] ?? tabTitle(tab);
 
               return (
                 <Reorder.Item
@@ -353,6 +375,7 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
         </div>
 
         <div className="ml-auto flex h-9 min-w-0 shrink items-center pr-1">
+          <EncryptionNotice />
           <WorkspaceSwitcher variant="chip" />
         </div>
 
@@ -370,6 +393,7 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
           screen === "home" && "rounded-tl-none",
         )}
       >
+        <EncryptionCutoverGate>
         {screen === "settings" ? (
           <SettingsLayout wide={isWideSettings} backHref={lastAppHref}>
             {children}
@@ -397,6 +421,7 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
             </div>
           );
         })}
+        </EncryptionCutoverGate>
       </main>
 
       <NotificationCenter activeChatId={activeTabId ? activeTab?.chatId : undefined} />

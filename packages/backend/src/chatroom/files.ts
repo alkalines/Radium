@@ -1,14 +1,32 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { ModelMessage } from "ai";
-import type { Id } from "../../convex/_generated/dataModel";
+import type { Doc, Id } from "../../convex/_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
+  query,
   type ActionCtx,
   type MutationCtx,
 } from "../../convex/_generated/server";
 import { internal } from "../../convex/_generated/api";
+import { requireAccessibleChat } from "../../convex/workspaces";
+import { legacyBoxValidator } from "../e2ee/legacy-contract";
+import {
+  assertLegacyPlaintextAllowed,
+  assertLegacyWritesAllowed,
+  deleteLegacySidecar,
+  isLegacyStorage,
+} from "../e2ee/migration-contract";
 import { workspaceMutation } from "../../convex/helpers";
+import { decodeExactBytes } from "../e2ee/contract";
+import { CAPSULE_BYTES, decodeCapsule } from "radium-crypto";
+import { assertPlaintextChatWriteAllowed } from "./legacy";
+import {
+  invalidSealedContent,
+  openFileBytes,
+  parseFileFragment,
+  stripFileFragment,
+} from "./sealing";
 
 /**
  * Chat attachments live in Convex File Storage, never inline in chat documents. The browser
@@ -23,9 +41,13 @@ import { workspaceMutation } from "../../convex/helpers";
 
 /** Largest accepted attachment; the web Composer enforces the same limit before uploading. */
 export const MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024;
+// Content padding adds at most one 4 KiB page; the envelope adds a 31-byte header and 16-byte tag.
+const MAX_ENCRYPTED_CHAT_FILE_BYTES = MAX_CHAT_FILE_BYTES + 4096 + 47;
 // Uploads never sent in a message (removed attachment, closed Tab) are deleted after this.
 const PENDING_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 const CLEANUP_BATCH_SIZE = 64;
+// A bare `type/subtype` token pair; encrypted uploads declare it, so it must stay short and inert.
+const MEDIA_TYPE_PATTERN = /^[\w!#$&^.+-]{1,64}\/[\w!#$&^.+-]{1,64}$/;
 
 const fileUIPartValidator = v.object({
   type: v.literal("file"),
@@ -42,15 +64,77 @@ export const generateUploadUrl = workspaceMutation({
 });
 
 /**
+ * Locate a historical attachment's sealed sidecar by its old storage URL, after authorizing the
+ * parent chat. The legacy plaintext blob is gone, so the browser opens the sidecar itself
+ * (`openLegacyContent`, which resolves an external envelope through `e2ee_legacy.storageUrl`) and
+ * re-encrypts the file natively before it is sent or forked. Null: not a historical attachment.
+ */
+export const historicalFile = query({
+  args: { chatId: v.id("aisdk_chats"), url: v.string() },
+  returns: v.union(
+    v.null(),
+    v.object({ recordId: v.id("chat_files"), legacyContent: legacyBoxValidator }),
+  ),
+  handler: async (ctx, { chatId, url }) => {
+    const { workspace } = await requireAccessibleChat(ctx, chatId);
+    const file = await ctx.db
+      .query("chat_files")
+      .withIndex("by_workspace_and_url_and_chat", (q) =>
+        q.eq("workspace", workspace._id).eq("url", stripFileFragment(url)).eq("chat", chatId),
+      )
+      .first();
+    if (!file?.legacyContent) return null;
+    return { recordId: file._id, legacyContent: file.legacyContent };
+  },
+});
+
+/**
  * Record an uploaded file as a pending attachment of the caller in this workspace and return its
  * file part. A storage ID can be registered once, so another user cannot claim an upload. Returns
  * `null` (deleting the upload) when the file is missing or larger than `MAX_CHAT_FILE_BYTES`;
  * throwing would roll the deletion back.
  */
 export const register = workspaceMutation({
-  args: { storageId: v.id("_storage"), filename: v.optional(v.string()) },
+  args: {
+    storageId: v.id("_storage"),
+    filename: v.optional(v.string()),
+    /** Declared media type of an encrypted upload, e.g. `image/png`; plaintext uploads use storage's. */
+    mediaType: v.optional(v.string()),
+    e2ee: v.optional(
+      v.object({
+        fileId: v.string(),
+        capsule: v.bytes(),
+        chatEpoch: v.number(),
+        e2eeParent: v.string(),
+      }),
+    ),
+  },
   returns: v.union(fileUIPartValidator, v.null()),
   handler: async (ctx, args) => {
+    if (args.mediaType !== undefined && (!args.e2ee || !MEDIA_TYPE_PATTERN.test(args.mediaType))) {
+      throw new ConvexError({ code: "E2EE_CONTENT_INVALID" });
+    }
+    // Uploads stop during the freeze; plaintext ones never resume after cutover.
+    await assertLegacyWritesAllowed(ctx);
+    if (!args.e2ee) await assertLegacyPlaintextAllowed(ctx);
+    if (args.e2ee) {
+      if (
+        args.filename !== undefined ||
+        !decodeExactBytes(args.e2ee.fileId, 16) ||
+        !decodeExactBytes(args.e2ee.e2eeParent, 16) ||
+        !Number.isSafeInteger(args.e2ee.chatEpoch) ||
+        args.e2ee.chatEpoch < 1 ||
+        args.e2ee.capsule.byteLength !== CAPSULE_BYTES
+      ) {
+        // File names belong inside the sealed message, never beside encrypted storage metadata.
+        throw new ConvexError({ code: "E2EE_CONTENT_INVALID" });
+      }
+      try {
+        decodeCapsule(new Uint8Array(args.e2ee.capsule));
+      } catch {
+        throw new ConvexError({ code: "E2EE_CONTENT_INVALID" });
+      }
+    }
     const stored = await ctx.db.system.get("_storage", args.storageId);
     if (!stored) return null;
 
@@ -61,13 +145,18 @@ export const register = workspaceMutation({
     if (claimed) return null;
 
     const url = await ctx.storage.getUrl(args.storageId);
-    if (!url || stored.size > MAX_CHAT_FILE_BYTES) {
+    const maxBytes = args.e2ee ? MAX_ENCRYPTED_CHAT_FILE_BYTES : MAX_CHAT_FILE_BYTES;
+    if (!url || stored.size > maxBytes) {
       await ctx.storage.delete(args.storageId);
       return null;
     }
 
-    const mediaType = stored.contentType || "application/octet-stream";
-    const filename = args.filename?.trim().slice(0, 255) || undefined;
+    // Encrypted uploads are stored as opaque bytes: the storage row's content type is the
+    // uploader's HTTP header and never trusted; the declared media type is only metadata.
+    const mediaType = args.e2ee
+      ? (args.mediaType ?? "application/octet-stream")
+      : stored.contentType || "application/octet-stream";
+    const filename = args.e2ee ? undefined : args.filename?.trim().slice(0, 255) || undefined;
     await ctx.db.insert("chat_files", {
       workspace: ctx.workspace._id,
       userId: ctx.identity._id,
@@ -76,6 +165,7 @@ export const register = workspaceMutation({
       mediaType,
       filename,
       size: stored.size,
+      ...(args.e2ee ?? {}),
     });
     return { type: "file" as const, mediaType, url, ...(filename ? { filename } : {}) };
   },
@@ -90,25 +180,41 @@ export function storedFileUrls(messages: ReadonlyArray<{ parts: readonly unknown
       const record = part as Record<string, unknown>;
       if (record.type !== "file" || typeof record.url !== "string") continue;
       if (record.url.startsWith("http://") || record.url.startsWith("https://")) {
-        urls.add(record.url);
+        urls.add(stripFileFragment(record.url));
       }
     }
   }
   return urls;
 }
 
+/** A reference row that carries everything needed to open its bytes with the chat's key. */
+function isSealedFile(file: Doc<"chat_files">) {
+  return (
+    file.fileId !== undefined &&
+    file.capsule !== undefined &&
+    file.e2eeParent !== undefined &&
+    file.chatEpoch !== undefined
+  );
+}
+
 /**
  * Give `chat` a reference to each workspace file in `urls`: a pending upload is attached, a file
  * another chat already references (a fork, a reused attachment) gets its own row. URLs that are
  * not this workspace's files are ignored, so a client cannot attach another workspace's upload.
+ * With `sealed`, every new upload linked must be encrypted (a plaintext one would silently
+ * downgrade the attachment of a keyed chat). Files another chat already references are linked as
+ * they are: a legacy plaintext attachment carried into a fork was stored in plaintext before and
+ * gains no new exposure; the content migration seals it later.
  */
 export async function linkChatFiles(
   ctx: MutationCtx,
   workspace: Id<"workspaces">,
   chat: Id<"aisdk_chats">,
   urls: Iterable<string>,
+  options: { sealed?: boolean } = {},
 ) {
-  for (const url of urls) {
+  for (const originalUrl of urls) {
+    const url = stripFileFragment(originalUrl);
     const fileReference = (reference: Id<"aisdk_chats"> | undefined) =>
       ctx.db
         .query("chat_files")
@@ -120,6 +226,9 @@ export async function linkChatFiles(
 
     const pending = await fileReference(undefined);
     if (pending) {
+      // A historical box is tied to its row and original recipient; attaching it cannot grant a chat access.
+      if (pending.legacyContent) invalidSealedContent();
+      if (options.sealed && !isSealedFile(pending)) invalidSealedContent();
       await ctx.db.patch("chat_files", pending._id, { chat });
       continue;
     }
@@ -131,6 +240,11 @@ export async function linkChatFiles(
       )
       .first();
     if (!source) continue;
+    // A sidecar is bound to its own row ID and cannot be copied; the browser re-encrypts a
+    // historical attachment as a fresh native upload before it is reused or forked.
+    if (source.legacyContent) invalidSealedContent();
+    // A plaintext reference is a legacy write, so it stops with them at cutover.
+    if (!isSealedFile(source)) await assertPlaintextChatWriteAllowed(ctx);
     await ctx.db.insert("chat_files", {
       workspace,
       userId: source.userId,
@@ -139,17 +253,23 @@ export async function linkChatFiles(
       mediaType: source.mediaType,
       filename: source.filename,
       size: source.size,
+      fileId: source.fileId,
+      capsule: source.capsule,
+      chatEpoch: source.chatEpoch,
+      e2eeParent: source.e2eeParent,
       chat,
     });
   }
 }
 
-/** Delete a reference row, and the stored file once no other row references it. */
-async function deleteFileReference(
-  ctx: MutationCtx,
-  file: { _id: Id<"chat_files">; storageId: Id<"_storage"> },
-) {
+/**
+ * Delete a reference row, and the stored file once no other row references it. A historical
+ * attachment's external sidecar envelope goes with its row.
+ */
+async function deleteFileReference(ctx: MutationCtx, file: Doc<"chat_files">) {
   await ctx.db.delete("chat_files", file._id);
+  await deleteLegacySidecar(ctx, { table: "chat_files", record: file._id });
+  if (!file.storageId) return;
   const remaining = await ctx.db
     .query("chat_files")
     .withIndex("by_storageId", (q) => q.eq("storageId", file.storageId))
@@ -174,7 +294,8 @@ export async function deleteChatFileBatch(ctx: MutationCtx, chat: Id<"aisdk_chat
  * Delete one batch of `_storage` files older than `cutoff` that no repository row references:
  * uploads never registered, or telemetry files whose blob write failed. A persisted cursor makes
  * each file checked once; files referenced then are deleted with their last reference instead.
- * Returns whether the scan reached `cutoff`.
+ * Historical sidecar envelopes are referenced through `e2ee_legacy_storage`, never by a source
+ * table's own index. Returns whether the scan reached `cutoff`.
  */
 async function sweepUnreferencedStorage(ctx: MutationCtx, cutoff: number) {
   const cursor = await ctx.db.query("storage_sweeps").first();
@@ -195,7 +316,8 @@ async function sweepUnreferencedStorage(ctx: MutationCtx, cutoff: number) {
           .query("telemetry_blobs")
           .withIndex("by_storage", (q) => q.eq("storage", file._id))
           .first();
-    if (!chatFile && !telemetryBlob) await ctx.storage.delete(file._id);
+    const legacyEnvelope = chatFile || telemetryBlob ? false : await isLegacyStorage(ctx, file._id);
+    if (!chatFile && !telemetryBlob && !legacyEnvelope) await ctx.storage.delete(file._id);
   }
 
   const last = files.at(-1);
@@ -232,20 +354,31 @@ export const prunePendingUploads = internalMutation({
   },
 });
 
-/** Storage IDs of this workspace's files among `urls`, for the chat action's model input. */
+/**
+ * Storage IDs of this workspace's files among `urls`, for the chat action's model input. A
+ * historical attachment has no plaintext storage left: it is reported as `historical` so the turn
+ * fails explicitly instead of sending its dead URL to a model.
+ */
 export const resolveStoredFiles = internalQuery({
   args: { workspace: v.id("workspaces"), urls: v.array(v.string()) },
-  returns: v.array(v.object({ url: v.string(), storageId: v.id("_storage") })),
+  returns: v.array(
+    v.object({
+      url: v.string(),
+      storageId: v.optional(v.id("_storage")),
+      historical: v.optional(v.boolean()),
+    }),
+  ),
   handler: async (ctx, args) => {
-    const resolved: Array<{ url: string; storageId: Id<"_storage"> }> = [];
-    for (const url of new Set(args.urls)) {
+    const resolved: Array<{ url: string; storageId?: Id<"_storage">; historical?: boolean }> = [];
+    for (const url of new Set(args.urls.map(stripFileFragment))) {
       const file = await ctx.db
         .query("chat_files")
         .withIndex("by_workspace_and_url_and_chat", (q) =>
           q.eq("workspace", args.workspace).eq("url", url),
         )
         .first();
-      if (file) resolved.push({ url, storageId: file.storageId });
+      if (file?.legacyContent) resolved.push({ url, historical: true });
+      else if (file?.storageId) resolved.push({ url, storageId: file.storageId });
     }
     return resolved;
   },
@@ -272,11 +405,39 @@ export async function inlineStoredFiles(
   }
   if (urls.length === 0) return messages;
 
-  const resolved = await ctx.runQuery(internal.chat_files.resolveStoredFiles, { workspace, urls });
+  // Never pass object-key fragments across the action/query boundary.
+  const resolved = await ctx.runQuery(internal.chat_files.resolveStoredFiles, {
+    workspace,
+    urls: urls.map(stripFileFragment),
+  });
+  const storageIds = new Map(resolved.map(({ url, storageId }) => [url, storageId]));
+  const historical = new Set(resolved.flatMap(({ url, historical }) => (historical ? [url] : [])));
   const bytesByUrl = new Map<string, Uint8Array>();
-  for (const { url, storageId } of resolved) {
+  for (const url of new Set(urls)) {
+    // Its plaintext no longer exists; sending the dead URL would fail silently at the provider.
+    if (historical.has(stripFileFragment(url))) {
+      throw new Error("Historical attachment must be re-encrypted before use");
+    }
+    const fragment = parseFileFragment(url);
+    fragment?.objectKey.fill(0);
+    const storageId = storageIds.get(stripFileFragment(url));
+    if (!storageId) {
+      if (fragment) {
+        throw new Error("Encrypted attachment unavailable");
+      }
+      continue;
+    }
     const blob = await ctx.storage.get(storageId);
-    if (blob) bytesByUrl.set(url, new Uint8Array(await blob.arrayBuffer()));
+    if (!blob) {
+      if (fragment) {
+        throw new Error("Encrypted attachment unavailable");
+      }
+      continue;
+    }
+    bytesByUrl.set(
+      url,
+      await openFileBytes(workspace, url, new Uint8Array(await blob.arrayBuffer())),
+    );
   }
 
   return messages.map((message) => {
@@ -284,7 +445,13 @@ export async function inlineStoredFiles(
     const content = message.content.map((part) => {
       const url = storageUrlOf(part);
       const bytes = url ? bytesByUrl.get(url) : undefined;
-      if (!bytes) return part;
+      if (!bytes) {
+        if (!url || part.type !== "file") return part;
+        const data = part.data;
+        if (!data || typeof data !== "object" || !("type" in data) || data.type !== "url")
+          return part;
+        return { ...part, data: { ...data, url: new URL(stripFileFragment(url)) } };
+      }
       return { ...part, data: { type: "data" as const, data: bytes } };
     });
     return { ...message, content } as ModelMessage;

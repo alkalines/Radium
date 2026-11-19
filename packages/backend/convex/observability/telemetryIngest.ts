@@ -8,6 +8,7 @@ import {
   type QueryCtx,
 } from "../_generated/server";
 import { authorizeChatRecord, requireWorkspaceAccessForUser } from "../workspaces";
+import { assertLegacyWritesAllowed } from "../../src/e2ee/migration-contract";
 import {
   telemetryAttemptSchema,
   telemetryBlobKindSchema,
@@ -18,6 +19,32 @@ import {
   type TelemetryChanges,
   type TelemetryLineage,
 } from "../../src/telemetry/validators";
+import {
+  insertedNodeReachesCustody,
+  invalidateForCapturedRequest,
+  nodeReachesCustody,
+  trackedGeneration,
+} from "../../src/e2ee/migration-telemetry-reach";
+
+const sealedBlob = v.object({
+  epoch: v.number(),
+  requestId: v.string(),
+  capsule: v.bytes(),
+  envelope: v.optional(v.bytes()),
+});
+
+/** Current public owner key; capture never receives private key material. */
+export const ownerKey = internalQuery({
+  args: { workspace: v.id("workspaces") },
+  handler: async (ctx, { workspace }) => {
+    const row = await ctx.db.get("workspaces", workspace);
+    if (!row?.keyEpoch) return null;
+    const key = await ctx.db.query("e2ee_workspace_epochs")
+      .withIndex("by_workspace_and_epoch", (q) => q.eq("workspace", workspace).eq("epoch", row.keyEpoch!))
+      .unique();
+    return key ? { epoch: key.epoch, publicKey: key.ownerPublicKey } : null;
+  },
+});
 
 // Capture writes arrive from `src/telemetry/capture.ts` in bounded batches. Every function here
 // is internal: arguments are server-derived, but ownership claims (API key, chat) are still
@@ -82,7 +109,7 @@ export const existingBlobs = internalQuery({
       found.push({
         hash,
         id: blob._id,
-        recorded: blob.content !== undefined || blob.storage !== undefined,
+        recorded: blob.content !== undefined || blob.storage !== undefined || blob.sealed !== undefined || blob.legacyContent !== undefined,
       });
     }
     return found;
@@ -94,10 +121,8 @@ const blobInput = v.object({
   kind: telemetryBlobKindSchema,
   /** UTF-8 byte length of the canonical JSON, even when the content is not stored. */
   size: v.number(),
-  content: v.optional(v.string()),
-  /** File-storage copy of content above the inline limit, uploaded by the caller. */
   storage: v.optional(v.id("_storage")),
-  meta: v.optional(telemetryBlobMetaSchema),
+  sealed: v.optional(sealedBlob),
   /** Tool blobs of a `toolset`, in request order; they must already exist. */
   members: v.optional(v.array(v.id("telemetry_blobs"))),
 });
@@ -111,16 +136,17 @@ export const ingestBlobs = internalMutation({
   args: { workspace: v.id("workspaces"), blobs: v.array(blobInput) },
   returns: v.array(v.object({ hash: v.string(), id: v.id("telemetry_blobs") })),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const ids: Array<{ hash: string; id: Id<"telemetry_blobs"> }> = [];
     for (const blob of args.blobs) {
       const existing = await blobByHash(ctx, args.workspace, blob.hash);
-      const hasContent = blob.content !== undefined || blob.storage !== undefined;
+      const hasContent = blob.sealed !== undefined;
 
       if (existing) {
-        const existingRecorded = existing.content !== undefined || existing.storage !== undefined;
+        const existingRecorded = existing.content !== undefined || existing.storage !== undefined || existing.sealed !== undefined || existing.legacyContent !== undefined;
         if (!existingRecorded && hasContent) {
           await ctx.db.patch("telemetry_blobs", existing._id, {
-            content: blob.content,
+            sealed: blob.sealed,
             storage: blob.storage,
           });
         } else if (blob.storage) {
@@ -133,11 +159,11 @@ export const ingestBlobs = internalMutation({
       const id = await ctx.db.insert("telemetry_blobs", {
         workspace: args.workspace,
         hash: blob.hash,
+        legacyHashVersion: 1,
         kind: blob.kind,
         size: blob.size,
-        content: blob.content,
+        sealed: blob.sealed,
         storage: blob.storage,
-        meta: blob.meta,
       });
       for (const [position, tool] of (blob.members ?? []).entries()) {
         await ctx.db.insert("telemetry_toolset_tools", {
@@ -174,11 +200,13 @@ export const ingestNodes = internalMutation({
   },
   returns: v.object({ node: v.id("telemetry_nodes"), forked: v.boolean() }),
   handler: async (ctx, args) => {
-    let last: { id: Id<"telemetry_nodes">; depth: number } | undefined;
+    await assertLegacyWritesAllowed(ctx);
+    const generation = await trackedGeneration(ctx, args.workspace);
+    let last: { id: Id<"telemetry_nodes">; depth: number; doc?: Doc<"telemetry_nodes">; reaches?: boolean } | undefined;
     if (args.parentHash !== undefined) {
       const parent = await nodeByHash(ctx, args.workspace, args.parentHash);
       if (!parent) throw new Error("Telemetry parent node not found.");
-      last = { id: parent._id, depth: parent.depth };
+      last = { id: parent._id, depth: parent.depth, doc: parent };
     }
 
     let inserted = false;
@@ -186,7 +214,7 @@ export const ingestNodes = internalMutation({
     for (const node of args.nodes) {
       const existing = await nodeByHash(ctx, args.workspace, node.hash);
       if (existing) {
-        last = { id: existing._id, depth: existing.depth };
+        last = { id: existing._id, depth: existing.depth, doc: existing };
         continue;
       }
       // Only the first insertion can join existing history; later nodes hang off new ones.
@@ -200,15 +228,26 @@ export const ingestNodes = internalMutation({
       }
       inserted = true;
       const depth = (last?.depth ?? 0) + 1;
+      // While unfrozen after cutover, stamp whether the new node's chain touches custodial history
+      // (valid only for this migration generation) so later requests need no ancestor walk. Node
+      // insertion alone changes no proof; `finishRequest` invalidates when a request reaches custody.
+      let reaches: boolean | undefined;
+      if (generation !== undefined) {
+        // A tracked run always has a stored parent doc or a freshly computed reach for `last`.
+        const parentReaches = last ? (last.reaches ?? await nodeReachesCustody(ctx, last.doc!, generation)) : false;
+        reaches = await insertedNodeReachesCustody(ctx, { workspace: args.workspace, blob: node.blob }, parentReaches);
+      }
       const id = await ctx.db.insert("telemetry_nodes", {
         workspace: args.workspace,
         hash: node.hash,
+        legacyHashVersion: 1,
         parent: last?.id,
         blob: node.blob,
         depth,
         origin: node.origin,
+        ...(reaches === undefined ? {} : { custodyFree: !reaches, custodyFreeGeneration: generation }),
       });
-      last = { id, depth };
+      last = { id, depth, reaches };
     }
     if (!last) throw new Error("Telemetry node run is empty.");
     return { node: last.id, forked };
@@ -364,7 +403,12 @@ export const finishRequest = internalMutation({
     upstreamInferenceCost: v.optional(v.number()),
     providerGenerationId: v.optional(v.string()),
     chatCompletion: v.optional(v.id("chat_completions")),
-    error: v.optional(v.object({ message: v.string(), status: v.optional(v.number()) })),
+    sealedError: v.optional(v.object({
+      epoch: v.number(),
+      requestId: v.string(),
+      capsule: v.bytes(),
+      envelope: v.bytes(),
+    })),
     canceled: v.optional(v.boolean()),
     attempts: v.array(telemetryAttemptSchema),
     input: v.optional(v.id("telemetry_nodes")),
@@ -381,6 +425,7 @@ export const finishRequest = internalMutation({
   },
   returns: v.id("telemetry_requests"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const existing = await ctx.db
       .query("telemetry_requests")
       .withIndex("by_workspace_and_requestId", (q) =>
@@ -405,7 +450,7 @@ export const finishRequest = internalMutation({
     } else if (args.source === "chatroom") {
       throw new Error("Chatroom telemetry requires chat attribution.");
     }
-    const [input, prefix] = await Promise.all([
+    const [input, prefix, output] = await Promise.all([
       requireWorkspaceNode(ctx, args.workspace, args.input),
       requireWorkspaceNode(ctx, args.workspace, args.prefix),
       requireWorkspaceNode(ctx, args.workspace, args.output),
@@ -460,9 +505,19 @@ export const finishRequest = internalMutation({
     const { session: _session, prefix: _prefix, forked: _forked, ...fields } = args;
     const request = await ctx.db.insert("telemetry_requests", {
       ...fields,
+      attempts: fields.attempts.map(({ message: _message, ...attempt }) => attempt),
       session,
       lineage,
       changes,
+    });
+    // Only a request that reaches custodial history can change a finished custody proof. Reach is
+    // derived from the stored rows (`input`/`output` chains, blobs, toolset tools), never from a
+    // caller flag, so unrelated traffic neither bumps the proof revision nor schedules a refresh.
+    await invalidateForCapturedRequest(ctx, {
+      workspace: args.workspace,
+      chatId: args.chatId,
+      nodes: [input, output],
+      blobs: [args.system, args.params, args.headers, args.toolset],
     });
     await ctx.scheduler.runAfter(0, internal.observability.telemetryExport.deliver, { request });
     return request;

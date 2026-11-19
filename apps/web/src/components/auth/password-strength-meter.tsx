@@ -1,4 +1,8 @@
-import { evaluatePasswordStrength, type PasswordStrengthLevel } from "@better-auth-ui/core";
+import {
+  evaluatePasswordStrength,
+  type PasswordStrength,
+  type PasswordStrengthLevel,
+} from "@better-auth-ui/core";
 import { useAuth } from "@better-auth-ui/react";
 
 import { cn } from "@/lib/utils";
@@ -29,13 +33,29 @@ export type PasswordStrengthMeterProps = {
  * authority on what is acceptable.
  */
 export function PasswordStrengthMeter({ password, className }: PasswordStrengthMeterProps) {
-  const { emailAndPassword, localization } = useAuth();
+  const { emailAndPassword } = useAuth();
 
   if (!emailAndPassword?.strengthMeter) return null;
 
-  const { score, level } = evaluatePasswordStrength(password, {
+  const strength = evaluatePasswordStrength(password, {
     minLength: emailAndPassword.minPasswordLength,
   });
+  return <PasswordStrengthBar strength={strength} className={className} />;
+}
+
+/**
+ * Renders an already evaluated strength. OPAQUE forms use this directly: they score the
+ * password in the input's change handler and keep only the score in state, never the password.
+ */
+export function PasswordStrengthBar({
+  strength,
+  className,
+}: {
+  strength: PasswordStrength;
+  className?: string;
+}) {
+  const { localization } = useAuth();
+  const { score, level } = strength;
 
   if (level === "empty") return null;
 

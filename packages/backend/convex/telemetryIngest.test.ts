@@ -2,6 +2,7 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { decodeCapsule, generateEncryptionKeyPair, openCapsule, openWithCapsule } from "radium-crypto";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -9,7 +10,7 @@ import schema from "./schema";
 import { startCapture } from "../src/telemetry/capture";
 import { blobHash, nodeHash } from "../src/telemetry/hash";
 import { canonicalJson } from "../src/telemetry/canonical";
-import { blobValue, loadBlob, loadChain, loadToolset } from "../src/telemetry/store";
+import { loadBlob, loadChain, loadToolset, type LoadedBlob } from "../src/telemetry/store";
 import type { TelemetryAttempt, TelemetrySettings } from "../src/telemetry/validators";
 
 vi.mock("./auth", () => ({
@@ -34,14 +35,21 @@ const session = { primary: "header:session-1", isSubagent: false };
 
 let clock = 0;
 let requestCount = 0;
+const seeds = new Map<string, Uint8Array>();
+let priorSecret: string | undefined;
 
 // Scheduled export deliveries must not run: they belong to the export slice's own tests.
 beforeEach(() => {
+  priorSecret = process.env.TELEMETRY_HASH_SECRET;
+  process.env.TELEMETRY_HASH_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
   vi.useFakeTimers();
   clock = 1_000;
   requestCount = 0;
 });
 afterEach(() => {
+  if (priorSecret === undefined) delete process.env.TELEMETRY_HASH_SECRET;
+  else process.env.TELEMETRY_HASH_SECRET = priorSecret;
+  seeds.clear();
   vi.useRealTimers();
 });
 
@@ -59,10 +67,82 @@ function actionCtx(t: TestConvex) {
 }
 
 async function makeWorkspace(t: TestConvex) {
-  return await t.run((ctx) =>
-    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Workspace" }),
-  );
+  const keys = await generateEncryptionKeyPair();
+  const workspace = await t.run(async (ctx) => {
+    const workspace = await ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "Workspace", keyEpoch: 1 });
+    await ctx.db.insert("e2ee_workspace_epochs", {
+      workspace, epoch: 1, suite: 1, memberKeyId: "member", ownerKeyId: "owner",
+      memberPublicKey: keys.publicKey.slice().buffer as ArrayBuffer,
+      ownerPublicKey: keys.publicKey.slice().buffer as ArrayBuffer,
+      createdBy: "owner", createdAt: 1,
+    });
+    return workspace;
+  });
+  seeds.set(workspace, keys.seed);
+  return workspace;
 }
+
+async function openBlob(workspace: Id<"workspaces">, blob: LoadedBlob | null) {
+  if (!blob?.sealed?.envelope) return undefined;
+  const sealed = blob.sealed;
+  const capsuleKey = await openCapsule({
+    seed: seeds.get(workspace)!,
+    capsule: decodeCapsule(new Uint8Array(sealed.capsule)),
+    aad: { table: "telemetry_capsules", workspace, parent: sealed.requestId, record: sealed.requestId, field: "capsule" },
+  });
+  const bytes = await openWithCapsule({
+    capsuleKey, envelope: new Uint8Array(sealed.envelope!),
+    aad: { table: "telemetry_blobs", workspace, parent: sealed.requestId, record: blob.hash, field: "content" },
+    pad: "content",
+  });
+  return JSON.parse(new TextDecoder().decode(bytes)) as { content?: string; meta?: unknown };
+}
+
+async function value(workspace: Id<"workspaces">, blob: LoadedBlob | null) {
+  const content = (await openBlob(workspace, blob))?.content;
+  return content === undefined ? undefined : JSON.parse(content);
+}
+
+test("capture seals content and binds its envelope to the workspace and hash", async () => {
+  const t = makeTest();
+  const workspace = await makeWorkspace(t);
+  const request = await record(t, { workspace, body: body([user("sensitive prompt")]) });
+  const loaded = await t.run(async (ctx) => {
+    const node = await ctx.db.get("telemetry_nodes", request.input!);
+    return loadBlob(ctx, workspace, node!.blob);
+  });
+  expect(loaded?.content).toBeUndefined();
+  expect(loaded?.meta).toBeUndefined();
+  expect(await value(workspace, loaded)).toEqual(user("sensitive prompt"));
+  await expect(openBlob(workspace, { ...loaded!, hash: "wrong" })).rejects.toThrow();
+});
+
+test("capture suppresses plaintext without an owner key", async () => {
+  const t = makeTest();
+  const workspace = await t.run((ctx) =>
+    ctx.db.insert("workspaces", { ownerType: "user", ownerId: "owner", name: "keyless" }),
+  );
+  const request = await record(t, { workspace, body: body([user("secret")]) });
+  const stored = await counts(t, workspace);
+  expect(stored.blobs.every((blob) => !blob.content && !blob.meta && !blob.storage && !blob.sealed)).toBe(true);
+  expect(request.sealedError).toBeUndefined();
+});
+
+test("missing deployment hash secret fails closed without writing telemetry", async () => {
+  const t = makeTest();
+  const workspace = await makeWorkspace(t);
+  delete process.env.TELEMETRY_HASH_SECRET;
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  const capture = startCapture(actionCtx(t), {
+    workspace, userId: "owner", requestId: "missing-secret", settings: recordAll,
+  }, {
+    rawBody: body([user("secret")]), source: "gateway", model: "model", stream: false, startedAt: 1,
+  });
+  await capture.finish({ status: "ok" });
+  expect((await counts(t, workspace)).blobs).toHaveLength(0);
+  expect(await t.run((ctx) => ctx.db.query("telemetry_requests").collect())).toHaveLength(0);
+  errors.mockRestore();
+});
 
 type RecordInput = {
   workspace: Id<"workspaces">;
@@ -196,12 +276,12 @@ test("a decomposed request reassembles into the original body", async () => {
     const tools = await loadToolset(ctx, workspace, request.toolset);
     const params = await loadBlob(ctx, workspace, request.params);
     return {
-      ...(blobValue(params) as object),
+      ...(await value(workspace, params) as object),
       messages: [
-        ...(blobValue(system) as unknown[]),
-        ...nodes.map((node) => blobValue(node.message)),
+        ...(await value(workspace, system) as unknown[]),
+        ...(await Promise.all(nodes.map((node) => value(workspace, node.message)))),
       ],
-      tools: tools.map((tool) => blobValue(tool)),
+      tools: await Promise.all(tools.map((tool) => value(workspace, tool))),
     };
   });
   expect(reassembled).toEqual(original);
@@ -382,7 +462,7 @@ test("system prompt, tool, parameter, and model changes are detected against the
   expect(model.changes?.model).toEqual({ from: "provider/model", to: "other/model" });
 });
 
-test("recording inputs off keeps hashes and metadata but no content, and later recording fills it in", async () => {
+test("recording inputs off keeps keyed hashes but suppresses content and metadata, then upgrades", async () => {
   const t = makeTest();
   const workspace = await makeWorkspace(t);
   const messages: Message[] = [
@@ -401,6 +481,7 @@ test("recording inputs off keeps hashes and metadata but no content, and later r
   const redacted = await record(t, {
     workspace,
     body: body(messages, { tools, temperature: 0.3 }),
+    headers: { "x-title": "sensitive header" },
     settings: recordNothing,
     output: "secret answer",
   });
@@ -413,17 +494,12 @@ test("recording inputs off keeps hashes and metadata but no content, and later r
     expect(blob.storage).toBeUndefined();
     expect(blob.size).toBeGreaterThan(0);
   }
-  expect(byKind("message").map((blob) => blob.meta)).toEqual(
-    expect.arrayContaining([
-      { role: "assistant", names: ["lookup"] },
-      { role: "tool", toolCallId: "c1" },
-      { role: "assistant" },
-    ]),
-  );
-  expect(byKind("tool")[0]!.meta).toEqual({ names: ["lookup"] });
-  // Configuration is not prompt content, and the toolset is only hashes.
-  expect(JSON.parse(byKind("params")[0]!.content!)).toMatchObject({ temperature: 0.3 });
-  expect(byKind("toolset")[0]!.content).toBeDefined();
+  expect(stored.blobs.every((blob) => blob.meta === undefined && blob.content === undefined)).toBe(true);
+  expect(byKind("params")[0]!.sealed).toBeUndefined();
+  expect(byKind("headers")[0]!.sealed).toBeUndefined();
+  expect(JSON.stringify(stored.blobs)).not.toContain("sensitive header");
+  expect(JSON.stringify(stored.blobs)).not.toContain("lookup");
+  expect(byKind("toolset")[0]!.sealed).toBeDefined();
   expect(redacted.output).toBeDefined();
 
   // The same request recorded later upgrades the system prompt and tools in place.
@@ -437,8 +513,8 @@ test("recording inputs off keeps hashes and metadata but no content, and later r
     system: await loadBlob(ctx, workspace, recorded.system),
     tools: await loadToolset(ctx, workspace, recorded.toolset),
   }));
-  expect(blobValue(upgraded.system)).toEqual([messages[0]]);
-  expect(upgraded.tools.map((tool) => blobValue(tool))).toEqual(tools);
+  expect(await value(workspace, upgraded.system)).toEqual([messages[0]]);
+  expect(await Promise.all(upgraded.tools.map((tool) => value(workspace, tool)))).toEqual(tools);
   expect((await counts(t, workspace)).blobs).toHaveLength(stored.blobs.length);
 });
 
@@ -506,7 +582,7 @@ test("oversized content goes to file storage once and is reused", async () => {
     return { blob: loaded, files: await ctx.db.system.query("_storage").collect() };
   });
   expect(blob?.content).toBeUndefined();
-  expect(blob?.storageUrl).toBeDefined();
+  expect(blob?.sealed?.storageUrl).toBeDefined();
   expect(files).toHaveLength(1);
 });
 
@@ -537,4 +613,80 @@ test("capture refuses a request whose API key belongs to another workspace", asy
     ctx.db.query("telemetry_requests").collect(),
   );
   expect(requests).toHaveLength(0);
+});
+
+const custodyBox = { kind: "custody" as const, keyId: "k", epoch: 1, box: new ArrayBuffer(1) };
+
+/** Cutover is complete and one historical message blob of the workspace is held in custody. */
+async function holdCustodialMessage(t: TestConvex, workspace: Id<"workspaces">, message: Message) {
+  const hash = await blobHash(workspace, "message", canonicalJson(message));
+  await t.run(async (ctx) => {
+    await ctx.db.insert("e2ee_migration_state", {
+      key: "global", frozen: false, generation: 2, custodyState: "active", cutoverComplete: true, custodyWrites: 0,
+    });
+    const blob = await ctx.db.insert("telemetry_blobs", { workspace, hash, kind: "message", size: 10, legacyContent: custodyBox });
+    await ctx.db.insert("e2ee_legacy_custody", { table: "telemetry_blobs", record: blob, workspace });
+  });
+}
+
+async function proofActivity(t: TestConvex, workspace: Id<"workspaces">) {
+  return await t.run(async (ctx) => ({
+    revisions: (await ctx.db.query("e2ee_telemetry_revisions").collect()).map((row) => row.revision),
+    workspace: await ctx.db.get("workspaces", workspace),
+    state: await ctx.db.query("e2ee_migration_state").first(),
+    refreshes: (await ctx.db.system.query("_scheduled_functions").collect())
+      .filter((job) => job.name.includes("e2ee_telemetry")).length,
+  }));
+}
+
+test("capture after cutover leaves custody proofs alone unless a request reaches custodial history", async () => {
+  const t = makeTest();
+  const workspace = await makeWorkspace(t);
+  const legacy = user("historical question");
+  await holdCustodialMessage(t, workspace, legacy);
+
+  // Unrelated traffic: no revision, no workspace write, no refresh pass, however many requests.
+  const before = await proofActivity(t, workspace);
+  await record(t, { workspace, body: body([user("fresh one")], { tools: [{ type: "function", function: { name: "lookup" } }] }) });
+  await record(t, { workspace, body: body([user("fresh one"), assistant("a"), user("fresh two")]) });
+  const unrelated = await proofActivity(t, workspace);
+  expect(unrelated.revisions).toEqual([]);
+  expect(unrelated.workspace).toEqual(before.workspace);
+  expect(unrelated.state).toEqual(before.state);
+  expect(unrelated.refreshes).toBe(0);
+
+  // A request whose chain starts at the custodial message reaches custody: one revision, one pass.
+  await record(t, { workspace, body: body([legacy]) });
+  const related = await proofActivity(t, workspace);
+  expect(related.revisions).toEqual([1]);
+  expect(related.workspace).toEqual(before.workspace);
+  expect(related.state).toMatchObject({ telemetryRefreshPending: true, telemetryRefreshGeneration: 2 });
+  expect(related.refreshes).toBe(1);
+
+  // Continuing that conversation natively still reaches it through the hidden ancestor; the next
+  // unrelated request does not.
+  await record(t, { workspace, body: body([legacy, assistant("a"), user("continued")]) });
+  expect((await proofActivity(t, workspace)).revisions).toEqual([2]);
+  await record(t, { workspace, body: body([user("fresh three")]) });
+  expect((await proofActivity(t, workspace)).revisions).toEqual([2]);
+
+  // Reach is memoized on the nodes: the three on the custodial chain touch custody, the rest do not.
+  const nodes = await t.run((ctx) => ctx.db.query("telemetry_nodes").collect());
+  expect(nodes.filter((node) => node.custodyFree === false)).toHaveLength(3);
+  expect(nodes.filter((node) => node.custodyFree === true)).toHaveLength(nodes.length - 3);
+});
+
+test("a proof chain that cannot continue releases its coalescing flags instead of staying pending", async () => {
+  const t = makeTest();
+  // Writers reopened mid-chain: the freeze the proofs need is gone, so the step throws.
+  await t.run((ctx) => ctx.db.insert("e2ee_migration_state", {
+    key: "global", frozen: false, generation: 3, custodyState: "active", cutoverComplete: false, custodyWrites: 0,
+    telemetryRefreshPending: true, telemetryRefreshGeneration: 3, telemetryRefreshDirty: true,
+  }));
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  await t.mutation(internal.e2ee_telemetry.proveNext, { table: "telemetry_blobs" });
+  await t.mutation(internal.e2ee_telemetry.enqueueProofs, { table: "telemetry_blobs" });
+  errors.mockRestore();
+  const state = await t.run((ctx) => ctx.db.query("e2ee_migration_state").first());
+  expect(state).toMatchObject({ telemetryRefreshPending: false, telemetryRefreshDirty: false });
 });

@@ -150,7 +150,7 @@ describe("destination management", () => {
         name: "Collector",
         endpoint: "https://otel.example.com",
         enabled: true,
-        privacyMode: false,
+        privacyMode: true,
         samplingRate: 1,
         includeApiKeys: [keyA],
         excludeApiKeys: [],
@@ -300,7 +300,7 @@ describe("deliver", () => {
     });
     await expect(t.action(exportApi.deliver, { request })).resolves.toBeNull();
     const failed = await t.run((ctx) => ctx.db.get("telemetry_destinations", destination));
-    expect(failed?.lastError).toBe("connect refused");
+    expect(failed?.lastError).toBe("Delivery failed.");
   });
 
   test("honors API key include and exclude lists, with exclude winning", async () => {

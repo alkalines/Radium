@@ -43,6 +43,15 @@ export const workerEditResult = v.union(
 );
 export type WorkerEditResult = Infer<typeof workerEditResult>;
 
+/** The `apply_patch` Add File envelope a Create call stages; Workers rebuild it from signed input. */
+export function workerCreatePatch(path: string, content: string): string {
+  const lines = content
+    .split("\n")
+    .map((line) => `+${line}`)
+    .join("\n");
+  return `*** Begin Patch\n*** Add File: ${path}\n${lines}\n*** End Patch`;
+}
+
 /** Field-order-independent dispatch deduplication. */
 export function workerEditRequestKey(request: WorkerEditRequest): string {
   const action = request.action;

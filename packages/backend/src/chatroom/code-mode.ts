@@ -57,9 +57,23 @@ export type CodeModeOutput = {
 /**
  * The browser's answer to an awaiting inner call: approve or deny (with an optional reason) an
  * approval, or answer or dismiss a `question` (answers follow `QuestionOutput`, one list per question).
+ * An approval of a Worker tool call on a paired Worker carries the user's `signature` over the call
+ * input as the prompt showed it (see `WorkerApprovalSignature` in `src/worker/chat-tools.ts`). The
+ * signed input itself is never stored here: the chat action recorded the text it presented.
  */
 export const codeModeInteractionResponseValidator = v.union(
-  v.object({ kind: v.literal("approval"), approved: v.boolean(), reason: v.optional(v.string()) }),
+  v.object({
+    kind: v.literal("approval"),
+    approved: v.boolean(),
+    reason: v.optional(v.string()),
+    signature: v.optional(
+      v.object({
+        signature: v.string(),
+        signerKeyId: v.string(),
+        approvedAt: v.number(),
+      }),
+    ),
+  }),
   v.object({ kind: v.literal("question"), answers: v.array(v.array(v.string())) }),
   v.object({ kind: v.literal("question"), dismissed: v.literal(true) }),
 );

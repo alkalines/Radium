@@ -7,6 +7,7 @@ import {
   internalMutation,
   internalQuery,
   type QueryCtx,
+  type ActionCtx,
 } from "../_generated/server";
 import { isChatVisibleToWorkspace } from "../chatroom";
 import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../helpers";
@@ -18,17 +19,17 @@ import {
   parseDestinationEndpoint,
   type OtlpBundle,
 } from "../../src/telemetry/otlp";
-import { loadBlob, loadChain, loadToolset, type LoadedBlob } from "../../src/telemetry/store";
+import type { LoadedBlob } from "../../src/telemetry/store";
+import { canonicalJson } from "../../src/telemetry/canonical";
+import type { DecomposedRequest } from "../../src/telemetry/decompose";
+import type { TelemetryAttempt } from "../../src/telemetry/validators";
 import { telemetryDestinationKindSchema } from "../../src/telemetry/validators";
 
 const HEADERS_SECRET = "headers";
 const MAX_DESTINATIONS = 20;
-/** Newest messages exported per request; bounds query reads for very long conversations. */
-const EXPORT_MESSAGE_LIMIT = 100;
 const DELIVERY_TIMEOUT_MS = 10_000;
 /** Destination rows are patched at most this often on repeated success to avoid write contention. */
 const DELIVERY_RECORD_INTERVAL_MS = 10_000;
-const MAX_ERROR_LENGTH = 300;
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 
 const destinationView = v.object({
@@ -184,7 +185,7 @@ export const createDestination = ownedWorkspaceMutation({
       name: args.name,
       endpoint: args.endpoint,
       enabled: args.enabled ?? true,
-      privacyMode: args.privacyMode ?? false,
+      privacyMode: args.privacyMode ?? true,
       samplingRate: args.samplingRate ?? 1,
       includeApiKeys: args.includeApiKeys ?? [],
       excludeApiKeys: args.excludeApiKeys ?? [],
@@ -342,14 +343,8 @@ export const loadDeliveryPlan = internalQuery({
     if (destinations.length === 0) return null;
 
     // Content is only loaded when some destination will actually include it.
-    const needsContent = destinations.some((destination) => !destination.privacyMode);
-    const chain = needsContent
-      ? await loadChain(ctx, workspace, request.input, EXPORT_MESSAGE_LIMIT)
-      : { nodes: [] };
-    const output =
-      needsContent && request.output
-        ? (await loadChain(ctx, workspace, request.output, 1)).nodes[0]
-        : undefined;
+    const chain = { nodes: [] };
+    const output = undefined;
 
     const bundle: OtlpBundle = {
       request: {
@@ -367,15 +362,14 @@ export const loadDeliveryPlan = internalQuery({
         finishReason: request.finishReason,
         usage: request.usage,
         providerGenerationId: request.providerGenerationId,
-        error: request.error,
-        attempts: request.attempts,
+        attempts: request.attempts.map(({ message: _message, ...attempt }) => attempt),
         lineage: request.lineage,
         changes: request.changes,
       },
       sessionKey,
-      params: await loadBlob(ctx, workspace, request.params),
-      system: needsContent ? await loadBlob(ctx, workspace, request.system) : null,
-      toolset: needsContent ? await loadToolset(ctx, workspace, request.toolset) : [],
+      params: null,
+      system: null,
+      toolset: [],
       messages: chain.nodes,
       output,
     };
@@ -448,28 +442,65 @@ async function send(target: DeliveryTarget, payload: unknown): Promise<SendResul
     });
     if (response.status >= 200 && response.status < 300) return { ok: true };
     return { ok: false, error: `HTTP ${response.status}` };
-  } catch (error) {
-    const message = abort.signal.aborted
-      ? "Delivery timed out."
-      : error instanceof Error
-        ? error.message
-        : "Delivery failed.";
-    return { ok: false, error: message.slice(0, MAX_ERROR_LENGTH) };
+  } catch {
+    return { ok: false, error: abort.signal.aborted ? "Delivery timed out." : "Delivery failed." };
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** Fill content stored in file storage; unreadable files leave the blob without content. */
-async function hydrate(blob: LoadedBlob | null | undefined): Promise<void> {
-  if (!blob || blob.content !== undefined || !blob.storageUrl) return;
-  try {
-    const response = await fetch(blob.storageUrl);
-    if (response.ok) blob.content = await response.text();
-  } catch {
-    // Export proceeds without this content.
-  }
+
+/** Send opt-in content directly from the active request; plaintext never crosses a Convex call. */
+export async function deliverFromMemory(
+  ctx: ActionCtx,
+  request: Id<"telemetry_requests">,
+  input: {
+    parts: DecomposedRequest;
+    output: unknown;
+    error?: { message: string; status?: number };
+    attempts: TelemetryAttempt[];
+    recordInputs: boolean;
+    recordOutputs: boolean;
+  },
+) {
+  const plan: DeliveryPlan | null = await ctx.runQuery(
+    internal.observability.telemetryExport.loadDeliveryPlan, { request },
+  );
+  if (!plan) return;
+  const blob = (kind: LoadedBlob["kind"], value: unknown): LoadedBlob => ({
+    id: "" as Id<"telemetry_blobs">, hash: "", kind, size: 0,
+    content: canonicalJson(value), redacted: false,
+  });
+  const node = (value: unknown, index: number, origin: "input" | "output") => ({
+    id: "" as Id<"telemetry_nodes">, depth: index + 1, origin,
+    message: blob("message", value),
+  });
+  const bundle: OtlpBundle = {
+    ...plan.bundle,
+    request: {
+      ...plan.bundle.request,
+      error: input.recordInputs || input.recordOutputs ? input.error : undefined,
+      attempts: input.recordInputs || input.recordOutputs ? input.attempts : plan.bundle.request.attempts,
+    },
+    params: input.recordInputs ? blob("params", input.parts.params) : null,
+    system: input.recordInputs && input.parts.system.length ? blob("system", input.parts.system) : null,
+    toolset: input.recordInputs ? input.parts.tools.map((value) => blob("tool", value)) : [],
+    messages: input.recordInputs ? input.parts.chain.slice(-100).map((value, index) => node(value, index, "input")) : [],
+    output: input.recordOutputs && input.output ? node(input.output, 0, "output") : null,
+  };
+  await Promise.all(plan.destinations.filter((target) => !target.privacyMode).map(async (target) => {
+    try {
+      const payload = await buildOtlpExport(bundle, { privacyMode: false });
+      const result = await send(target, payload);
+      await ctx.runMutation(internal.observability.telemetryExport.recordDelivery, {
+        destination: target.id, error: result.ok ? undefined : result.error,
+      });
+    } catch {
+      console.error("Telemetry export failed");
+    }
+  }));
 }
+
 
 /**
  * Export a captured request to every matching destination. Scheduled by capture after the
@@ -487,31 +518,24 @@ export const deliver = internalAction({
       if (!plan) return null;
 
       const { bundle } = plan;
-      if (plan.destinations.some((destination) => !destination.privacyMode)) {
-        await Promise.all([
-          hydrate(bundle.system),
-          hydrate(bundle.output?.message),
-          ...(bundle.toolset ?? []).map(hydrate),
-          ...(bundle.messages ?? []).map((node) => hydrate(node.message)),
-        ]);
-      }
+
 
       await Promise.all(
-        plan.destinations.map(async (target) => {
+        plan.destinations.filter((target) => target.privacyMode).map(async (target) => {
           try {
-            const payload = await buildOtlpExport(bundle, { privacyMode: target.privacyMode });
+            const payload = await buildOtlpExport(bundle, { privacyMode: true });
             const result = await send(target, payload);
             await ctx.runMutation(internal.observability.telemetryExport.recordDelivery, {
               destination: target.id,
               error: result.ok ? undefined : result.error,
             });
-          } catch (error) {
-            console.error("Telemetry export failed", error);
+          } catch {
+            console.error("Telemetry export failed");
           }
         }),
       );
-    } catch (error) {
-      console.error("Telemetry export failed", error);
+    } catch {
+      console.error("Telemetry export failed");
     }
     return null;
   },

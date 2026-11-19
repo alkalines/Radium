@@ -8,8 +8,8 @@ import schema from "./component/schema.js";
 const modules = import.meta.glob("./component/**/*.js");
 
 /** Register the built component under the same name used in the app's config. */
-export function register(
-  t: TestConvex<SchemaDefinition<GenericSchema, boolean>>,
+export function register<S extends SchemaDefinition<GenericSchema, boolean>>(
+  t: TestConvex<S>,
   name = "workerIdentity",
 ) {
   t.registerComponent(name, schema, modules);

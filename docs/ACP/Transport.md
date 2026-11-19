@@ -11,6 +11,11 @@ Raw JSON-RPC never leaves the Worker: the Worker answers agent requests itself
 and forwards a normalized event model, so the browser is independent of ACP
 versions and agent quirks.
 
+For keyed workspaces, this relay carries ciphertext rather than readable ACP content. Paired Workers verify owner-signed launch definitions before probing, creator-signed session bindings, and audience-authorized command/answer signatures. Frame capsules are Worker-signed and opened once per epoch; routing metadata is authenticated inside the sealed frame. Config/command surfaces are decrypted from the timeline, not copied into plaintext `acp_sessions`. The sections below describe relay scheduling; plaintext shapes apply only to legacy keyless workspaces. Wire ownership and residual leakage: [E2EE ACP](../E2EE/Data.md#acp).
+
+Prepared phase 9 migration preserves old relay content in explicitly historical encrypted sidecars, without inventing Worker signatures or replaying commands. Pending legacy operations must drain before freeze; sidecar tasks/commands are excluded from machine claims. Native signed frames keep their format, and plaintext writers stay disabled after verified cutover. No migration has run; see the [approval-gated rollout](../deployment.md#e2ee-phase-9-rollout-approval-required).
+
+
 ## Connections
 
 Nothing connects to the Worker, and clients never connect to each other. The
@@ -93,7 +98,7 @@ replace; text chunks append), which makes the later v2 adapter a local change.
 | `item.upsert {item: {id, kind, order, ...fields}}`               | Create an item or patch its fields (`order` sorts items and addresses history pages)                                                         |
 | `text.append {id, text}`                                         | Append streamed text to an `agent`/`thought`/`user` item                                                                                     |
 | `turn.start {turnId}` / `turn.end {turnId, stopReason?, error?}` | Turn boundaries                                                                                                                              |
-| `session.patch {config?, commands?, usage?, info?}`              | Also mirrored to `acp_sessions` (config, commands and title at once, usage at turn end)                                                      |
+| `session.patch {config?, commands?, usage?, info?}`              | Changes timeline state; keyed sessions mirror only operational usage/status outside ciphertext, never config values or command content. |
 | `window {start, before?, hasMore}`                               | Opens a snapshot (items from `start` follow) or a history page (`start <= order < before`)                                                   |
 | `fragment {id, index, total, data}`                              | One piece of a single op too large for a frame (a 256 KiB tool output); clients concatenate `data` and apply the op once every piece arrived |
 
@@ -158,7 +163,7 @@ a minute per Tab.
 Frames live in the `chat_frames` table shared with the built-in agent
 ([Live Sessions](../Radium_Chatroom/Live_Sessions.md#shared-live-layer)). An ACP
 frame is `{chat, stream: "acp:<epoch>", seqFrom, seqTo, format: "acp", kind,
-payload}`, read by `(chat, stream, seqFrom)`; `payload` is the JSON of the ops.
+payload}`. Keyless sessions store JSON ops; paired sessions store sealed `{seqTo, kind, ops}` bytes under the epoch capsule, binding `seqFrom` through the AAD. A viewer rejects altered metadata or ciphertext without advancing its cursor.
 
 - `kind`: `snapshot`, `live`, `history` (an older page, shared by all viewers).
   Command results that belong to one user (an `authenticate` receipt) are not
@@ -208,7 +213,7 @@ error?, result?}`; the Worker subscribes through `acp.assignedCommands` (its
 | ------------------------ | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `prompt`                 | `session/new` (first), `session/prompt`         | Payload: text and `resource_link` blocks (attachments are a later slice)                                                                                                                              |
 | `cancel`                 | `session/cancel`                                | Also answers open permissions/elicitations as cancelled. An unclaimed prompt is cancelled in Convex without a command                                                                                 |
-| `set_config`, `set_mode` | `session/set_config_option`, `session/set_mode` | Response config replaces `acp_sessions.config`; before the ACP session exists the choice is stored in `acp_sessions.draft` and applied after `session/new`; once the first prompt is claimed (but before the session id is bound) the choice is also sent as a live command, since the Worker has already read the draft |
+| `set_config`, `set_mode` | `session/set_config_option`, `session/set_mode` | Paired sessions send sealed signed commands only, including pre-session choices. Legacy sessions may persist draft config and mirror the response in `acp_sessions.config`. |
 | `history`                | —                                               | Worker-local timeline read                                                                                                                                                                            |
 | `sync_sessions`          | `session/list` (all pages, no `cwd`)            | Refreshes the [agent session index](Sessions.md#agent-session-index) with diff writes through `acp.knownAgentSessions` / `acp.syncAgentSessions`; also run by the Worker after each definitions probe |
 | `authenticate`, `logout` | `authenticate`, `logout`                        | Agent-level, not session-level; the Worker re-initializes and reports the agent again                                                                                                                 |
@@ -268,6 +273,7 @@ answer?, answeredBy?}`, with `pending` → `answered` (durable decision) →
 - Answers: a permission option ID; an elicitation `accept` with `{name, value}`
   pairs, `decline` or `cancel`. `acp.Answer` validates against the stored request
   (`acpAnswerError`); the first valid answer wins.
+- Paired sessions instead store `sealedRequest` and `sealedAnswer`. The Worker verifies the answer's signature, audience, request key and structure after opening it; invalid answers reopen the interaction. Convex cannot validate encrypted choice contents.
 - There is no Radium timeout: the agent waits until someone answers or stops
   the turn, and an awaiting session is never idle-stopped. Built-in Code Mode's
   180-second limit does not apply.

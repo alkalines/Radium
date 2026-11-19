@@ -1,3 +1,4 @@
+import { toBase64Url } from "radium-crypto";
 import { v } from "convex/values";
 import type { Doc } from "../../convex/_generated/dataModel";
 import {
@@ -8,7 +9,12 @@ import {
   type MutationCtx,
 } from "../../convex/_generated/server";
 import { authComponent } from "../../convex/auth";
-import { notificationCategory, notificationPath, type NotificationKind } from "./contract";
+import {
+  notificationCategory,
+  notificationPath,
+  notificationTitle,
+  type NotificationKind,
+} from "./contract";
 
 /**
  * Web Push: per-browser subscriptions, the VAPID configuration, and the data the Node sender
@@ -222,14 +228,20 @@ export const pushTargets = internalQuery({
       .withIndex("by_userId", (q) => q.eq("userId", notification.userId))
       .take(MAX_SUBSCRIPTIONS_PER_USER);
 
-    // Read by `apps/web/public/notifications-sw.js`. The push service only relays the encrypted
-    // payload; the session title is the most chat content it carries.
+    // Legacy rows may contain plaintext, so push only fixed text until they are migrated.
     const payload = JSON.stringify({
       id: notification._id,
       kind: notification.kind,
       category: notificationCategory(notification.kind),
-      title: notification.title,
-      body: notification.body,
+      userId: notification.userId,
+      ...(notification.sealed ? {
+        sealed: {
+          keyId: notification.sealed.keyId,
+          box: toBase64Url(new Uint8Array(notification.sealed.box)),
+        },
+      } : {}),
+      title: notificationTitle(notification.kind),
+      body: notification.chat ? "Session" : "Workspace",
       path: notificationPath(notification),
       ...(notification.workspace ? { workspace: notification.workspace } : {}),
     });

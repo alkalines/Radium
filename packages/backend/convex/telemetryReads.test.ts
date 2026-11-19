@@ -249,19 +249,13 @@ test("getRequest resolves system and params changes and diffs the toolset", asyn
   expect(parsed(result.changes?.system?.to)).toEqual([{ role: "system", content: "Be thorough." }]);
   expect(parsed(result.changes?.params?.from)).toEqual({ temperature: 0 });
   expect(parsed(result.changes?.params?.to)).toEqual({ temperature: 0.7, top_p: 0.9 });
-  expect(parsed(result.tools[1]?.blob)).toMatchObject({
+  expect(parsed(result.tools[1])).toMatchObject({
     function: { parameters: { $schema: "http://json-schema.org/draft-07/schema#" } },
   });
   expect(result.changes?.model).toEqual({ from: "old/model", to: "provider/model" });
-  expect(result.tools.map((tool) => tool.name)).toEqual(["search", "get_weather", "calc"]);
-
-  const tools = result.changes?.tools;
-  expect(tools?.added.map((tool) => tool.name)).toEqual(["calc"]);
-  expect(tools?.removed).toEqual([]);
-  expect(tools?.changed.map((tool) => tool.name)).toEqual(["get_weather"]);
-  expect(tools?.changed[0].before.hash).toBe("tool-get_weather-1");
-  expect(tools?.changed[0].after.hash).toBe("tool-get_weather-2");
-  expect(tools?.reordered).toBe(true);
+  expect(result.tools.map((tool) => tool.hash)).toEqual(["tool-search-1", "tool-get_weather-2", "tool-calc-1"]);
+  expect(result.changes?.tools?.from.map((tool) => tool.hash)).toEqual(["tool-get_weather-1", "tool-search-1"]);
+  expect(result.changes?.tools?.to.map((tool) => tool.hash)).toEqual(["tool-search-1", "tool-get_weather-2", "tool-calc-1"]);
 });
 
 test("getRequestMessages pages newest first, marks new nodes, and rejects off-chain cursors", async () => {

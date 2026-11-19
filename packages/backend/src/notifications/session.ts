@@ -2,7 +2,6 @@ import { v } from "convex/values";
 import { internalMutation } from "../../convex/_generated/server";
 import { chatInterruption } from "../chatroom/interruption";
 import {
-  notificationTitle,
   sessionNotificationKindValidator,
   type SessionNotificationKind,
 } from "./contract";
@@ -48,31 +47,22 @@ export function sessionNotificationKind(end: ChatRequestEnd): SessionNotificatio
   return end.outcome.status === "completed" ? "session_finished" : undefined;
 }
 
-/**
- * Notify the user who sent a Chatroom request how it ended. Called by the chat HTTP action after
- * it saved the messages; the action has already authorized `userId` for the chat. The body names
- * the session (and the error for failures), so the notification never carries more of a private
- * chat than its title.
- */
+/** Notify the user who sent a Chatroom request without persisting chat content. */
 export const notifySession = internalMutation({
   args: {
     userId: v.string(),
     chat: v.id("aisdk_chats"),
     kind: sessionNotificationKindValidator,
-    detail: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     const chat = await ctx.db.get("aisdk_chats", args.chat);
     if (!chat) return null;
 
-    const title = chat.title?.trim() || "Untitled session";
     await notify(ctx, {
       userId: args.userId,
       ...(chat.workspace ? { workspace: chat.workspace } : {}),
       kind: args.kind,
-      title: notificationTitle(args.kind),
-      body: args.detail ? `${title} · ${args.detail}` : title,
       chat: args.chat,
       createdAt: Date.now(),
     });

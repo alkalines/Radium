@@ -51,7 +51,11 @@ export type CodeModeInventory = {
 
 /** Persistence for in-stream prompts (`convex/code_mode.ts`), injected by the chat action. */
 export type CodeModeInteractions = {
-  open: (kind: CodeModeInteractionKind) => Promise<string>;
+  /**
+   * `callId` is the inner call's tool call ID and `input` the call input exactly as the prompt
+   * shows it (`CodeModeCall.input`); a Worker approval signature names both.
+   */
+  open: (kind: CodeModeInteractionKind, callId: string, input: unknown) => Promise<string>;
   /** The answer, or `null` while unanswered. */
   response: (id: string) => Promise<CodeModeInteractionResponse | null>;
   close: (id: string) => Promise<void>;
@@ -247,7 +251,7 @@ async function* runProgram(options: {
     kind: CodeModeInteractionKind,
     signal: AbortSignal,
   ): Promise<CodeModeInteractionResponse | undefined> {
-    const id = await interactions.open(kind);
+    const id = await interactions.open(kind, call.id, call.input);
     call.status = "awaiting";
     const deadline = Date.now() + CODE_MODE_INTERACTION_TIMEOUT_MS;
     call.interaction = { id, kind, expiresAt: deadline };

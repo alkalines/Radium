@@ -1,3 +1,6 @@
+import type { LoadedBlob } from "backend/src/telemetry/store";
+import { blobValue } from "backend/src/telemetry/store";
+import { diffTools } from "backend/src/telemetry/reads";
 import type { RunState } from "@/components/agentic/agent-status";
 
 /** Request status as stored by the backend. */
@@ -225,4 +228,31 @@ export function prettyJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/** Tool labels come only from opened content/metadata (or legacy plaintext), never ciphertext. */
+export function telemetryToolName(blob: LoadedBlob): string {
+  const value = asRecord(blobValue(blob));
+  const fn = asRecord(value?.function) ?? value;
+  return blob.meta?.names?.[0] ?? (typeof fn?.name === "string" ? fn.name : "Unnamed tool");
+}
+
+/** Reuses the lineage comparison policy after decrypting both toolsets on this device. */
+export function telemetryToolChanges(from: LoadedBlob[], to: LoadedBlob[]) {
+  const named = (blobs: LoadedBlob[]) => blobs.map((blob) => ({
+    name: telemetryToolName(blob), hash: blob.hash, blob,
+  }));
+  const before = named(from);
+  const after = named(to);
+  const changes = diffTools(before, after);
+  const old = new Map(before.map((tool) => [tool.name, tool.blob]));
+  const next = new Map(after.map((tool) => [tool.name, tool.blob]));
+  return {
+    added: changes.added.map((tool) => ({ name: tool.name, blob: next.get(tool.name)! })),
+    removed: changes.removed.map((tool) => ({ name: tool.name, blob: old.get(tool.name)! })),
+    changed: changes.changed.map((tool) => ({
+      name: tool.name, before: old.get(tool.name)!, after: next.get(tool.name)!,
+    })),
+    reordered: changes.reordered,
+  };
 }

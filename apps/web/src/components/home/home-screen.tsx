@@ -1,4 +1,4 @@
-import { Component, useEffect, useState, type ReactNode } from "react";
+import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -9,6 +9,7 @@ import { usePaginatedQuery } from "convex-helpers/react/cache";
 import {
   FolderMinusIcon,
   FolderPlusIcon,
+  LockKeyholeIcon,
   MessageSquareDashedIcon,
   MessageSquareTextIcon,
   MessagesSquareIcon,
@@ -51,10 +52,21 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { newTabId } from "@/components/window/window-tabs";
 import { useFrontendLogger } from "@/lib/logging";
+import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 import { SessionActionsMenu } from "./session-actions-menu";
-import { AgentSessions, useOpenAgentSession } from "./agent-sessions";
+import {
+  AgentSessions,
+  useAgentSessionTitles,
+  useOpenAgentSession,
+  useSyncAgentSessions,
+} from "./agent-sessions";
 import { HOME_PAGE_SIZE, useMergedPages, type PagedSource } from "./merged-pages";
 import { formatRelativeTime, groupByRecency } from "./recency";
+import { useKeyStatus } from "@/lib/crypto/use-key-status";
+import { openRowSeed, type WrapWire } from "@/lib/crypto/chat-keys";
+import { openTitle } from "@/lib/crypto/chat-content";
+import { KeysLockedError } from "@/lib/crypto/key-manager";
+import { CustodialContentError, openLegacyContent } from "@/lib/crypto/legacy-content";
 
 type HomeSession = FunctionReturnType<typeof api.aisdk.ListPinnedChats>[number];
 type UnopenedAgentSession = FunctionReturnType<
@@ -72,6 +84,7 @@ type HomeRow =
       kind: "agent";
       id: string;
       title: string;
+      untitled: boolean;
       at: number;
       row: UnopenedAgentSession;
       agent: RowAgent;
@@ -137,7 +150,7 @@ export function HomeScreen() {
   const { data: projectsData, error: projectsError } = useQuery(
     convexQuery(api.projects.list, workspaceId ? { workspace: workspaceId } : "skip"),
   );
-  const projects = Array.isArray(projectsData) ? projectsData : [];
+  const projects = useDecryptedNames(Array.isArray(projectsData) ? projectsData : [], "projects", workspaceId);
   // A selection made in another workspace, or of a Project deleted since, shows all sessions.
   const isSelectionCurrent =
     projectSelection !== null && projectSelection.workspace === workspaceId;
@@ -152,20 +165,30 @@ export function HomeScreen() {
 
   // Refreshes the agents' session indexes whenever the owner looks at a session list, as opening
   // an agent under Agents does; the backend skips offline Workers and anything synced in the
-  // last minute.
-  const syncAgentSessions = useMutation(api.acp.SyncAgentSessions);
-  const agentIdsToSync =
-    isOwner && !selectedAgent ? agents.map((agent) => agent.agentId).join("\n") : "";
+  // last minute. A keyed workspace gets one signed sync per Worker that reports the agent.
+  const syncAgentSessions = useSyncAgentSessions();
+  const syncTargets = JSON.stringify(
+    isOwner && !selectedAgent
+      ? agents.map((agent) => [
+          agent.agentId,
+          (agentRows ?? [])
+            .filter((row) => row.agentId === agent.agentId && activeWorkerIds.has(row.worker))
+            .map((row) => row.worker),
+        ])
+      : [],
+  );
   const filterKey = `${workspaceId}:${String(projectFilter)}`;
   useEffect(() => {
-    if (!workspaceId || !agentIdsToSync) return;
-    for (const agentId of agentIdsToSync.split("\n")) {
-      void syncAgentSessions({ workspace: workspaceId, agentId }).catch((error) => {
+    if (!workspaceId) return;
+    for (const [agentId, workerIds] of JSON.parse(syncTargets) as [string, string[]][]) {
+      void syncAgentSessions(workspaceId, agentId, workerIds).catch((error) => {
+        // Locked keys only mean the refresh cannot be signed yet.
+        if (error instanceof KeysLockedError) return;
         const message = acpActionError(error);
         if (message) toast.error(message);
       });
     }
-  }, [agentIdsToSync, filterKey, syncAgentSessions, workspaceId]);
+  }, [filterKey, syncAgentSessions, syncTargets, workspaceId]);
 
   const workspaceName = workspace?.name ?? "workspace";
 
@@ -559,17 +582,108 @@ function SessionList({
     { initialNumItems: HOME_PAGE_SIZE, customPagination: true },
   );
   const { pending: openingAgentSessions, openRow: openAgentSession } = useOpenAgentSession();
+  const agentSessionTitle = useAgentSessionTitles(workspaceId, agentSessions.results);
+  const keyStatus = useKeyStatus();
+  const [openedTitles, setOpenedTitles] = useState<
+    Record<string, { box: ArrayBuffer; title: string; emoji?: string }>
+  >({});
+  const titleRows = useMemo(() => [...(pinned ?? []), ...chats.results], [pinned, chats.results]);
+  useEffect(() => {
+    if (keyStatus.state !== "unlocked") {
+      setOpenedTitles((current) => (Object.keys(current).length ? {} : current));
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      titleRows.map(async (session) => {
+        if (session.legacyContent && !session.e2ee?.title) {
+          const box = session.legacyContent.box;
+          if (openedTitles[session.id]?.box === box) return undefined;
+          try {
+            const value = await openLegacyContent<{ title?: string; emoji?: string }>(
+              session.legacyContent,
+              { table: "aisdk_chats", record: session.id, workspace: workspaceId, chatId: session.id },
+            );
+            return [session.id, { title: value.title ?? "Untitled session", emoji: value.emoji, box }] as const;
+          } catch (error) {
+            return [session.id, {
+              title: error instanceof CustodialContentError ? "History in recovery custody" : "Unable to decrypt",
+              box,
+            }] as const;
+          }
+        }
+        const encrypted = session.e2ee;
+        if (!encrypted?.title || !encrypted.wrap) {
+          return undefined;
+        }
+        if (openedTitles[session.id]?.box === encrypted.title.box) {
+          return undefined;
+        }
+        try {
+          const row = encrypted.wrap;
+          let wrap: WrapWire;
+          if (row.recipient === "identity" && row.userId) {
+            wrap = { ...row, recipient: "identity", userId: row.userId };
+          } else if (row.recipient === "workspace" && row.workspaceEpoch !== undefined) {
+            wrap = { ...row, recipient: "workspace", workspaceEpoch: row.workspaceEpoch };
+          } else {
+            throw new Error("Invalid title key wrap.");
+          }
+          const seed = await openRowSeed({
+            chatId: session.id,
+            workspaceId,
+            e2eeId: encrypted.e2eeId,
+            wrap,
+          });
+          const title = await openTitle(encrypted.title, {
+            workspaceId,
+            e2eeId: encrypted.e2eeId,
+            seed,
+          });
+          return [session.id, { ...title, box: encrypted.title.box }] as const;
+        } catch {
+          return [session.id, { title: "Unable to decrypt", box: encrypted.title.box }] as const;
+        }
+      }),
+    ).then((opened) => {
+      if (cancelled) {
+        return;
+      }
+      const changed = opened.filter((entry) => entry !== undefined);
+      if (changed.length) {
+        setOpenedTitles((current) => ({ ...current, ...Object.fromEntries(changed) }));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [titleRows, workspaceId, keyStatus, openedTitles]);
+  const displaySession = (session: HomeSession): HomeSession => {
+    if (!session.e2ee && !session.legacyContent) {
+      return session;
+    }
+    const unlocked = keyStatus.state === "unlocked";
+    const opened = unlocked ? openedTitles[session.id] : undefined;
+    // Mixed legacy rows retain plaintext titles until the content migration seals them.
+    const title = unlocked ? (opened?.title ?? session.title ?? "Encrypted session") : "Locked";
+    return { ...session, title, emoji: unlocked ? (opened?.emoji ?? session.emoji) : undefined };
+  };
   if (pinnedError) throw pinnedError;
 
   const definitionsById = new Map((definitions ?? []).map((agent) => [agent.agentId, agent]));
   const sources: PagedSource<HomeRow>[] = [
-    { items: chats.results.map(chatRow), status: chats.status, loadMore: chats.loadMore },
+    {
+      items: chats.results.map((session) => chatRow(displaySession(session))),
+      status: chats.status,
+      loadMore: chats.loadMore,
+    },
     isOwner
       ? {
           items: agentSessions.results.map((row) => ({
             kind: "agent" as const,
             id: row._id,
-            title: row.title?.trim() || "Untitled session",
+            title: agentSessionTitle(row) ?? "Untitled session",
+            untitled: agentSessionTitle(row) === undefined,
             at: row.updatedAt,
             row,
             agent: definitionsById.get(row.agentId) ?? { name: row.agentId },
@@ -585,7 +699,7 @@ function SessionList({
   if (merged.loading || pinned === undefined || (isOwner && definitions === undefined)) {
     return <SessionListSkeleton />;
   }
-  const rows = [...pinned.map(chatRow), ...merged.items];
+  const rows = [...pinned.map((session) => chatRow(displaySession(session))), ...merged.items];
   if (rows.length === 0 && !merged.hasMore) return empty;
 
   const normalizedQuery = query.trim().toLowerCase();
@@ -614,6 +728,7 @@ function SessionList({
                 <SessionRow
                   key={row.id}
                   session={row.session}
+                  workspaceId={workspaceId}
                   project={row.session.project ? projectsById.get(row.session.project) : undefined}
                   projects={projects}
                   now={now}
@@ -627,7 +742,7 @@ function SessionList({
                 <AgentSessionRow
                   key={row.id}
                   title={row.title}
-                  untitled={!row.row.title?.trim()}
+                  untitled={row.untitled}
                   updatedAt={row.at}
                   agent={row.agent}
                   project={row.row.project ? projectsById.get(row.row.project) : undefined}
@@ -665,11 +780,13 @@ function chatRow(session: HomeSession): HomeRow {
 function SessionRow({
   session,
   project,
+  workspaceId,
   projects,
   now,
   offline,
 }: {
   session: HomeSession;
+  workspaceId: Id<"workspaces">;
   /** The session's Project, when it has one and it is in the list. */
   project: ProjectSummary | undefined;
   projects: ProjectSummary[];
@@ -710,7 +827,7 @@ function SessionRow({
       ) : null}
       {offline ? <span className="shrink-0 text-xs text-muted-foreground">Offline</span> : null}
       {session.canAct ? (
-        <SessionActionsMenu session={session} projects={projects} />
+        <SessionActionsMenu session={{ ...session, workspace: workspaceId }} projects={projects} />
       ) : (
         // Keeps the time aligned with Rows that have a menu.
         <span aria-hidden="true" className="size-6 shrink-0" />
@@ -792,6 +909,12 @@ function SessionGlyph({
   session: HomeSession;
   project: ProjectSummary | undefined;
 }) {
+  const keyStatus = useKeyStatus();
+  if (session.e2ee && keyStatus.state !== "unlocked") {
+    return (
+      <LockKeyholeIcon className="size-4 shrink-0 text-muted-foreground" aria-label="Locked" />
+    );
+  }
   if (session.activeStream) {
     return (
       <AgentStatus state="streaming" label="Generating" hideLabel className="w-4 justify-center" />

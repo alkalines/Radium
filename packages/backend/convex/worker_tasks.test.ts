@@ -291,105 +291,69 @@ test("cleanup bounds each terminal batch and subsequent ticks drain the backlog"
   expect(await f.t.mutation(internal.worker_tasks.prune, {})).toBe(2);
 });
 
-test("edit dispatch and output preserve owner, private-chat and assignment boundaries", async () => {
+test("sealed historical tasks are never delivered, retried or claimed by a Worker", async () => {
   const f = await fixture();
-  const args = {
-    workspace: f.workspace,
-    workerId: f.first.identity.workerId,
-    requestId: "edit-read",
-    request: {
-      directory: "/worker/project",
-      sessionId: "session",
-      action: { kind: "read" as const, path: "src/file.ts" },
-    },
-    chatId: f.chatId,
-  };
-  const taskId = await f.owner.mutation(api.worker_tasks.dispatchEdit, args);
-  expect(await f.owner.mutation(api.worker_tasks.dispatchEdit, args)).toBe(taskId);
-  await expect(
-    f.owner.mutation(api.worker_tasks.dispatchEdit, {
-      ...args,
-      request: { ...args.request, directory: "/worker/another-project" },
-    }),
-  ).rejects.toThrow();
-  const { directory: _directory, ...legacyRequest } = args.request;
-  await expect(
-    f.owner.mutation(api.worker_tasks.dispatchEdit, { ...args, request: legacyRequest } as never),
-  ).rejects.toThrow();
-  await expect(
-    f.owner.mutation(api.worker_tasks.dispatchEdit, {
-      ...args,
-      request: { ...args.request, action: { kind: "read", path: "other.ts" } },
-    }),
-  ).rejects.toThrow();
-  await expect(f.t.mutation(api.worker_tasks.dispatchEdit, args)).rejects.toThrow();
-  await f.t.run((ctx) =>
-    ctx.db.insert("workspace_members", {
+  const taskId = await f.t.run((ctx) =>
+    ctx.db.insert("worker_tasks", {
       workspace: f.workspace,
-      userId: "member",
-      role: "member",
+      workerId: f.first.identity.workerId,
+      requestId: "historical",
+      operation: "edit",
+      legacyContent: { kind: "custody", keyId: "custody", epoch: 1, box: new ArrayBuffer(8) },
+      status: "failed",
+      revision: 3,
+      attempt: 1,
+      updatedAt: Date.now(),
+      terminalAt: Date.now(),
     }),
   );
-  const member = f.t.withIdentity({ subject: "member" });
-  await expect(member.mutation(api.worker_tasks.dispatchEdit, args)).rejects.toThrow();
+  expect(await f.first.machine.query(api.worker_tasks.assigned, { status: "failed" })).toEqual([]);
   await expect(
-    member.query(api.worker_tasks.outcome, { workspace: f.workspace, taskId }),
-  ).rejects.toThrow();
-  const privateChat = await f.t.run((ctx) =>
-    ctx.db.insert("aisdk_chats", {
-      workspace: f.workspace,
-      userId: "member",
-      scope: "personal",
-    }),
-  );
-  await expect(
-    f.owner.mutation(api.worker_tasks.dispatchEdit, {
-      ...args,
-      chatId: privateChat,
-      requestId: "private-edit",
+    f.first.machine.mutation(api.worker_tasks.updateStatus, {
+      taskId,
+      expectedRevision: 3,
+      status: "retrying",
     }),
   ).rejects.toThrow();
   await expect(
-    f.second.machine.mutation(api.worker_tasks.claimEdit, { taskId, claimId: "other" }),
+    f.first.machine.mutation(api.worker_tasks.claimEdit, { taskId, claimId: "claim" }),
   ).rejects.toThrow();
-  expect(
-    (
-      await f.first.machine.query(api.worker_tasks.assigned, { status: "sent", operation: "edit" })
-    ).map((task) => task._id),
-  ).toEqual([taskId]);
-  await expect(
-    f.owner.mutation(api.worker_tasks.dispatchEdit, {
-      ...args,
-      requestId: "large",
-      request: {
-        directory: "/worker/project",
-        sessionId: "session",
-        action: { kind: "preview", patch: "a".repeat(33 * 1024) },
-      },
-    }),
-  ).rejects.toThrow();
-  expect(
-    (await f.owner.query(api.worker_tasks.outcome, { workspace: f.workspace, taskId }))
-      ?.editRequest,
-  ).toEqual(args.request);
-  await f.t.run((ctx) => ctx.db.patch(f.chatId, { userId: "member" }));
-  await expect(
-    f.owner.query(api.worker_tasks.outcome, { workspace: f.workspace, taskId }),
-  ).rejects.toThrow();
+  expect((await f.t.run((ctx) => ctx.db.get(taskId)))?.status).toBe("failed");
 });
+
+/** A plaintext edit task as `dispatchChatEdit` stores it for a keyless workspace. */
+async function insertEditTask(
+  f: Awaited<ReturnType<typeof fixture>>,
+  requestId: string,
+  action:
+    | { kind: "read"; path: string; startLine?: number; maxLines?: number }
+    | {
+        kind: "apply";
+        previewId: string;
+      },
+) {
+  return await f.t.run((ctx) =>
+    ctx.db.insert("worker_tasks", {
+      workspace: f.workspace,
+      workerId: f.first.identity.workerId,
+      requestId,
+      operation: "edit",
+      editRequest: { directory: "/worker/project", sessionId: "session", action },
+      editOwnerId: "owner",
+      status: "sent",
+      revision: 0,
+      attempt: 0,
+      updatedAt: Date.now(),
+    }),
+  );
+}
 
 test("edit claims exclude competing connections and completion retries never reopen execution", async () => {
   const f = await fixture();
-  const taskId = await f.owner.mutation(api.worker_tasks.dispatchEdit, {
-    workspace: f.workspace,
-    workerId: f.first.identity.workerId,
-    requestId: "apply",
-    request: {
-      directory: "/worker/project",
-      sessionId: "session",
-      action: { kind: "apply", previewId: "preview" },
-    },
-  });
+  const taskId = await insertEditTask(f, "apply", { kind: "apply", previewId: "preview" });
+  await expect(
+    f.second.machine.mutation(api.worker_tasks.claimEdit, { taskId, claimId: "other" }),
+  ).rejects.toThrow();
   const claim = { taskId, claimId: "process-1" };
   const task = await f.first.machine.mutation(api.worker_tasks.claimEdit, claim);
   expect(task?.status).toBe("processing");
@@ -442,29 +406,12 @@ test("edit claims exclude competing connections and completion retries never reo
 
 test("native error context is bounded, idempotent and expires with the failed task", async () => {
   const f = await fixture();
-  const args = {
-    workspace: f.workspace,
-    workerId: f.first.identity.workerId,
-    requestId: "rejected",
-    request: {
-      sessionId: "session",
-      directory: "/worker/project",
-      action: { kind: "read" as const, path: "file.ts", startLine: 10, maxLines: 20 },
-    },
-  };
-  await expect(
-    f.owner.mutation(api.worker_tasks.dispatchEdit, {
-      ...args,
-      request: { ...args.request, action: { ...args.request.action, startLine: 0 } },
-    }),
-  ).rejects.toThrow();
-  const taskId = await f.owner.mutation(api.worker_tasks.dispatchEdit, args);
-  await expect(
-    f.owner.mutation(api.worker_tasks.dispatchEdit, {
-      ...args,
-      request: { ...args.request, action: { ...args.request.action, startLine: 11 } },
-    }),
-  ).rejects.toThrow();
+  const taskId = await insertEditTask(f, "rejected", {
+    kind: "read",
+    path: "file.ts",
+    startLine: 10,
+    maxLines: 20,
+  });
   await f.first.machine.mutation(api.worker_tasks.claimEdit, { taskId, claimId: "process" });
   const receipt = {
     taskId,
@@ -491,7 +438,5 @@ test("native error context is bounded, idempotent and expires with the failed ta
     ctx.db.patch(taskId, { terminalAt: Date.now() - WORKER_TASK_RETENTION_MS }),
   );
   expect(await f.t.mutation(internal.worker_tasks.prune, {})).toBe(1);
-  expect(
-    await f.owner.query(api.worker_tasks.outcome, { workspace: f.workspace, taskId }),
-  ).toBeNull();
+  expect(await f.t.run((ctx) => ctx.db.get(taskId))).toBeNull();
 });

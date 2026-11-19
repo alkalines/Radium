@@ -20,6 +20,7 @@ import {
   requestChallenge,
   signChallenge,
 } from "./proof.js";
+import { pairWorker } from "../e2ee/pairing.js";
 
 /** The backend has no enrollment receipt for a locally pending identity. */
 export class EnrollmentNotFoundError extends Error {
@@ -29,7 +30,10 @@ export class EnrollmentNotFoundError extends Error {
   }
 }
 
-/** Enroll from a protected setup code, attempting key-bound recovery before creation. */
+/**
+ * Enroll from a protected setup code, attempting key-bound recovery before creation. A v2 code
+ * (keyed workspace) then pairs the new identity: E2EE keys are generated, saved and published.
+ */
 export async function setupWorker(
   stateDirectory: string,
   setupCode: string,
@@ -41,16 +45,15 @@ export async function setupWorker(
     throw new WorkerProtocolError("This Worker already has an identity; refusing to overwrite it");
   }
 
+  let identity: WorkerIdentity;
   try {
-    const identity = await recoverIdentity(state, options);
-    await saveWorkerIdentity(stateDirectory, state, identity);
-    return identity;
+    identity = await recoverIdentity(state, options);
   } catch (error) {
     if (!(error instanceof EnrollmentNotFoundError)) throw error;
+    identity = await enrollIdentity(state, setup, options);
   }
-
-  const identity = await enrollIdentity(state, setup, options);
-  await saveWorkerIdentity(stateDirectory, state, identity);
+  const enrolled = await saveWorkerIdentity(stateDirectory, state, identity);
+  if (setup.pairing) await pairWorker(stateDirectory, enrolled, setup.pairing, options);
   return identity;
 }
 

@@ -1,6 +1,6 @@
 # Worker Machine Authentication
 
-Status: **implemented locally, deployment integration unverified** (2026-10-04).
+Status: **implemented; local phase-7 enrollment and authenticated control verified** (2026-11-13).
 This is the selected authentication profile for the [Convex transport](Convex_Transport.md).
 It uses the existing [identity component](Component.md); it does not create human
 accounts, Gateway API keys or deployment credentials for Workers.
@@ -106,6 +106,17 @@ select `file` with `RADIUM_WORKER_CREDENTIAL_STORE`. Version-1 local state migra
 without changing the key or recovery selector; version-2 metadata omits the private
 JWK and records the selected backend. Missing saved credentials fail closed.
 This local setting is separate from the parent app's Convex issuer variables.
+
+### Content Encryption And Execution Authority
+
+Machine authentication is not permission to execute backend-authored content. Phase 7 adds separate encryption/signing keys and a pinned owner identity in local state v3. A keyed workspace's browser makes a `radium-worker-v2.` setup code with a pairing secret; an enrolled Worker instead uses `radium-worker pair` to keep its P-256 identity. The Worker publishes its new public keys first and saves the seeds and owner pin only after the backend accepts them, so a refused publish keeps the previous keys. The browser verifies the Worker's pairing MAC and certifies its fingerprint in roster v2. Private seeds stay in the credential store and `forget` removes journaled interrupted-pairing credentials too.
+
+Paired Workers verify the owner-signed roster, executable ACP definitions and per-chat authority before acting; they refuse unsigned tasks and incomplete v2 setup rather than falling back to plaintext. Persisted high-water marks reject rollback and equal-version conflicts, including after revocation and restart; a standing Read grant expires 7 days after issue, and grants or ACP definitions dated more than 5 minutes in the Worker's future are refused before they can advance a mark. A roster or connection failure leaves an ACP agent pending and retried, never permanently unauthorized.
+
+An unpaired Worker runs backend-authored content as is (plaintext Bash/edit tasks, ACP launch definitions and prompts), so `radium-worker start` refuses to run one and tells the operator to run `radium-worker pair`. Only for a keyless workspace the operator may opt in on each start with `radium-worker start --allow-plaintext`; the flag is not persisted, and a paired Worker ignores it and never takes the plaintext paths. Protocol and leakage details: [E2EE keys](../E2EE/Keys.md#workers), [ACP data](../E2EE/Data.md#acp), and [tool grants](Chatroom.md).
+
+Phase 9 preparation seals legacy requests/results/receipts as read-only history and never treats migration as renewed execution authority. Historical tasks are not assignable or claimable, and pending legacy work blocks sealing until quiescent. Execution directories stay plaintext routing metadata by explicit scope choice. Deployment execution and narrowing remain [approval-gated](../deployment.md#e2ee-phase-9-rollout-approval-required).
+
 
 ## Protocol And Authorization
 
@@ -292,8 +303,4 @@ bun run --cwd packages/worker typecheck
 bun run --cwd apps/web vite:build
 ```
 
-No functions, auth configuration or migrations were uploaded in this slice.
-Actual Convex JWT verification, reactive revocation, TLS/proxy routing and recovery
-across separately deployed processes still require deployment integration testing.
-Agent job commands, ACP, approvals, filesystem/process execution, output and isolation remain
-the next [task 06](../tasks/06_Chatroom_Worker.md) slice.
+Phase 7 additionally exercised v2 enrollment, certification and the real authenticated Convex subscription on an authorized local deployment ([task 11](../tasks/11_E2EE.md#phase-7-workers-and-acp)). TLS/proxy routing, partitioned revocation and recovery across separately deployed installations are not established by that smoke.

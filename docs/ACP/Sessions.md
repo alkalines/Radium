@@ -214,6 +214,10 @@ client that sent the first prompt calls `acp.GenerateTitle({chat, text})` right 
 memory, uses the workspace title model like built-in chats, and saves without force,
 so an agent title or user rename that arrived meanwhile wins.
 
+Encrypted chats (with chat keys) never send the prompt to Convex: the client seals a
+fallback title from the first prompt itself (`acp.SetFallbackTitle`), and a paired
+Worker seals agent titles to the chat key (`sealedTitle`); `userTitled` still wins.
+
 ## MCP Servers
 
 Status: **not implemented**; the Worker passes `mcpServers: []`.

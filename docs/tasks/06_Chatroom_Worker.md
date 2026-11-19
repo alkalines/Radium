@@ -143,8 +143,9 @@ the deployment-connected Convex process and enrolled Worker.
 
 ### Edit-Only Execution And Messaging (2026-10-07)
 
-Implemented an initial native read/preview/apply/close path where the owner-only
-`dispatchEdit` caller supplies the target Worker's execution directory, plus
+Implemented an initial native read/preview/apply/close path where the owner-authorized
+dispatch caller (then a public `dispatchEdit`, since replaced by the internal Chatroom
+dispatch paths) supplies the target Worker's execution directory, plus
 machine-authorized exclusive claims/completions. Edit tasks carry bounded,
 short-lived requests/results; the assignment query returns at most four records and
 supports an indexed edit filter. The consumer serializes local work and retries
@@ -169,8 +170,9 @@ Gateway routing/translator/type-import errors; scoped lint remains blocked by th
 missing ESLint dependency. Scoped formatting and `git diff --check` passed.
 
 Correction follow-up: the execution-directory contract is backend-selected, not a
-Worker startup option. Worker `start` always consumes edit tasks, and public
-`dispatchEdit` requires an absolute `request.directory` on the target Worker; the
+Worker startup option. Worker `start` always consumes edit tasks, and dispatch
+(then the public `dispatchEdit`; now internal only) requires an absolute
+`request.directory` on the target Worker; the
 owner-authorized backend caller selects it, and the Worker canonicalizes it. Stored
 requests may omit the directory only for legacy compatibility; queued tasks missing
 it fail with `DIRECTORY_REQUIRED` and do not use the current working directory.

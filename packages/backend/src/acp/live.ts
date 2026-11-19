@@ -1,10 +1,14 @@
 import { v } from "convex/values";
 import { mutation, query } from "../../convex/_generated/server";
 import { requireAccessibleChat } from "../../convex/workspaces";
-import { acpError, accessibleSession, admitWarm, findSession } from "./policy";
+import { acpError, accessibleSession, admitWarm, findSession, relayFrozen } from "./policy";
 import { validAcpToken } from "./contract";
 
-/** Heartbeat only an authorized visible chat; non-ACP chats do not create presence rows. */
+/**
+ * Heartbeat only an authorized visible chat; non-ACP chats do not create presence rows. While the
+ * encryption cutover is frozen nothing is written (no viewer row, no warming): a warm session would
+ * block sealing of its rows and frames, and the panel is hidden anyway. It reports the stored state.
+ */
 export const Watch = mutation({
   args: { chat: v.id("aisdk_chats"), tab: v.string() },
   returns: v.object({ warm: v.boolean() }),
@@ -14,6 +18,7 @@ export const Watch = mutation({
     if (!validAcpToken(args.tab, 64)) acpError("ACP_INVALID_TAB");
     const session = await findSession(ctx, args.chat);
     if (!session) acpError("ACP_NOT_ACP");
+    if (await relayFrozen(ctx)) return { warm: session.warm };
     const viewer = (
       await ctx.db
         .query("chat_viewers")
@@ -47,6 +52,12 @@ export const LiveFrames = query({
         q.eq("chat", args.chat).eq("stream", args.stream).gte("seqFrom", args.fromSeq),
       )
       .take(64);
-    return frames.map(({ seqFrom, seqTo, kind, payload }) => ({ seqFrom, seqTo, kind, payload }));
+    // Only a sealed historical frame needs its row id (it binds the sidecar's AAD); native frames
+    // keep the original wire shape.
+    return frames.map(({ _id, seqFrom, seqTo, kind, payload, legacyContent }) =>
+      legacyContent
+        ? { _id, seqFrom, seqTo, kind, payload, legacyContent }
+        : { seqFrom, seqTo, kind, payload },
+    );
   },
 });

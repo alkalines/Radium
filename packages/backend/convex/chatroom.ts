@@ -14,6 +14,7 @@ import {
   sanitizeTitle,
 } from "@/chatroom/titles";
 import { loadFirstUserMessage } from "@/chatroom/messages";
+import { assertPlaintextChatWriteAllowed } from "@/chatroom/legacy";
 import {
   chatModelIdentityValidator,
   DEFAULT_SYSTEM_PROMPT_SETTINGS,
@@ -412,7 +413,7 @@ export const generateForChat = internalAction({
         ...title,
       });
     } catch (error) {
-      console.error("Failed to generate chat title:", error);
+      console.warn("Chat title generation failed");
     }
 
     return null;
@@ -433,7 +434,7 @@ export const titleGenerationInfo = internalQuery({
   ),
   handler: async (ctx, args) => {
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat) return null;
+    if (!chat || chat.e2eeId || chat.legacyContent) return null;
 
     const firstUserMessage = await loadFirstUserMessage(ctx, chat);
     const initialUserMessage = firstUserMessageText({
@@ -463,9 +464,44 @@ export const titleGenerationInfo = internalQuery({
   },
 });
 
+/** Resolve a title model without reading or returning any stored conversation content. */
+export const titleModelForChat = internalQuery({
+  args: { chatId: v.id("aisdk_chats") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      workspace: v.id("workspaces"),
+      userId: v.string(),
+      model: v.string(),
+    }),
+  ),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ workspace: Id<"workspaces">; userId: string; model: string } | null> => {
+    const chat = await ctx.db.get("aisdk_chats", args.chatId);
+    if (!chat) {
+      return null;
+    }
+    const workspace = await resolveWorkspaceForChat(ctx, chat);
+    if (!workspace) {
+      return null;
+    }
+    const settings = await loadWorkspaceSettings(ctx, workspace);
+    const model = await firstAvailableModel(
+      ctx,
+      workspace,
+      settings?.titleModel ?? settings?.defaultModel,
+    );
+    return model ? { workspace: workspace._id, userId: chat.userId, model } : null;
+  },
+});
+
 /**
  * Authorize an ACP viewer and resolve the ordinary workspace title model without reading a
  * transcript. The action receives the first prompt only in memory, never through this query.
+ * Encrypted chats return null: their first prompt must never reach the Gateway, so the browser
+ * seals a fallback title itself (`acp.SetFallbackTitle`).
  */
 export const acpTitleGenerationInfo = internalQuery({
   args: { chatId: v.id("aisdk_chats") },
@@ -479,7 +515,7 @@ export const acpTitleGenerationInfo = internalQuery({
   ),
   handler: async (ctx, args) => {
     const { chat, session, workspace } = await accessibleSession(ctx, args.chatId);
-    if (chat.title || session.userTitled) return null;
+    if (chat.e2eeId || chat.legacyContent || chat.title || session.userTitled) return null;
     const settings = await loadWorkspaceSettings(ctx, workspace);
     const model = await firstAvailableModel(
       ctx,
@@ -501,7 +537,9 @@ export const saveGeneratedTitle = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const chat = await ctx.db.get("aisdk_chats", args.chatId);
-    if (!chat || (!args.force && chat.title)) return null;
+    // Plaintext titles stop with legacy writers; a sidecar chat's title lives in the sidecar.
+    if (!chat || chat.e2eeId || chat.legacyContent || (!args.force && chat.title)) return null;
+    await assertPlaintextChatWriteAllowed(ctx, chat);
 
     await ctx.db.patch("aisdk_chats", args.chatId, sanitizeTitle(args));
     return null;
@@ -642,7 +680,7 @@ export async function filterVisibleCompletions(
 /**
  * A captured request is visible to the workspace owner when it came through Gateway without a
  * chat, or when its chat passes the Chatroom privacy policy. Ownership alone never exposes
- * another user's private chat, so personal-chat requests stay hidden.
+ * another user's private chat, so personal and unlisted shared-chat requests stay hidden.
  */
 export async function isRequestVisible(
   ctx: DatabaseCtx,

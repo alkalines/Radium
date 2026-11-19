@@ -1,5 +1,13 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { DefaultChatTransport, type ChatStatus, type FileUIPart, type UIMessage } from "ai";
+import {
+  DefaultChatTransport,
+  getToolName,
+  isToolUIPart,
+  type ChatStatus,
+  type FileUIPart,
+  type ToolUIPart,
+  type UIMessage,
+} from "ai";
 import { useChat } from "@ai-sdk/react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
@@ -9,14 +17,16 @@ import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
 import { RotateCcwIcon, Undo2Icon } from "lucide-react";
 import { toast } from "sonner";
+import { toBase64Url } from "radium-crypto";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { CodeModeInteractionResponse } from "backend/src/chatroom/code-mode";
-import type { AcpDraftConfig } from "backend/src/acp/contract";
+import type { AcpCommandPayload, AcpDraftConfig } from "backend/src/acp/contract";
 import type { ChatInterruption } from "backend/src/chatroom/interruption";
 import type { ToolSelection } from "backend/src/chatroom/tools";
 import type { ChatWorkerSelection } from "backend/src/worker/chat-config";
+import type { WorkerApprovalSignature } from "backend/src/worker/chat-tools";
 import { isWorkerOnline } from "backend/src/worker/presence";
 import type { RunState } from "@/components/agentic/agent-status";
 import { RadiumWordmark } from "@/components/agentic/radium-wordmark";
@@ -78,6 +88,53 @@ import { ToolsDialog } from "./tools-dialog";
 import { AcpSessionScreen } from "./acp/acp-session-screen";
 import { AcpConfigControls, applyAcpDraft } from "./acp/config-controls";
 import { acpActionError } from "./acp/use-acp-session";
+import { acpFallbackTitle, publishAcpBinding, signAcpCommand } from "./acp/acp-crypto";
+import { EncryptionNotice } from "@/components/auth/encryption-notice";
+import { useKeyStatus } from "@/lib/crypto/use-key-status";
+import { keyManager, KeysLockedError } from "@/lib/crypto/key-manager";
+import { CustodialContentError } from "@/lib/crypto/legacy-content";
+import {
+  ChatKeysRequiredError,
+  openHistoricalFile,
+  openHistoricalChat,
+  reencryptFilePart,
+  reencryptMessageFiles,
+  requireChatKeys,
+} from "@/lib/crypto/legacy-chat";
+import {
+  createChatKeys,
+  rememberChatSeed,
+  ensureChatKeys,
+  openChatSeed,
+  writableChatKey,
+  changeChatScope,
+} from "@/lib/crypto/chat-keys";
+import type { ChatKeysSetupWire } from "@/lib/crypto/chat-keys";
+import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
+import {
+  openMessages,
+  openQueue,
+  openTitle,
+  sealQueue,
+  sealTitle,
+  sealMessagesForFork,
+  decryptFileUrl,
+  parseFileFragment,
+  type ChatContentKey,
+  type ChatQueue,
+} from "@/lib/crypto/chat-content";
+import {
+  forgetWorkerApproval,
+  recordWorkerApproval,
+  signToolApproval,
+  signToolGrant,
+  workerGrantAction,
+  type WorkerAuthorizationTarget,
+} from "./worker-authorization";
+import { keyedWorkspaceClaim, workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
+
+// A stable identity while the Projects list loads, so the name decryption effect does not restart.
+const NO_PROJECTS: never[] = [];
 
 /**
  * A user turn the Session reverted to: the messages as they were before (restorable until the next
@@ -91,6 +148,8 @@ type PendingRevert = { messages: UIMessage[]; draft: ComposerDraft };
  */
 export type SessionTabHint = {
   title?: string;
+  /** Encrypted titles are display-only and must never enter persisted Tab hints. */
+  encrypted?: boolean;
   runState: RunState;
   project?: TabProjectHint | null;
 };
@@ -127,9 +186,10 @@ export type SessionTabHint = {
  * screen is memoized, and with stable props a navigation re-renders only the Tabs whose
  * `isActive` (or requested model/Project) changed.
  *
- * Per-Tab state: what Convex cannot give back (Composer text, model/provider/reasoning choices,
- * the agent, and a draft's workspace, visibility, Worker, Project, and tool override) is kept in
- * the Tab's snapshot (`tab-state.ts`), keyed strictly by `tabId`. It is restored once after mount
+ * Per-Tab state: model/provider/reasoning choices, the agent, and a draft's workspace, visibility,
+ * Worker, Project, and tool override are kept in the Tab's snapshot (`tab-state.ts`), keyed by
+ * `tabId`. Composer text is persisted only for accounts without keys; encrypted drafts stay in memory.
+ * The snapshot is restored once after mount
  * and rewritten on change; it never writes workspace or user defaults. Saved chats take
  * visibility, Worker, Project, and tools from Convex, never from the snapshot, and never change
  * Project here (that is a confirmed Home action).
@@ -204,10 +264,24 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const navigate = useNavigate();
   const { workspaceId, workspaces } = useWorkspace();
   const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
+  const { data: authSession } = authClient.useSession();
   const { data: chatResult, error: chatError } = useQuery(
     convexQuery(api.aisdk.GetChat, chatId ? { chatId } : "skip"),
   );
   const chat = typeof chatResult === "string" ? undefined : chatResult;
+  const keyStatus = useKeyStatus();
+  const hasAccountKeys = keyStatus.state === "unlocked" || keyStatus.state === "locked";
+  const [contentFailure, setContentFailure] = useState<string>();
+  const [persistedMessages, setPersistedMessages] = useState<UIMessage[]>();
+  const [queue, setQueue] = useState<ChatQueue>();
+  const [openedTitle, setOpenedTitle] = useState<string>();
+  const [openedInterruption, setOpenedInterruption] = useState<string>();
+  const revisions = useRef<Record<string, number>>({});
+  const draftKeys = useRef<
+    (ChatContentKey & { keys: ChatKeysSetupWire; seed: Uint8Array }) | undefined
+  >(undefined);
+  const [sharedMembers, setSharedMembers] = useState<string[]>([]);
+  const [draftScope, setDraftScope] = useState<ChatScope>("personal");
   // Restored Tabs need only metadata until opened; keep content live after the first activation.
   const [openedChatId, setOpenedChatId] = useState(isActive ? chatId : undefined);
   if (isActive && chatId && openedChatId !== chatId) setOpenedChatId(chatId);
@@ -226,13 +300,17 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
 
   const createChat = useMutation(api.aisdk.CreateChat);
   const forkChat = useMutation(api.aisdk.ForkChat);
-  const setChatScope = useMutation(api.aisdk.SetChatScope);
+  const { data: keyState } = useQuery(convexQuery(api.e2ee.chatKeys, chatId ? { chatId } : "skip"));
   const setChatWorker = useMutation(api.aisdk.SetChatWorker);
+  const setChatWorkerGrant = useMutation(api.aisdk.SetChatWorkerGrant);
   const answerCodeModeInteraction = useMutation(api.code_mode.answerInteraction);
+  // Approval signatures by tool call ID; the continuation request carries those it answers.
+  const approvalSignatures = useRef(new Map<string, WorkerApprovalSignature>());
   const createAcpSession = useMutation(api.acp.CreateSession);
   const setAcpConfig = useMutation(api.acp.SetConfig);
   const setAcpMode = useMutation(api.acp.SetMode);
   const promptAcp = useMutation(api.acp.Prompt);
+  const setAcpFallbackTitle = useMutation(api.acp.SetFallbackTitle);
   const generateAcpTitle = useAction(api.acp.GenerateTitle);
 
   // An existing chat's settings belong to its own workspace; a draft uses the current one.
@@ -241,6 +319,104 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     (candidate) => candidate._id === settingsWorkspaceId && candidate.role === "owner",
   );
   const signedIn = userInfo !== undefined && typeof userInfo !== "string";
+  const { data: workspaceKeyState } = useQuery(
+    convexQuery(
+      api.e2ee.workspaceKeyState,
+      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    ),
+  );
+  const { data: memberNames } = useQuery(
+    convexQuery(
+      api.e2ee.identityNames,
+      workspaceKeyState
+        ? { userIds: workspaceKeyState.members.map((member) => member.userId) }
+        : "skip",
+    ),
+  );
+  const needsNewChatKeys =
+    hasAccountKeys && !(draftScope === "workspace" && workspaceKeyState?.keyEpoch === null);
+
+  useEffect(() => {
+    draftKeys.current = undefined;
+  }, [settingsWorkspaceId, draftScope, sharedMembers]);
+
+  useEffect(() => {
+    if (!chatId || !isActive || keyStatus.state !== "unlocked") {
+      return;
+    }
+    void ensureChatKeys(chatId).catch(() =>
+      setContentFailure("Could not verify this chat's encryption keys."),
+    );
+  }, [chatId, isActive, keyStatus]);
+
+  useEffect(() => {
+    if (!chatId || !chat || !chatContent) {
+      return;
+    }
+    let cancelled = false;
+    const context = chat.e2eeId
+      ? { chatId, workspaceId: chat.workspace, e2eeId: chat.e2eeId }
+      : undefined;
+    setContentFailure(undefined);
+    void (async () => {
+      if (context) {
+        await openChatSeed(chatId, chat.keyEpoch ?? 1);
+      }
+      const historical = await openHistoricalChat(
+        {
+          chatId,
+          workspaceId: chat.workspace,
+          legacyContent: chat.legacyContent,
+          wants: {
+            title: !(context && chat.sealedTitle),
+            // `null` records a consumed queue; a sealed or plaintext queue replaces the historical one.
+            queue: chat.messages_queue === undefined && !(context && chat.sealedQueue),
+            interruption: chat.interruption?.message === "",
+          },
+        },
+        chatContent.entries,
+      );
+      const opened = await openMessages(historical.entries, chatContent.capsules, {
+        chatId,
+        workspaceId: chat.workspace,
+        e2eeId: chat.e2eeId ?? chatId,
+      });
+      const openedQueue =
+        context && chat.sealedQueue
+          ? await openQueue(chat.sealedQueue, context)
+          : (chat.messages_queue ?? historical.queue);
+      const title =
+        context && chat.sealedTitle
+          ? (await openTitle(chat.sealedTitle, context)).title
+          : (chat.title ?? historical.title?.title);
+      if (cancelled) {
+        return;
+      }
+      revisions.current = opened.revisions;
+      setPersistedMessages(opened.messages);
+      setQueue(openedQueue as ChatQueue | undefined);
+      setOpenedTitle(title);
+      setOpenedInterruption(historical.interruptionMessage);
+    })().catch((error: unknown) => {
+      if (cancelled) {
+        return;
+      }
+      setPersistedMessages(undefined);
+      setQueue(undefined);
+      setOpenedTitle(undefined);
+      setOpenedInterruption(undefined);
+      setContentFailure(
+        error instanceof KeysLockedError
+          ? "Unlock to read"
+          : error instanceof CustodialContentError
+            ? "Historical content is held in recovery custody and is not yet available."
+            : "Could not verify or decrypt this chat.",
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, chat, chatContent, keyStatus]);
 
   const [modelOverride, setModelOverride] = useState(requestedModel);
   const [providerOverride, setProviderOverride] = useState(requestedProvider);
@@ -251,7 +427,6 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const [choiceWorkspaceId, setChoiceWorkspaceId] = useState<string | undefined>(
     settingsWorkspaceId,
   );
-  const [draftScope, setDraftScope] = useState<ChatScope>("personal");
   const [draftWorker, setDraftWorker] = useState<ChatWorkerSelection | null>(null);
   const [draftProject, setDraftProject] = useState<string | null>(null);
   const [draftTools, setDraftTools] = useState<ToolSelection | null>(null);
@@ -296,12 +471,19 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
     ),
   );
-  const { data: projects } = useQuery(
+  const { data: projectsData } = useQuery(
     convexQuery(
       api.projects.list,
       signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
     ),
   );
+  // Every use below sees decrypted names; `undefined` still means the list is loading.
+  const decryptedProjects = useDecryptedNames(
+    projectsData ?? NO_PROJECTS,
+    "projects",
+    settingsWorkspaceId,
+  );
+  const projects = projectsData ? decryptedProjects : undefined;
   const { data: workerToolDefaults } = useQuery(
     convexQuery(
       api.chatroom.getWorkerToolDefaults,
@@ -330,6 +512,13 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const agents = workspaceAgents(agentDefinitions, draftWorker?.workerId, agentRows);
   const agent = chatId ? builtInAgent : sessionAgentById(agentId, agents);
   const isAcpDraft = chatId === undefined && agent.protocol === "acp";
+  useEffect(() => {
+    // Shared Sessions need chat keys, which only a keyed workspace has.
+    if (isAcpDraft && draftScope === "shared" && workspaceKeyState?.keyEpoch === null) {
+      setDraftScope("personal");
+      setSharedMembers([]);
+    }
+  }, [isAcpDraft, draftScope, workspaceKeyState?.keyEpoch]);
   // The Worker reports only the native profile; a Gateway session lists the Gateway models instead.
   const acpDefaults =
     agent.protocol === "acp" && agent.profile === "native"
@@ -397,6 +586,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       seedProjectId.current = undefined;
       setChoiceWorkspaceId(draft.workspaceId);
       setDraftScope(draft.scope);
+      setSharedMembers(draft.members ?? []);
       setDraftWorker(draft.worker);
       setDraftProject(draft.project);
       setDraftTools(draft.tools);
@@ -420,6 +610,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     setDraftWorker(null);
     setDraftProject(null);
     setDraftTools(null);
+    setSharedMembers([]);
     setAgentId(builtInAgent.id);
     setAcpDraft({ config: [] });
   }, [choicesAreStale, settingsWorkspaceId]);
@@ -434,11 +625,13 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         workspaceId: choiceWorkspaceId,
         scope: draftScope,
         worker: draftWorker,
+        members: sharedMembers,
         project: draftProject,
         tools: draftTools,
       };
     }
     patchTabState(tabId, {
+      ...(hasAccountKeys || chat?.e2eeId ? { text: undefined } : {}),
       model: modelOverride,
       provider: providerOverride,
       serviceTier,
@@ -451,10 +644,13 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   }, [
     agentId,
     chatId,
+    chat?.e2eeId,
+    hasAccountKeys,
     choiceWorkspaceId,
     choicesAreStale,
     draftProject,
     draftScope,
+    sharedMembers,
     draftTools,
     draftWorker,
     isTabStateRestored,
@@ -467,9 +663,6 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     tabId,
   ]);
 
-  // The Composer writes its text straight to the snapshot on every change, so typing re-renders
-  // only the Composer instead of this whole screen; the write is a small synchronous localStorage
-  // update, which also means a reload right after typing keeps the text.
   const composerTextStore = useMemo<ComposerTextStore>(
     () => ({
       read: () => readTabState(tabId)?.text ?? "",
@@ -557,11 +750,10 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   // default, then the first available model.
   const explicitModel = choicesAreStale ? undefined : modelOverride;
   const explicitProvider = choicesAreStale ? undefined : providerOverride;
-  const persistedMessages = chatContent?.messages as UIMessage[] | undefined;
   const chatModel = persistedMessages ? getLastMessageModel(persistedMessages) : undefined;
   const chatProvider = persistedMessages ? getLastMessageProvider(persistedMessages) : undefined;
-  const queuedModel = chat?.messages_queue?.model;
-  const queuedProvider = chat?.messages_queue?.provider;
+  const queuedModel = queue?.model;
+  const queuedProvider = queue?.provider;
   const hasModels = Boolean(models?.length);
   const isModelListLoading =
     models === undefined || (chatId === undefined && (modelsFetching || choicesAreStale));
@@ -569,7 +761,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     chatId !== undefined &&
     !isChatUnavailable &&
     !isLoadingCreatedChat &&
-    (chatResult === undefined || (isContentEnabled && isChatContentPending));
+    (chatResult === undefined ||
+      (isContentEnabled && (isChatContentPending || persistedMessages === undefined)));
   const isWaitingForDefault =
     !(chatModel || queuedModel) &&
     (userInfo === undefined || (signedIn && defaultModelQuery.isPending));
@@ -624,14 +817,63 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         headers: getConvexAuthHeaders,
         // Approval continuations and retries carry no per-call body: fall back to the model and
         // provider recorded on the latest assistant turn.
-        prepareSendMessagesRequest({ api: requestApi, body, credentials, headers, id, messages }) {
+        async prepareSendMessagesRequest({
+          api: requestApi,
+          body,
+          credentials,
+          headers,
+          id,
+          messages,
+        }) {
+          let sendMessages = messages;
+          let sendRevisions = revisions.current;
+          let recipientKey: { e2eeId: string; epoch: number; publicKey: string } | undefined;
+          if (chatId) {
+            // Every write is native: a keyless chat gets its keys first (no plaintext fallback), and
+            // historical attachments become fresh encrypted uploads before the server sees the history.
+            if (!chat?.e2eeId) await requireChatKeys(chatId);
+            const key = await writableChatKey(chatId);
+            // The server seals this turn only while the chat's current key is still exactly this one.
+            recipientKey = {
+              e2eeId: key.e2eeId,
+              epoch: key.epoch,
+              publicKey: toBase64Url(key.publicKey),
+            };
+            const reencrypted = await reencryptMessageFiles(messages, {
+              chatId,
+              workspaceId: key.workspaceId,
+              key,
+            });
+            sendMessages = reencrypted.messages;
+            if (reencrypted.changed.size > 0) {
+              // A new URL must be rewritten even though the message ID is unchanged.
+              sendRevisions = Object.fromEntries(
+                Object.entries(revisions.current).filter(([id]) => !reencrypted.changed.has(id)),
+              );
+            }
+          }
+          // A paired Worker runs an approved call only with the user's signature over its input.
+          const lastParts = messages.at(-1)?.parts ?? [];
+          const answered = new Set(
+            lastParts.flatMap((part) =>
+              isToolUIPart(part) && part.state === "approval-responded" && part.approval.approved
+                ? [part.toolCallId]
+                : [],
+            ),
+          );
+          const approvals = Object.fromEntries(
+            [...approvalSignatures.current].filter(([toolCallId]) => answered.has(toolCallId)),
+          );
           return {
             api: requestApi,
             body: {
               ...body,
               chatId,
               id,
-              messages,
+              messages: sendMessages,
+              revisions: sendRevisions,
+              approvals,
+              recipientKey,
               model: body?.model ?? getLastMessageModel(messages),
               provider: body?.provider ?? getLastMessageProvider(messages),
             },
@@ -643,6 +885,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       }),
     [
       chatId,
+      chat?.e2eeId,
       selectedBudget,
       selectedEffort,
       selectedModel,
@@ -701,6 +944,162 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     if (changed) setHiddenInteractions(new Set(submittedInteractions.current));
   }, [messages]);
 
+  const workerTarget: WorkerAuthorizationTarget | undefined =
+    chatId && chat?.worker?.workerId && chat.worker.directory
+      ? {
+          workspaceId: chat.workspace,
+          chatId,
+          workerId: chat.worker.workerId,
+          directory: chat.worker.directory,
+          e2eeId: chat.e2eeId ?? null,
+        }
+      : undefined;
+
+  /**
+   * Sign an approved Worker call. `null`: nothing to sign (not a Worker tool, or a keyless
+   * workspace and unencrypted chat, whose unpaired Worker runs unsigned). `false`: refused.
+   */
+  async function signApproval(part: ToolUIPart): Promise<WorkerApprovalSignature | null | false> {
+    if (!workerTarget) return null;
+    try {
+      return await signToolApproval(workerTarget, {
+        toolName: getToolName(part),
+        toolCallId: part.toolCallId,
+        input: part.input,
+      });
+    } catch (error) {
+      if (
+        workspaceKeyState?.keyEpoch === null &&
+        !chat?.e2eeId &&
+        !workspaceKnownKeyed(workerTarget.workspaceId)
+      )
+        return null;
+      toast.error(
+        error instanceof KeysLockedError
+          ? "Unlock this device to approve Worker tools."
+          : "Could not sign this approval.",
+      );
+      return false;
+    }
+  }
+
+  async function answerApproval(
+    part: ToolUIPart,
+    response: { id: string; approved: boolean; reason?: string },
+  ) {
+    if (response.approved) {
+      const signed = await signApproval(part);
+      if (signed === false) return;
+      if (signed) approvalSignatures.current.set(part.toolCallId, signed);
+    }
+    await addToolApprovalResponse(response);
+  }
+
+  async function answerCodeModeApproval(
+    id: string,
+    part: ToolUIPart,
+    response: { approved: boolean; reason?: string },
+  ) {
+    let signature: Omit<WorkerApprovalSignature, "input"> | undefined;
+    if (response.approved) {
+      const signed = await signApproval(part);
+      if (signed === false) return;
+      // The action recorded the input text this prompt shows; only the signature travels.
+      if (signed) {
+        signature = {
+          signature: signed.signature,
+          signerKeyId: signed.signerKeyId,
+          approvedAt: signed.approvedAt,
+        };
+      }
+    }
+    await respondToCodeMode(id, {
+      kind: "approval",
+      approved: response.approved,
+      ...(response.reason ? { reason: response.reason } : {}),
+      ...(signature ? { signature } : {}),
+    });
+  }
+
+  // Standing Read authority is signed only for a Worker selection the owner approved on this
+  // device by confirming the prompt that names its directory, and re-signed for exactly that
+  // selection before half of `WORKER_GRANT_TTL_MS` has passed. A selection served by the server
+  // alone is never signed. Hidden Tabs do not sign or write grants.
+  const grantedSelection = useRef<{ key: string } | undefined>(undefined);
+  useEffect(() => {
+    const selection = chat?.worker;
+    const reset = () => {
+      grantedSelection.current = undefined;
+      if (chatId) toast.dismiss(`worker-grant:${chatId}`);
+    };
+    if (!chatId || !chat || !isActive || !isOwner || keyStatus.state !== "unlocked") {
+      reset();
+      return;
+    }
+    if (!selection?.workerId || !selection.directory || !selection.tools.includes("read")) {
+      reset();
+      return;
+    }
+    const target: WorkerAuthorizationTarget = {
+      workspaceId: chat.workspace,
+      chatId,
+      workerId: selection.workerId,
+      directory: selection.directory,
+      e2eeId: chat.e2eeId ?? null,
+    };
+    const { userId, keyId } = keyStatus;
+    const action = workerGrantAction({
+      userId,
+      signerKeyId: keyId,
+      target,
+      selection,
+      now: Date.now(),
+    });
+    if (action === "none") {
+      reset();
+      return;
+    }
+    const confirm = action === "confirm";
+    const key = JSON.stringify([target, [...selection.tools].sort(), keyId, confirm]);
+    if (grantedSelection.current?.key === key) return;
+    const attempt = { key };
+    grantedSelection.current = attempt;
+    const authorize = async () => {
+      try {
+        const grant = await signToolGrant(target, selection);
+        if (grantedSelection.current !== attempt || keyManager.getSnapshot() !== keyStatus) return;
+        await setChatWorkerGrant({
+          chatId,
+          workerId: target.workerId,
+          directory: target.directory,
+          grant,
+        });
+      } catch {
+        if (grantedSelection.current === attempt) {
+          grantedSelection.current = undefined;
+          toast.error("Could not authorize Worker reads. Reopen this session to try again.");
+        }
+      }
+    };
+    if (!confirm) {
+      void authorize();
+      return;
+    }
+    toast("Allow Worker reads in this chat?", {
+      id: `worker-grant:${chatId}`,
+      description: `The agent may read files in ${target.directory} on this chat's Worker without asking.`,
+      duration: Infinity,
+      action: {
+        label: "Allow",
+        onClick: () => {
+          if (grantedSelection.current !== attempt) return;
+          recordWorkerApproval(userId, target, selection.tools);
+          void authorize();
+        },
+      },
+    });
+  }, [chat, chatId, isActive, isOwner, keyStatus, setChatWorkerGrant]);
+
   async function respondToCodeMode(id: string, response: CodeModeInteractionResponse) {
     if (submittedInteractions.current.has(id)) return;
     submittedInteractions.current.add(id);
@@ -724,10 +1123,10 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const [seededChatId, setSeededChatId] = useState<string>();
   const seededMidRequest = useRef(false);
   useEffect(() => {
-    if (!chatContent || !chatId) return;
+    if (!chatContent || !chatId || !persistedMessages) return;
     if (seededChatId !== chatId) {
       seededMidRequest.current = chatContent.activeStream;
-      setMessages(chatContent.messages as UIMessage[]);
+      setMessages(persistedMessages);
       setSeededChatId(chatId);
       return;
     }
@@ -738,8 +1137,33 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     }
     if (chatContent.activeStream) return;
     seededMidRequest.current = false;
-    setMessages(chatContent.messages as UIMessage[]);
-  }, [chatContent, chatId, seededChatId, setMessages, status]);
+    setMessages(persistedMessages);
+  }, [chatContent, persistedMessages, chatId, seededChatId, setMessages, status]);
+
+  useEffect(
+    () =>
+      keyManager.subscribe(() => {
+        if (keyManager.getSnapshot().state === "unlocked") {
+          return;
+        }
+        draftKeys.current = undefined;
+        approvalSignatures.current.clear();
+        if (!chat?.e2eeId) {
+          return;
+        }
+        void stop();
+        setMessages([]);
+        setPersistedMessages(undefined);
+        setQueue(undefined);
+        setOpenedTitle(undefined);
+        setPendingRevert(null);
+        setPendingPrompt(undefined);
+        setSeededChatId(undefined);
+        revisions.current = {};
+        composerRef.current?.swapDraft({ text: "", files: [] });
+      }),
+    [chat?.e2eeId, setMessages, stop],
+  );
 
   // The todo tray shows the latest list while it has open items; a finished one sinks back. The
   // prompt slot stays squared under it until its exit animation finishes.
@@ -751,7 +1175,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   // sending so Convex updates or status changes cannot replay the queued turn.
   const sentQueueChatId = useRef<string>(undefined);
   useEffect(() => {
-    const queue = chat?.messages_queue;
+    if (contentFailure) return;
     if (
       !chatId ||
       seededChatId !== chatId ||
@@ -776,7 +1200,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         },
       },
     );
-  }, [chat?.messages_queue, chatId, seededChatId, sendMessage, status]);
+  }, [queue, contentFailure, chatId, seededChatId, sendMessage, status]);
 
   const reportedUnavailable = useRef(false);
   useEffect(() => {
@@ -793,7 +1217,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   // The submitted or queued prompt shows as the user turn until the conversation has messages.
   let visiblePendingPrompt: string | undefined;
   if (messages.length === 0 && !hasHadMessages) {
-    visiblePendingPrompt = pendingPrompt ?? chat?.messages_queue?.text;
+    visiblePendingPrompt = pendingPrompt ?? queue?.text;
   }
   const isStarting = isCreating || visiblePendingPrompt !== undefined;
   const isEmpty = chatId === undefined && pendingPrompt === undefined;
@@ -804,7 +1228,12 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   if (error) {
     interruption = { kind: "failed", message: error.message };
   } else if (chat?.interruption && !chat.activeStream) {
-    interruption = chat.interruption;
+    // An empty message marks historical error text that moved into the sidecar; new failures
+    // store none and show the generic line.
+    interruption =
+      chat.interruption.message === ""
+        ? { kind: chat.interruption.kind, message: openedInterruption }
+        : chat.interruption;
   }
   const runState = sessionRunState(
     status,
@@ -815,7 +1244,11 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   );
 
   const submittedTitle = pendingPrompt?.split("\n")[0]?.trim() || undefined;
-  const title = chat?.title ?? submittedTitle;
+  // Encrypted titles exist only after decryption; an unlocked chat without one is simply untitled.
+  const encryptedFallback = keyStatus.state === "unlocked" ? "Encrypted session" : "Locked";
+  const title = chat?.e2eeId || chat?.legacyContent
+    ? (openedTitle ?? submittedTitle ?? encryptedFallback)
+    : (chat?.title ?? submittedTitle);
 
   // `undefined` while a saved chat or the Projects list is still loading, so the Tab keeps its hint.
   const isProjectKnown =
@@ -826,8 +1259,22 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     return { name: selectedProject.name, color: selectedProject.color, icon: selectedProject.icon };
   }, [isProjectKnown, selectedProject]);
   useEffect(() => {
-    onTabHint(tabId, { title, runState, project: projectHint });
-  }, [onTabHint, projectHint, runState, tabId, title]);
+    onTabHint(tabId, {
+      title,
+      encrypted: Boolean(chat?.e2eeId) || (hasAccountKeys && usesDraftChoices),
+      runState,
+      project: projectHint,
+    });
+  }, [
+    chat?.e2eeId,
+    hasAccountKeys,
+    usesDraftChoices,
+    onTabHint,
+    projectHint,
+    runState,
+    tabId,
+    title,
+  ]);
 
   /** Send body for one model, omitting reasoning options it does not support. */
   const buildSendBody = useCallback(
@@ -876,29 +1323,93 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       setPendingPrompt(text);
       let created: Id<"aisdk_chats"> | undefined;
       try {
+        // A keyed workspace takes only keyed Sessions: chat keys, then the creator's signed binding
+        // and sealed, signed commands. A keyless workspace keeps the plaintext path unchanged.
+        if (!workspaceKeyState) throw new Error("Waiting for workspace encryption keys.");
+        const keyed = keyedWorkspaceClaim(settingsWorkspaceId, workspaceKeyState.keyEpoch != null);
+        const keys = keyed ? await getDraftKeys() : undefined;
+        if (keyed && !keys) throw new Error("Unlock to create encryption keys.");
+        const members = draftScope === "shared" ? sharedMembers : [];
         created = await createAcpSession({
           workspace: settingsWorkspaceId,
-          scope: draftScope,
+          scope: keyed ? draftScope : draftScope === "workspace" ? "workspace" : "personal",
+          ...(keyed && draftScope === "shared" ? { members } : {}),
           project: selectedProject?._id,
           worker: draftWorker.workerId,
           agentId: agent.agentId,
           profile: agent.profile,
+          ...(keys ? { e2ee: { keys: keys.keys } } : {}),
         });
-        for (const option of acpDraft.config) await setAcpConfig({ chat: created, ...option });
-        if (acpDraft.modeId) await setAcpMode({ chat: created, modeId: acpDraft.modeId });
-        await promptAcp({
-          chat: created,
-          prompt: [{ type: "text", text }],
-          clientId: crypto.randomUUID(),
-        });
-        void generateAcpTitle({ chat: created, text }).catch(() => {});
+        const createdChat = created;
+        const workerId = draftWorker.workerId;
+        const signCommand = (command: AcpCommandPayload, clientId?: string) =>
+          signAcpCommand({
+            workspaceId: settingsWorkspaceId,
+            workerId,
+            chatId: createdChat,
+            command,
+            clientId,
+          });
+        // The draft epoch was made before the chat ID existed; the Worker seals frames only to an
+        // epoch bound to this chat, so bind one before the first command reaches it.
+        let boundKey: ChatContentKey | undefined;
+        if (keys) {
+          rememberChatSeed(created, keys.e2eeId, keys.epoch, keys.seed);
+          draftKeys.current = undefined;
+          await publishAcpBinding({
+            chatId: created,
+            e2eeId: keys.e2eeId,
+            scope: draftScope,
+            members,
+            version: 1,
+          });
+          boundKey = await writableChatKey(created);
+        }
+        for (const option of acpDraft.config) {
+          await setAcpConfig({
+            chat: created,
+            ...(keys
+              ? {
+                  signed: await signCommand({
+                    kind: "set_config",
+                    configId: option.configId,
+                    value: option.value,
+                  }),
+                }
+              : option),
+          });
+        }
+        if (acpDraft.modeId) {
+          await setAcpMode({
+            chat: created,
+            ...(keys
+              ? { signed: await signCommand({ kind: "set_mode", modeId: acpDraft.modeId }) }
+              : { modeId: acpDraft.modeId }),
+          });
+        }
+        const prompt = [{ type: "text" as const, text }];
+        const clientId = crypto.randomUUID();
+        if (boundKey) {
+          await promptAcp({
+            chat: created,
+            clientId,
+            signed: await signCommand({ kind: "prompt", prompt }, clientId),
+          });
+          // Keyed Sessions never send the prompt to a title action: the fallback title is sealed here.
+          void sealTitle({ title: acpFallbackTitle(text) }, boundKey)
+            .then((sealedTitle) => setAcpFallbackTitle({ chat: createdChat, sealedTitle }))
+            .catch(() => {});
+        } else {
+          await promptAcp({ chat: created, prompt, clientId });
+          void generateAcpTitle({ chat: created, text }).catch(() => {});
+        }
         setCreatedChatId(created);
         onAcpCreated(created, text);
       } catch (error) {
         const message = acpActionError(error) ?? "Could not start the agent session.";
         if (created) {
           // A created binding survives failed admission/config: open it, preserving the text to retry.
-          patchTabState(tabId, { text });
+          composerRef.current?.swapDraft({ text, files: [] });
           toast.error(message);
           onAcpCreated(created);
         } else {
@@ -923,9 +1434,22 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     setIsCreating(true);
     setPendingPrompt(text);
     try {
+      const keys = await getDraftKeys();
+      const queued: ChatQueue = {
+        text,
+        files,
+        model: selectedModel,
+        provider: selectedProvider,
+        serviceTier: selectedTier,
+        inferenceMode: effectiveMode,
+        reasoningEffort: selectedEffort,
+        reasoningBudget: selectedBudget,
+        webSearch: false,
+      };
       const createdChatId = await createChat({
         workspace: settingsWorkspaceId,
         scope: draftScope,
+        members: draftScope === "shared" ? sharedMembers : undefined,
         ...(workerSelection ? { worker: workerSelection } : {}),
         ...(selectedProject ? { project: selectedProject._id } : {}),
         // Only a draft whose tools were changed carries an override; otherwise the chat follows
@@ -938,18 +1462,19 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
               },
             }
           : {}),
-        messages_queue: {
-          text,
-          files,
-          model: selectedModel,
-          ...(selectedProvider ? { provider: selectedProvider } : {}),
-          ...(selectedTier ? { serviceTier: selectedTier } : {}),
-          ...(effectiveMode ? { inferenceMode: effectiveMode } : {}),
-          ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}),
-          ...(selectedBudget ? { reasoningBudget: selectedBudget } : {}),
-          webSearch: false,
-        },
+        ...(keys
+          ? {
+              e2ee: {
+                keys: keys.keys,
+                sealedQueue: await sealQueue(queued, { ...keys, workspaceId: settingsWorkspaceId }),
+                fileUrls: files.map((file) => file.url),
+              },
+            }
+          : { messages_queue: queued }),
       });
+      if (keys) {
+        rememberChatSeed(createdChatId, keys.e2eeId, 1, keys.seed);
+      }
       setCreatedChatId(createdChatId);
       onCreated(tabId, createdChatId);
     } catch (caughtError) {
@@ -958,6 +1483,60 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       throw caughtError;
     } finally {
       setIsCreating(false);
+    }
+  }
+
+  async function getDraftKeys() {
+    if (!settingsWorkspaceId) {
+      throw new Error("Choose a workspace first.");
+    }
+    if (keyStatus.state === "signed-out") {
+      throw new Error("Waiting for encryption status.");
+    }
+    // A workspace this device verified as keyed never gets a plaintext chat, whatever the server
+    // reports.
+    if (hasAccountKeys && workspaceKeyState)
+      keyedWorkspaceClaim(settingsWorkspaceId, workspaceKeyState.keyEpoch !== null);
+    if (!needsNewChatKeys) {
+      return undefined;
+    }
+    if (!workspaceKeyState) {
+      throw new Error("Waiting for workspace encryption keys.");
+    }
+    if (!draftKeys.current) {
+      const created = await createChatKeys({
+        workspaceId: settingsWorkspaceId,
+        scope: draftScope,
+        members: sharedMembers,
+      });
+      draftKeys.current = { ...created, workspaceId: settingsWorkspaceId };
+    }
+    return draftKeys.current;
+  }
+
+  async function attachmentKey(): Promise<ChatContentKey | undefined> {
+    if (isAcpDraft) {
+      return undefined;
+    }
+    try {
+      if (chatId) {
+        // New attachments are always encrypted; a keyless chat gets its keys first.
+        if (!chat?.e2eeId) await requireChatKeys(chatId);
+        return await writableChatKey(chatId);
+      }
+      const keys = await getDraftKeys();
+      return keys && settingsWorkspaceId
+        ? { ...keys, workspaceId: settingsWorkspaceId }
+        : undefined;
+    } catch (error) {
+      setCreateError(
+        error instanceof KeysLockedError
+          ? "Unlock to create encryption keys."
+          : error instanceof ChatKeysRequiredError
+            ? error.message
+            : "Could not prepare chat encryption.",
+      );
+      throw error;
     }
   }
 
@@ -994,11 +1573,19 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     if (status === "submitted" || status === "streaming") return;
     const index = messages.findIndex((candidate) => candidate.id === message.id);
     if (index === -1) return;
+    // A message exists only in a saved chat; capture the narrowed ids for the async callbacks.
+    const revertChatId = chatId;
+    const revertWorkspaceId = settingsWorkspaceId;
+    if (!revertChatId || !revertWorkspaceId) return;
 
-    const files = await Promise.all(getMessageFiles(message).map(toComposerFile));
+    const files = await Promise.all(
+      getMessageFiles(message).map((part) =>
+        toComposerFile(part, revertWorkspaceId, revertChatId),
+      ),
+    );
     const replacedDraft = composerRef.current?.swapDraft({
       text: getMessageText(message),
-      files: files.filter((file) => file !== null),
+      files,
     });
     setPendingRevert(
       (current) => current ?? { messages, draft: replacedDraft ?? { text: "", files: [] } },
@@ -1020,42 +1607,72 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
    * it, and the chosen model is preselected for the next turn.
    */
   async function handleFork(message: UIMessage, forkModel: string) {
-    if (!settingsWorkspaceId) return;
+    if (!settingsWorkspaceId || !chatId) return;
     const index = messages.findIndex((candidate) => candidate.id === message.id);
     if (index === -1) return;
 
-    let newChatId: Id<"aisdk_chats">;
-    if (message.role === "assistant") {
-      newChatId = await forkChat({
-        workspace: settingsWorkspaceId,
-        scope: chat?.scope,
-        project: chat?.project ?? undefined,
-        messages: messages.slice(0, index + 1),
-      });
-    } else {
-      const forkModelData = models?.find((candidate) => candidate.slug === forkModel);
-      const forkEffort = validReasoningEffort(forkModelData, reasoningEffort);
-      const forkTier = validServiceTier(forkModelData, selectedProvider, serviceTier);
-      const forkMode = validInferenceMode(forkModelData, selectedProvider, effectiveMode);
-      const forkBudget =
-        forkModelData?.features?.reasoning_budget && reasoningBudget ? reasoningBudget : undefined;
-      newChatId = await forkChat({
-        workspace: settingsWorkspaceId,
-        scope: chat?.scope,
-        project: chat?.project ?? undefined,
-        messages: messages.slice(0, index),
-        messages_queue: {
-          text: getMessageText(message),
-          files: getMessageFiles(message),
-          model: forkModel,
-          ...(selectedProvider ? { provider: selectedProvider } : {}),
-          ...(forkTier ? { serviceTier: forkTier } : {}),
-          ...(forkMode ? { inferenceMode: forkMode } : {}),
-          ...(forkEffort ? { reasoningEffort: forkEffort } : {}),
-          ...(forkBudget ? { reasoningBudget: forkBudget } : {}),
-          webSearch: false,
-        },
-      });
+    const scope = chat?.scope ?? "personal";
+    const members = scope === "shared" ? (keyState?.members ?? []) : undefined;
+    const history = messages.slice(0, index + (message.role === "assistant" ? 1 : 0));
+    const forkModelData = models?.find((candidate) => candidate.slug === forkModel);
+    const forkQueue: ChatQueue | undefined =
+      message.role === "assistant"
+        ? undefined
+        : {
+            text: getMessageText(message),
+            files: getMessageFiles(message),
+            model: forkModel,
+            provider: selectedProvider,
+            serviceTier: validServiceTier(forkModelData, selectedProvider, serviceTier),
+            inferenceMode: validInferenceMode(forkModelData, selectedProvider, effectiveMode),
+            reasoningEffort: validReasoningEffort(forkModelData, reasoningEffort),
+            reasoningBudget: forkModelData?.features?.reasoning_budget
+              ? reasoningBudget
+              : undefined,
+            webSearch: false,
+          };
+    if (hasAccountKeys && workspaceKeyState)
+      keyedWorkspaceClaim(settingsWorkspaceId, workspaceKeyState.keyEpoch !== null);
+    const encrypted =
+      Boolean(chat?.e2eeId) ||
+      (hasAccountKeys && !(scope === "workspace" && workspaceKeyState?.keyEpoch === null));
+    const keys = encrypted
+      ? await createChatKeys({ workspaceId: settingsWorkspaceId, scope, members })
+      : undefined;
+    const forkKey = keys ? { ...keys, workspaceId: settingsWorkspaceId } : undefined;
+    // A fork cannot reuse a historical attachment's sidecar: each becomes a fresh upload under the
+    // fork's own key first. Without a key this rejects rather than forking a broken attachment.
+    const reencryptTarget = { chatId, workspaceId: settingsWorkspaceId, key: forkKey };
+    const { messages: forkHistory } = await reencryptMessageFiles(history, reencryptTarget);
+    const queuedFork = forkQueue
+      ? {
+          ...forkQueue,
+          files: await Promise.all(
+            forkQueue.files.map((file) => reencryptFilePart(file, reencryptTarget)),
+          ),
+        }
+      : undefined;
+    const newChatId = await forkChat({
+      workspace: settingsWorkspaceId,
+      scope,
+      members,
+      project: chat?.project ?? undefined,
+      ...(keys && forkKey
+        ? {
+            e2ee: {
+              keys: keys.keys,
+              ...(await sealMessagesForFork(forkHistory, forkKey)),
+              sealedQueue: queuedFork ? await sealQueue(queuedFork, forkKey) : undefined,
+              fileUrls: [
+                ...forkHistory.flatMap(getMessageFiles),
+                ...(queuedFork?.files ?? []),
+              ].map((file) => file.url),
+            },
+          }
+        : { messages: forkHistory, messages_queue: queuedFork }),
+    });
+    if (keys) {
+      rememberChatSeed(newChatId, keys.e2eeId, 1, keys.seed);
     }
     patchTabState(`chat-${newChatId}`, {
       serviceTier: validServiceTier(
@@ -1077,15 +1694,16 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     });
   }
 
-  async function changeScope(scope: ChatScope) {
+  async function changeScope(scope: ChatScope, members = sharedMembers) {
     if (!chatId) {
       setDraftScope(scope);
+      setSharedMembers(members);
       return;
     }
     if (!chat?.canManageScope || isScopeSaving) return;
     setIsScopeSaving(true);
     try {
-      await setChatScope({ chatId, scope });
+      await changeChatScope({ chatId, scope, members: scope === "shared" ? members : undefined });
     } catch (caughtError) {
       toast.error(
         caughtError instanceof Error ? caughtError.message : "Failed to update chat visibility.",
@@ -1104,6 +1722,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     if (!chat?.canManage || isWorkerSaving) return;
     setIsWorkerSaving(true);
     try {
+      // A new pick drops the old approval; its server-derived directory needs a fresh confirmation.
+      if ("userId" in keyStatus) forgetWorkerApproval(keyStatus.userId, chat.workspace, chatId);
       await setChatWorker({ chatId, selection: next });
     } catch (caughtError) {
       toast.error(caughtError instanceof Error ? caughtError.message : "Failed to update Worker.");
@@ -1122,7 +1742,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     () => ({
       onCopy: copyMessageText,
       onRevert: (message: UIMessage) => {
-        void latestThreadHandlers.current.handleRevert(message);
+        void latestThreadHandlers.current.handleRevert(message).catch(() => {
+          toast.error("Unable to read the attachments. The conversation was not changed.");
+        });
       },
       onRegenerate: (message: UIMessage) => latestThreadHandlers.current.handleRegenerate(message),
       onFork: (message: UIMessage, forkModel: string) => {
@@ -1148,6 +1770,15 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
             membership may have been removed.
           </AlertDescription>
         </Alert>
+      </div>
+    );
+  }
+
+  if (chat?.e2eeId && contentFailure) {
+    return (
+      <div className="flex h-full items-center justify-center gap-3 p-4">
+        <span className="text-sm text-muted-foreground">{contentFailure}</span>
+        {contentFailure === "Unlock to read" ? <EncryptionNotice /> : null}
       </div>
     );
   }
@@ -1293,7 +1924,10 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         {createError ? (
           <Alert variant="destructive">
             <AlertTitle>Unable to start chat</AlertTitle>
-            <AlertDescription>{createError}</AlertDescription>
+            <AlertDescription>
+              {createError}
+              {keyStatus.state === "locked" ? <EncryptionNotice /> : null}
+            </AlertDescription>
           </Alert>
         ) : null}
         {acpUnavailableReason && !createError ? (
@@ -1380,11 +2014,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                     shortcutsEnabled={isActive && index === 0}
                     expiresAt={interaction.expiresAt}
                     onApprovalResponse={(response) => {
-                      void respondToCodeMode(interaction.id, {
-                        kind: "approval",
-                        approved: response.approved,
-                        ...(response.reason ? { reason: response.reason } : {}),
-                      });
+                      void answerCodeModeApproval(interaction.id, part, response);
                     }}
                   />
                 </m.div>
@@ -1425,7 +2055,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                     part={currentApproval}
                     total={nativeApprovals.length}
                     shortcutsEnabled={isActive}
-                    onApprovalResponse={(response) => void addToolApprovalResponse(response)}
+                    onApprovalResponse={(response) => void answerApproval(currentApproval, response)}
                   />
                 </m.div>
               ) : null}
@@ -1465,6 +2095,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                 ref={composerRef}
                 layoutId={`composer-${tabId}`}
                 workspace={chatId ? chat?.workspace : settingsWorkspaceId}
+                encryptionKey={attachmentKey}
                 autoFocus={isEmpty && isActive}
                 canSend={canSend}
                 isRunning={isRunning}
@@ -1521,6 +2152,17 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                   <ConversationVisibilityMenu
                     scope={chat?.scope ?? draftScope}
                     isDraft={chatId === undefined}
+                    allowShared={!isAcpDraft || workspaceKeyState?.keyEpoch != null}
+                    members={chatId ? (keyState?.members ?? []) : sharedMembers}
+                    availableMembers={(workspaceKeyState?.members ?? [])
+                      .filter((member) => member.userId !== authSession?.user.id)
+                      .map((member) => ({
+                        id: member.userId,
+                        name:
+                          memberNames?.find((entry) => entry.userId === member.userId)?.name ??
+                          "Unknown member",
+                      }))}
+                    onMembersChange={(members) => void changeScope("shared", members)}
                     canChange={
                       chatId === undefined || (chat?.canManageScope === true && !isScopeSaving)
                     }
@@ -1542,7 +2184,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                     />
                   ) : null
                 }
-                textStore={composerTextStore}
+                textStore={
+                  keyStatus.state === "no-keys" && !chat?.e2eeId ? composerTextStore : undefined
+                }
               />
             </div>
           </div>
@@ -1649,15 +2293,22 @@ function hasFileUrl<T extends { url?: string }>(file: T): file is T & FileUIPart
   return Boolean(file.url);
 }
 
-/** A sent file part back as a `File` for the Composer; a part that cannot be read is dropped. */
-async function toComposerFile(part: FileUIPart): Promise<File | null> {
-  try {
-    const response = await fetch(part.url);
-    const blob = await response.blob();
-    return new File([blob], part.filename ?? "attachment", { type: part.mediaType });
-  } catch {
-    return null;
-  }
+/**
+ * Restores a file locally; any download or integrity failure aborts the entire revert. A
+ * historical attachment comes from its sidecar, since its old storage URL no longer serves bytes.
+ */
+async function toComposerFile(
+  part: FileUIPart,
+  workspaceId: Id<"workspaces">,
+  chatId: Id<"aisdk_chats">,
+): Promise<File> {
+  const historical = parseFileFragment(part.url)
+    ? null
+    : await openHistoricalFile(chatId, workspaceId, part.url);
+  const blob = historical?.blob ?? (await decryptFileUrl(part.url, workspaceId));
+  return new File([blob], part.filename ?? historical?.filename ?? "attachment", {
+    type: part.mediaType,
+  });
 }
 
 /** Chatroom's AI SDK endpoint lives on the Convex site origin, not the web origin. */

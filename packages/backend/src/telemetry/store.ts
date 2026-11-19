@@ -1,5 +1,6 @@
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import type { QueryCtx } from "../../convex/_generated/server";
+import type { LegacyBox } from "../e2ee/legacy-contract";
 import type { TelemetryBlobKind, TelemetryBlobMeta } from "./validators";
 
 /**
@@ -25,6 +26,14 @@ export type LoadedBlob = {
   content?: string;
   /** Signed file URL for content above the inline limit. */
   storageUrl?: string;
+  legacyContent?: LegacyBox;
+  sealed?: {
+    epoch: number;
+    requestId: string;
+    capsule: ArrayBuffer;
+    envelope?: ArrayBuffer;
+    storageUrl?: string;
+  };
   /** True when only the fingerprint and metadata were captured. */
   redacted: boolean;
 };
@@ -58,11 +67,13 @@ async function toLoadedBlob(
     hash: blob.hash,
     kind: blob.kind,
     size: blob.size,
-    meta: blob.meta,
+    meta: blob.legacyContent ? undefined : blob.meta,
     truncated: blob.truncated,
-    content: blob.content,
-    storageUrl,
-    redacted: blob.content === undefined && blob.storage === undefined,
+    content: blob.legacyContent ? undefined : blob.content,
+    storageUrl: blob.sealed || blob.legacyContent ? undefined : storageUrl,
+    sealed: blob.sealed ? { ...blob.sealed, storageUrl } : undefined,
+    legacyContent: blob.legacyContent,
+    redacted: blob.content === undefined && blob.storage === undefined && blob.sealed === undefined && blob.legacyContent === undefined,
   };
 }
 

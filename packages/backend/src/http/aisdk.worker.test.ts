@@ -88,12 +88,17 @@ function fixture(
       })),
     })
     .mockResolvedValueOnce(modelSupportsTools);
-  if (userId === "owner" && worker.workerId !== undefined)
+  if (userId === "owner" && worker.workerId !== undefined) {
     runQuery.mockResolvedValueOnce({
       workerId: "selected-worker",
       workspaceId: "chat-workspace",
       status: "active",
     });
+    // `worker_tasks.chatWorkerTarget`: keyless workspace, plaintext transport.
+    if (worker.directory === undefined || worker.directory.startsWith("/")) {
+      runQuery.mockResolvedValueOnce(null);
+    }
+  }
   runQuery.mockResolvedValueOnce({ enabled: false });
   const runMutation = vi.fn().mockResolvedValue(null);
   return { ctx: { runQuery, runMutation } as unknown as ActionCtx, runQuery, runMutation };

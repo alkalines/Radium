@@ -33,4 +33,11 @@ crons.interval(
   internal.observability.telemetryRetention.pruneExpired,
   {},
 );
+crons.interval(
+  "expired device recovery offers",
+  { minutes: 15 },
+  internal.e2ee.pruneDeviceRecovery,
+  {},
+);
+crons.interval("expired workspace invites", { hours: 1 }, internal.e2ee.pruneExpiredInvites, {});
 export default crons;

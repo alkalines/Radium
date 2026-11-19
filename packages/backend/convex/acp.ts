@@ -7,9 +7,11 @@ export {
   answeredInteractions,
   openInteraction,
   resolveInteraction,
+  reopenInteraction,
   startEpoch,
   appendFrames,
   updateSession,
+  chatKey,
   reportAgents,
   recoverWorker,
   knownAgentSessions,
@@ -17,6 +19,7 @@ export {
 } from "../src/acp/machine";
 export {
   CreateSession,
+  PublishBinding,
   Prompt,
   Cancel,
   SetConfig,
@@ -24,8 +27,9 @@ export {
   Answer,
   RequestHistory,
   Fork,
+  StartFork,
+  SetFallbackTitle,
   ListAgentSessionIndex,
-  SearchAgentSessionIndex,
   ListUnopenedAgentSessions,
   SyncAgentSessions,
   OpenAgentSession,
@@ -36,6 +40,7 @@ export {
   WorkerStatus,
   GenerateTitle,
   OpenInteractions,
+  StreamCapsule,
   ListAgents,
 } from "../src/acp/browser";
 export {
@@ -44,6 +49,7 @@ export {
   deleteStream,
   prune,
   cleanupChat,
+  resumeDeferredCleanup,
 } from "../src/acp/retention";
 export {
   ListAgentDefinitions,

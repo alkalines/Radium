@@ -6,20 +6,58 @@ import { requireAccessibleChat } from "../../convex/workspaces";
 import type { WorkerMutationCtx, WorkerQueryCtx } from "../worker/machine";
 import { logger } from "../logging/server";
 import { recordAcpTurn } from "../usage/acp";
+import {
+  assertLegacyPlaintextAllowed,
+  legacyPlaintextAllowed,
+  readMigrationState,
+} from "../e2ee/migration-contract";
+import { chatKeyIsStale } from "../e2ee/chat-keys";
+import { touchChatMembers } from "../chatroom/members";
 import type {
+  AcpCommandKind,
   AcpCommandPayload,
   AcpConfig,
+  AcpDeletedTarget,
   AcpSessionStatus,
+  AcpSignedCommand,
   AcpStopReason,
   AcpTurnReport,
 } from "./contract";
-import { ACP_WARM_SESSIONS_MAX, validAcpToken } from "./contract";
+import {
+  ACP_SEALED_ERROR_TEXT,
+  ACP_SEALED_SHORT_BYTES,
+  ACP_WARM_SESSIONS_MAX,
+  validAcpToken,
+} from "./contract";
 
 type ReadCtx = QueryCtx | MutationCtx;
 
 /** Caller-visible ACP failure, without leaking another Worker's binding. */
 export function acpError(code: string, message?: string): never {
   throw new ConvexError(message ? { code, message } : { code });
+}
+
+/**
+ * Gate for a plaintext relay write to a row that may already carry a historical sidecar. Plaintext
+ * stops when cutover freezes or completes, and a row whose plaintext moved into a sidecar must never
+ * receive plaintext again, not even after an aborted cutover re-enabled the keyless writers: new
+ * plaintext beside a sidecar would conflict with the sealed history and block its migration forever.
+ */
+export async function assertRelayPlaintextAllowed(
+  ctx: MutationCtx,
+  row: { legacyContent?: unknown },
+): Promise<void> {
+  await assertLegacyPlaintextAllowed(ctx);
+  if (row.legacyContent !== undefined) acpError("ACP_PLAINTEXT_REFUSED");
+}
+
+/**
+ * Whether the encryption cutover freeze is on. Background relay maintenance (retention, cooling,
+ * viewer warming) consults it so a frozen window keeps every legacy relay row and frame in place
+ * until the seal run has captured it; it resumes by itself once the freeze lifts.
+ */
+export async function relayFrozen(ctx: ReadCtx): Promise<boolean> {
+  return (await readMigrationState(ctx))?.frozen === true;
 }
 
 /** Single indexed metadata lookup; no presence or transcript reads. */
@@ -144,6 +182,7 @@ export async function enqueue(
   chat?: Id<"aisdk_chats">,
   clientId: string = crypto.randomUUID(),
 ) {
+  await assertLegacyPlaintextAllowed(ctx);
   const existing = await existingCommand(ctx, binding.workspace, binding.worker, clientId, by);
   if (existing) return existing._id;
   return ctx.db.insert("acp_commands", {
@@ -154,6 +193,44 @@ export async function enqueue(
     payload,
     chat,
     clientId,
+    status: "pending",
+  });
+}
+
+/**
+ * Insert a sealed, user-signed command (keyed workspaces). Callers verified the signature
+ * (`verifySignedCommand`); the signed `clientId` is the idempotency key. `agentId` is the plaintext
+ * copy agent-level kinds need for debouncing; `target` snapshots a deleted chat's binding.
+ */
+export async function enqueueSigned(
+  ctx: MutationCtx,
+  binding: { workspace: Id<"workspaces">; worker: string },
+  by: string,
+  command: {
+    kind: AcpCommandKind;
+    signed: AcpSignedCommand;
+    agentId?: string;
+    target?: AcpDeletedTarget;
+  },
+  chat?: Id<"aisdk_chats">,
+) {
+  const existing = await existingCommand(
+    ctx,
+    binding.workspace,
+    binding.worker,
+    command.signed.clientId,
+    by,
+  );
+  if (existing) return existing._id;
+  return ctx.db.insert("acp_commands", {
+    ...binding,
+    by,
+    kind: command.kind,
+    agentId: command.agentId,
+    signed: command.signed,
+    target: command.target,
+    chat,
+    clientId: command.signed.clientId,
     status: "pending",
   });
 }
@@ -185,7 +262,12 @@ export function validateMode(config: AcpConfig | undefined, modeId: string) {
     acpError("ACP_INVALID_MODE");
 }
 
-/** Lifecycle patch accepted only from the bound Worker. Null explicitly clears the last error. */
+/**
+ * Lifecycle patch accepted only from the bound Worker. Null explicitly clears the last error. In a
+ * keyed workspace the Worker sends no free text: `sealedTitle` (chat key, `aisdk_chats` title AAD),
+ * `sealedError` (chat key, `acp_sessions` error AAD; null clears), `indexTitle` (owner key, index
+ * AAD) and a `sessionProof` signature with every new `sessionId`.
+ */
 export type SessionPatch = {
   status?: AcpSessionStatus;
   stopReason?: AcpStopReason;
@@ -197,6 +279,10 @@ export type SessionPatch = {
   history?: Doc<"acp_sessions">["history"];
   sessionId?: string;
   title?: string;
+  sealedTitle?: { epoch: number; box: ArrayBuffer };
+  sealedError?: { epoch: number; box: ArrayBuffer } | null;
+  indexTitle?: { epoch: number; box: ArrayBuffer; tag: string };
+  sessionProof?: ArrayBuffer;
   /** Usage facts of the turn this patch ends; recorded once per prompt command. */
   turn?: AcpTurnReport;
 };
@@ -208,6 +294,27 @@ const STOP_REASON_FAILURES: Partial<Record<AcpStopReason, string>> = {
   refusal: "The model refused",
 };
 
+/**
+ * Bounds of a Worker-sealed title/error box addressed to the chat's current key epoch. A stale
+ * epoch (revoked reader or rotated workspace key) is refused: the chat must rotate first.
+ */
+async function requireChatBox(
+  ctx: ReadCtx,
+  chat: Doc<"aisdk_chats">,
+  workspaceId: Id<"workspaces">,
+  value: { epoch: number; box: ArrayBuffer },
+) {
+  if (
+    !chat.e2eeId ||
+    value.epoch !== chat.keyEpoch ||
+    value.box.byteLength === 0 ||
+    value.box.byteLength > ACP_SEALED_SHORT_BYTES
+  )
+    acpError("ACP_INVALID_SEALED");
+  const workspace = await ctx.db.get(workspaceId);
+  if (!workspace || (await chatKeyIsStale(ctx, chat, workspace))) acpError("ACP_INVALID_SEALED");
+}
+
 /** Mirror boundaries atomically; frame writes deliberately never call this policy. */
 export async function applySessionPatch(
   ctx: MutationCtx,
@@ -217,9 +324,42 @@ export async function applySessionPatch(
   const chat = await ctx.db.get(session.chat);
   if (!chat?.agent) acpError("ACP_DENIED");
   const now = Date.now();
-  const { title, sessionId, error, turn, ...fields } = patch;
+  const {
+    title,
+    sessionId,
+    error,
+    turn,
+    sealedTitle,
+    sealedError,
+    indexTitle,
+    sessionProof,
+    config,
+    commands,
+    ...fields
+  } = patch;
   const updates: Partial<Doc<"acp_sessions">> = { ...fields, updatedAt: now };
-  if (error !== undefined) updates.error = error === null ? undefined : error.slice(0, 500);
+  // Free text is never stored once plaintext relay writes are closed; the status stays generic.
+  const plaintext = await legacyPlaintextAllowed(ctx);
+  // A session whose history already lives in a sidecar takes no plaintext either, even when an
+  // aborted cutover re-enabled keyless writers. Native sealed fields and the status still apply.
+  const sidecar = session.legacyContent !== undefined;
+  if (plaintext && !sidecar) {
+    if (config !== undefined) updates.config = config;
+    if (commands !== undefined) updates.commands = commands;
+  }
+  if (error !== undefined) {
+    if (error === null || !plaintext) updates.error = undefined;
+    else if (!sidecar) updates.error = error.slice(0, 500);
+    if (error === null) updates.sealedError = undefined;
+  }
+  if (sealedError === null) {
+    updates.error = undefined;
+    updates.sealedError = undefined;
+  } else if (sealedError) {
+    await requireChatBox(ctx, chat, session.workspace, sealedError);
+    updates.sealedError = sealedError;
+    updates.error = ACP_SEALED_ERROR_TEXT;
+  }
   const chatPatch: Partial<Doc<"aisdk_chats">> = {};
   if (sessionId !== undefined) {
     if (!validAcpToken(sessionId)) acpError("ACP_INVALID_SESSION_ID");
@@ -244,12 +384,34 @@ export async function applySessionPatch(
     updates.sessionId = sessionId;
     chatPatch.agent = { ...chat.agent, sessionId };
   }
-  if (title !== undefined && !session.userTitled) {
+  // A paired Worker proves each session id it binds; Workers verify the proof before reopening.
+  if (sessionProof) {
+    if (!(sessionId ?? session.sessionId) || sessionProof.byteLength !== 64)
+      acpError("ACP_INVALID_SESSION_ID");
+    if (!session.sessionProof || sessionId !== undefined)
+      updates.sessionProof = { kind: "worker", signature: sessionProof };
+  }
+  // Plaintext titles never land on a chat whose title is sealed, whose history moved into a
+  // sidecar (new plaintext would conflict with it), or after the plaintext cutover.
+  if (title !== undefined && !session.userTitled && !chat.e2eeId && !chat.legacyContent && plaintext) {
     const normalized = title.replace(/\s+/g, " ").trim().slice(0, 80);
     if (normalized) chatPatch.title = normalized;
   }
+  if (sealedTitle) {
+    await requireChatBox(ctx, chat, session.workspace, sealedTitle);
+    if (!session.userTitled)
+      Object.assign(chatPatch, { sealedTitle, title: undefined, emoji: undefined });
+  }
+  if (
+    indexTitle &&
+    (indexTitle.box.byteLength > ACP_SEALED_SHORT_BYTES || indexTitle.tag.length > 64)
+  )
+    acpError("ACP_INVALID_SEALED");
   const indexedSessionId = sessionId ?? session.sessionId;
-  if (indexedSessionId && (sessionId !== undefined || chatPatch.title !== undefined)) {
+  if (
+    indexedSessionId &&
+    (sessionId !== undefined || chatPatch.title !== undefined || indexTitle !== undefined)
+  ) {
     const row = await ctx.db
       .query("acp_agent_sessions")
       .withIndex("by_worker_and_agentId_and_sessionId", (q) =>
@@ -260,18 +422,31 @@ export async function applySessionPatch(
           .eq("sessionId", indexedSessionId),
       )
       .first();
-    const indexedTitle = chatPatch.title ?? chat.title ?? row?.title;
-    if (row) {
-      if (row.chat !== chat._id || row.title !== indexedTitle)
-        await ctx.db.patch(row._id, { chat: chat._id, title: indexedTitle });
+    // Keyed chats keep only the Worker's owner-sealed index title; legacy rows mirror the chat title.
+    let indexed: Pick<Doc<"acp_agent_sessions">, "title" | "sealedTitle" | "titleTag">;
+    if (indexTitle) {
+      indexed = {
+        title: undefined,
+        sealedTitle: { epoch: indexTitle.epoch, box: indexTitle.box },
+        titleTag: indexTitle.tag,
+      };
+    } else if (chat.e2eeId) {
+      indexed = { title: undefined, sealedTitle: row?.sealedTitle, titleTag: row?.titleTag };
     } else {
+      // Once plaintext relay writes close, an existing title is retained but never refreshed.
+      indexed = {
+        title: plaintext && !row?.legacyContent ? (chatPatch.title ?? chat.title ?? row?.title) : row?.title,
+      };
+    }
+    if (row) await ctx.db.patch(row._id, { chat: chat._id, ...indexed });
+    else {
       await ctx.db.insert("acp_agent_sessions", {
         workspace: session.workspace,
         worker: session.worker,
         agentId: session.agentId,
         sessionId: indexedSessionId,
         cwd: session.cwd,
-        title: indexedTitle,
+        ...indexed,
         updatedAt: now,
         chat: chat._id,
       });
@@ -297,17 +472,23 @@ export async function applySessionPatch(
       notification = "session_finished";
   } else if (patch.status === "failed") {
     const reason = patch.stopReason ?? session.stopReason;
-    const reported = error === null ? undefined : (error ?? session.error);
-    detail = reported || (reason && STOP_REASON_FAILURES[reason]) || "Agent failed";
+    const fixed = (reason && STOP_REASON_FAILURES[reason]) || "Agent failed";
+    // Raw agent error text never reaches the chat row or scheduler arguments: the chat keeps only
+    // the generic kind, and the notification carries fixed text. The session's own error (sealed
+    // or generic) is what a viewer reads.
+    const sealed = sealedError === undefined ? !!session.sealedError : sealedError !== null;
+    detail = sealed ? ACP_SEALED_ERROR_TEXT : fixed;
     Object.assign(chatPatch, {
       activeStream: false,
       lastInteractionAt: now,
-      interruption: { kind: "failed", message: detail },
+      interruption: { kind: "failed" },
     });
     if (session.status !== "failed") notification = "session_failed";
   } else if (patch.status === "ended") chatPatch.activeStream = false;
   await ctx.db.patch(session._id, updates);
   if (Object.keys(chatPatch).length) await ctx.db.patch(chat._id, chatPatch);
+  if (chatPatch.lastInteractionAt !== undefined)
+    await touchChatMembers(ctx, chat._id, chatPatch.lastInteractionAt);
   if (turn && (patch.status === "idle" || patch.status === "failed")) {
     // Usage is an operational estimate and must not reject the turn's state transition either;
     // the Worker would otherwise retry the whole patch.

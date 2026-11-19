@@ -33,9 +33,11 @@ const modules = import.meta.glob("./**/*.ts");
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 function makeTest() {
+  vi.stubEnv("TELEMETRY_HASH_SECRET", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
   const t = convexTest({ schema, modules });
   registerMigrations(t);
   registerSecretStore(t);

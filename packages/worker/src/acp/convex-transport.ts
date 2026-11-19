@@ -27,6 +27,11 @@ export function convexAcpTransport(client: ConvexClient): AcpTransport {
         ...args,
         interaction: interaction as Id<"acp_interactions">,
       }),
+    reopenInteraction: ({ interaction }) =>
+      client.mutation(api.acp.reopenInteraction, {
+        interaction: interaction as Id<"acp_interactions">,
+      }),
+    chatKey: ({ chat }) => client.query(api.acp.chatKey, { chat: chat as Id<"aisdk_chats"> }),
     startEpoch: ({ chat, ...args }) =>
       client.mutation(api.acp.startEpoch, { ...args, chat: chat as Id<"aisdk_chats"> }),
     appendFrames: ({ chat, ...args }) =>

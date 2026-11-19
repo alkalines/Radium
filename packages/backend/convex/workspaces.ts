@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   internalMutation,
@@ -14,6 +15,11 @@ import { canAccessResolvedChat, canAccessWorkspace, canManageChat } from "../src
 import { isWorkspaceIconName } from "../src/workspaces/icons";
 import { isTileColorName } from "../src/workspaces/colors";
 import { normalizeDisplayName } from "../src/workspaces/names";
+import { isChatMember } from "../src/chatroom/members";
+import { workspaceKeysValidator, invalidKeys } from "../src/e2ee/workspace-contract";
+import { clearWorkspaceJoins, insertWorkspaceEpoch } from "../src/e2ee/workspace-keys";
+import { legacyBoxValidator } from "../src/e2ee/legacy-contract";
+import { assertLegacyWritesAllowed, assertLegacyPlaintextAllowed } from "../src/e2ee/migration-contract";
 
 const MAX_WORKSPACES = 100;
 const MAX_MEMBERS = 200;
@@ -24,6 +30,7 @@ const workspaceSummaryValidator = v.object({
   _id: v.id("workspaces"),
   _creationTime: v.number(),
   name: v.string(),
+  legacyContent: v.optional(legacyBoxValidator),
   icon: v.optional(v.string()),
   color: v.optional(v.string()),
   ownerType: v.literal("user"),
@@ -170,6 +177,7 @@ function workspaceSummary(workspace: WorkspaceRecord, role: WorkspaceRole) {
     _id: workspace._id,
     _creationTime: workspace._creationTime,
     name: workspace.name,
+    legacyContent: workspace.legacyContent,
     icon: workspace.icon,
     color: workspace.color,
     ownerType: workspace.ownerType,
@@ -269,6 +277,7 @@ export async function authorizeChatRecord(
     workspace._id,
     userId,
     member ? [member] : [],
+    chat.scope === "shared" && (await isChatMember(ctx, chat._id, userId)) ? [userId] : [],
   );
   return accessible ? { chat, workspace } : null;
 }
@@ -448,6 +457,8 @@ export const ensurePersonalWorkspace = mutation({
   args: { name: v.optional(v.string()) },
   returns: v.id("workspaces"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
+    if (args.name && args.name !== "Workspace") await assertLegacyPlaintextAllowed(ctx);
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) throw new Error("Not logged in.");
 
@@ -482,7 +493,7 @@ export const ensurePersonalWorkspace = mutation({
           await ctx.db.insert("workspaces", {
             ownerType: "user",
             ownerId: identity._id,
-            name: normalizeDisplayName(args.name ?? "Personal workspace", "Workspace"),
+            name: normalizeDisplayName(args.name ?? "Workspace", "Workspace"),
             legacyBalance: balance._id,
             legacyOrganizationId: balance.organizationId,
             legacyTeamId: balance.teamId,
@@ -495,7 +506,7 @@ export const ensurePersonalWorkspace = mutation({
     return await ctx.db.insert("workspaces", {
       ownerType: "user",
       ownerId: identity._id,
-      name: normalizeDisplayName(args.name ?? "Personal workspace", "Workspace"),
+      name: normalizeDisplayName(args.name ?? "Workspace", "Workspace"),
     });
   },
 });
@@ -505,6 +516,7 @@ export const ensureForLegacyBalance = internalMutation({
   args: { balance: v.id("balances") },
   returns: v.id("workspaces"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const balance = await ctx.db.get("balances", args.balance);
     if (!balance) throw new Error("Legacy API-key owner not found.");
 
@@ -520,7 +532,7 @@ export const ensureForLegacyBalance = internalMutation({
     return await ctx.db.insert("workspaces", {
       ownerType: "user",
       ownerId: balance.userId,
-      name: "Personal workspace",
+      name: "Workspace",
       legacyBalance: balance._id,
       legacyOrganizationId: balance.organizationId,
       legacyTeamId: balance.teamId,
@@ -533,6 +545,8 @@ export const create = mutation({
   args: { name: v.string() },
   returns: v.id("workspaces"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
+    if (args.name !== "Workspace") await assertLegacyPlaintextAllowed(ctx);
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) throw new Error("Not logged in.");
 
@@ -554,7 +568,9 @@ export const rename = mutation({
   args: { workspace: v.id("workspaces"), name: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyPlaintextAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    if (workspace.legacyContent) throw new Error("Encrypted workspace names must be edited by an encryption-capable client.");
     await ctx.db.patch("workspaces", workspace._id, {
       name: normalizeDisplayName(args.name, "Workspace"),
     });
@@ -566,7 +582,9 @@ export const setIcon = mutation({
   args: { workspace: v.id("workspaces"), icon: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyPlaintextAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
+    if (workspace.legacyContent) throw new Error("Encrypted workspace icons must be edited by an encryption-capable client.");
     if (!isWorkspaceIconName(args.icon)) throw new Error("Unsupported workspace icon.");
     await ctx.db.patch("workspaces", workspace._id, { icon: args.icon });
     return null;
@@ -578,6 +596,7 @@ export const setColor = mutation({
   args: { workspace: v.id("workspaces"), color: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     if (!isTileColorName(args.color)) throw new Error("Unsupported workspace color.");
     await ctx.db.patch("workspaces", workspace._id, { color: args.color });
@@ -643,6 +662,7 @@ export const addMember = mutation({
   args: { workspace: v.id("workspaces"), email: v.string() },
   returns: v.id("workspace_members"),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     const user = await findBetterAuthUserByEmail(ctx, args.email);
     if (!user) throw new Error("User not found.");
@@ -661,11 +681,85 @@ export const addMember = mutation({
   },
 });
 
-/** Remove an explicit member by their existing Better Auth email. */
-export const removeMember = mutation({
-  args: { workspace: v.id("workspaces"), email: v.string() },
+// Rows handled per mutation while detaching a removed member from chats; the rest is continued.
+const REMOVAL_BATCH_SIZE = 100;
+
+/**
+ * Detach a removed member from chats in one bounded batch, then schedule the remainder:
+ * their `chat_members` rows are deleted and those chats flagged `rekey`, and the `shared` chats
+ * they created are flagged too (a removed creator is no longer an implicit recipient of new
+ * epochs). `cursor` pages the created chats; the member rows need none because they are deleted.
+ */
+async function revokeMemberChats(
+  ctx: MutationCtx,
+  workspace: Id<"workspaces">,
+  userId: string,
+  cursor: string | null,
+): Promise<void> {
+  const shared = await ctx.db
+    .query("chat_members")
+    .withIndex("by_workspace_and_userId_and_lastInteractionAt", (q) =>
+      q.eq("workspace", workspace).eq("userId", userId),
+    )
+    .take(REMOVAL_BATCH_SIZE);
+  for (const row of shared) {
+    await ctx.db.delete("chat_members", row._id);
+    const chat = await ctx.db.get("aisdk_chats", row.chat);
+    if (chat) {
+      await ctx.db.patch("aisdk_chats", chat._id, { rekey: true });
+    }
+  }
+  if (shared.length === REMOVAL_BATCH_SIZE) {
+    await ctx.scheduler.runAfter(0, internal.workspaces.continueMemberRemoval, {
+      workspace,
+      userId,
+      cursor,
+    });
+    return;
+  }
+  const created = await ctx.db
+    .query("aisdk_chats")
+    .withIndex("by_workspace_and_userId_and_scope", (q) =>
+      q.eq("workspace", workspace).eq("userId", userId).eq("scope", "shared"),
+    )
+    .paginate({ numItems: REMOVAL_BATCH_SIZE, cursor });
+  for (const chat of created.page) {
+    await ctx.db.patch("aisdk_chats", chat._id, { rekey: true });
+  }
+  if (!created.isDone) {
+    await ctx.scheduler.runAfter(0, internal.workspaces.continueMemberRemoval, {
+      workspace,
+      userId,
+      cursor: created.continueCursor,
+    });
+  }
+}
+
+/** Continues `removeMember`'s chat detachment for a member with more chats than one batch. */
+export const continueMemberRemoval = internalMutation({
+  args: {
+    workspace: v.id("workspaces"),
+    userId: v.string(),
+    cursor: v.union(v.string(), v.null()),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
+    await revokeMemberChats(ctx, args.workspace, args.userId, args.cursor);
+    return null;
+  },
+});
+
+/** Remove an explicit member by their existing Better Auth email. */
+export const removeMember = mutation({
+  args: {
+    workspace: v.id("workspaces"),
+    email: v.string(),
+    rotation: v.optional(workspaceKeysValidator),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     const user = await findBetterAuthUserByEmail(ctx, args.email);
     if (!user) throw new Error("User not found.");
@@ -675,7 +769,20 @@ export const removeMember = mutation({
     if (userId === workspace.ownerId) throw new Error("The workspace owner is implicit.");
 
     const existing = await workspaceMemberForUser(ctx, workspace._id, userId);
-    if (existing) await ctx.db.delete("workspace_members", existing._id);
+    if (workspace.keyEpoch && !args.rotation) {
+      invalidKeys();
+    }
+    if (!workspace.keyEpoch && args.rotation) {
+      invalidKeys();
+    }
+    if (existing) {
+      await ctx.db.delete("workspace_members", existing._id);
+    }
+    await revokeMemberChats(ctx, workspace._id, userId, null);
+    await clearWorkspaceJoins(ctx, workspace._id);
+    if (args.rotation) {
+      await insertWorkspaceEpoch(ctx, workspace, args.rotation);
+    }
     return null;
   },
 });
@@ -689,6 +796,7 @@ export const archive = mutation({
   args: { workspace: v.id("workspaces") },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const workspace = await requireOwnedWorkspace(ctx, args.workspace);
     const activeWorkspaces = await ctx.db
       .query("workspaces")
@@ -722,6 +830,7 @@ export const restore = mutation({
   args: { workspace: v.id("workspaces") },
   returns: v.null(),
   handler: async (ctx, args) => {
+    await assertLegacyWritesAllowed(ctx);
     const identity = await authComponent.getAuthUser(ctx);
     if (!identity) throw new Error("Not logged in.");
 

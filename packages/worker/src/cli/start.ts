@@ -1,3 +1,4 @@
+import { watch, type FSWatcher } from "node:fs";
 import { recoverPendingIdentity } from "../auth/enrollment.js";
 import { readWorkerState } from "../auth/state.js";
 import { createGatewayKeyStore } from "../auth/gateway.js";
@@ -21,6 +22,7 @@ import {
   startLocalUsageSync,
   type LocalUsageSync,
 } from "../usage/local-usage.js";
+import { convexTrustTransport, WorkerTrust } from "../e2ee/trust.js";
 
 const DISCONNECT_GUIDANCE: Record<WorkerControlDisconnectReason, string> = {
   connecting: "Opening the Convex connection.",
@@ -35,13 +37,28 @@ const DISCONNECT_GUIDANCE: Record<WorkerControlDisconnectReason, string> = {
   shutdown: "The Worker control connection has stopped.",
 };
 
+const UNPAIRED_GUIDANCE =
+  "This Worker is not paired, so the backend could run any command on it. Create a pairing code in Chatroom → Workers and run `radium-worker pair`, then start again. Only for a workspace without keys, run `radium-worker start --allow-plaintext` to accept unencrypted, unsigned commands.";
+
 /** Recover local enrollment before opening the authenticated outbound control client. */
 export async function startWorker(options: CliOptions): Promise<void> {
   let state = await readWorkerState(options.stateDirectory);
   if (!state) throw new WorkerProtocolError("Worker is not configured; run setup first");
 
   state = await recoverPendingIdentity(options.stateDirectory, state);
+  // A v2 enrollment must never fall back to the legacy plaintext consumer after an interrupted
+  // pairing; the pairing secret is intentionally not persisted for automatic recovery.
+  if (state.setup.version === 2 && !state.e2ee) {
+    throw new WorkerProtocolError(
+      "Encrypted Worker setup is incomplete; create a pairing code and run `radium-worker pair`",
+    );
+  }
+  // Unpaired, the backend fully controls what this machine runs; that takes an explicit opt-in.
+  if (!state.e2ee && !options.allowPlaintext) throw new WorkerProtocolError(UNPAIRED_GUIDANCE);
   console.info(storageDescription(state.credentialStoreMode));
+  if (state.e2ee && options.allowPlaintext) {
+    console.info("--allow-plaintext ignored: this Worker is paired and runs signed commands only.");
+  }
 
   let control: WorkerControlConnection | undefined;
   let editor: EditExecutor | undefined;
@@ -51,9 +68,11 @@ export async function startWorker(options: CliOptions): Promise<void> {
   let presence: PresenceReporter | undefined;
   let acp: AcpHost | undefined;
   let localUsage: LocalUsageSync | undefined;
+  let trust: WorkerTrust | null = null;
   const close = async () => {
     clearInterval(diagnosticsTimer);
     presence?.close();
+    trust?.close();
     localUsage?.close();
     try {
       await acp?.close();
@@ -83,6 +102,23 @@ export async function startWorker(options: CliOptions): Promise<void> {
       console.info(formatControlStatus(status));
     });
     presence = startPresenceReporter(control.client, tempDirectory);
+    // Paired Workers verify every command against the pinned owner; unpaired ones run plaintext
+    // only because the operator allowed it above.
+    const client = control.client;
+    trust = await WorkerTrust.open({
+      stateDirectory: options.stateDirectory,
+      state,
+      transport: () => convexTrustTransport(client),
+    });
+    if (!trust && !options.allowPlaintext) throw new WorkerProtocolError(UNPAIRED_GUIDANCE);
+    const mode = trust ?? "plaintext";
+    console.info(
+      trust
+        ? "End-to-end encryption: paired; commands must be signed by workspace members."
+        : "End-to-end encryption: not paired (--allow-plaintext); this Worker only serves workspaces without keys, and the backend sees and controls everything it runs.",
+    );
+    // Report an owner-key change, rollback or missing certification at startup (fixed messages).
+    void trust?.roster().catch(() => undefined);
     presence.setAvailable(previousStatusKey === "connected");
     diagnosticsTimer = setInterval(() => {
       if (!control || previousStatusKey === "connected") return;
@@ -92,20 +128,30 @@ export async function startWorker(options: CliOptions): Promise<void> {
       );
     }, 15_000);
     if (editor) {
-      tasks = consumeEditTasks(control.client, editor, bash);
+      tasks = consumeEditTasks(control.client, editor, bash, mode);
       tasks.setAvailable(previousStatusKey === "connected");
       console.info("Worker edit and Bash task consumer enabled.");
     }
-    acp = new AcpHost(convexAcpTransport(control.client), {
-      gateway: {
-        url: `${state.setup.backendUrl}/api/openai/v1`,
-        keys: createGatewayKeyStore(options.stateDirectory),
+    acp = new AcpHost(
+      convexAcpTransport(control.client),
+      {
+        gateway: {
+          url: `${state.setup.backendUrl}/api/openai/v1`,
+          keys: createGatewayKeyStore(options.stateDirectory),
+        },
       },
-    });
+      mode,
+    );
     acp.setAvailable(previousStatusKey === "connected");
     localUsage = startLocalUsageSync(convexLocalUsageTransport(control.client));
     localUsage.setAvailable(previousStatusKey === "connected");
-    await waitForShutdown(close);
+    // An unpaired Worker cannot serve a workspace that has keys, and `pair` runs as a separate
+    // command. Reopen in signed mode once pairing lands, so the stale plaintext host stops.
+    const reason = await waitForShutdown(close, trust ? undefined : pairingCompleted(options));
+    if (reason === "paired") {
+      console.info("Worker paired; restarting with end-to-end encryption.");
+      await startWorker(options);
+    }
   } catch (error) {
     await close().catch(() => undefined);
     throw error;
@@ -118,18 +164,66 @@ function formatControlStatus(status: WorkerControlStatus): string {
   return `Worker control disconnected (${status.reason}). ${DISCONNECT_GUIDANCE[status.reason]}`;
 }
 
-/** Close the same connection once and detach both signal handlers before awaiting it. */
-function waitForShutdown(close: () => Promise<void>): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let stopping = false;
-    const onSignal = () => {
-      if (stopping) return;
-      stopping = true;
-      process.off("SIGINT", onSignal);
-      process.off("SIGTERM", onSignal);
-      void close().then(resolve, reject);
-    };
-    process.once("SIGINT", onSignal);
-    process.once("SIGTERM", onSignal);
-  });
+/**
+ * Resolves once the state file on disk gains E2EE keys (`radium-worker pair` finished). `cancel`
+ * stops watching.
+ */
+function pairingCompleted(options: CliOptions): { done: Promise<void>; cancel: () => void } {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  let checking = false;
+  let dirty = false;
+  const check = () => {
+    if (checking) {
+      dirty = true;
+      return;
+    }
+    checking = true;
+    dirty = false;
+    readWorkerState(options.stateDirectory, { skipE2eeKeys: true })
+      .then((next) => {
+        if (next?.e2ee) resolve();
+      })
+      // A partially written state file is re-read on its next change event.
+      .catch(() => undefined)
+      .finally(() => {
+        checking = false;
+        if (dirty) check();
+      });
+  };
+  let watcher: FSWatcher;
+  try {
+    watcher = watch(options.stateDirectory, check);
+  } catch {
+    // No state directory to watch means no pairing can land in it either.
+    return { done: promise, cancel: () => undefined };
+  }
+  // Losing the watch only loses the automatic restart; `pair` still tells the user to restart.
+  watcher.on("error", () => watcher.close());
+  void promise.finally(() => watcher.close());
+  return { done: promise, cancel: () => watcher.close() };
+}
+
+/**
+ * Close the same connection once and detach both signal handlers before awaiting it. Resolves
+ * with what stopped the Worker: a signal, or completed pairing when `paired` is given.
+ */
+function waitForShutdown(
+  close: () => Promise<void>,
+  paired?: { done: Promise<void>; cancel: () => void },
+): Promise<"signal" | "paired"> {
+  const { promise, resolve, reject } = Promise.withResolvers<"signal" | "paired">();
+  let stopping = false;
+  const stop = (reason: "signal" | "paired") => {
+    if (stopping) return;
+    stopping = true;
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    paired?.cancel();
+    void close().then(() => resolve(reason), reject);
+  };
+  const onSignal = () => stop("signal");
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  void paired?.done.then(() => stop("paired"));
+  return promise;
 }

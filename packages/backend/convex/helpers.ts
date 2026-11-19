@@ -16,6 +16,7 @@ import {
   requireWorkspaceOwnedByUser,
   updateWorkspaceSettings,
 } from "./workspaces";
+import { assertLegacyWritesAllowed } from "../src/e2ee/migration-contract";
 
 const workspaceArgs = { workspace: v.id("workspaces") };
 
@@ -57,6 +58,7 @@ async function workspaceMutationContext(
   args: { workspace: Id<"workspaces"> },
   ownerOnly = false,
 ) {
+  await assertLegacyWritesAllowed(ctx);
   const result = await workspaceContext(ctx, args, ownerOnly);
   const { identity, workspace } = result.ctx;
 

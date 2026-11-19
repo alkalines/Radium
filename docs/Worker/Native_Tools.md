@@ -86,8 +86,9 @@ that binding; a new directory under the same session ID starts with fresh snapsh
 Service requests are serialized, including requests from different sessions.
 
 Stored legacy tasks may lack `request.directory`; the Worker fails those tasks with
-`DIRECTORY_REQUIRED` without falling back to its current working directory. The
-public `dispatchEdit` request always requires the directory field.
+`DIRECTORY_REQUIRED` without falling back to its current working directory. Every
+request dispatched by the internal Chatroom paths (`dispatchSealedChatTask`,
+`dispatchChatEdit`) carries the directory.
 
 1. **Read:** return the matching native file header, numbered text, and the pinned
    engine's instructions/grammars. Record only displayed lines as seen. Optional

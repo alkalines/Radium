@@ -40,7 +40,7 @@ function fixture() {
     execute: vi.fn(async (_request: WorkerEditRequest) => "output"),
     close: vi.fn(async () => {}),
   };
-  const consumer = consumeEditTasks(client, executor);
+  const consumer = consumeEditTasks(client, executor, undefined, "plaintext");
   return { consumer, executor, mutation, unsubscribe, notify: (tasks: Task[]) => notify(tasks) };
 }
 
@@ -301,7 +301,7 @@ test("Bash is claimed once, separated by chat scope, and only receipt delivery r
     ),
     close: vi.fn(async () => {}),
   };
-  const consumer = consumeEditTasks(client, editor, bash);
+  const consumer = consumeEditTasks(client, editor, bash, "plaintext");
   notify([bashTask]);
   expect(bash.execute).not.toHaveBeenCalled();
   consumer.setAvailable(true);
@@ -360,7 +360,7 @@ test("shutdown aborts an in-flight Bash command before flushing its receipt", as
       finish(JSON.stringify({ ok: false, code: "BASH_ABORTED", output: "" }));
     }),
   };
-  const consumer = consumeEditTasks(client, editor, bash);
+  const consumer = consumeEditTasks(client, editor, bash, "plaintext");
   consumer.setAvailable(true);
   notify([bashTask]);
   await vi.advanceTimersByTimeAsync(1);
@@ -402,7 +402,7 @@ test("an oversized Bash receipt becomes a deliverable failure instead of blockin
     execute: vi.fn(async () => "x".repeat(32 * 1024 + 1)),
     close: vi.fn(async () => {}),
   };
-  const consumer = consumeEditTasks(client, editor, bash);
+  const consumer = consumeEditTasks(client, editor, bash, "plaintext");
   consumer.setAvailable(true);
   notify([bashTask]);
   await vi.advanceTimersByTimeAsync(1);
@@ -454,7 +454,7 @@ test("task subscription failures are isolated and recover without a control tran
     execute: vi.fn(async () => JSON.stringify({ ok: true, exitCode: 0, output: "done" })),
     close: vi.fn(async () => {}),
   };
-  const consumer = consumeEditTasks(client, editor, bash);
+  const consumer = consumeEditTasks(client, editor, bash, "plaintext");
   expect([...streams.keys()]).toEqual(["edit", "bash"]);
   streams.get("bash")!.notify([bashTask]);
   streams.get("bash")!.error();

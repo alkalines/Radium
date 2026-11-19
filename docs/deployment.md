@@ -9,28 +9,32 @@ container and release paths are currently blocked and unverified pending the
 
 ### Application And Convex
 
-| Variable                     | Required          | Scope              | Purpose                                                                                    |
-| ---------------------------- | ----------------- | ------------------ | ------------------------------------------------------------------------------------------ |
-| `CONVEX_DEPLOYMENT`          | Cloud development | Local CLI          | Convex deployment selected by `convex dev`                                                 |
-| `VITE_CONVEX_URL`            | Yes               | Build/public       | Convex client URL, normally `https://<deployment>.convex.cloud`                            |
-| `VITE_CONVEX_SITE_URL`       | Yes               | Build/public       | Convex HTTP action origin, normally `https://<deployment>.convex.site`                     |
-| `SITE_URL`                   | Yes               | Convex             | Public web origin used by Better Auth, such as `http://localhost:3000`                     |
-| `SECRET_STORE_KEYS`          | Yes               | Deploy/Convex      | Versioned key material used by Convex Secret Store                                         |
-| `AISDK_MaxRetries`           | No                | Convex             | AI SDK retry count; defaults to `0`                                                        |
-| `LWC_SECRET`                 | Feature-specific  | Convex             | Signs ChatGPT Subscription sessions                                                        |
-| `WORKER_AUTH_PRIVATE_JWK`    | Worker auth       | Convex secret      | Private ES256 machine-token issuer JWK with `kid`                                          |
-| `WORKER_AUTH_JWKS`           | Worker auth       | Convex/auth config | Matching public JWKS for the optional custom JWT verifier                                  |
-| `WEB_PUSH_VAPID_PUBLIC_KEY`  | Web Push          | Convex             | VAPID public key browsers subscribe with ([Notifications](Notifications.md#configuration)) |
-| `WEB_PUSH_VAPID_PRIVATE_KEY` | Web Push          | Convex secret      | Matching VAPID private key that signs push requests                                        |
-| `WEB_PUSH_SUBJECT`           | No                | Convex             | VAPID contact (`mailto:` or `https:`); defaults to `SITE_URL`                              |
+| Variable                     | Required          | Scope                      | Purpose                                                                                                                  |
+| ---------------------------- | ----------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `CONVEX_DEPLOYMENT`          | Cloud development | Local CLI                  | Convex deployment selected by `convex dev`                                                                               |
+| `VITE_CONVEX_URL`            | Yes               | Build/public               | Convex client URL, normally `https://<deployment>.convex.cloud`                                                          |
+| `VITE_CONVEX_SITE_URL`       | Yes               | Build/public               | Convex HTTP action origin, normally `https://<deployment>.convex.site`                                                   |
+| `SITE_URL`                   | Yes               | Convex                     | Public web origin used by Better Auth, such as `http://localhost:3000`                                                   |
+| `SECRET_STORE_KEYS`          | Yes               | Deploy/Convex              | Versioned key material used by Convex Secret Store                                                                       |
+| `OPAQUE_SERVER_SETUP`        | Yes               | Convex secret              | OPAQUE server key pair and OPRF seed for password sign-in ([below](#opaque-server-setup))                                |
+| `AUTH_PROXY_SECRET`          | Recommended       | Convex + web server secret | Same value on both sides; lets Convex rate-limit auth per client IP behind the web proxy ([below](#opaque-server-setup)) |
+| `TELEMETRY_HASH_SECRET`       | Telemetry/routing | Convex secret              | Base64url-encoded 32-byte secret for workspace-keyed content, chain and message-derived routing hashes; back up with deployment configuration |
+| `AUTH_TRUST_X_FORWARDED_FOR` | No                | Web server                 | `true` only when the web server sits behind a reverse proxy that overwrites `X-Forwarded-For`                            |
+| `AISDK_MaxRetries`           | No                | Convex                     | AI SDK retry count; defaults to `0`                                                                                      |
+| `LWC_SECRET`                 | Feature-specific  | Convex                     | Signs ChatGPT Subscription sessions                                                                                      |
+| `WORKER_AUTH_PRIVATE_JWK`    | Worker auth       | Convex secret              | Private ES256 machine-token issuer JWK with `kid`                                                                        |
+| `WORKER_AUTH_JWKS`           | Worker auth       | Convex/auth config         | Matching public JWKS for the optional custom JWT verifier                                                                |
+| `WEB_PUSH_VAPID_PUBLIC_KEY`  | Web Push          | Convex                     | VAPID public key browsers subscribe with ([Notifications](Notifications.md#configuration))                               |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | Web Push          | Convex secret              | Matching VAPID private key that signs push requests                                                                      |
+| `WEB_PUSH_SUBJECT`           | No                | Convex                     | VAPID contact (`mailto:` or `https:`); defaults to `SITE_URL`                                                            |
 
 `VITE_*` values are public and embedded at build time. Never put provider API
 keys or other secrets in a `VITE_*` variable.
 
 `packages/backend/convex/convex.config.ts` declares the custom backend runtime
-environment contract with Convex validators. `SITE_URL` and `SECRET_STORE_KEYS`
-are required; `AISDK_MaxRetries`, `LWC_SECRET`, the Worker issuer keys, and the
-Web Push keys are optional. `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` are
+environment contract with Convex validators. `SITE_URL`, `SECRET_STORE_KEYS` and
+`OPAQUE_SERVER_SETUP` are required; `TELEMETRY_HASH_SECRET` is required for telemetry capture and message-derived routing sessions. The retry, subscription, Worker issuer, and
+Web Push settings are optional. `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL` are
 Convex-provided system variables, not custom app settings. Declarations do not
 set values: configure deployment values through the dashboard or `convex env`.
 The app passes `SECRET_STORE_KEYS` to the Secret Store component by typed env
@@ -75,9 +79,38 @@ bunx convex env set AISDK_MaxRetries 0
 
 Upstream provider credentials are normally added by the workspace owner in
 **Gateway > Credentials**. They are stored through Convex Secret Store and are
-not public application environment variables. Broader application-level
-encryption is future work; `SECRET_STORE_KEYS` only configures the Secret Store
-component.
+not public application environment variables. `SECRET_STORE_KEYS` protects the credential store; it is not a content decryption key.
+
+### Telemetry Encryption
+
+Provision `TELEMETRY_HASH_SECRET` once per deployment: generate 32 random bytes and encode as unpadded base64url (43 characters). See `packages/backend/.env.example`. Missing or invalid values suppress capture and message-derived routing fallback; explicit routing session IDs still work. Back it up with configuration. Rotation changes fingerprints, so old and new requests no longer deduplicate or share hash-derived lineage.
+
+New telemetry content, blob metadata and upstream error text are sealed to the workspace owner key. Workspaces without an owner key keep metadata only; no plaintext fallback is written. Historical plaintext is retained for phase 9, not silently migrated. Owners unlock in the browser to read content and compute diffs.
+
+New export destinations default to metadata only. Disabling privacy mode explicitly sends captured plaintext to that destination from the active request's memory after completion; it is best-effort and cannot be replayed from stored ciphertext. Scheduled exports never send content. Deploy matching browser/backend versions together.
+
+### OPAQUE Server Setup
+
+Password sign-in uses OPAQUE ([E2EE authentication](E2EE/Authentication.md)); the server never sees passwords. `OPAQUE_SERVER_SETUP` holds the server's long-term private key and OPRF seed. Generate it **once per deployment** with the exact plugin version Radium pins, from `packages/backend` after `bun install`:
+
+```bash
+bunx better-auth-opaque create-setup
+bunx convex env set OPAQUE_SERVER_SETUP '<printed value>'
+```
+
+- **Back it up with the database** (secret manager plus an offline copy). Losing it invalidates every OPAQUE record: no user can sign in, every account needs a reset link, and personal data of users without a recovery key or another unlocked device becomes unreadable.
+- Never regenerate it for an existing deployment and never commit it. A leaked setup together with leaked `account` rows allows offline password guessing at Argon2id cost per guess.
+- Moving a deployment (for example cloud to local, below) must carry the same value, or imported accounts cannot sign in.
+
+Reset links: there is no email transport yet, so the operator issues one-hour, single-use links from the CLI and passes them to the user by any channel:
+
+```bash
+bunx convex run auth:issuePasswordResetLink '{"email": "user@example.com"}'
+```
+
+The link carries the token in the URL fragment (`/auth/reset-password#token=…`); treat it like a password until it expires. Issuing a new link invalidates the user's earlier ones. For accounts created before encryption the link sets up encryption with new keys and removes the classic password.
+
+Auth rate limiting (OPAQUE sign-in and reset: 5 requests per minute per client) needs the real client address. Browsers reach Better Auth through the web server's `/api/auth/*` proxy, so set the same random `AUTH_PROXY_SECRET` on the Convex deployment (`bunx convex env set AUTH_PROXY_SECRET '<openssl rand -hex 32>'`) and in the web server's environment; the proxy then forwards the client address and Convex trusts it only with the secret. Set `AUTH_TRUST_X_FORWARDED_FOR=true` on the web server only behind a reverse proxy that overwrites `X-Forwarded-For`.
 
 ### Telemetry Export
 
@@ -142,13 +175,19 @@ bunx convex import --replace-all -y ~/cloud-dev-snapshot.zip
 
 Then set `VITE_CONVEX_URL=http://127.0.0.1:3210` and
 `VITE_CONVEX_SITE_URL=http://127.0.0.1:3211` in `apps/web/.env.local`. Keeping
-`BETTER_AUTH_SECRET` and the Worker issuer keys identical preserves imported
-sign-in sessions and Worker identities. An enrolled Worker stores its origins in
+`BETTER_AUTH_SECRET`, `OPAQUE_SERVER_SETUP` and the Worker issuer keys identical preserves imported
+sign-in sessions, OPAQUE password records and Worker identities. An enrolled Worker stores its origins in
 `setup.backendUrl`/`setup.convexUrl` of `~/.radium-worker/worker-state.json`;
 change them to `http://127.0.0.1:3211`/`http://127.0.0.1:3210`, then confirm with
 `bun run --cwd packages/worker cli refresh`. No re-enrollment is needed because
 the backend checks proofs against its own `CONVEX_SITE_URL`.
 `bunx convex deployment select dev` switches back to the cloud deployment.
+
+### Worker Encryption Cutover
+
+Deploy matching browser, backend and Worker versions together for phase 7. Existing enrollment identities survive: pair each Worker from Workers → Pair using `radium-worker pair`, then let the unlocked owner certify its key in roster v2. An unpaired Worker refuses to start unless its operator passes `radium-worker start --allow-plaintext` (keyless workspaces only, not persisted). Restart a running Worker after `pair` to use the new keys; one started with `--allow-plaintext` also restarts itself in signed mode once `pair` writes its keys. In ACP settings, explicitly review and save existing launch definitions; paired Workers never probe unsigned definitions. Code/config changes are not evidence that stored legacy content has been encrypted.
+
+Legacy ACP session IDs without an authenticated proof are not silently adopted after pairing. The owner who created the chat confirms it with "Authorize Session" on the chat (or opens it from the agent index); others start a new Session. No migration or production deployment is implied by the phase-7 code. Standing Read grants and executable authorizations cannot provide instantaneous revocation across a partitioned or withholding relay; stop the local Worker when immediate revocation is required.
 
 ### Initial Workspace Provisioning
 
@@ -230,7 +269,7 @@ It uses the installed Convex `componentApiDTS` template and local static analysi
 of the root component mounts, then formats the result with the installed Convex
 formatter. The network guard is an additional check; it must remain enabled.
 
-The driver is checked against the installed Convex `1.46.0` template and
+The driver is checked against the installed Convex `1.49.0` template and
 uses an internal CLI export, not a stable public API. Review the generated diff
 after Convex or component dependency updates. It supports the current static
 `convex.config.ts` form and fails closed for dynamic imports, unsupported
@@ -341,3 +380,71 @@ It publishes:
 
 It also creates a GitHub release with generated notes. A release fails when
 the requested version does not match `package.json`.
+
+## E2EE Phase 9 Rollout (Approval Required)
+
+**Executed on the local deployment (2026-11-18) after an independent go/no-go review; custody retained.** Any other target needs its own explicit approval for the exact operation and target, a restorable backup, and a rehearsal on a restored copy whose counts the real run must match. Offline tests do not substitute for deployment-backed checks; never use production data for a smoke.
+
+### Preconditions
+
+- Confirm the exact Convex target and take a restorable backup. Preserve `SECRET_STORE_KEYS`, `OPAQUE_SERVER_SETUP` and `TELEMETRY_HASH_SECRET` with it. The custody seed is inside Secret Store and must survive restore while custody exists.
+- Deploy matching widened backend, browser **and Worker** builds only after approval. Upgrade connected Workers before resuming encrypted work: old Workers do not enforce the new chat-ID/audience recipient binding. Old unbound epochs remain historical/read-only; migration keeps their plaintext history in custody until an unlocked updated client creates a fresh authenticated bound epoch. **Do not narrow schema or remove indexes yet.**
+- Establish legacy ownership attribution before sealing. For embedded Chatroom history, prefer the existing `migrations:runChatMessages` before cutover; this avoids downloading a whole chat sidecar just to decrypt its title. Do not run old plaintext telemetry conversions after content has been sealed.
+- Drain Gateway/Chatroom requests, captures, exports, ACP turns, commands, interactions and Worker tasks before the freeze. Old in-flight deployment code must not keep writing during cutover. Active legacy work is reported by `e2ee_legacy_relay:relayAbandonScans` and paginated `staleRelayBlockers`; a Worker that is still active must drain or be explicitly revoked **before** freeze. Age/offline presence alone never authorizes abandoning work.
+- Require a valid `TELEMETRY_HASH_SECRET`. Exact stored content/chain/session evidence determines provenance. For otherwise ambiguous content-less rows only, `TELEMETRY_HASH_PROVENANCE` can attest at most 32 non-overlapping `{from,until,scheme:"keyed"|"unkeyed"}` epochs (milliseconds, `until` exclusive), including rollback periods. Gaps/conflicts block migration; the retired single `TELEMETRY_KEYED_HASH_SINCE` is ignored. Never guess an epoch from creation time alone.
+
+### Controlled Sequence
+
+Run commands from `packages/backend` against the approved target. Every entrypoint below is internal; browser callers cannot start jobs or obtain custody keys.
+
+```bash
+# Read-only preflight: records job progress and reads source files; does not change keys/content/storage.
+bunx convex run e2ee_migration:startJobs '{"kind":"seal"}'
+bunx convex run e2ee_migration:status '{}'
+
+# Only after reviewing every blocker and authorizing the freeze:
+bunx convex run e2ee_migration_node:createCustody '{}'
+bunx convex run e2ee_migration:setFrozen '{"frozen":true}'
+bunx convex run e2ee_migration:startJobs '{"kind":"seal","tables":["acp_sessions"],"dryRun":false,"batchSize":10}'
+bunx convex run e2ee_migration:status '{}'
+# Wait for the acp_sessions job to finish without blockers before starting the remaining tables:
+bunx convex run e2ee_migration:startJobs '{"kind":"seal","dryRun":false,"batchSize":10}'
+bunx convex run e2ee_migration:status '{}'
+```
+
+Jobs schedule bounded pages. Cryptographic/file actions run in the Node module (512 MiB), not 64 MiB default actions. Source bytes, encoding and memory bounds are checked; legitimate 20 MiB legacy attachments are supported. Conflicts keep the cursor and retry up to three times; blockers hold the page. Use `pauseJob` / `resumeJob` with `{"job":"<job-id>"}`; never skip a blocked cursor.
+
+For confirmed revoked/absent Workers, freeze first, then preview `e2ee_legacy_relay:abandonRelayRows` with `{"rows":[{"table":"worker_tasks","record":"<id>"}]}`. A real run needs `dryRun:false` and explicit selected rows; it changes only terminal status/codes, preserving payloads and frames for sealing. It never replays work or claims whether host-side effects occurred. Active Workers are refused. If one still needs revocation, abort/unfreeze, revoke, re-freeze, then abandon; owner mutations cannot revoke while frozen.
+
+Abort (`setFrozen {"frozen":false}` before completion) invalidates old proofs but does not decrypt sealed history. Row-local guards keep plaintext from being written beside existing sidecars during abort/retry. Revoking after a freeze requires that abort sequence; it is not a reason to weaken the freeze.
+
+While frozen, ACP browser writes are refused and Watch/retention sweeps preserve history. Already queued cold-chat/stream cleanup parks in a metadata-only journal; unfreeze or cutover resumes it without a polling retry loop. Explicit user deletion still deletes the requested chat.
+
+Enrolment/key creation while aborted intentionally cannot release custody. After re-freezing, start an **unscoped** real release (`e2ee_migration:startJobs '{"kind":"release","dryRun":false}'`) so keys created during the abort are not missed, then perform a fresh exhaustive verify. Refresh over-budget telemetry proofs first when their generation/revision changed; keep mixed/unknown rows in custody.
+
+Once sealing jobs finish, compute attribution proofs for large custodial telemetry graphs, release whatever now has a safe recipient, then verify **every** registered source table:
+
+```bash
+bunx convex run e2ee_telemetry:advanceProofs '{"table":"telemetry_blobs"}'
+bunx convex run e2ee_migration:startJobs '{"kind":"release","dryRun":false}'
+bunx convex run e2ee_migration:startJobs '{"kind":"verify"}'
+bunx convex run e2ee_migration:status '{}'
+```
+
+Wait for each job chain before proceeding to its dependent step; `advanceProofs` chains through blobs and nodes. A finished proof alone is not an encryption job. `e2ee_telemetry:listUnreleasable` takes `{"table":"telemetry_blobs"}` (or nodes); follow its opaque `cursor` until null. **Approved policy:** mixed/private/unknown-audience diagnostics stay encrypted in custody and flagged for review. Never hand them to a workspace owner merely to get the custody count to zero.
+
+`finishCutover {}` requires a current frozen-generation proof with zero plaintext and zero blockers across all tables. It resumes encrypted writes, permanently closes plaintext paths, blocks classic accounts on encryption setup, resumes pending notification sealing without pushing them again, and refreshes telemetry proofs at the new generation followed by release. It does **not** require zero custody. Relevant native references or chat-visibility changes invalidate a dedicated per-workspace proof revision; unrelated custody-free captures do not write the workspace document or trigger wholesale reproof. A stale wide proof is never a release authorization. Failed proof steps retain custody, clear the pending scheduler flag, and appear as failed in `listUnreleasable`; correct the failure and rerun `advanceProofs`.
+
+### Continued Release And Custody End
+
+Identity activation (including enrolment/reset), workspace keys and chat keys request scoped release when custody exists. Operators can preview/run release with `startJobs`, `kind:"release"`, optional `scope:{"userId":"…"}`, `{"workspace":"…"}` or `{"chat":"…"}`. Release defaults to dry run. The backend opens **only custody**; it never opens existing client ciphertext.
+
+All keyless chat scopes wait for native chat keys: workspace member keys are not used as a fallback that could survive narrowing a chat to personal. Any unlocked current authorized reader can create the initial key for the complete current audience, excluding departed workspace users; existing epochs cannot be replaced this way. Stale/revoked chat epochs also hold custody until a fresh epoch exists. Trace-derived span/payload custody entries carry chat hints, and large blob/node proofs add hints once their audience is proven.
+
+Legacy `msg:`+16hex session fingerprints (including affinity `::model` keys) are rekeyed once; native keyed/explicit IDs remain unchanged. Parent session keys use the same mapping. Unattributed old affinity fingerprints stay custodial until normal expiry/rebind cleanup removes their encrypted sidecars. Historical request grouping uses session IDs and survives; sampling decisions keyed by an old session string can change for future exports.
+
+Page `e2ee_migration:custodialRows` with `{"paginationOpts":{"numItems":50,"cursor":null}}` and optional scope; follow `continueCursor` until `isDone`. `pageCount` is the current page, not the account/global total.
+
+Before `endCustody {}`, run a fresh exhaustive `verify` and inspect `status`. Key deletion refuses nonzero custodial rows, plaintext, blockers, stale proofs or a nonempty custody registry. Custody-write counters serialize the proof against concurrent sealing. Uncertain records can deliberately keep custody active indefinitely; do not delete their key manually.
+
+Only after successful **deployment-backed** verification should a separate approved deploy remove compatibility fields/indexes. Historical ACP/Worker payloads remain read-only history, never forged live commands. Project/Worker/ACP execution directories remain the explicitly approved plaintext routing exception. Expire pre-cutover snapshots/backups under the operator's retention policy: encrypting current rows does not rewrite old backups.

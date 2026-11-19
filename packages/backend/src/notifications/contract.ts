@@ -1,3 +1,4 @@
+import { makeFunctionReference } from "convex/server";
 import { v, type Infer } from "convex/values";
 import type { LimitEventKind } from "../limits/events";
 
@@ -127,10 +128,38 @@ export function notificationTitle(kind: NotificationKind): string {
   }
 }
 
+/** Authenticates a sealed notification to its recipient, workspace and database row. */
+export function notificationAad(userId: string, workspace: string | undefined, id: string) {
+  return {
+    table: "notifications",
+    workspace: workspace ?? "",
+    parent: userId,
+    record: id,
+    field: "content",
+  };
+}
+
+/**
+ * Cutover hook: schedule this (empty args) from the same transaction that unfreezes writes
+ * (`setFrozen(false)` and `finishCutover`) so notification sealing held by the freeze resumes. It
+ * is a no-op while frozen again, never pushes, and takes only an opaque pagination cursor.
+ */
+export const resumeNotificationSealingReference = makeFunctionReference<
+  "mutation",
+  { cursor?: string },
+  null
+>("notifications:resumeSealing");
+
 /**
  * App-relative path a notification opens: its session, or Gateway > Limits for limit events.
  * The client switches to the notification's workspace before opening a workspace page.
  */
 export function notificationPath(notification: { chat?: string }): string {
   return notification.chat ? `/chat/${notification.chat}` : "/gateway/limits";
+}
+
+/** Sealed body of a limit notification: credential, provider and meter, each bounded. */
+export function limitNotificationBody(parts: { credential: string; provider: string; meter?: string }): string {
+  const meter = parts.meter ? ` · ${parts.meter.slice(0, 80)}` : "";
+  return `${parts.credential.slice(0, 80)} · ${parts.provider.slice(0, 80)}${meter}`;
 }

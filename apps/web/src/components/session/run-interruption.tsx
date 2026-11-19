@@ -37,7 +37,7 @@ export function RunInterruptionCard({
     : "The reply stopped before it finished. Send a new prompt to continue.";
   if (isFailed) {
     title = "Request failed";
-    detail = interruption.message ?? "The request ended with an error before the reply finished.";
+    detail = interruption.message || "The request ended with an error before the reply finished.";
   } else if (isStepLimit) {
     title = "Paused at the step limit";
     detail =

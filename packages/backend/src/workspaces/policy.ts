@@ -13,7 +13,7 @@ export type WorkspaceMember = {
 };
 
 /** Personal chats are creator-private; workspace chats are shared with workspace access. */
-export type ChatScope = "personal" | "workspace";
+export type ChatScope = "personal" | "shared" | "workspace";
 
 /**
  * Check management after the caller has authorized the chat's workspace and visibility.
@@ -84,12 +84,17 @@ export function canAccessChat(
   workspaceId: string,
   userId: string,
   members: readonly WorkspaceMember[] = [],
+  chatMembers: readonly string[] = [],
 ): boolean {
   if (!canAccessWorkspace(workspace, userId, members) || chat.workspaceId !== workspaceId) {
     return false;
   }
 
-  return chat.scope === "workspace" || chat.userId === userId;
+  return (
+    chat.scope === "workspace" ||
+    chat.userId === userId ||
+    (chat.scope === "shared" && chatMembers.includes(userId))
+  );
 }
 
 /** Legacy chats require the mapped balance and the mapped workspace owner. */
@@ -115,6 +120,7 @@ export function canAccessResolvedChat(
   workspaceId: string,
   userId: string,
   members: readonly WorkspaceMember[] = [],
+  chatMembers: readonly string[] = [],
 ): boolean {
   if (!workspace) return false;
 
@@ -127,7 +133,7 @@ export function canAccessResolvedChat(
     ) {
       return false;
     }
-    return canAccessChat(chat, workspace, workspaceId, userId, members);
+    return canAccessChat(chat, workspace, workspaceId, userId, members, chatMembers);
   }
 
   return canAccessLegacyChat(chat, workspace, userId);

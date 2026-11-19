@@ -6,6 +6,7 @@ import { LogInIcon, LogOutIcon } from "lucide-react";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { AcpAuthMethod } from "backend/src/acp/contract";
+import { isKeyedWorkspace, signAcpCommand } from "./acp-crypto";
 import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 
@@ -62,7 +63,20 @@ export function AcpAgentAuth({
     if (busy || (!logout && methodId === undefined)) return;
     setBusy(true);
     try {
-      const args = { workspace, worker, agentId, clientId: crypto.randomUUID() };
+      const clientId = crypto.randomUUID();
+      // A keyed workspace accepts only a sealed command signed by the owner for this Worker.
+      const signed = (await isKeyedWorkspace(workspace))
+        ? await signAcpCommand({
+            workspaceId: workspace,
+            workerId: worker,
+            chatId: "",
+            clientId,
+            command: logout
+              ? { kind: "logout", agentId }
+              : { kind: "authenticate", agentId, methodId: methodId! },
+          })
+        : undefined;
+      const args = { workspace, worker, agentId, clientId, ...(signed ? { signed } : {}) };
       const command = logout
         ? await signOut(args)
         : await authenticate({ ...args, methodId: methodId! });
