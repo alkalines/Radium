@@ -8,7 +8,8 @@ start.
 
 - [Radium Gateway](Radium_Gateway.md)
 - [Radium Chatroom](Radium_Chatroom.md)
-- [Live sessions across Tabs](Radium_Chatroom/Live_Sessions.md) — proposed: live in-flight replies, Stop and reload resume in every Tab and device through short-lived Convex frames instead of Redis; shared with ACP
+- [Live sessions across Tabs](Radium_Chatroom/Live_Sessions.md) — proposed Convex-frame design, superseded by [live data](Backend_Migration/Live_Data.md#built-in-chat-runs) in the backend migration
+- [Backend migration](Backend_Migration.md) — planned: Convex replaced by Bun + Hono, Drizzle on Postgres, Valkey, tRPC, Durable Streams and optional Electric, runnable on Cloudflare Workers; with [runtime and layout](Backend_Migration/Runtime.md), [live data](Backend_Migration/Live_Data.md) and [Convex import](Backend_Migration/Convex_Import.md)
 - [Notifications](Notifications.md) — session and usage-limit notifications: toasts and sound in open tabs, system notifications, Web Push, preferences, and the planned phone channel
 - [Interface design](Interface_Design.md) — web UI spec: layout model, visual tokens, Run state, and Motion rules
 - [ACP agents](ACP.md) — external harnesses (Claude Agent, Codex, Gemini CLI, …) over the Agent Client Protocol on a Worker: Worker host, Convex transport and Chatroom implemented; with [agents](ACP/Agents.md), [sessions](ACP/Sessions.md), [transport](ACP/Transport.md), and [Chatroom mapping](ACP/Interactions.md)
