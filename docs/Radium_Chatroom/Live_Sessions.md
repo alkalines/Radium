@@ -1,7 +1,6 @@
 # Live Sessions Across Tabs
 
-Status: **proposed, not implemented.** Applies to the built-in agent; ACP
-Sessions use the same live layer ([ACP transport](../ACP/Transport.md)).
+Status: **proposed, not implemented; superseded.** The [backend migration](../Backend_Migration.md) moves this behavior to Durable Streams instead of Convex frame tables: see [live data → built-in chat runs](../Backend_Migration/Live_Data.md#built-in-chat-runs). The goals, rollout concerns and UI behavior below still apply. ACP Sessions use the same live layer ([ACP transport](../ACP/Transport.md)).
 
 Goal: every Tab and device that has a Session open sees an in-flight reply as it
 streams, can stop it, and a reload does not lose it. Without Redis: Convex

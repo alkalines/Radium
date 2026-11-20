@@ -3,6 +3,8 @@
 Radium has two application runtimes: a TanStack Start web server and a Convex
 backend. The browser uses both of them.
 
+A replacement of the Convex backend (Bun + Hono, Drizzle on Postgres, Valkey, tRPC, Durable Streams) is planned but not started; this page describes the current system. See [backend migration](Backend_Migration.md).
+
 The web application lives in `apps/web/`; Convex functions and components live in
 `packages/backend/convex/`. Reusable backend modules live directly under
 `packages/backend/src/` by domain (`chatroom/`, `logging/`, `routing/`, `telemetry/`,
