@@ -24,16 +24,18 @@ Rule: **Postgres** is the record, **Valkey** holds what may expire or be rebuilt
 
 ## Durable Streams
 
-The stream server (`durable-streams-server`, the Caddy plugin build, or Electric Cloud) is internal. Only the backend holds `STREAMS_TOKEN`, and browsers and Workers reach streams through the backend's authorizing proxy. Streams use JSON mode (`application/json`), so every append is one message and reads return message arrays.
+The stream server (`durable-streams-server`, the Caddy plugin build, or Electric Cloud) is internal. Only the backend holds `STREAMS_TOKEN`, and browsers and Workers reach streams through the backend's authorizing proxy. Streams use JSON mode (`application/json`), so every append is one message and reads return message arrays. The backend writes through `IdempotentProducer` from `@durable-streams/client` (batching with `lingerMs: 300`, producer id per writer and run or epoch), so retries never duplicate.
+
+**Expiry is not deletion.** The Caddy plugin hides a stream once its TTL or `Stream-Expires-At` passes, but leaves its bytes in `data_dir` until the path is deleted or created again, and it implements no retention ([Phase 0](../tasks/14_Backend_Migration.md#phase-0-results-2026-11-21)). Expiry can only be set when a stream is created. So the backend `DELETE`s every stream it creates once it is no longer needed; TTLs are only a backstop for streams the backend loses track of.
 
 | Stream path                  | Writer                             | Readers                       | Lifetime                                                                               |
 | ---------------------------- | ---------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------- |
-| `u/<user>/events/<gen>`      | backend                            | that user's Tabs and devices  | rotated daily; old generation closed with a `rotate` message                           |
-| `w/<workspace>/events/<gen>` | backend                            | workspace owner and members   | rotated daily                                                                          |
-| `c/<chat>/runs/<run>`        | backend (`/api/chat`)              | anyone who can read the chat  | closed at run end; `Stream-Expires-At` = end + 10 min                                  |
+| `u/<user>/events/<gen>`      | backend                            | that user's Tabs and devices  | rotated daily; old generation closed with a `rotate` message, deleted a day later      |
+| `w/<workspace>/events/<gen>` | backend                            | workspace owner and members   | rotated daily, as above                                                                |
+| `c/<chat>/runs/<run>`        | backend (`/api/chat`)              | anyone who can read the chat  | `Stream-TTL: 600`; closed at run end; deleted by an outbox job 10 min after run end    |
 | `c/<chat>/acp/<epoch>`       | the chat's Worker, via the backend | anyone who can read the chat  | `Stream-TTL: 300` (sliding); deleted when the session cools or the epoch is superseded |
-| `c/<chat>/signals/<gen>`     | backend                            | backend request handlers only | rotated                                                                                |
-| `k/<worker>/inbox/<gen>`     | backend                            | that Worker only              | rotated daily                                                                          |
+| `c/<chat>/signals/<gen>`     | backend                            | backend request handlers only | rotated, as above                                                                      |
+| `k/<worker>/inbox/<gen>`     | backend                            | that Worker only              | rotated daily, as above                                                                |
 
 `<gen>` exists because the protocol says a deleted stream path should not be reused. The current generation of each rotating stream is kept in Valkey and returned by a tRPC query (`events.streams()` for browsers, `worker.inbox()` for Workers). A reader that hits a closed stream, `404` or `410` asks again.
 
@@ -46,7 +48,12 @@ The stream server (`durable-streams-server`, the Caddy plugin build, or Electric
 - `c/<chat>/runs|acp`: the chatroom access function used by `chats.get`, including personal-chat privacy;
 - `k/<worker>`: the Worker JWT's own id, with identity epoch and revocation checked.
 
-Only protocol parameters (`offset`, `live`, `cursor`) are forwarded. Long-poll and SSE responses are piped through unchanged. Live SSE connections are recycled by the server (`sse_reconnect_interval`), and every reconnect passes the proxy again, so access revocation takes effect within one interval.
+Only protocol parameters (`offset`, `live`, `cursor`) are forwarded. Long-poll and SSE responses are piped through unchanged, minus `content-encoding` and `content-length`, because `fetch` has already decompressed the body. Live SSE connections are recycled by the server (`sse_reconnect_interval`), and every reconnect passes the proxy again, so access revocation takes effect within one interval.
+
+The stream server sends no SSE keepalives, so a quiet stream looks idle to every hop:
+
+- Stream routes turn off the runtime's idle timeout per request (on Bun, `server.timeout(req, 0)`; Bun's default 10 s cut every quiet SSE read in Phase 0). The web origin's `/api/*` forwarder must do the same.
+- `@durable-streams/client` doesn't reconnect after a mid-stream network error (`ECONNRESET` ended the reader). Browser and Worker readers wrap it in resume-from-last-offset with backoff.
 
 `POST /api/streams/c/<chat>/acp/<epoch>` is the only append path open to a client, and only to the chat's bound Worker. The proxy checks the epoch fence (not cooled, not superseded; Valkey-cached from `acp_sessions`) and the per-frame and per-append size limits from `contracts`, then forwards with idempotent-producer headers (producer = Worker id + epoch). The protocol deduplicates retries and orders appends, which replaces `acp_streams.nextSeq` and the `ACP_FRAME_CONFLICT`/`ACP_FRAME_GAP` bookkeeping. Browsers never append; their writes are tRPC mutations.
 
@@ -69,7 +76,7 @@ This replaces the always-on Convex subscriptions with one SSE connection per Tab
 When `ELECTRIC_URL` is configured, selected row-shaped data syncs into TanStack DB collections through Electric. When it isn't, the same collections are TanStack Query collections filled by tRPC and refreshed by invalidation events. Each collection is defined once in `apps/web/src/lib/collections/`; the factory picks `electricCollectionOptions` or `queryCollectionOptions` based on server-provided config, so the components using `useLiveQuery` stay the same.
 
 - **Shapes are server-defined.** `GET /api/shapes/:collection` sets `table`, `columns` and a parameterized `where` from the session (Electric's [proxy auth pattern](https://electric.ax/docs/sync/guides/auth)), passing through only Electric protocol parameters. Each live request passes the proxy, so revoked access stops at the next poll.
-- **Writes go through tRPC.** Collection `onInsert`/`onUpdate`/`onDelete` call the tRPC mutation, which returns the Postgres transaction id (`pg_current_xact_id()`). With Electric, the collection waits for that txid to arrive before dropping its optimistic state; with the query source, it invalidates and refetches.
+- **Writes go through tRPC.** Collection `onInsert`/`onUpdate`/`onDelete` call the tRPC mutation, which returns the Postgres transaction id (`pg_current_xact_id()::xid::text`). With Electric, the handler awaits `collection.utils.awaitTxId(txid)` before resolving. With the query source, the handler awaits `collection.utils.refetch()` and returns `{ refetch: false }`; leaving the refetch to run after the handler drops the optimistic state first and the row flickers back (Phase 0).
 - **Eligible collections** have a filter that is a plain predicate on the row itself:
 
 | Collection          | Shape                                                      |
@@ -81,6 +88,8 @@ When `ELECTRIC_URL` is configured, selected row-shaped data syncs into TanStack 
 | `acpSession`        | `chat = $chat` (after the chat access check)               |
 
 Not eligible for now: the chat list, whose visibility depends on scope and `chat_members`; telemetry and usage (owner-only aggregates); anything with secrets. These stay on tRPC + invalidation. Electric needs `wal_level=logical` and a role with `REPLICATION`; the reference compose file enables both.
+
+**Migrations must not drop and recreate an Electric-synced table.** In Phase 0 a recreated table silently left `electric_publication_default` while Electric kept serving its shape: no live changes, and `awaitTxId` timed out. Change synced tables with `ALTER`, and if one must be replaced, the migration's release notes include an Electric shape reset.
 
 ## Built-in Chat Runs
 
@@ -109,11 +118,12 @@ sequenceDiagram
     T2->>API: chats.stop (tRPC) → Valkey stop flag
     API->>PG: onEnd: save messages, finish run
     API->>DS: append finish + close
+    API->>PG: (outbox, run end + 10 min) delete run stream
 ```
 
 - **Admission**: `chat_runs` has a partial unique index (one active run per chat). A second sender gets `409` and re-seeds, as Live Sessions planned.
 - **Everyone is a viewer.** `/api/chat` returns the stream location instead of the stream body, the shape `@durable-streams/aisdk-transport` uses. The sender reads the same stream as every other Tab, so there's one code path, and reload resumes from offset `-1` (`resumeStreamIsReplay`).
-- **Stop from any Tab**: `chats.stop` sets `stop:<run>` in Valkey; the generator checks it at every batch flush (about 300 ms). No database write.
+- **Stop from any Tab**: `chats.stop` sets `stop:<run>` in Valkey; the generator checks it at every batch flush (about 300 ms). No database write. This is the largest Valkey cost of a run (about 140 `EXISTS` per 45 s reply in Phase 0) and still trivial; an in-process flag fed by the chat's signal stream can replace it if it ever matters.
 - **Detached runs** work on long-lived presets: generation is driven by the server, not the sender's connection. On serverless presets the run stays bound to the request ([presets](Runtime.md#long-lived-vs-serverless-presets)).
 - **Lost runs**: `chat_runs.lease_at` renewed every 15 s; the retention job fails runs with a stale lease and clears `activeStream`.
 - Approvals, questions and Code Mode prompts end or pause the stream exactly as today; answers are tRPC mutations.
@@ -155,18 +165,21 @@ The chat handler no longer polls the database every 500 ms (Worker tasks) or eve
 ## E2EE On Streams
 
 - ACP epochs carry the same sealed frames and capsule as today. The Worker seals them and the backend never had their plaintext, so they must stay sealed.
-- **Built-in runs are plaintext.** The backend already handles this content in plaintext to call the model, by design. The run stream is part of that same transient processing window. It is not persistent storage: it expires 10 minutes after the run ends, and the sealed `chat_messages` write at the end of the turn remains the only stored copy. Because the stream server's data directory still holds that content until expiry, it is classified with backend memory: it is excluded from backups and never exported. If it is ever retained longer, sealing runs with the chat key (the ACP capsule pattern) is the fix.
+- **Built-in runs are plaintext.** The backend already handles this content in plaintext to call the model, by design. The run stream is part of that same transient processing window. It is not persistent storage: the backend deletes it 10 minutes after the run ends, and the sealed `chat_messages` write at the end of the turn remains the only stored copy. Expiry alone would not do this, because the Caddy store keeps an expired stream's bytes on disk until the path is deleted (Phase 0). Until the deletion, the stream server's data directory holds that content, so it is classified with backend memory: it is excluded from backups and never exported. If it is ever retained longer, sealing runs with the chat key (the ACP capsule pattern) is the fix.
 - Invalidation and doorbell events carry no content.
 - Updating [E2EE data classification](../E2EE/Data.md) for streams and Valkey is part of the migration.
 
 ## Load Profile
 
-To be measured in Phase 0. These are expectations, not guarantees.
+Measured in Phase 0 by driving the planned write pattern for one minute against real Postgres, Valkey and Durable Streams: one watched ACP session and a 45 s built-in run (about 25 tokens/s), each with two Tabs. The new backend doesn't exist yet, so the "After" numbers count the operations this design issues, not the overhead of an implementation. The Convex column comes from code (`packages/worker/src/acp/relay.ts` `textFlushMs: 300`, `ACP_VIEWER_HEARTBEAT_MS`, `WORKER_HEARTBEAT_INTERVAL_MS`), not from a measurement.
 
-| Situation                              | Convex today                                                                                    | After                                                                 |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Watched ACP session streaming text     | 1 mutation per 300 ms (index read, up to 8 inserts, 1 patch); every viewer re-runs `LiveFrames` | 1 stream append per 300 ms; viewers read new bytes; no Postgres write |
-| Each open ACP Tab                      | 1 heartbeat write per minute + `acp_sessions` warm patch                                        | 1 Valkey script per minute                                            |
-| Worker online                          | presence write every 20 s, 9–10 live queries                                                    | Valkey `SET EX` every 20 s, 1 SSE connection                          |
-| Built-in reply, second device watching | not possible (proposed frames: 3–4 inserts/s)                                                   | stream appends only                                                   |
-| Chat handler waiting for a Worker task | query every 500 ms for up to 45 s                                                               | one long-poll                                                         |
+| Per minute                                  | Convex today                                                                                               | After (measured)                                                                                                                                              |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Watched ACP session, 2 Tabs, streaming text | 200 relay mutations (index read, up to 8 inserts, 1 patch each); `LiveFrames` re-run per viewer: about 400 | 200 stream appends through the proxy; 0 Postgres writes; each Tab read 600 frames over its SSE connection                                                     |
+| Each open ACP Tab                           | 1 heartbeat write + `acp_sessions` warm patch                                                              | 1 Valkey `EVAL` (`ZSCORE`/`ZCARD`/`ZADD` inside)                                                                                                              |
+| Worker online                               | 3 presence writes; 9–10 live queries                                                                       | 3 Valkey `SET EX`; 1 SSE connection                                                                                                                           |
+| Built-in reply, 2 Tabs watching             | not possible (proposed frames: 3–4 inserts/s)                                                              | 141 stream appends (`IdempotentProducer`, `lingerMs: 300`) for 1,117 chunks; 139 Valkey `EXISTS` (stop flag)                                                  |
+| Built-in reply, Postgres                    | n/a                                                                                                        | 5 inserts + 4 updates: admission (user message, run, outbox row), outbox row done, 2 lease renewals, end (assistant message, run finished, delete-stream job) |
+| Chat handler waiting for a Worker task      | query every 500 ms for up to 45 s                                                                          | one long-poll (not exercised)                                                                                                                                 |
+
+The stream server's RSS grew by about 0.2 MB over the minute.

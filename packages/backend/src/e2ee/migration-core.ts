@@ -49,7 +49,8 @@ import { domain as relay } from "./migration-relay";
 import { domain as telemetry } from "./migration-telemetry";
 import { scheduleProofRefresh } from "./migration-telemetry-proofs";
 
-const custody = { namespace: "e2ee:custody" as const, name: "seed" };
+/** Secret Store locator of the custody seed; `endCustody` removes it. */
+export const custody = { namespace: "e2ee:custody" as const, name: "seed" };
 
 const DEFAULT_BATCH_SIZE = 10;
 const MAX_BATCH_SIZE = 100;

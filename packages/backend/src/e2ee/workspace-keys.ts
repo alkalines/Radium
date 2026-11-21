@@ -2,7 +2,8 @@ import { workspaceArchivedEpochsValidator, workspaceKeyStateValidator } from "./
 import { v } from "convex/values";
 import { grantStatement, ROSTER_EPOCH_WINDOW, rosterStatement, verify } from "radium-crypto";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
-import { mutation, query, type MutationCtx, type QueryCtx } from "../../convex/_generated/server";
+import { query, type MutationCtx, type QueryCtx } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { requireOwnedWorkspace, requireWorkspaceAccessForUser } from "../../convex/workspaces";
 import {

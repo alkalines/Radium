@@ -9,24 +9,25 @@ container and release paths are currently blocked and unverified pending the
 
 ### Application And Convex
 
-| Variable                     | Required          | Scope                      | Purpose                                                                                                                  |
-| ---------------------------- | ----------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `CONVEX_DEPLOYMENT`          | Cloud development | Local CLI                  | Convex deployment selected by `convex dev`                                                                               |
-| `VITE_CONVEX_URL`            | Yes               | Build/public               | Convex client URL, normally `https://<deployment>.convex.cloud`                                                          |
-| `VITE_CONVEX_SITE_URL`       | Yes               | Build/public               | Convex HTTP action origin, normally `https://<deployment>.convex.site`                                                   |
-| `SITE_URL`                   | Yes               | Convex                     | Public web origin used by Better Auth, such as `http://localhost:3000`                                                   |
-| `SECRET_STORE_KEYS`          | Yes               | Deploy/Convex              | Versioned key material used by Convex Secret Store                                                                       |
-| `OPAQUE_SERVER_SETUP`        | Yes               | Convex secret              | OPAQUE server key pair and OPRF seed for password sign-in ([below](#opaque-server-setup))                                |
-| `AUTH_PROXY_SECRET`          | Recommended       | Convex + web server secret | Same value on both sides; lets Convex rate-limit auth per client IP behind the web proxy ([below](#opaque-server-setup)) |
-| `TELEMETRY_HASH_SECRET`       | Telemetry/routing | Convex secret              | Base64url-encoded 32-byte secret for workspace-keyed content, chain and message-derived routing hashes; back up with deployment configuration |
-| `AUTH_TRUST_X_FORWARDED_FOR` | No                | Web server                 | `true` only when the web server sits behind a reverse proxy that overwrites `X-Forwarded-For`                            |
-| `AISDK_MaxRetries`           | No                | Convex                     | AI SDK retry count; defaults to `0`                                                                                      |
-| `LWC_SECRET`                 | Feature-specific  | Convex                     | Signs ChatGPT Subscription sessions                                                                                      |
-| `WORKER_AUTH_PRIVATE_JWK`    | Worker auth       | Convex secret              | Private ES256 machine-token issuer JWK with `kid`                                                                        |
-| `WORKER_AUTH_JWKS`           | Worker auth       | Convex/auth config         | Matching public JWKS for the optional custom JWT verifier                                                                |
-| `WEB_PUSH_VAPID_PUBLIC_KEY`  | Web Push          | Convex                     | VAPID public key browsers subscribe with ([Notifications](Notifications.md#configuration))                               |
-| `WEB_PUSH_VAPID_PRIVATE_KEY` | Web Push          | Convex secret              | Matching VAPID private key that signs push requests                                                                      |
-| `WEB_PUSH_SUBJECT`           | No                | Convex                     | VAPID contact (`mailto:` or `https:`); defaults to `SITE_URL`                                                            |
+| Variable                     | Required          | Scope                      | Purpose                                                                                                                                       |
+| ---------------------------- | ----------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CONVEX_DEPLOYMENT`          | Cloud development | Local CLI                  | Convex deployment selected by `convex dev`                                                                                                    |
+| `VITE_CONVEX_URL`            | Yes               | Build/public               | Convex client URL, normally `https://<deployment>.convex.cloud`                                                                               |
+| `VITE_CONVEX_SITE_URL`       | Yes               | Build/public               | Convex HTTP action origin, normally `https://<deployment>.convex.site`                                                                        |
+| `SITE_URL`                   | Yes               | Convex                     | Public web origin used by Better Auth, such as `http://localhost:3000`                                                                        |
+| `SECRET_STORE_KEYS`          | Yes               | Deploy/Convex              | Versioned key material used by Convex Secret Store                                                                                            |
+| `OPAQUE_SERVER_SETUP`        | Yes               | Convex secret              | OPAQUE server key pair and OPRF seed for password sign-in ([below](#opaque-server-setup))                                                     |
+| `AUTH_PROXY_SECRET`          | Recommended       | Convex + web server secret | Same value on both sides; lets Convex rate-limit auth per client IP behind the web proxy ([below](#opaque-server-setup))                      |
+| `TELEMETRY_HASH_SECRET`      | Telemetry/routing | Convex secret              | Base64url-encoded 32-byte secret for workspace-keyed content, chain and message-derived routing hashes; back up with deployment configuration |
+| `AUTH_TRUST_X_FORWARDED_FOR` | No                | Web server                 | `true` only when the web server sits behind a reverse proxy that overwrites `X-Forwarded-For`                                                 |
+| `AISDK_MaxRetries`           | No                | Convex                     | AI SDK retry count; defaults to `0`                                                                                                           |
+| `LWC_SECRET`                 | Feature-specific  | Convex                     | Signs ChatGPT Subscription sessions                                                                                                           |
+| `WORKER_AUTH_PRIVATE_JWK`    | Worker auth       | Convex secret              | Private ES256 machine-token issuer JWK with `kid`                                                                                             |
+| `WORKER_AUTH_JWKS`           | Worker auth       | Convex/auth config         | Matching public JWKS for the optional custom JWT verifier                                                                                     |
+| `WEB_PUSH_VAPID_PUBLIC_KEY`  | Web Push          | Convex                     | VAPID public key browsers subscribe with ([Notifications](Notifications.md#configuration))                                                    |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | Web Push          | Convex secret              | Matching VAPID private key that signs push requests                                                                                           |
+| `WEB_PUSH_SUBJECT`           | No                | Convex                     | VAPID contact (`mailto:` or `https:`); defaults to `SITE_URL`                                                                                 |
+| `RADIUM_MAINTENANCE`         | No                | Convex                     | Maintenance mode of the last Convex version: `drain` or `1` ([below](#last-convex-version-migration-status-and-maintenance-mode))             |
 
 `VITE_*` values are public and embedded at build time. Never put provider API
 keys or other secrets in a `VITE_*` variable.
@@ -448,3 +449,42 @@ Page `e2ee_migration:custodialRows` with `{"paginationOpts":{"numItems":50,"curs
 Before `endCustody {}`, run a fresh exhaustive `verify` and inspect `status`. Key deletion refuses nonzero custodial rows, plaintext, blockers, stale proofs or a nonempty custody registry. Custody-write counters serialize the proof against concurrent sealing. Uncertain records can deliberately keep custody active indefinitely; do not delete their key manually.
 
 Only after successful **deployment-backed** verification should a separate approved deploy remove compatibility fields/indexes. Historical ACP/Worker payloads remain read-only history, never forged live commands. Project/Worker/ACP execution directories remain the explicitly approved plaintext routing exception. Expire pre-cutover snapshots/backups under the operator's retention policy: encrypting current rows does not rewrite old backups.
+
+## Last Convex version: migration status and maintenance mode
+
+The last Convex version carries two operator tools for the final export of the [Convex import](Backend_Migration/Convex_Import.md#runbook). Run every command from `packages/backend` against the approved target; changing a deployment's environment or running functions on it needs the same explicit approval as any other deployment operation.
+
+**Maintenance mode** is the deployment environment variable `RADIUM_MAINTENANCE`, checked per call from the function environment (no database reads). The deployment accepts only the declared values:
+
+| Value   | Refused                                                                                                                                                                                                                                               | Still open                                                                                                   |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| unset   | Nothing                                                                                                                                                                                                                                               | Everything                                                                                                   |
+| `drain` | Browser mutations and actions; every non-`GET`/`HEAD`/`OPTIONS` HTTP request (Gateway completions, Chatroom chat, Better Auth sign-up/sign-in/sign-out); every ChatGPT subscription request except preflight, since its status reads bind credentials | Reads; Worker mutations and the Worker token exchange (`/api/worker/auth/*`), so Workers finish claimed work |
+| `1`     | Everything `drain` refuses, plus Worker mutations and the Worker token exchange                                                                                                                                                                       | Reads                                                                                                        |
+
+```bash
+bunx convex env set RADIUM_MAINTENANCE drain   # stop new work; Workers finish theirs
+bunx convex env set RADIUM_MAINTENANCE 1       # close Worker writes for the export
+bunx convex env remove RADIUM_MAINTENANCE      # reopen (rollback before cutover)
+```
+
+Refused function calls throw `ConvexError({ code: "MAINTENANCE" })` before their handler runs; refused HTTP requests get `503` with `Retry-After: 300` and `{"error":{"code":"MAINTENANCE",…}}`. Internal functions, crons and scheduled functions are not gated, so operator tools and remediation keep working. Their writes after the export starts, such as cron cleanups, usage-limit polls or a Better Auth session refresh on a `GET`, are not in the snapshot; the new backend rebuilds that state.
+
+**`migrationStatus`** is a read-only internal action that checks every [precondition](Backend_Migration/Convex_Import.md#preconditions) Convex can see:
+
+```bash
+bunx convex run migration_status:migrationStatus '{}'
+```
+
+It returns `{ ready, failing, maintenance, migrations, verifiers, e2ee, queues, scheduler }`. `failing` names each failed gate:
+
+- `maintenance`: mode is not `1`.
+- `migrations:<name>`: a migration of `runAll`, `runCredentialLimits`, `runChatMessages` or `runTelemetryTraces` is not done.
+- `verifiers:<name>`: one of the 16 ownership verifiers, exhausted page by page, reported issues or a page failed (`error`). Issue counts are summed per code with up to three sample record ids.
+- `e2ee:cutover`, `e2ee:frozen`, `e2ee:verify`: phase 9 cutover is not complete, writes are frozen, or the current verify proof is incomplete or not zero for plaintext, custody and blockers.
+- `e2ee:custody`: custody is still `active`, `e2ee_legacy_custody` lists rows, or the `e2ee:custody` seed is still in Secret Store ([custody end](#continued-release-and-custody-end)).
+- `e2ee:jobs`: a phase 9 job is still running.
+- `queues:<table>.<status>`: unfinished ACP commands (`pending`, `claimed`), interactions (`pending`, `answered`) or Worker tasks (`sent`, `processing`, `retrying`); counts stop at 25. `queues:codemode_interactions`: a Code Mode approval or question is still open.
+- `scheduler`: scheduled functions are `pending` or `inProgress`. `convex export` leaves out system tables, so they would be lost. The report lists counts per function name, never arguments. Crons themselves are not scheduled functions, but the follow-ups they schedule are, so a failing gate is re-checked after a quiet minute.
+
+The report holds counts, states, function names and record ids only. It does not check what the export or the operator must (the env values to keep, the backup).

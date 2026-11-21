@@ -8,7 +8,8 @@ import {
   toBase64Url,
   verify,
 } from "radium-crypto";
-import { mutation, query } from "../../convex/_generated/server";
+import { query } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { decodeExactBytes } from "./contract";
 

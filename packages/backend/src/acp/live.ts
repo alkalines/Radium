@@ -1,5 +1,6 @@
 import { v } from "convex/values";
-import { mutation, query } from "../../convex/_generated/server";
+import { query } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { requireAccessibleChat } from "../../convex/workspaces";
 import { acpError, accessibleSession, admitWarm, findSession, relayFrozen } from "./policy";
 import { validAcpToken } from "./contract";

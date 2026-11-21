@@ -11,6 +11,7 @@ import authSchema from "./betterAuth/schema";
 import { v } from "convex/values";
 import { CLIENT_IP_HEADER, prepareAuthRequest } from "../src/e2ee/auth-ingress";
 import { createOpaqueHooks } from "../src/e2ee/hooks";
+import { maintenanceRefusal } from "../src/maintenance";
 
 // The component client has methods needed for integrating Convex with Better Auth,
 // as well as helper methods for general use. Better Auth is installed locally
@@ -105,13 +106,21 @@ export const createSchemaAuthOptions = (ctx: GenericCtx<DataModel>) =>
   createAuthOptions(ctx, SCHEMA_ONLY_SERVER_SETUP);
 
 /**
- * Better Auth instance for one Convex function. Its HTTP handler first applies the ingress
- * policy of `src/e2ee/auth-ingress.ts` (trusted client address for rate limiting, body size
- * bound); server-side `auth.api` calls are unaffected.
+ * Better Auth instance for one Convex function. Its HTTP handler first refuses writes while
+ * maintenance mode is on (`src/maintenance.ts`), then applies the ingress policy of
+ * `src/e2ee/auth-ingress.ts` (trusted client address for rate limiting, body size bound);
+ * server-side `auth.api` calls are unaffected.
  */
 export const createAuth = (ctx: GenericCtx<DataModel>) => {
   const auth = betterAuth(createAuthOptions(ctx));
   const handler = async (request: Request) => {
+    // Sign-up, sign-in, sign-out and account changes are POSTs that write rows the export could
+    // miss. Session reads (GET) stay open; a session refresh one writes after the export is lost,
+    // so that session keeps its exported expiry.
+    const refusal = maintenanceRefusal(request.method, "browser");
+    if (refusal) {
+      return refusal;
+    }
     const prepared = await prepareAuthRequest(ctx, request);
     if (prepared instanceof Response) {
       return prepared;

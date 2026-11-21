@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { workerMetadata } from "worker-component";
 import { components, internal } from "../../convex/_generated/api";
-import { action } from "../../convex/_generated/server";
+import { action } from "../maintenance";
 import { denyWorkerAuth as denied, workerMutation, workerQuery } from "./machine";
 import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../../convex/helpers";
 import { backendOrigin, ENROLLMENT_TTL, machineSigningKey, randomToken, tokenDigest } from "./auth";

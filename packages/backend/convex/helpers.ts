@@ -4,11 +4,11 @@ import type { Id } from "./_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
-  mutation,
   query,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { mutation } from "../src/maintenance";
 import { authComponent } from "./auth";
 import {
   loadWorkspaceSettings,
@@ -101,17 +101,21 @@ const ownerWriteAccess = {
 /** Owner/member reads with an authorized workspace and its effective settings. */
 export const workspaceQuery = customQuery(query, workspaceAccess);
 
-/** Owner/member mutations; settings updates independently require ownership. */
+/** Owner/member mutations; settings updates independently require ownership. Closed by maintenance mode. */
 export const workspaceMutation = customMutation(mutation, workspaceWriteAccess);
 
 /** Owner-only reads, including workspace telemetry configuration. */
 export const ownedWorkspaceQuery = customQuery(query, ownerAccess);
 
-/** Owner-only mutations for workspace configuration and defaults. */
+/** Owner-only mutations for workspace configuration and defaults. Closed by maintenance mode. */
 export const ownedWorkspaceMutation = customMutation(mutation, ownerWriteAccess);
 
 /** Internal visibility still requires a propagated Better Auth session. Not for background jobs. */
 export const internalWorkspaceQuery = customQuery(internalQuery, workspaceAccess);
 
-/** Session-backed internal mutations with the same owner-only settings writer. */
+/**
+ * Session-backed internal mutations with the same owner-only settings writer. Not gated by
+ * maintenance mode (`src/maintenance.ts`): only server code can call it, and every client entry
+ * that reaches it (a public action) is already gated.
+ */
 export const internalWorkspaceMutation = customMutation(internalMutation, workspaceWriteAccess);

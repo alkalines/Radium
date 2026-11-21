@@ -2,12 +2,12 @@ import { v } from "convex/values";
 import { internal } from "../../convex/_generated/api";
 import type { Doc } from "../../convex/_generated/dataModel";
 import {
-  action,
   internalAction,
   internalMutation,
   type ActionCtx,
   type MutationCtx,
 } from "../../convex/_generated/server";
+import { action } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { secrets, workspaceProviderSecretNamespace } from "../../convex/secrets";
 import { boundedMessage } from "../routing/failures";

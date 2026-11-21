@@ -7,13 +7,8 @@ import {
   requireMcpName,
   requireExaApiKey,
 } from "@/chatroom/aisdk-tools";
-import {
-  internalQuery,
-  mutation,
-  query,
-  type MutationCtx,
-  type QueryCtx,
-} from "./_generated/server";
+import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { mutation } from "../src/maintenance";
 import type { Doc } from "./_generated/dataModel";
 import { getDefaultWorkspaceForUser, requireOwnedWorkspace } from "./workspaces";
 import { workspaceQuery } from "./helpers";

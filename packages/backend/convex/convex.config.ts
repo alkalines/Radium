@@ -26,6 +26,11 @@ const app = defineApp({
     WEB_PUSH_VAPID_PUBLIC_KEY: v.optional(v.string()),
     WEB_PUSH_VAPID_PRIVATE_KEY: v.optional(v.string()),
     WEB_PUSH_SUBJECT: v.optional(v.string()),
+    /**
+     * Maintenance mode of the last Convex version (`src/maintenance.ts`): unset is off, `drain`
+     * closes browser, API and sign-in writes, `1` also closes Worker writes for the final export.
+     */
+    RADIUM_MAINTENANCE: v.optional(v.union(v.literal("1"), v.literal("drain"))),
   },
 });
 app.use(betterAuth);

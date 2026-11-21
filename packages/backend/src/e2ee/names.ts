@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { decodeCapsule, decodeEnvelope, CAPSULE_BYTES, equalBytes } from "radium-crypto";
-import { mutation, query } from "../../convex/_generated/server";
+import { query } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { requireWorkspaceAccessForUser } from "../../convex/workspaces";
 import { canManageProject } from "../workspaces/policy";

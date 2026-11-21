@@ -2,13 +2,13 @@ import { v } from "convex/values";
 import { api, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import {
-  action,
   internalAction,
   internalMutation,
   internalQuery,
   type QueryCtx,
   type ActionCtx,
 } from "../_generated/server";
+import { action } from "../../src/maintenance";
 import { isChatVisibleToWorkspace } from "../chatroom";
 import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../helpers";
 import { secrets, workspaceTelemetrySecretNamespace } from "../secrets";

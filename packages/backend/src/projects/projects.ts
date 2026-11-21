@@ -3,10 +3,10 @@ import { internal } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import {
   internalMutation,
-  mutation,
   type MutationCtx,
   type QueryCtx,
 } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { workspaceMutation, workspaceQuery } from "../../convex/helpers";
 import { requireWorkspaceAccessForUser } from "../../convex/workspaces";

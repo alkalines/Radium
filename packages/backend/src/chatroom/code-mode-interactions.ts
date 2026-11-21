@@ -1,5 +1,6 @@
 import { v } from "convex/values";
-import { internalMutation, internalQuery, mutation } from "../../convex/_generated/server";
+import { internalMutation, internalQuery } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { requireAccessibleChat } from "../../convex/workspaces";
 import {

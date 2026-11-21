@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internal } from "../../convex/_generated/api";
-import { internalMutation, mutation, query } from "../../convex/_generated/server";
+import { internalMutation, query } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import schema from "../../convex/schema";
 import { legacyBoxValidator } from "../e2ee/legacy-contract";

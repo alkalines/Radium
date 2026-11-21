@@ -1,5 +1,6 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query, type QueryCtx } from "../../convex/_generated/server";
+import { query, type QueryCtx } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { requireAccessibleChat } from "../../convex/workspaces";
 import { activeIdentityFor, invalidKeys, requireBox, requireKeyId } from "./workspace-contract";

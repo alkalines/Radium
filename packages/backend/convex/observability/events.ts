@@ -2,7 +2,7 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import { v } from "convex/values";
 
 import { components } from "../_generated/api";
-import { mutation } from "../_generated/server";
+import { mutation } from "../../src/maintenance";
 import { authComponent } from "../auth";
 import {
   isLoggingEnvelopeWithinLimits,

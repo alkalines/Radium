@@ -41,11 +41,19 @@ const tableValidator = v.union(
   v.literal("acp_sessions"),
 );
 
-/** Scan keys of each table; sessions have no status index, so they are paged as one `all` scan. */
-const SCANS: Readonly<Record<Table, readonly string[]>> = {
+/**
+ * Statuses of work that only its Worker can finish. Shared with `migrationStatus`
+ * (`src/migration_status.ts`), whose queue gate requires none of them before the final export.
+ */
+export const UNFINISHED_RELAY_STATUSES = {
   acp_commands: ["pending", "claimed"],
   acp_interactions: ["pending", "answered"],
   worker_tasks: ["sent", "processing", "retrying"],
+} as const;
+
+/** Scan keys of each table; sessions have no status index, so they are paged as one `all` scan. */
+const SCANS: Readonly<Record<Table, readonly string[]>> = {
+  ...UNFINISHED_RELAY_STATUSES,
   acp_sessions: ["all"],
 };
 

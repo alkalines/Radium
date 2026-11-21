@@ -1,7 +1,7 @@
 import { ConvexError, v, type Infer } from "convex/values";
 import type { Doc } from "../../convex/_generated/dataModel";
 import { internal } from "../../convex/_generated/api";
-import { action } from "../../convex/_generated/server";
+import { action } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../../convex/helpers";
 import { workerQuery } from "../worker/machine";

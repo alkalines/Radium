@@ -1,10 +1,6 @@
 import { v } from "convex/values";
-import {
-  internalMutation,
-  mutation,
-  query,
-  type MutationCtx,
-} from "../../convex/_generated/server";
+import { internalMutation, query, type MutationCtx } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { requireOwnedWorkspace, requireWorkspaceAccessForUser } from "../../convex/workspaces";
 import {

@@ -4,11 +4,11 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
-  mutation,
   query,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { mutation } from "../src/maintenance";
 import { authComponent, createAuth } from "./auth";
 import schema from "./schema";
 import { canAccessResolvedChat, canAccessWorkspace, canManageChat } from "../src/workspaces/policy";

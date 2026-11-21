@@ -2,7 +2,8 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import { v } from "convex/values";
 import { AMK_WRAPPER_BYTES } from "radium-crypto";
 import { components } from "../../convex/_generated/api";
-import { internalMutation, mutation } from "../../convex/_generated/server";
+import { internalMutation } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { decodeExactBytes, DEVICE_RECOVERY_SLOT_BYTES, DEVICE_RECOVERY_TTL_MS } from "./contract";
 

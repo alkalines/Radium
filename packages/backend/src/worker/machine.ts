@@ -2,7 +2,8 @@ import { customCtx, customMutation, customQuery } from "convex-helpers/server/cu
 import { ConvexError } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 import { components } from "../../convex/_generated/api";
-import { mutation, query, type MutationCtx, type QueryCtx } from "../../convex/_generated/server";
+import { query, type MutationCtx, type QueryCtx } from "../../convex/_generated/server";
+import { workerWriteMutation } from "../maintenance";
 import { backendOrigin, workerIssuer } from "./auth";
 import { assertLegacyWritesAllowed } from "../e2ee/migration-contract";
 
@@ -79,8 +80,9 @@ export const workerQuery = customQuery(query, customCtx(resolveWorkerContext));
  * Machine-only writes; authorization is rechecked in the state-transition transaction.
  * This grants identity authority only. Execution handlers must additionally check
  * capabilities and job assignments before admitting privileged operations.
+ * Closed when maintenance mode is `on`, open while it drains (`src/maintenance.ts`).
  */
-export const workerMutation = customMutation(mutation, customCtx(async (ctx: MutationCtx) => {
+export const workerMutation = customMutation(workerWriteMutation, customCtx(async (ctx: MutationCtx) => {
   await assertLegacyWritesAllowed(ctx);
   return resolveWorkerContext(ctx);
 }));

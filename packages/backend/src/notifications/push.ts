@@ -4,10 +4,10 @@ import type { Doc } from "../../convex/_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
-  mutation,
   query,
   type MutationCtx,
 } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import {
   notificationCategory,

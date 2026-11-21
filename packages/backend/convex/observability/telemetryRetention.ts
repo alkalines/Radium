@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
-import { internalMutation, mutation, type MutationCtx } from "../_generated/server";
+import { internalMutation, type MutationCtx } from "../_generated/server";
+import { mutation } from "../../src/maintenance";
 import { isChatVisibleToWorkspace } from "../chatroom";
 import { assertLegacyWritesAllowed, deleteLegacySidecar } from "../../src/e2ee/migration-contract";
 import { requireOwnedWorkspace } from "../workspaces";

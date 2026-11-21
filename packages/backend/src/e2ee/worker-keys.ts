@@ -11,7 +11,8 @@ import {
 } from "radium-crypto";
 import { components } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
-import { mutation, query, type MutationCtx, type QueryCtx } from "../../convex/_generated/server";
+import { query, type MutationCtx, type QueryCtx } from "../../convex/_generated/server";
+import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { requireOwnedWorkspace, requireWorkspaceAccessForUser } from "../../convex/workspaces";
 import { ENROLLMENT_TTL } from "../worker/auth";

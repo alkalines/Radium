@@ -8,11 +8,13 @@ const handlers = vi.hoisted(() => ({
   completion: vi.fn(),
   models: vi.fn(),
   subscription: vi.fn(),
+  workerAuth: vi.fn(),
 }));
 
 vi.mock("./aisdk.chat", () => ({ handleAISDKChat: handlers.chat }));
 vi.mock("./chat_completion", () => ({ handleChatCompletion: handlers.completion }));
 vi.mock("./models", () => ({ handleOpenAIModels: handlers.models }));
+vi.mock("./worker", () => ({ handleWorkerAuth: handlers.workerAuth }));
 vi.mock("../subscriptions/chatgpt", () => ({
   handleChatGPTSubscription: handlers.subscription,
 }));
@@ -151,5 +153,66 @@ describe("application HTTP router", () => {
         await app.fetch(new Request("https://gateway.example.test/api/auth/session"), ctx)
       ).text(),
     ).toBe("404 Not Found");
+  });
+
+  describe("maintenance mode", () => {
+    async function send(method: string, path: string) {
+      return await app.fetch(
+        new Request(`https://gateway.example.test${path}`, { method, headers: { Origin: origin } }),
+        ctx,
+      );
+    }
+
+    test.each([
+      ["/api/openai/v1/chat/completions", "completion"],
+      ["/api/aisdk/chat", "chat"],
+      ["/api/subscription/chatgpt-subscription/start", "subscription"],
+      ["/api/worker/auth/challenge", "workerAuth"],
+    ] as const)("refuses POST %s with a readable 503 when on", async (path, name) => {
+      vi.stubEnv("RADIUM_MAINTENANCE", "1");
+      const response = await send("POST", path);
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Retry-After")).toBe("300");
+      expect(await response.json()).toEqual({
+        error: { code: "MAINTENANCE", message: expect.any(String) },
+      });
+      expect(handlers[name]).not.toHaveBeenCalled();
+    });
+
+    test("keeps CORS on refused browser routes", async () => {
+      vi.stubEnv("RADIUM_MAINTENANCE", "1");
+
+      for (const path of ["/api/aisdk/chat", "/api/subscription/chatgpt-subscription/start"]) {
+        const response = await send("POST", path);
+        expect(response.status).toBe(503);
+        expect(response.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+      }
+    });
+
+    test("keeps reads open, except subscription reads that bind credentials", async () => {
+      vi.stubEnv("RADIUM_MAINTENANCE", "1");
+
+      expect((await send("GET", "/api/openai/v1/models")).status).toBe(200);
+      const subscription = await send("GET", "/api/subscription/chatgpt-subscription/status");
+      expect(subscription.status).toBe(503);
+      expect(subscription.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+      expect(handlers.subscription).not.toHaveBeenCalled();
+    });
+
+    test("drain keeps Worker token exchange open and closes everything else", async () => {
+      vi.stubEnv("RADIUM_MAINTENANCE", "drain");
+
+      expect((await send("POST", "/api/worker/auth/complete")).status).toBe(200);
+      expect(handlers.workerAuth).toHaveBeenCalledOnce();
+      expect((await send("POST", "/api/openai/v1/chat/completions")).status).toBe(503);
+      expect(handlers.completion).not.toHaveBeenCalled();
+    });
+
+    test("an unrecognized value closes every write path", async () => {
+      vi.stubEnv("RADIUM_MAINTENANCE", "true");
+
+      expect((await send("POST", "/api/worker/auth/challenge")).status).toBe(503);
+    });
   });
 });

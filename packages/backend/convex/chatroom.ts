@@ -25,11 +25,11 @@ import {
   internalAction,
   internalMutation,
   internalQuery,
-  mutation,
   query,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { mutation } from "../src/maintenance";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { createInternalGatewayProvider } from "./ai_gateway";

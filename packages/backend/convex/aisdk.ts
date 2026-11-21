@@ -1,14 +1,8 @@
 import { ConvexError, v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { mergedStream, stream } from "convex-helpers/server/stream";
-import {
-  action,
-  internalMutation,
-  internalQuery,
-  mutation,
-  query,
-  type QueryCtx,
-} from "./_generated/server";
+import { internalMutation, internalQuery, query, type QueryCtx } from "./_generated/server";
+import { action, mutation } from "../src/maintenance";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { authComponent } from "./auth";
