@@ -104,7 +104,7 @@ sequenceDiagram
     T1->>DS: read live (via proxy)
     T2->>DS: read from offset -1 (via proxy)
     loop generation
-        API->>DS: append UI chunk batches (sealed for keyed chats)
+        API->>DS: append UI chunk batches
     end
     T2->>API: chats.stop (tRPC) → Valkey stop flag
     API->>PG: onEnd: save messages, finish run
@@ -114,7 +114,7 @@ sequenceDiagram
 - **Admission**: `chat_runs` has a partial unique index (one active run per chat). A second sender gets `409` and re-seeds, as Live Sessions planned.
 - **Everyone is a viewer.** `/api/chat` returns the stream location instead of the stream body, the shape `@durable-streams/aisdk-transport` uses. The sender reads the same stream as every other Tab, so there's one code path, and reload resumes from offset `-1` (`resumeStreamIsReplay`).
 - **Stop from any Tab**: `chats.stop` sets `stop:<run>` in Valkey; the generator checks it at every batch flush (about 300 ms). No database write.
-- **Detached runs** come for free on Bun: generation is driven by the server, not the sender's connection. On Cloudflare the run is bound to the request until a Durable Object runner exists ([limitation](Runtime.md#cloudflare-spikes)).
+- **Detached runs** work on long-lived presets: generation is driven by the server, not the sender's connection. On serverless presets the run stays bound to the request ([presets](Runtime.md#long-lived-vs-serverless-presets)).
 - **Lost runs**: `chat_runs.lease_at` renewed every 15 s; the retention job fails runs with a stale lease and clears `activeStream`.
 - Approvals, questions and Code Mode prompts end or pause the stream exactly as today; answers are tRPC mutations.
 
@@ -154,8 +154,8 @@ The chat handler no longer polls the database every 500 ms (Worker tasks) or eve
 
 ## E2EE On Streams
 
-- ACP epochs carry the same sealed frames and capsule as today.
-- **Built-in runs in keyed chats are sealed.** The request already carries `recipientKey` for sealed message writes. The backend creates a per-run key, seals it to the chat key as the stream's first message (the same capsule pattern as ACP epochs), and encrypts each chunk batch with AAD (`chat_runs`, workspace, chat `e2eeId`, `run:seq`). The web transport opens the capsule and decrypts before feeding `useChat`. Keyless chats stream plaintext JSON. Without this, the stream server would hold plaintext replies at rest, which the Convex design never did.
+- ACP epochs carry the same sealed frames and capsule as today. The Worker seals them and the backend never had their plaintext, so they must stay sealed.
+- **Built-in runs are plaintext.** The backend already handles this content in plaintext to call the model, by design. The run stream is part of that same transient processing window. It is not persistent storage: it expires 10 minutes after the run ends, and the sealed `chat_messages` write at the end of the turn remains the only stored copy. Because the stream server's data directory still holds that content until expiry, it is classified with backend memory: it is excluded from backups and never exported. If it is ever retained longer, sealing runs with the chat key (the ACP capsule pattern) is the fix.
 - Invalidation and doorbell events carry no content.
 - Updating [E2EE data classification](../E2EE/Data.md) for streams and Valkey is part of the migration.
 

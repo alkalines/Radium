@@ -1,6 +1,6 @@
 # Backend Runtime And Code Layout
 
-Status: **planned.** Part of the [backend migration](../Backend_Migration.md). Covers how the new backend is organized, what differs between Bun and Cloudflare Workers, and the conventions that replace Convex's.
+Status: **planned.** Part of the [backend migration](../Backend_Migration.md). Covers how the new backend is organized, how one codebase deploys to Bun or to serverless targets, and the conventions that replace Convex's.
 
 The goal is a backend that reads like an ordinary TypeScript service, with no shape inherited from Convex. Port domain _behavior_ and its tests; rewrite the mechanics. The `AGENTS.md` code-clarity rules apply unchanged.
 
@@ -12,19 +12,20 @@ packages/
   crypto/           unchanged (radium-crypto)
   backend/
     drizzle/        generated SQL migrations + journal (committed)
+    nitro.config.ts Nitro build: preset, scheduled tasks, driver aliases
+    server.ts       Nitro server entry: exports the Hono app
     src/
-      app.ts        createApp(platform): the Hono app (all routes, tRPC mount)
-      platform/     ports + adapters: bun.ts, cloudflare.ts
+      app.ts        createApp(): the Hono app (all routes, tRPC mount)
+      drivers/      db, kv, objects: bun.ts and portable.ts (chosen at build time)
       db/           Drizzle client type, schema barrel, ids, migrator, backfills/
       trpc/         init, context, procedures (session/workspace/owned/worker), root router
       http/         non-tRPC routes: gateway, auth, worker auth, chat stream, stream/shape proxies
-      jobs/         outbox dispatcher, scheduled jobs registry
+      jobs/         outbox dispatcher; scheduled jobs as Nitro tasks
+      import-convex/  frozen baseline schema + mappings (see Convex_Import.md)
       <domain>/     schema.ts, services, router.ts, tests: one folder per domain
     bin/
-      server.ts     Bun entry (Bun.serve + Bun.cron)
-      cloudflare.ts Workers entry (fetch + scheduled + queue)
       migrate.ts    applies SQL migrations and backfills
-      import-convex.ts  one-time importer (see Convex_Import.md)
+      import-convex.ts  one-time importer
   worker/           Radium Worker: tRPC client + stream reader (transport rewritten)
 apps/web            tRPC client, TanStack Query, TanStack DB collections, /api/* forwarder
 ```
@@ -37,56 +38,63 @@ Domains: `auth`, `workspaces` (with projects, preferences), `gateway` (providers
 
 The web app imports 67 files from `backend/src/*` today, several of them runtime code (`acp/fold`, `models_dev`, `worker/presence`, `chatroom/tools`). That import direction stops. Code needed by more than one of web, Worker and backend, and free of server dependencies, moves to `packages/contracts`: zod schemas for wire shapes, branded id types, ACP op types and fold, presence windows, limits and constants. The web app imports only `contracts`, `crypto` and the backend's `AppRouter` **type**.
 
-## Platform Port
+## Deployment Targets: Nitro
 
-Everything that differs between runtimes sits behind one small interface. Nothing outside `src/platform/` imports `bun`, `cloudflare:*` or a driver package.
-
-| Port                                  | Bun adapter                                                                               | Cloudflare adapter                                                                                        |
-| ------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `db`: Drizzle `PgDatabase`            | `drizzle-orm/bun-sql` over `Bun.SQL` (pooled)                                             | `drizzle-orm/postgres-js` over the Hyperdrive connection string (`prepare: true`, as Hyperdrive requires) |
-| `kv`: the Valkey commands we use      | `Bun.RedisClient`                                                                         | Valkey over `node:net` (`redis` or a small RESP client; [spike](#cloudflare-spikes))                      |
-| `objects`: put, get, delete, presign  | `Bun.S3Client` (any S3-compatible store) or a local-disk adapter for single-node installs | R2 binding (presign through R2's S3 API)                                                                  |
-| `defer(promise)`: after-response work | tracked in-process promise                                                                | `ctx.waitUntil`                                                                                           |
-| `schedule`: register cron jobs        | `Bun.cron(expr, handler)`                                                                 | `scheduled()` handler; `wrangler.toml` triggers                                                           |
-| `env`: validated configuration        | `process.env` parsed once at boot                                                         | `env` bindings parsed per request                                                                         |
-
-Durable Streams and Electric are reached through `fetch` and `@durable-streams/client` on both runtimes, so neither needs an adapter.
-
-Lifetime differs. On Bun the platform is built once at boot; pools and Valkey connections are shared. On Cloudflare it is built per request from `env`/`ctx`, because Workers forbid sockets shared across requests. Services receive the platform as an argument (through the tRPC or Hono context), never through module-level singletons, so both lifetimes work with the same code.
+The backend is a **Nitro v3** project whose server entry is the Hono app. Nitro supplies what would otherwise be per-vendor glue: one build per **preset** (`bun`, `node_server`, `deno_server`, `cloudflare_module`, `vercel`, `netlify`, `aws_lambda`, …), runtime config from env, startup and shutdown hooks, `waitUntil` where the platform has one, and scheduled tasks wired to the platform's native scheduler. The web app already builds with Nitro (`nitro()` in `apps/web/vite.config.mts`), so this adds a toolchain we already run rather than a new one, and no vendor SDK enters domain code.
 
 ```ts
-// bin/server.ts (Bun)
-const platform = await createBunPlatform(parseEnv(process.env));
-const app = createApp(platform);
-registerScheduledJobs(platform); // Bun.cron
-Bun.serve({ fetch: app.fetch, idleTimeout: 0 }); // long SSE/streams
-
-// bin/cloudflare.ts
-export default {
-  fetch: (request, env, ctx) =>
-    createApp(createCloudflarePlatform(env, ctx)).fetch(request, env, ctx),
-  scheduled: (event, env, ctx) => runScheduledJob(event.cron, createCloudflarePlatform(env, ctx)),
-} satisfies ExportedHandler<Env>;
+// packages/backend/server.ts
+import { createApp } from "./src/app";
+export default createApp(); // Hono app; Nitro adapts it to the preset
 ```
 
-The Drizzle database type is the common `PgDatabase<…, typeof schema>` so services never see which driver is underneath. Any driver-specific feature (Bun SQL's `sql.array`, Postgres.js `sql.json`) is a review blocker outside `platform/`.
+Nitro is used for build, deploy, config, lifecycle and tasks. Its data layers are **not** used:
+
+- `db0` (`nitro/database`) is experimental, wraps tagged-template SQL, and has no `Bun.SQL` connector (Postgres goes through `pg`). Drizzle stays the only database API.
+- `unstorage` (`nitro/kv`) is a get/set store whose Redis driver is `ioredis`. It has none of the atomic operations Valkey is here for (`SET NX`, `GETDEL`, `INCR`, sorted sets, scripts), and it would bypass `Bun.RedisClient`.
+
+Hono stays the router: the tRPC adapter, Better Auth handler and Gateway routes keep their Hono shape. Nitro file routes and H3 handlers are not used.
+
+### Drivers
+
+Only three things differ by runtime. Each has a Bun implementation and a portable one, picked at **build time** from the Nitro preset through a module alias (`#drivers` → `src/drivers/bun.ts` or `src/drivers/portable.ts`), so a Bun build never bundles the portable libraries and a serverless build never references `bun`. Nothing outside `src/drivers/` imports `bun` or a driver package.
+
+| Driver                               | `bun` preset                                                                              | Every other preset                                                                                                                                                                  |
+| ------------------------------------ | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `db`: Drizzle `PgDatabase`           | `drizzle-orm/bun-sql` over `Bun.SQL`                                                      | `drizzle-orm/postgres-js`. A platform pooler (Hyperdrive, Neon, Supabase, RDS Proxy) is just a different `DATABASE_URL`, plus Hyperdrive's `prepare: true` requirement as an option |
+| `kv`: the Valkey commands we use     | `Bun.RedisClient`                                                                         | `redis` (node-redis) over TCP                                                                                                                                                       |
+| `objects`: put, get, delete, presign | `Bun.S3Client` (any S3-compatible store) or a local-disk adapter for single-node installs | `aws4fetch` against any S3-compatible API (S3, R2, MinIO, Garage)                                                                                                                   |
+
+Durable Streams and Electric are reached with `fetch` and `@durable-streams/client` everywhere, so they need no driver. The Drizzle type is the common `PgDatabase<…, typeof schema>`; any driver-specific feature (Bun SQL's `sql.array`, Postgres.js `sql.json`) outside `src/drivers/` is a review blocker.
+
+Lifetime differs by preset. Long-lived presets (`bun`, `node_server`, `deno_server`) create pools and Valkey connections once in a Nitro startup plugin. Serverless presets create them per request where the platform forbids shared sockets. Services receive drivers through the Hono/tRPC context, never module singletons, so both lifetimes run the same code.
+
+### Long-lived vs serverless presets
+
+| Capability                                                  | `bun` / `node_server` / `deno_server` | Serverless presets                                                                                                  |
+| ----------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Detached runs (reply keeps generating after its tab closes) | Yes                                   | No: the run ends when the request ends, plus the platform's `waitUntil` grace. Stop and resume still work           |
+| Scheduled tasks                                             | Nitro `scheduledTasks` (croner)       | Native on Cloudflare and Vercel through Nitro; elsewhere an external scheduler calls an authenticated task endpoint |
+| After-commit job dispatch                                   | in-process                            | `waitUntil` when available; the one-minute outbox sweep covers the rest                                             |
+
+Vendor primitives that Nitro does not abstract (Durable Objects, Workflows, Queues) are not used. The `bun` preset is the reference deployment; serverless presets are supported for the features in the right-hand column.
 
 ## Configuration
 
-| Variable                                                         | Purpose                                                                                               | Replaces                              |
-| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| `SITE_URL`                                                       | Web origin (cookies, CORS for direct API clients, reset links, VAPID subject default)                 | same                                  |
-| `API_URL`                                                        | Public backend origin: Gateway base URL, Worker JWT issuer/audience, Worker setup codes               | `CONVEX_SITE_URL`, `CONVEX_CLOUD_URL` |
-| `DATABASE_URL`                                                   | Postgres (Bun, migrations, importer). Cloudflare uses the Hyperdrive binding                          | new                                   |
-| `VALKEY_URL`                                                     | Valkey (`Bun.RedisClient` also reads `REDIS_URL`/`VALKEY_URL`)                                        | new                                   |
-| `STREAMS_URL`, `STREAMS_TOKEN`                                   | Internal Durable Streams server and the bearer the backend uses; the server is never exposed publicly | new                                   |
-| `ELECTRIC_URL`, `ELECTRIC_SECRET`                                | Optional; enables Electric-sourced collections                                                        | new                                   |
-| `S3_*` or `FILES_DIR`                                            | Object store (Bun's S3 env names) or local disk; R2 binding on Cloudflare                             | Convex File Storage                   |
-| `BETTER_AUTH_SECRET`, `OPAQUE_SERVER_SETUP`, `AUTH_PROXY_SECRET` | Unchanged; must be the same values as the Convex deployment for sessions and OPAQUE logins to survive | same                                  |
-| `SECRET_STORE_KEYS`                                              | Unchanged format and values; KEKs for the `secrets` table                                             | same                                  |
-| `TELEMETRY_HASH_SECRET`, `TELEMETRY_HASH_PROVENANCE`             | Unchanged                                                                                             | same                                  |
-| `WORKER_AUTH_PRIVATE_JWK`, `WORKER_AUTH_JWKS`                    | Unchanged keys; the issuer string changes to `API_URL`                                                | same                                  |
-| `WEB_PUSH_VAPID_*`, `LWC_SECRET`                                 | Unchanged                                                                                             | same                                  |
+| Variable                                                         | Purpose                                                                                                              | Replaces                              |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `SITE_URL`                                                       | Web origin (cookies, CORS for direct API clients, reset links, VAPID subject default)                                | same                                  |
+| `API_URL`                                                        | Public backend origin: Gateway base URL, Worker JWT issuer/audience, Worker setup codes                              | `CONVEX_SITE_URL`, `CONVEX_CLOUD_URL` |
+| `DATABASE_URL`                                                   | Postgres, or a platform pooler URL on serverless presets; migrations and the importer always use a direct connection | new                                   |
+| `VALKEY_URL`                                                     | Valkey (`Bun.RedisClient` also reads `REDIS_URL`/`VALKEY_URL`)                                                       | new                                   |
+| `STREAMS_URL`, `STREAMS_TOKEN`                                   | Internal Durable Streams server and the bearer the backend uses; the server is never exposed publicly                | new                                   |
+| `ELECTRIC_URL`, `ELECTRIC_SECRET`                                | Optional; enables Electric-sourced collections                                                                       | new                                   |
+| `S3_*` or `FILES_DIR`                                            | Object store (Bun's S3 env names, also read by the portable driver) or local disk                                    | Convex File Storage                   |
+| `BETTER_AUTH_SECRET`, `OPAQUE_SERVER_SETUP`, `AUTH_PROXY_SECRET` | Unchanged; must be the same values as the Convex deployment for sessions and OPAQUE logins to survive                | same                                  |
+| `SECRET_STORE_KEYS`                                              | Unchanged format and values; KEKs for the `secrets` table                                                            | same                                  |
+| `TELEMETRY_HASH_SECRET`, `TELEMETRY_HASH_PROVENANCE`             | Unchanged                                                                                                            | same                                  |
+| `WORKER_AUTH_PRIVATE_JWK`, `WORKER_AUTH_JWKS`                    | Unchanged keys; the issuer string changes to `API_URL`                                                               | same                                  |
+| `WEB_PUSH_VAPID_*`, `LWC_SECRET`                                 | Unchanged                                                                                                            | same                                  |
 
 `AISDK_MaxRetries` is declared in `convex.config.ts` but never read; drop it unless the port wires it. Web: `VITE_CONVEX_URL`/`VITE_CONVEX_SITE_URL` go away; the web server gets `API_INTERNAL_URL` (where `/api/*` is forwarded) and the browser needs no backend URL at all.
 
@@ -104,12 +112,12 @@ The Drizzle database type is the common `PgDatabase<…, typeof schema>` so serv
 | `/api/files/*`                               | Session                                                             | Presign upload, register, download redirect, and legacy Convex storage URL resolution |
 | `/api/subscription/chatgpt-subscription/*`   | Session + owned workspace                                           | Unchanged                                                                             |
 
-The web server forwards `/api/*` to `API_INTERNAL_URL` as a streaming pass-through. This generalizes `apps/web/src/app/api/backend/$.ts` and absorbs the auth proxy's header handling: strip client-sent proxy headers, add `x-radium-proxy-secret` and the client IP. On Cloudflare the web Worker reaches the backend through a Service Binding instead of the network. SSR prefetch calls the backend the same way with the incoming cookie forwarded.
+The web server forwards `/api/*` to `API_INTERNAL_URL` as a streaming pass-through. This generalizes `apps/web/src/app/api/backend/$.ts` and absorbs the auth proxy's header handling: strip client-sent proxy headers, add `x-radium-proxy-secret` and the client IP. SSR prefetch calls the backend the same way with the incoming cookie forwarded. When web and backend are deployed to the same host, the forward stays on the internal network.
 
 ## tRPC Conventions
 
 - One router per domain (`src/<domain>/router.ts`), merged in `src/trpc/router.ts`. Procedure names are camelCase verbs (`chats.list`, `chats.rename`), not the mixed `GetChat`/`ListChats` casing Convex grew.
-- Procedures are thin. They parse input with zod (shared schemas from `contracts`), call one service function, and map domain errors to `TRPCError` codes. Services take `(platform, actor, input)` and own authorization.
+- Procedures are thin. They parse input with zod (shared schemas from `contracts`), call one service function, and map domain errors to `TRPCError` codes. Services take `(drivers, actor, input)` and own authorization.
 - Base procedures replace the Convex wrappers:
   - `publicProcedure`;
   - `sessionProcedure`: Better Auth session resolved once per request (Valkey `secondaryStorage` cache);
@@ -176,11 +184,11 @@ Almost every `ctx.scheduler.runAfter` call is `runAfter(0)`, meaning "run after 
 
 `jobs(id, kind, payload jsonb, run_at, dedupe_key unique null, attempts, locked_until, last_error)`
 
-- After commit, the request calls `platform.defer(dispatch(jobIds))`; on Bun that runs in-process, on Cloudflare inside `waitUntil`.
+- After commit, the request hands the new job ids to the dispatcher: in-process on long-lived presets, inside `waitUntil` on serverless presets that have it.
 - A sweep every minute claims due jobs with `for update skip locked` and runs them, which covers crashes, deploys and delayed jobs (`run_at`: notification fallback after 10 s, superseded epoch deletion after 60 s, budget debounce after 5 s).
 - Handlers are idempotent and bounded. A failed job retries with backoff up to a limit, then stays visible for operators.
 
-pg-boss and graphile-worker were considered and rejected: both want a long-running Node poller on a direct connection, which doesn't fit Cloudflare and would leave two job systems. If a later Cloudflare release needs more throughput, Queues can drive the same handlers.
+pg-boss and graphile-worker were considered and rejected: both want a long-running Node poller on a direct connection, which doesn't fit serverless presets and would leave two job systems.
 
 ### Scheduled Work
 
@@ -196,11 +204,11 @@ pg-boss and graphile-worker were considered and rejected: both want a long-runni
 | `chat_files.prunePendingUploads` (1 h)                                                                     | `files.orphans` job over object-store keys vs `chat_files`                                                          |
 | `telemetryRetention.pruneExpired` (1 h)                                                                    | `telemetry.retention` job                                                                                           |
 
-Each scheduled run takes a Valkey lease (`SET NX PX`) so several Bun replicas or overlapping Cloudflare invocations run it once.
+These run as Nitro tasks (`src/jobs/tasks/*`, `scheduledTasks` in `nitro.config.ts`), plus the one-minute outbox sweep. Each run takes a Valkey lease (`SET NX PX`), so several replicas or overlapping serverless invocations run it once. Nitro tasks are still marked experimental; if that blocks us, the long-lived presets fall back to `Bun.cron` in a startup plugin.
 
 ## Object Storage
 
-`chat_files`, large `telemetry_blobs` and E2EE legacy sidecar envelopes move from Convex File Storage to the object store, keyed by their imported storage id (`files/<storageId>`). Uploads use presigned PUT URLs (Bun `S3Client.presign`, R2's S3 API), then `files.register`. The local-disk adapter uploads through `/api/files` instead. Downloads redirect to short-lived presigned GETs. Message file parts persisted inside **sealed** messages still contain Convex storage URLs the server cannot rewrite; `/api/files` resolves them through `chat_files.legacy_url` ([import](Convex_Import.md#file-storage)).
+`chat_files`, large `telemetry_blobs` and E2EE legacy sidecar envelopes move from Convex File Storage to the object store, keyed by their imported storage id (`files/<storageId>`). Uploads use presigned PUT URLs (`Bun.S3Client.presign`, or `aws4fetch` signing in the portable driver), then `files.register`. The local-disk adapter uploads through `/api/files` instead. Downloads redirect to short-lived presigned GETs. Message file parts persisted inside **sealed** messages still contain Convex storage URLs the server cannot rewrite; `/api/files` resolves them through `chat_files.legacy_url` ([import](Convex_Import.md#file-storage)).
 
 ## Secrets
 
@@ -214,7 +222,7 @@ This is the policy that lets any install upgrade from any earlier release.
 - **Backfills**: `src/db/backfills/NNNN_<name>.ts` exports `run` (idempotent, bounded batches, resumable) and `verify` (exhaustive, returns issue counts). Progress and the last verify result live in a `backfills` table.
 - **Widen → backfill → verify → switch → narrow** across at least two releases. A narrowing migration refuses to apply unless the matching backfill's recorded `verify` is clean. Same discipline as `convex/migrations.ts`, enforced by the runner instead of by convention.
 - **One command**: `bun run --cwd packages/backend db:migrate` takes a Postgres advisory lock, applies pending SQL migrations in order, then pending backfills, then records the schema version. Because every migration since the Postgres baseline stays in the repo, an install on any earlier release reaches the current one in a single run. A squash to a new baseline happens only at a major version that documents the minimum version to upgrade from.
-- **Boot check**: the server compares the recorded schema version with the one it was built for. If the database is behind, it refuses to start (Bun) or answers `503` (Cloudflare). It never migrates on its own, and Cloudflare never runs DDL. Operators and CI run `db:migrate` with the direct `DATABASE_URL`.
+- **Boot check**: the server compares the recorded schema version with the one it was built for. If the database is behind, it refuses to start (long-lived presets) or answers `503` (serverless presets). It never migrates on its own. Operators and CI run `db:migrate` with a direct `DATABASE_URL`, never through a pooler.
 - **CI**: on every PR, `drizzle-kit check`; regenerating must produce no diff; migrations apply to an empty database **and** to a snapshot of the previous release's database; backfill `verify` runs on that snapshot. Release jobs run `db:migrate` against a target only with explicit authorization (`AGENTS.md`).
 
 ## Verification
@@ -228,15 +236,14 @@ This is the policy that lets any install upgrade from any earlier release.
 
 As today, offline or unit tests are not deployment verification. Report integration checks as blocked when their infrastructure is missing.
 
-## Cloudflare Spikes
+## Serverless Spikes
 
-The Cloudflare adapter is accepted only after these pass on a deployed Worker, not in `wrangler dev`:
+A serverless preset is supported only after these pass on a real deployment, not a local emulator. Cloudflare (`cloudflare_module`) is the first target; the same list applies to any other preset.
 
-1. Hyperdrive + Postgres.js + Drizzle: a transaction with `for update skip locked`, prepared statements, a 5-minute streaming response holding no connection.
-2. Valkey over `node:net`/`cloudflare:sockets` with TLS: `redis` (node-redis) vs a minimal RESP client; scripts (`EVAL`), `GETDEL`, sockets per request. If neither is acceptable, the fallback is a Durable Object implementing the same `kv` port (still not Workers KV, which is eventually consistent).
-3. A Durable Streams SSE read proxied through the Worker for 10 minutes, and the AI SDK durable transport end to end.
+1. Postgres through the portable driver and the platform's pooler (Hyperdrive on Cloudflare): a transaction with `for update skip locked`, prepared statements, a 5-minute streaming response holding no connection.
+2. Valkey over TCP with TLS through `redis` (node-redis): scripts (`EVAL`), `GETDEL`, connections per request. Without working TCP, the preset is unsupported. We don't add a vendor-specific store.
+3. A Durable Streams SSE read proxied for 10 minutes, and the AI SDK durable transport end to end.
 4. Better Auth with the OPAQUE plugin, and `web-push` (Node crypto) or a WebCrypto Web Push library.
-5. `@opencode/codemode` and MCP clients within Workers CPU limits.
-6. TanStack Start web Worker → backend Worker through a Service Binding, streaming.
-
-Known limitation: detached runs (generation continuing after the sender disconnects) need a Durable Object or Workflow on Cloudflare and are out of scope for the first Cloudflare release.
+5. `@opencode/codemode` and MCP clients within the platform's CPU limits.
+6. Nitro `scheduledTasks` and `waitUntil` reaching the Hono app on that preset.
+7. The web deployment forwarding `/api/*` to the backend with streaming intact.

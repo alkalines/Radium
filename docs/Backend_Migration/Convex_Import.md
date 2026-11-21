@@ -2,21 +2,29 @@
 
 Status: **planned.** Part of the [backend migration](../Backend_Migration.md). The one-time, verified move of a Convex deployment's data into Postgres, the object store and the new secrets table. Every self-hosted deployment runs it once, as an operator action. Running it against a deployment needs the same explicit authorization as any remote migration (`AGENTS.md`).
 
-## Upgrade Path
+## Two Stages
 
-Any install reaches the Postgres backend through the same three steps, whatever release it runs today:
+Over its life the Convex backend gained its own data migrations: the ownership bridge (`runAll`), `runCredentialLimits`, `runChatMessages`, `runTelemetryTraces`, and E2EE phase 9. They are Convex functions, so they can only run on Convex. The move is therefore two separate stages with a fixed hand-off point between them:
 
 ```mermaid
 flowchart LR
-    Old["Any earlier Convex release"] -->|upgrade| Final["Final Convex release<br/>all Convex migrations + export gate"]
-    Final -->|"run pending Convex migrations,<br/>verifiers clean, freeze"| Export["Snapshot export<br/>(ZIP + file storage)"]
-    Export -->|"import-convex"| PG["First Postgres release"]
-    PG -->|db:migrate| Later["Any later release"]
+    Convex["Convex deployment<br/>(any past state)"] -->|"Stage 1: run every pending<br/>Convex migration, verifiers clean"| Done["Fully migrated Convex data"]
+    Done -->|"freeze + export"| Zip["Snapshot export"]
+    Zip -->|"Stage 2: import-convex"| Base["Postgres at the<br/>baseline schema (0000)"]
+    Base -->|"db:migrate"| Head["Postgres at the<br/>current schema"]
 ```
 
-1. **Final Convex release.** The last release built on Convex, cut from `dev` before the migration branch merges. It contains every Convex migration ever defined (ownership `runAll`, `runCredentialLimits`, `runChatMessages`, `runTelemetryTraces`, the E2EE phase 9 runner) plus two additions: an internal `migrationStatus` query that reports each migration's state and verifier results, and a **maintenance mode** that rejects browser and Worker writes while an export runs.
-2. **Import** into the first Postgres release with `bun run --cwd packages/backend import-convex`. The importer refuses an export taken from any other release.
-3. From then on, Postgres schema changes follow the [migration policy](Runtime.md#schema-migrations): `db:migrate` takes any later release forward in one run.
+1. **Stage 1, on Convex.** Using the last Convex version of the code (the commit before the cutover merge, which contains every Convex migration), run whatever is still pending on that deployment until all verifiers are clean. Two small additions ship in that version: an internal `migrationStatus` query that reports each migration's state and verifier results, and a **maintenance mode** that rejects browser and Worker writes while the export runs. Whatever state a deployment was left in, Stage 1 brings it to the same end state.
+2. **Stage 2, into Postgres.** `bun run --cwd packages/backend import-convex` loads that end state into a database at the **baseline** schema, the first Postgres migration (`0000_baseline`), never the latest one. It then hands over to the normal `db:migrate`, which applies every later SQL migration and backfill exactly as for any other install.
+
+### Why The Baseline Keeps It Future-Proof
+
+The Postgres schema will keep changing after the cutover. If the importer wrote rows through the current Drizzle schema, every later migration would have to keep the importer working too, and an import run a year from now would hit a schema it was never tested against. Pinning it to the baseline removes that coupling:
+
+- The importer owns a **frozen copy** of the baseline table definitions (`src/import-convex/baseline-schema.ts`, generated once from `0000_baseline` and never edited) and its own row mappings. Domain schemas evolve freely; the importer never imports them.
+- `import-convex` runs `db:migrate --to 0000_baseline` on an empty database, imports, verifies, then runs `db:migrate` to head. An import tomorrow and an import next year go through the same baseline, and later migrations see imported data exactly as they see data from an install that started on Postgres.
+- Postgres migrations therefore never need to know the data came from Convex. If one does need to touch imported rows (for example by narrowing `legacy_content`), it is an ordinary backfill under the [migration policy](Runtime.md#schema-migrations), tested against a database built from the importer's fixture.
+- CI runs the importer fixture → baseline → `db:migrate` to head on every PR that adds a migration, so a migration that breaks imported data fails before it merges.
 
 ## Preconditions
 
@@ -27,12 +35,12 @@ The importer only accepts a narrowed source. Each gate is checked from `migratio
 | Ownership `runAll` finished; `runCredentialLimits`, `runChatMessages`, `runTelemetryTraces` finished                                                                     | Postgres has no `balances`, `keys`, `chatroom_settings`, embedded `aisdk_chats.messages` or legacy traces                            |
 | All 16 paginated verifiers (`verifyBalances` … `verifyTelemetryPayloads`) exhausted with zero issues                                                                     | Legacy rows are fully represented by their replacements, so dropping them loses nothing. Legacy keys all have mapped `api_keys` rows |
 | E2EE phase 9 `cutoverComplete`, verify jobs clean                                                                                                                        | No plaintext-legacy writers or freeze flags need porting                                                                             |
-| Custody **ended**, or retained with its `e2ee:custody` secret and `e2ee_legacy_custody` mapping present                                                                  | Custody-held history stays releasable                                                                                                |
+| Custody **ended**: every custodial row released, `endCustody` completed, no `e2ee:custody` secret left                                                                   | The new backend carries no custody or release code. Every historical row is already sealed to a real user, workspace or chat key     |
 | Maintenance mode on; no `pending` or `claimed` ACP commands, `pending` interactions, or `sent`/`processing` Worker tasks                                                 | Queues are drained, not translated                                                                                                   |
 | Operator has `SECRET_STORE_KEYS`, `BETTER_AUTH_SECRET`, `OPAQUE_SERVER_SETUP`, `TELEMETRY_HASH_SECRET` (+ provenance), `WORKER_AUTH_*`, `WEB_PUSH_VAPID_*`, `LWC_SECRET` | The new backend must use the **same** values; several are bound into stored data                                                     |
 | A restorable backup of the deployment (export ZIP with file storage) kept outside the target                                                                             | Rollback and audit                                                                                                                   |
 
-Ownership migrations and phase 9 have never run on a remote deployment ([deployment](../deployment.md)). Running them there is its own approval-gated step and happens before this one.
+The remote (Convex Cloud) dev deployment is not a source. It was stopped because its Database I/O was exhausting the account-wide quota, and neither the ownership migrations nor phase 9 ran there. The local deployment, created from it by export and since migrated, is the only deployment to import.
 
 ## Identifiers
 
@@ -53,15 +61,13 @@ Client- and Worker-chosen ids (`e2eeId`, `keyId`, `messageId`, `fileId`, `capsul
 
 ## Export
 
-Primary: `bunx convex export --include-file-storage --path <zip>` from `packages/backend` against the frozen deployment. This produces one snapshot of app tables, component tables and storage blobs.
+Primary: `bunx convex export --include-file-storage --path <zip>` from `packages/backend` against the frozen deployment. This should produce one snapshot of app tables, component tables and storage blobs. Component data is expected to be included but is unconfirmed; the agent running the Phase 0 spike establishes it on the local deployment, before anything depends on it:
 
-Phase 0 must confirm on the local deployment, before anything depends on it:
-
-- component tables are present for `betterAuth`, `workerIdentity` and `secretStore`;
-- `v.bytes()` values and `_storage` metadata (including `sha256`) round-trip;
+- whether component tables are present for `betterAuth`, `workerIdentity` and `secretStore`, and where they sit in the ZIP;
+- whether `v.bytes()` values and `_storage` metadata (including `sha256`) round-trip;
 - the ZIP layout and JSONL encoding the importer will parse.
 
-If component data is missing, the fallback is an operator export command in the final Convex release: paginated internal queries per table, including component wrappers, plus storage downloads. It is slower but deterministic.
+If component data is missing, the fallback is an operator export command in the last Convex version: paginated internal queries per table, including component wrappers, plus storage downloads. It is slower but deterministic.
 
 ## Transform Rules
 
@@ -69,8 +75,8 @@ General:
 
 - `_id` → `id`, `Id<…>` and id-valued strings → the same string; `_creationTime` → `created_at`.
 - `bytes` → `bytea`; optional fields → `null`; `v.any()` and AI SDK message parts → `jsonb`.
-- Nested objects become columns when the new schema indexes or filters on them (`chat_completions.bill.workspace`, `request.credential`, …) and stay `jsonb` otherwise. Each table's mapping lives next to its Drizzle schema in `src/<domain>/import.ts`, so schema and mapping are reviewed together.
-- Rows are validated with the same zod schemas the new services use. A row that doesn't validate stops the import, with table, id and field reported. Nothing is coerced silently.
+- Nested objects become columns when the baseline schema indexes or filters on them (`chat_completions.bill.workspace`, `request.credential`, …) and stay `jsonb` otherwise. Mappings live in `src/import-convex/`, next to the frozen baseline schema, not in the domain folders.
+- Rows are validated with zod schemas frozen alongside the baseline. A row that doesn't validate stops the import, with table, id and field reported. Nothing is coerced silently.
 
 Per area:
 
@@ -80,7 +86,7 @@ Per area:
 | Worker identity component (`workers`, `keys`, `enrollments`)                                                                      | Imported into `worker` domain tables with ids intact; only unexpired `pending` enrollments are kept; merged with the app's `worker_enrollments` receipt                                                                                                                                                                                                                                                                                              |
 | Secret Store (`secrets`, `secretEvents`)                                                                                          | Copied **byte for byte** (same envelope, same AAD, same namespaces). The importer test-decrypts every row in memory with `SECRET_STORE_KEYS` and reports only counts per `keyVersion`, never values                                                                                                                                                                                                                                                  |
 | Legacy bridge (`balances`, `keys`, `chatroom_settings`, `telemetry_traces/spans/payloads`, deprecated chat and completion fields) | Not imported (gated above)                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| E2EE (`e2ee_*`)                                                                                                                   | Copied verbatim. `e2ee_device_recovery` (15-minute handoffs) is dropped. Migration-runner bookkeeping (`e2ee_migration_state`, `e2ee_migration_jobs`, telemetry proof tables) is not imported once cutover is complete; `e2ee_legacy_custody` and `e2ee_legacy_storage` are imported only while custody is retained                                                                                                                                  |
+| E2EE (`e2ee_*`)                                                                                                                   | Copied verbatim. `e2ee_device_recovery` (15-minute handoffs) is dropped. Migration-runner bookkeeping (`e2ee_migration_state`, `e2ee_migration_jobs`, telemetry proof tables, `e2ee_legacy_custody`, `e2ee_legacy_storage`) is not imported, since cutover and custody are both finished. `legacyContent` sidecars are imported as ordinary ciphertext columns                                                                                       |
 | Chats, messages, members                                                                                                          | Copied; `aisdk_chats.activeStream` cleared; `chat_runs` starts empty                                                                                                                                                                                                                                                                                                                                                                                 |
 | <a id="file-storage"></a>File storage                                                                                             | Each `_storage` blob is streamed to `files/<storageId>` in the object store and its SHA-256 checked. `chat_files.url` becomes `legacy_url`. Message file parts in **sealed** messages still carry Convex storage URLs the server cannot rewrite, so `/api/files/resolve` maps a legacy URL to the file's current download through `legacy_url`. Plaintext (keyless) messages could be rewritten, but they are left alone so both kinds take one path |
 | Telemetry                                                                                                                         | Blobs, nodes, sessions, requests copied with ids intact; workspace-keyed hashes remain valid because workspace ids and `TELEMETRY_HASH_SECRET` are unchanged. Inline content stays inline; storage-backed blobs move to the object store                                                                                                                                                                                                             |
@@ -92,7 +98,7 @@ Per area:
 
 ## Import Mechanics
 
-- Target is a freshly migrated, **empty** database at the first Postgres release's schema. The importer refuses a non-empty target, so a failed run is retried from scratch rather than resumed.
+- Target is an **empty** database migrated only to `0000_baseline`. The importer refuses a non-empty target or one at any other version, so a failed run is retried from scratch rather than resumed. After verification it runs `db:migrate` to head.
 - Tables load in foreign-key dependency order inside batched transactions; self-referencing `telemetry_nodes` load ordered by `depth`.
 - Blobs upload with bounded concurrency before their referencing rows commit.
 - The run writes a report (counts per table, dropped-by-rule counts, timings) to stdout and a JSON file. It contains no secrets and no content.
@@ -116,11 +122,12 @@ Workers keep their keys and ids but store the backend origin they enrolled with.
 ## Runbook
 
 1. **Rehearse** on a restored copy of the production export in an isolated environment: full import, all verification steps, timing recorded.
-2. Upgrade production to the final Convex release; run any pending Convex migrations (separately approved) until `migrationStatus` is all green.
-3. Announce the window. Turn on maintenance mode; wait until Worker queues drain; stop Workers.
-4. Export with file storage; keep the ZIP and the env values together in the backup location.
-5. Run `import-convex` into the new Postgres; run verification.
-6. Point the web deployment and DNS at the new backend; `relocate` and restart Workers.
-7. Smoke the behaviors from verification step 7 on production with operator accounts; reopen.
+2. Deploy the last Convex version to the deployment; run any pending Convex migrations (separately approved) until `migrationStatus` is all green.
+3. **End custody.** Sign in to each account that still owns custodial rows, set up encryption keys and open each chat whose history is held, so the scoped releases run. Then run a fresh exhaustive `verify`, then `endCustody` (procedure: [deployment → continued release and custody end](../deployment.md#continued-release-and-custody-end)). `e2ee_migration:custodialRows` lists what is left. Keep the phase 9 backup until a released row has been seen decrypting in the browser.
+4. Announce the window. Turn on maintenance mode; wait until Worker queues drain; stop Workers.
+5. Export with file storage; keep the ZIP and the env values together in the backup location.
+6. Run `import-convex` into the new Postgres; run verification.
+7. Point the web deployment and DNS at the new backend; `relocate` and restart Workers.
+8. Smoke the behaviors from verification step 7 on production with operator accounts; reopen.
 
-**Rollback**: until step 7 reopens writes, turn maintenance mode off on Convex and discard the Postgres target. After reopening the cutover is forward-only; writes made to Postgres would be lost by going back. Keep the Convex deployment frozen and read-only for an agreed period, then delete it.
+**Rollback**: until step 8 reopens writes, turn maintenance mode off on Convex and discard the Postgres target. After reopening the cutover is forward-only; writes made to Postgres would be lost by going back. Keep the Convex deployment frozen and read-only for an agreed period, then delete it.
