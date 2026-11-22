@@ -13,9 +13,9 @@ import {
   workspaceProviderRecords,
 } from "../../convex/provider_records";
 import { requireAccessibleChat } from "../../convex/workspaces";
-import type { AcpStopReason, AcpTurnReport, AcpTurnUsage } from "../acp/contract";
+import type { AcpStopReason, AcpTurnReport, AcpTurnUsage } from "contracts/acp/contract";
 import { logger } from "../logging/server";
-import { fetchModelsDev, type ModelsDevApi } from "../models_dev";
+import { fetchModelsDev, type ModelsDevApi } from "contracts/models_dev";
 import {
   matchModelsDev,
   modelsDevMatchValidator,
@@ -26,9 +26,9 @@ import {
   type WorkspaceProviderModels,
 } from "./agent_usage";
 import { estimateCompletionCost } from "./completion";
-import type { ProviderPricing } from "../workspaces/provider";
+import type { ProviderPricing } from "contracts/workspaces/provider";
 import { isGatewayCompletionWithoutChat } from "../workspaces/policy";
-import { isTurnCovered, utcDay } from "./local_contract";
+import { isTurnCovered, utcDay } from "contracts/usage/local_contract";
 
 /** A matched models.dev price is refreshed weekly; a failed or empty lookup is retried daily. */
 const MATCH_REFRESH_MS = 7 * 24 * 60 * 60 * 1000;

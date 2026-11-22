@@ -1,9 +1,9 @@
 import type { FunctionReturnType } from "convex/server";
 
 import type { api } from "backend/convex/_generated/api";
-import type { AcpProfile } from "backend/src/acp/contract";
-import { acpGatewayProfileOffered } from "backend/src/acp/gateway";
-import { isWorkerOnline } from "backend/src/worker/presence";
+import type { AcpProfile } from "contracts/acp/contract";
+import { acpGatewayProfileOffered } from "contracts/acp/gateway";
+import { isWorkerOnline } from "contracts/worker/presence";
 
 /** Owner-only catalogs, shared by the draft and Run target picker. */
 export type SessionWorker = FunctionReturnType<typeof api.workers.list>[number];

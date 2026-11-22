@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { generateEncryptionKeyPair, openBox, randomBytes, sealBox, toBase64Url, utf8 } from "radium-crypto";
 import { internal } from "../../convex/_generated/api";
 import { internalAction, type ActionCtx } from "../../convex/_generated/server";
-import { legacyAad, type LegacyBox, type LegacyRecipient } from "./legacy-contract";
+import { legacyAad, type LegacyBox, type LegacyRecipient } from "contracts/e2ee/legacy-contract";
 import {
   errorReason,
   MAX_SEAL_ENVELOPE_BYTES,

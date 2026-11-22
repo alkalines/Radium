@@ -18,13 +18,14 @@ import {
   telemetryUsageSchema,
   type TelemetryChanges,
   type TelemetryLineage,
-} from "../../src/telemetry/validators";
+} from "contracts/telemetry/validators";
 import {
   insertedNodeReachesCustody,
   invalidateForCapturedRequest,
   nodeReachesCustody,
   trackedGeneration,
 } from "../../src/e2ee/migration-telemetry-reach";
+import { zodToConvex } from "../../src/zod-validators";
 
 const sealedBlob = v.object({
   epoch: v.number(),
@@ -118,7 +119,7 @@ export const existingBlobs = internalQuery({
 
 const blobInput = v.object({
   hash: v.string(),
-  kind: telemetryBlobKindSchema,
+  kind: zodToConvex(telemetryBlobKindSchema),
   /** UTF-8 byte length of the canonical JSON, even when the content is not stored. */
   size: v.number(),
   storage: v.optional(v.id("_storage")),
@@ -379,7 +380,7 @@ export const finishRequest = internalMutation({
   args: {
     workspace: v.id("workspaces"),
     requestId: v.string(),
-    source: telemetrySourceSchema,
+    source: zodToConvex(telemetrySourceSchema),
     apiKey: v.optional(v.id("api_keys")),
     userId: v.string(),
     chatId: v.optional(v.id("aisdk_chats")),
@@ -388,14 +389,14 @@ export const finishRequest = internalMutation({
     provider: v.optional(v.string()),
     credential: v.optional(v.id("workspace_credentials")),
     stream: v.boolean(),
-    status: telemetryRequestStatusSchema,
+    status: zodToConvex(telemetryRequestStatusSchema),
     startedAt: v.number(),
     endedAt: v.number(),
     durationMs: v.number(),
     ttftMs: v.optional(v.number()),
     generationMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
-    usage: v.optional(telemetryUsageSchema),
+    usage: v.optional(zodToConvex(telemetryUsageSchema)),
     requestedServiceTier: v.optional(v.string()),
     servedServiceTier: v.optional(v.string()),
     estimatedCost: v.optional(v.number()),
@@ -410,7 +411,7 @@ export const finishRequest = internalMutation({
       envelope: v.bytes(),
     })),
     canceled: v.optional(v.boolean()),
-    attempts: v.array(telemetryAttemptSchema),
+    attempts: v.array(zodToConvex(telemetryAttemptSchema)),
     input: v.optional(v.id("telemetry_nodes")),
     output: v.optional(v.id("telemetry_nodes")),
     prefix: v.optional(v.id("telemetry_nodes")),

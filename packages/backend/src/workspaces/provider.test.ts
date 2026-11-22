@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { serviceTiersForModel, type ProviderSnapshot } from "./provider";
+import { serviceTiersForModel, type ProviderSnapshot } from "contracts/workspaces/provider";
 import {
   isWorkspaceProviderEnabled,
   workspaceProviderRecords,

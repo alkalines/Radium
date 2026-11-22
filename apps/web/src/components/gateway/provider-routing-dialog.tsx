@@ -41,7 +41,7 @@ import {
   type ErrorRuleAction,
   type ProviderRouting,
   type RoutingStrategy,
-} from "backend/src/routing/settings";
+} from "contracts/routing/settings";
 import { ProviderLogo } from "./provider-logo";
 
 export type RoutingProvider = FunctionReturnType<

@@ -4,13 +4,14 @@ import {
   isLoggingEnvelopeWithinLimits,
   loggingEnvelopeSchema,
   LOGGING_LIMITS,
-} from "../../../src/logging/contract";
+} from "contracts/logging/contract";
 import { mutation } from "./_generated/server";
+import { zodToConvex } from "../../../src/zod-validators";
 
 /** Persist one already-authenticated operational event in the isolated component database. */
 export const ingest = mutation({
   args: {
-    ...loggingEnvelopeSchema.fields,
+    ...zodToConvex(loggingEnvelopeSchema).fields,
     actorId: v.string(),
   },
   returns: v.boolean(),

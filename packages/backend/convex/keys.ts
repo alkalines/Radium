@@ -6,11 +6,15 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { components, internal } from "./_generated/api";
 import { estimateCompletionCost } from "@/usage/completion";
 import { canAccessWorkspace, isByokRequest } from "../src/workspaces/policy";
-import { providerPricingValidator, providerSnapshotFromCatalog } from "../src/workspaces/provider";
+import {
+  providerPricingValidator,
+  providerSnapshotFromCatalog,
+} from "contracts/workspaces/provider";
 import { scheduleBudgetRefresh } from "../src/limits/store";
 import { authComponent } from "./auth";
 import { requireOwnedWorkspace } from "./workspaces";
-import { keyTelemetryValidator } from "../src/acp/gateway";
+import { keyTelemetryValidator } from "contracts/acp/gateway";
+import { zodToConvex } from "../src/zod-validators";
 
 export const hashAlgorithm = "SHA-512";
 export const hashText = async (text: string) =>
@@ -158,7 +162,7 @@ export const recordCompletion = internalMutation({
       inferenceMode: v.optional(v.string()),
       quoteCaptured: v.optional(v.boolean()),
       quoteSource: v.optional(v.string()),
-      quote: v.optional(providerPricingValidator),
+      quote: v.optional(zodToConvex(providerPricingValidator)),
     }),
     response: v.object({
       gen_id: v.string(),
@@ -181,7 +185,7 @@ export const recordCompletion = internalMutation({
       finish_reason: v.string(),
       servedServiceTier: v.optional(v.string()),
       reportedCost: v.optional(v.number()),
-      servedQuote: v.optional(providerPricingValidator),
+      servedQuote: v.optional(zodToConvex(providerPricingValidator)),
       servedQuoteCaptured: v.optional(v.boolean()),
       cacheWriteTtlUnknown: v.optional(v.boolean()),
       upstreamInferenceCost: v.optional(v.number()),
@@ -624,7 +628,7 @@ export const deleteKey = mutation({
 });
 
 export const setKeyTelemetry = mutation({
-  args: { key: v.id("api_keys"), telemetry: keyTelemetryValidator },
+  args: { key: v.id("api_keys"), telemetry: zodToConvex(keyTelemetryValidator) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const key = await ctx.db.get(args.key);

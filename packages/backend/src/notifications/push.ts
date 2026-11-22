@@ -14,7 +14,7 @@ import {
   notificationPath,
   notificationTitle,
   type NotificationKind,
-} from "./contract";
+} from "contracts/notifications/contract";
 
 /**
  * Web Push: per-browser subscriptions, the VAPID configuration, and the data the Node sender

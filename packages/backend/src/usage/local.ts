@@ -10,7 +10,8 @@ import {
   localUsageRowValidator,
   type LocalUsageModel,
   type StoredLocalUsageModel,
-} from "./local_contract";
+} from "contracts/usage/local_contract";
+import { zodToConvex } from "../zod-validators";
 
 /** Local usage storage: Worker uploads and the owner's sync status (`local_contract.ts`). */
 
@@ -45,7 +46,7 @@ export const reportLocalUsage = workerMutation({
   args: {
     day: v.string(),
     syncedAt: v.number(),
-    rows: v.array(localUsageRowValidator),
+    rows: v.array(zodToConvex(localUsageRowValidator)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {

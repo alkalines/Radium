@@ -2,7 +2,7 @@ import { internal } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { ActionCtx } from "../../convex/_generated/server";
 import { createCapsule, encodeCapsule, sealWithCapsule, utf8 } from "radium-crypto";
-import { toArrayBuffer } from "@/e2ee/contract";
+import { toArrayBuffer } from "contracts/e2ee/contract";
 import { boundedMessage } from "@/routing/failures";
 import { deliverFromMemory } from "../../convex/observability/telemetryExport";
 import type { RoutingSession } from "@/routing/session";
@@ -30,7 +30,7 @@ import type {
   TelemetrySettings,
   TelemetrySource,
   TelemetryUsage,
-} from "./validators";
+} from "contracts/telemetry/validators";
 
 /** Server-derived workspace attribution and settings for one captured request. */
 export type TelemetryRequestContext = {

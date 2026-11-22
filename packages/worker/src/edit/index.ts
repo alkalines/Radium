@@ -1,2 +1,2 @@
 export { WorkerEditService } from "./service.js";
-export type { WorkerEditRequest } from "backend/src/worker/edit-contract";
+export type { WorkerEditRequest } from "contracts/worker/edit-contract";

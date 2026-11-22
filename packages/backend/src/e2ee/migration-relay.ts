@@ -1,7 +1,7 @@
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
-import { ACP_BUSY_STATUSES, ACP_SEALED_ERROR_TEXT, isPersistedAcpErrorCode } from "../acp/contract";
-import { workerChatTaskRequestId } from "../worker/task-contract";
+import { ACP_BUSY_STATUSES, ACP_SEALED_ERROR_TEXT, isPersistedAcpErrorCode } from "contracts/acp/contract";
+import { workerChatTaskRequestId } from "contracts/worker/task-contract";
 import { activeLegacyRecipient } from "./legacy-crypto";
 import { deleteLegacySidecar, type LegacyAdapter } from "./migration-contract";
 

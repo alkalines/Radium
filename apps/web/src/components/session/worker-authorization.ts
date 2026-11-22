@@ -3,9 +3,9 @@ import {
   grantedChatWorkerTools,
   type ChatWorkerGrant,
   type ChatWorkerSelection,
-} from "backend/src/worker/chat-config";
-import type { WorkerApprovalSignature } from "backend/src/worker/chat-tools";
-import { WORKER_GRANT_TTL_MS, workerChatToolFromToolName } from "backend/src/worker/task-contract";
+} from "contracts/worker/chat-config";
+import type { WorkerApprovalSignature } from "contracts/worker/chat-tools";
+import { WORKER_GRANT_TTL_MS, workerChatToolFromToolName } from "contracts/worker/task-contract";
 import {
   CryptoError,
   toBase64Url,

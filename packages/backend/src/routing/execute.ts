@@ -11,7 +11,7 @@ import {
 } from "./failures";
 import type { RoutingPreferences } from "./preferences";
 import type { RoutingSession } from "./session";
-import type { CooldownReason, RoutingSettings } from "./settings";
+import type { CooldownReason, RoutingSettings } from "contracts/routing/settings";
 
 /** One routed request: who is asking, for which model, and with which preferences. */
 export type RoutingRequest = {

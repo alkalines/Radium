@@ -8,7 +8,7 @@ import * as workspaceKeys from "./workspace-keys";
 import * as legacyContent from "./legacy-content";
 import { hasSealedTelemetry, openTelemetryData, telemetryContent } from "./telemetry";
 import { telemetryToolChanges } from "@/components/gateway/telemetry-utils";
-import type { LoadedBlob } from "backend/src/telemetry/store";
+import type { LoadedBlob } from "contracts/telemetry/store";
 
 const workspace = "telemetry-test" as Id<"workspaces">;
 const requestId = "capture-uuid";

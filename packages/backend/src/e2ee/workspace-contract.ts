@@ -1,7 +1,7 @@
 import { ConvexError, v, type Infer } from "convex/values";
 import { CAPSULE_BYTES } from "radium-crypto";
 import type { QueryCtx, MutationCtx } from "../../convex/_generated/server";
-import { decodeExactBytes } from "./contract";
+import { decodeExactBytes } from "contracts/e2ee/contract";
 /** Signed workspace seed encrypted to one active identity. */
 export const grantInputValidator = v.object({
   epoch: v.number(),

@@ -42,9 +42,10 @@ import {
   routingSettingsValidator,
   type CooldownReason,
   type RoutingSettings,
-} from "./settings";
+} from "contracts/routing/settings";
 import { limitObservationValidator } from "../limits/meters";
 import { recordAttemptLimits } from "../limits/store";
+import { zodToConvex } from "../zod-validators";
 
 const sessionValidator = v.object({
   primary: v.string(),
@@ -313,7 +314,7 @@ export const reportResult = internalMutation({
       v.object({ type: v.literal("success") }),
       v.object({
         type: v.literal("failure"),
-        reason: v.optional(cooldownReasonValidator),
+        reason: v.optional(zodToConvex(cooldownReasonValidator)),
         retryAfterMs: v.optional(v.number()),
         credentialScope: v.boolean(),
         forceCooldown: v.boolean(),
@@ -452,7 +453,7 @@ const cooldownView = v.object({
   credentialName: v.optional(v.string()),
   /** Empty for a credential-wide cooldown. */
   model: v.string(),
-  reason: cooldownReasonValidator,
+  reason: zodToConvex(cooldownReasonValidator),
   nextRetryAt: v.number(),
   backoffLevel: v.number(),
   status: v.optional(v.number()),
@@ -468,7 +469,7 @@ const cooldownView = v.object({
 export const getConfiguration = ownedWorkspaceQuery({
   args: {},
   returns: v.object({
-    settings: routingSettingsValidator,
+    settings: zodToConvex(routingSettingsValidator),
     providers: v.array(
       v.object({
         slug: v.string(),
@@ -483,7 +484,7 @@ export const getConfiguration = ownedWorkspaceQuery({
             weight: v.number(),
           }),
         ),
-        routing: providerRoutingValidator,
+        routing: zodToConvex(providerRoutingValidator),
       }),
     ),
     cooldowns: v.array(cooldownView),
@@ -538,7 +539,7 @@ export const getConfiguration = ownedWorkspaceQuery({
 
 /** Replace the workspace routing settings. Owner only; out-of-range values are rejected. */
 export const setSettings = ownedWorkspaceMutation({
-  args: { settings: routingSettingsValidator },
+  args: { settings: zodToConvex(routingSettingsValidator) },
   returns: v.null(),
   handler: async (ctx, args) => {
     assertValidRoutingSettings(args.settings);
@@ -555,7 +556,7 @@ export const setSettings = ownedWorkspaceMutation({
 export const setProviderRouting = ownedWorkspaceMutation({
   args: {
     provider: v.string(),
-    routing: providerRoutingValidator,
+    routing: zodToConvex(providerRoutingValidator),
     credentials: v.optional(
       v.array(
         v.object({

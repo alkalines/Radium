@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { ChatWorkerSelection, ChatWorkerTool } from "backend/src/worker/chat-config";
+import type { ChatWorkerSelection, ChatWorkerTool } from "contracts/worker/chat-config";
 import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { cn } from "@/lib/utils";
 import {

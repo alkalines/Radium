@@ -1,5 +1,5 @@
-import { blobValue, type LoadedBlob, type LoadedNode } from "./store";
-import type { TelemetryAttempt, TelemetryUsage } from "./validators";
+import { blobValue, type LoadedBlob, type LoadedNode } from "contracts/telemetry/store";
+import type { TelemetryAttempt, TelemetryUsage } from "contracts/telemetry/validators";
 
 /** OTLP/JSON `AnyValue` subset used by exports. 64-bit integers are strings per OTLP/JSON. */
 export type OtlpValue =

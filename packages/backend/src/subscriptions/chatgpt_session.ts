@@ -1,5 +1,5 @@
 import type { MutationCtx } from "../../convex/_generated/server";
-import { OPENAI_CODEX_SLUG } from "../provider_slugs";
+import { OPENAI_CODEX_SLUG } from "contracts/provider_slugs";
 import type { SubscriptionAdapter } from "./registry";
 
 /** Cookie that carries the signed Login with ChatGPT session ID between browser and handler. */

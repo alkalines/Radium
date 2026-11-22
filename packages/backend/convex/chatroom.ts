@@ -1,6 +1,6 @@
 export { Watch, LiveFrames } from "../src/acp/live";
 import { v } from "convex/values";
-import { WEB_SEARCH_TOOL_ID } from "@/chatroom/tools";
+import { WEB_SEARCH_TOOL_ID } from "contracts/chatroom/tools";
 import {
   readStoredSelection,
   storedSelection,
@@ -43,8 +43,9 @@ import {
 } from "./workspaces";
 import { ownedWorkspaceMutation, workspaceQuery } from "./helpers";
 import { isWorkspaceProviderEnabled, workspaceProviderRecords } from "./provider_records";
-import { chatWorkerToolValidator, type ChatWorkerTool } from "../src/worker/chat-config";
+import { chatWorkerToolValidator, type ChatWorkerTool } from "contracts/worker/chat-config";
 import { accessibleSession } from "../src/acp/policy";
+import { zodToConvex } from "../src/zod-validators";
 
 /**
  * Workspace Chatroom configuration replaces the legacy per-user
@@ -79,7 +80,7 @@ export const setToolDefaults = ownedWorkspaceMutation({
 /** Read the workspace's default Worker tools; members may read, absent means none. */
 export const getWorkerToolDefaults = workspaceQuery({
   args: {},
-  returns: v.array(chatWorkerToolValidator),
+  returns: v.array(zodToConvex(chatWorkerToolValidator)),
   handler: async (ctx): Promise<ChatWorkerTool[]> => {
     return ctx.workspace.settings.workerTools ?? [];
   },
@@ -87,7 +88,7 @@ export const getWorkerToolDefaults = workspaceQuery({
 
 /** Replace the workspace's default Worker tools. Owner only; tools must be unique. */
 export const setWorkerToolDefaults = ownedWorkspaceMutation({
-  args: { tools: v.array(chatWorkerToolValidator) },
+  args: { tools: v.array(zodToConvex(chatWorkerToolValidator)) },
   returns: v.id("workspace_settings"),
   handler: async (ctx, args) => {
     if (new Set(args.tools).size !== args.tools.length) {

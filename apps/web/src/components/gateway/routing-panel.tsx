@@ -42,7 +42,7 @@ import {
   type CooldownReason,
   type RoutingSettings,
   type RoutingStrategy,
-} from "backend/src/routing/settings";
+} from "contracts/routing/settings";
 import { ProviderLogo } from "./provider-logo";
 import {
   ProviderRoutingDialog,
@@ -100,7 +100,7 @@ const reasonLabels: Record<CooldownReason, string> = {
  * workspace strategy, session affinity, retry, and cooling settings, each provider's routing
  * overrides, and the credentials currently cooling down. The strategy picks a provider, then
  * requests rotate across that provider's enabled credentials. Semantics follow CLIProxyAPI
- * (`packages/backend/src/routing/settings.ts`).
+ * (`packages/contracts/src/routing/settings.ts`).
  */
 export function RoutingPanel() {
   const { workspaceId } = useWorkspace();

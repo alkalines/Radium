@@ -8,7 +8,7 @@ import {
   type ChatWorkerGrant,
   type ChatWorkerSelection,
   type WorkerMetadataLookup,
-} from "./chat-config";
+} from "contracts/worker/chat-config";
 
 /** Look up Worker identity metadata scoped to one workspace through the identity component. */
 export function workspaceWorkerMetadata(

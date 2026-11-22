@@ -6,7 +6,8 @@ import { requireAccessibleChat } from "../../convex/workspaces";
 import {
   CODE_MODE_INTERACTION_TIMEOUT_MS,
   codeModeInteractionResponseValidator,
-} from "./code-mode";
+} from "contracts/chatroom/code-mode";
+import { zodToConvex } from "../zod-validators";
 
 /**
  * Prompts a running Code Mode program waits on (`codemode_interactions`). The chat action opens
@@ -27,7 +28,7 @@ const INTERACTION_EXPIRY_GRACE_MS = 60_000;
 export const answerInteraction = mutation({
   args: {
     interaction: v.id("codemode_interactions"),
-    response: codeModeInteractionResponseValidator,
+    response: zodToConvex(codeModeInteractionResponseValidator),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -73,7 +74,7 @@ export const openInteraction = internalMutation({
 /** The answer to a prompt, or `null` while it is unanswered (or already closed). */
 export const interactionResponse = internalQuery({
   args: { interaction: v.id("codemode_interactions") },
-  returns: v.union(codeModeInteractionResponseValidator, v.null()),
+  returns: v.union(zodToConvex(codeModeInteractionResponseValidator), v.null()),
   handler: async (ctx, args) => {
     const interaction = await ctx.db.get("codemode_interactions", args.interaction);
     return interaction?.response ?? null;

@@ -8,7 +8,7 @@ import { generateEncryptionKeyPair } from "radium-crypto";
 import { ConvexError } from "convex/values";
 import { api, internal } from "../../convex/_generated/api";
 import type { ActionCtx } from "../../convex/_generated/server";
-import { DEFAULT_ROUTING_SETTINGS } from "../routing/settings";
+import { DEFAULT_ROUTING_SETTINGS } from "contracts/routing/settings";
 import type * as Translators from "../translators/openai";
 
 const auth = vi.hoisted(() => ({

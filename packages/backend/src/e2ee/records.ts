@@ -18,8 +18,9 @@ import {
   type RegistrationPayload,
   type ResetPayloadWire,
   type SignInPayloadWire,
-} from "./contract";
+} from "contracts/e2ee/contract";
 import { requestCustodyRelease } from "./migration-contract";
+import { zodToConvex } from "../zod-validators";
 
 /**
  * Account key records behind the OPAQUE payload hooks (audit I2). One `e2ee_key_bundles` row per
@@ -146,7 +147,7 @@ export const commitBundle = internalMutation({
     userId: v.string(),
     credentialVersion: v.string(),
     currentCredentialVersion: v.union(v.string(), v.null()),
-    flow: registrationFlowValidator,
+    flow: zodToConvex(registrationFlowValidator),
     payload: v.any(),
   },
   returns: v.null(),

@@ -17,7 +17,7 @@ import { ArchiveXIcon, KeyRoundIcon, ServerOffIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { AcpInteractionAnswer } from "backend/src/acp/contract";
+import type { AcpInteractionAnswer } from "contracts/acp/contract";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {

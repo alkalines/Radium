@@ -29,12 +29,13 @@ import {
   workerReceiptAad,
   workerTaskAad,
   type WorkerSealedTaskRequest,
-} from "backend/src/worker/task-contract";
+} from "contracts/worker/task-contract";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { ActionCtx } from "backend/convex/_generated/server";
-import type { CodeModeOutput } from "backend/src/chatroom/code-mode";
-import { createCodeMode } from "backend/src/chatroom/code-mode-runtime";
-import { buildWorkerChatTools, workerCodeModeInteractions } from "backend/src/worker/chat-tools";
+import type { CodeModeOutput } from "contracts/chatroom/code-mode";
+import { createCodeMode } from "contracts/chatroom/code-mode-runtime";
+import { buildWorkerChatTools } from "backend/src/worker/chat-tools";
+import { workerCodeModeInteractions } from "contracts/worker/chat-tools";
 import { consumeEditTasks, type TaskTrust } from "./tasks.js";
 
 type Task = FunctionReturnType<typeof api.worker_tasks.assigned>[number];

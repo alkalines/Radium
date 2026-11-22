@@ -6,9 +6,9 @@ import type {
   AcpInteractionRequest,
   AcpSignedBinding,
   AcpSignedCommand,
-} from "backend/src/acp/contract";
-import type { AcpFrame } from "backend/src/acp/fold";
-import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+} from "contracts/acp/contract";
+import type { AcpFrame } from "contracts/acp/fold";
+import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import {
   acpAnswerStatement,
   acpBindingStatement,

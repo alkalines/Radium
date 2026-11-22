@@ -1,14 +1,14 @@
 import { v } from "convex/values";
 import { ConvexError } from "convex/values";
-import { acpGatewayProfileOffered } from "./gateway";
+import { acpGatewayProfileOffered } from "contracts/acp/gateway";
 import { findWorkerGateway } from "../worker/gateway";
-import { acpProfileValidator, type AcpProfile } from "./contract";
+import { acpProfileValidator, type AcpProfile } from "contracts/acp/contract";
 import { paginationOptsValidator } from "convex/server";
 import { mergedStream, stream } from "convex-helpers/server/stream";
 import schema from "../../convex/schema";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
-import { isWorkerOnline } from "../worker/presence";
+import { isWorkerOnline } from "contracts/worker/presence";
 import { query } from "../../convex/_generated/server";
 import { action, mutation } from "../maintenance";
 import { components, internal } from "../../convex/_generated/api";
@@ -17,7 +17,7 @@ import { authComponent } from "../../convex/auth";
 import { authorizeChatRecord } from "../../convex/workspaces";
 import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../../convex/helpers";
 import { requireWorkspaceProject } from "../projects/projects";
-import { requireActiveWorkspaceWorker, validChatWorkerDirectory } from "../worker/chat-config";
+import { requireActiveWorkspaceWorker, validChatWorkerDirectory } from "contracts/worker/chat-config";
 import {
   deriveChatWorkerDirectory,
   findWorkerPresence,
@@ -43,7 +43,7 @@ import {
   type AcpCommandKind,
   type AcpCommandPayload,
   type AcpSignedCommand,
-} from "./contract";
+} from "contracts/acp/contract";
 import {
   accessibleSession,
   acpError,
@@ -82,6 +82,7 @@ import {
 import { certifiedWorkerKeys } from "../e2ee/worker-keys";
 import { setChatMembers, touchChatMembers } from "../chatroom/members";
 import { validateChatBox } from "../chatroom/sealing";
+import { zodToConvex } from "../zod-validators";
 
 /**
  * Shared atomic chat + lifecycle creation for new, forked and indexed agent sessions. With `keys`
@@ -283,13 +284,13 @@ async function visibleIndexRows(ctx: QueryCtx, userId: string, rows: Doc<"acp_ag
  */
 export const CreateSession = ownedWorkspaceMutation({
   args: {
-    scope: v.optional(acpChatScopeValidator),
+    scope: v.optional(zodToConvex(acpChatScopeValidator)),
     members: v.optional(v.array(v.string())),
     project: v.optional(v.id("projects")),
     worker: v.string(),
     agentId: v.string(),
     cwd: v.optional(v.string()),
-    profile: v.optional(acpProfileValidator),
+    profile: v.optional(zodToConvex(acpProfileValidator)),
     e2ee: v.optional(v.object({ keys: chatKeysSetupValidator })),
   },
   returns: v.id("aisdk_chats"),
@@ -360,7 +361,7 @@ export const CreateSession = ownedWorkspaceMutation({
 export const PublishBinding = mutation({
   args: {
     chat: v.id("aisdk_chats"),
-    binding: acpSignedBindingValidator,
+    binding: zodToConvex(acpSignedBindingValidator),
     importProof: v.optional(v.object({ signerKeyId: v.string(), signature: v.bytes() })),
   },
   returns: v.null(),
@@ -396,9 +397,9 @@ export const PublishBinding = mutation({
 export const Prompt = mutation({
   args: {
     chat: v.id("aisdk_chats"),
-    prompt: v.optional(v.array(acpPromptBlockValidator)),
+    prompt: v.optional(v.array(zodToConvex(acpPromptBlockValidator))),
     clientId: v.string(),
-    signed: v.optional(acpSignedCommandValidator),
+    signed: v.optional(zodToConvex(acpSignedCommandValidator)),
   },
   returns: v.id("acp_commands"),
   handler: async (ctx, args) => {
@@ -467,7 +468,7 @@ export const Prompt = mutation({
  * callers always pass a signed `cancel`; it is used only when a command must be queued.
  */
 export const Cancel = mutation({
-  args: { chat: v.id("aisdk_chats"), signed: v.optional(acpSignedCommandValidator) },
+  args: { chat: v.id("aisdk_chats"), signed: v.optional(zodToConvex(acpSignedCommandValidator)) },
   returns: v.null(),
   handler: async (ctx, args) => {
     // Cancelling rewrites a command and its session, so it is frozen with every other writer.
@@ -542,7 +543,7 @@ export const SetConfig = mutation({
     chat: v.id("aisdk_chats"),
     configId: v.optional(v.string()),
     value: v.optional(v.union(v.string(), v.boolean())),
-    signed: v.optional(acpSignedCommandValidator),
+    signed: v.optional(zodToConvex(acpSignedCommandValidator)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -588,7 +589,7 @@ export const SetMode = mutation({
   args: {
     chat: v.id("aisdk_chats"),
     modeId: v.optional(v.string()),
-    signed: v.optional(acpSignedCommandValidator),
+    signed: v.optional(zodToConvex(acpSignedCommandValidator)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -635,8 +636,8 @@ export const SetMode = mutation({
 export const Answer = mutation({
   args: {
     interaction: v.id("acp_interactions"),
-    answer: v.optional(acpInteractionAnswerValidator),
-    sealed: v.optional(acpSealedAnswerValidator),
+    answer: v.optional(zodToConvex(acpInteractionAnswerValidator)),
+    sealed: v.optional(zodToConvex(acpSealedAnswerValidator)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -694,7 +695,7 @@ export const RequestHistory = mutation({
     epoch: v.number(),
     before: v.number(),
     limit: v.number(),
-    signed: v.optional(acpSignedCommandValidator),
+    signed: v.optional(zodToConvex(acpSignedCommandValidator)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -833,8 +834,8 @@ export const StartFork = mutation({
   args: {
     chat: v.id("aisdk_chats"),
     target: v.id("aisdk_chats"),
-    binding: acpSignedBindingValidator,
-    signed: acpSignedCommandValidator,
+    binding: zodToConvex(acpSignedBindingValidator),
+    signed: zodToConvex(acpSignedCommandValidator),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -884,7 +885,7 @@ export const StartFork = mutation({
  * seals itself (the server never sees the prompt). Ignored once the chat has any title.
  */
 export const SetFallbackTitle = mutation({
-  args: { chat: v.id("aisdk_chats"), sealedTitle: acpSealedBoxValidator },
+  args: { chat: v.id("aisdk_chats"), sealedTitle: zodToConvex(acpSealedBoxValidator) },
   returns: v.null(),
   handler: async (ctx, args) => {
     await assertLegacyWritesAllowed(ctx);
@@ -1008,7 +1009,7 @@ export const SyncAgentSessions = ownedWorkspaceMutation({
   args: {
     agentId: v.string(),
     signed: v.optional(
-      v.array(v.object({ worker: v.string(), ...acpSignedCommandValidator.fields })),
+      v.array(v.object({ worker: v.string(), ...zodToConvex(acpSignedCommandValidator).fields })),
     ),
   },
   returns: v.null(),
@@ -1090,7 +1091,7 @@ export const OpenAgentSession = ownedWorkspaceMutation({
     agentId: v.string(),
     sessionId: v.string(),
     e2ee: v.optional(
-      v.object({ keys: chatKeysSetupValidator, sealedTitle: v.optional(acpSealedBoxValidator) }),
+      v.object({ keys: chatKeysSetupValidator, sealedTitle: v.optional(zodToConvex(acpSealedBoxValidator)) }),
     ),
   },
   returns: v.id("aisdk_chats"),
@@ -1196,7 +1197,7 @@ export const Authenticate = ownedWorkspaceMutation({
     agentId: v.string(),
     methodId: v.string(),
     clientId: v.string(),
-    signed: v.optional(acpSignedCommandValidator),
+    signed: v.optional(zodToConvex(acpSignedCommandValidator)),
   },
   returns: v.id("acp_commands"),
   handler: async (ctx, args) => {
@@ -1227,7 +1228,7 @@ export const Logout = ownedWorkspaceMutation({
     worker: v.string(),
     agentId: v.string(),
     clientId: v.string(),
-    signed: v.optional(acpSignedCommandValidator),
+    signed: v.optional(zodToConvex(acpSignedCommandValidator)),
   },
   returns: v.id("acp_commands"),
   handler: async (ctx, args) => {

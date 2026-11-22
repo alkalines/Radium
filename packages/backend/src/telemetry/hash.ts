@@ -1,4 +1,4 @@
-import type { TelemetryBlobKind } from "./validators";
+import type { TelemetryBlobKind } from "contracts/telemetry/validators";
 
 const encoder = new TextEncoder();
 

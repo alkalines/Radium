@@ -1,6 +1,6 @@
 # ACP Sessions
 
-Status: **implemented** (backend, Worker and Chatroom). Overview: [ACP Agents](../ACP.md). New Sessions are created with `acp.CreateSession` (owner only, always a brand-new agent session) from a New session whose Run target is an ACP agent; existing agent sessions are opened from Home through the [agent session index](#agent-session-index) (`acp.OpenAgentSession`). The binding validator is `acpChatAgentValidator` in `packages/backend/src/acp/contract.ts`. Before the ACP session exists, `acp.GetSession` also returns the agent's last advertised `defaultConfig` and commands, so draft choices can be shown and changed.
+Status: **implemented** (backend, Worker and Chatroom). Overview: [ACP Agents](../ACP.md). New Sessions are created with `acp.CreateSession` (owner only, always a brand-new agent session) from a New session whose Run target is an ACP agent; existing agent sessions are opened from Home through the [agent session index](#agent-session-index) (`acp.OpenAgentSession`). The binding validator is `acpChatAgentValidator` in `packages/contracts/src/acp/contract.ts`. Before the ACP session exists, `acp.GetSession` also returns the agent's last advertised `defaultConfig` and commands, so draft choices can be shown and changed.
 
 A Radium Session (`aisdk_chats` row) with an ACP agent is bound to exactly one
 ACP session on one Worker. Radium keeps the binding and a small status record;

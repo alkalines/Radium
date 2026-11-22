@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { credentialPreview } from "@/credential_preview";
-import { MCP_BEARER_SECRET_KEY } from "@/chatroom/tools";
+import { MCP_BEARER_SECRET_KEY } from "contracts/chatroom/tools";
 import {
   EXA_TOOL_CREDENTIAL_PROVIDER,
   normalizeMcpUrl,

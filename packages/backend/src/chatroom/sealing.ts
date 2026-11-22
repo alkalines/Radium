@@ -12,7 +12,7 @@ import {
   toBase64Url,
   utf8,
 } from "radium-crypto";
-import { decodeExactBytes, toArrayBuffer } from "../e2ee/contract";
+import { decodeExactBytes, toArrayBuffer } from "contracts/e2ee/contract";
 
 /** A title/queue sealed to a numbered chat key epoch. */
 export const sealedBoxValidator = v.object({ epoch: v.number(), box: v.bytes() });

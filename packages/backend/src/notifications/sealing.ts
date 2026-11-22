@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { sealBox, utf8 } from "radium-crypto";
 import { internal } from "../../convex/_generated/api";
 import { internalAction, internalMutation, internalQuery } from "../../convex/_generated/server";
-import { limitNotificationBody, notificationAad, notificationTitle } from "./contract";
+import { limitNotificationBody, notificationAad, notificationTitle } from "contracts/notifications/contract";
 import { readMigrationState } from "../e2ee/migration-contract";
 
 /**

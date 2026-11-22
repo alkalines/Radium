@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { generateEncryptionKeyPair, openBox, sealBox, utf8 } from "radium-crypto";
-import { legacyAad } from "backend/src/e2ee/legacy-contract";
+import { legacyAad } from "contracts/e2ee/legacy-contract";
 
 type Request = { table: string; record: string; workspace?: string; chatId?: string };
 

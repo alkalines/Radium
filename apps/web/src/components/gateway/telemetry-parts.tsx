@@ -11,7 +11,7 @@ import {
   WrenchIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { blobValue } from "backend/src/telemetry/store";
+import { blobValue } from "contracts/telemetry/store";
 
 import { AgentStatus } from "@/components/agentic/agent-status";
 import { Tag } from "@/components/harness/group-list";

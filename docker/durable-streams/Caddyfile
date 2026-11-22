@@ -1,0 +1,20 @@
+# Durable Streams server (Caddy plugin build). Only the backend talks to it: every request must
+# carry `Authorization: Bearer $STREAMS_TOKEN`, and compose keeps the port off public networks.
+{
+	admin off
+	# Caddy would otherwise write ~/.config/caddy/autosave.json.
+	persist_config off
+}
+
+:4437 {
+	route {
+		@unauthorized not header Authorization "Bearer {$STREAMS_TOKEN}"
+		respond @unauthorized 401
+		route /v1/stream/* {
+			durable_streams {
+				data_dir /data
+			}
+		}
+		respond 404
+	}
+}

@@ -7,7 +7,7 @@ import {
   resolveNotificationPreferences,
   type NotificationKind,
   type NotificationPreferences,
-} from "./contract";
+} from "contracts/notifications/contract";
 import { readMigrationState } from "../e2ee/migration-contract";
 
 /**

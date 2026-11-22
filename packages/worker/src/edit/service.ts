@@ -19,7 +19,7 @@ import {
   WORKER_EDIT_OUTPUT_BYTES,
   type WorkerEditRequest,
   validWorkerEditRequest,
-} from "backend/src/worker/edit-contract";
+} from "contracts/worker/edit-contract";
 import { resolveWorkerEditPath, WorkerEditPathError } from "./path-policy.js";
 
 const MAX_FILE_BYTES = 4 * 1024 * 1024;

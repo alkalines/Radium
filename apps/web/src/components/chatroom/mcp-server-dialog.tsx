@@ -2,11 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { toast } from "sonner";
 
-import {
-  MCP_AUTH_TYPES,
-  MCP_BEARER_SECRET_KEY,
-  type McpAuthType,
-} from "backend/src/chatroom/tools";
+import { MCP_AUTH_TYPES, MCP_BEARER_SECRET_KEY, type McpAuthType } from "contracts/chatroom/tools";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,

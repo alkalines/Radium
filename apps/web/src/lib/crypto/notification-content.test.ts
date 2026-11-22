@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { generateEncryptionKeyPair, sealBox, utf8 } from "radium-crypto";
-import { notificationAad } from "backend/src/notifications/contract";
+import { notificationAad } from "contracts/notifications/contract";
 import { openNotificationBox } from "./notification-content";
 
 describe("notification content", () => {

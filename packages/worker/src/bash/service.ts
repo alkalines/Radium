@@ -7,7 +7,7 @@ import {
   WORKER_BASH_TIMEOUT_SECONDS,
   type WorkerBashRequest,
   validWorkerBashRequest,
-} from "backend/src/worker/bash-contract";
+} from "contracts/worker/bash-contract";
 import type { Shell as NativeShell } from "@oh-my-pi/pi-natives";
 
 const MAX_SESSIONS = 64;

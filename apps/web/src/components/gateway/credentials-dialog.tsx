@@ -80,7 +80,8 @@ export type CredentialsTarget = {
  */
 export type ProviderCredential = FunctionReturnType<typeof api.providers.listCredentials>[number];
 
-const CHATGPT_BASE_PATH = "/api/backend/subscription/chatgpt-subscription";
+// Backend route behind the `/api/*` forwarder; the new backend serves it from the Gateway slice on.
+const CHATGPT_BASE_PATH = "/api/subscription/chatgpt-subscription";
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;

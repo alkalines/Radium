@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { ConvexReactClient } from "convex/react";
 import { getFunctionName, type FunctionReference } from "convex/server";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import {
   chatKeyBindingStatement,
   chatKeyStatement,

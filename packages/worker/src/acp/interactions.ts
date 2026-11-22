@@ -3,7 +3,7 @@ import {
   ElicitationPropertySchema,
   MultiSelectItems,
 } from "@agentclientprotocol/sdk";
-import type { AcpElicitationField, AcpInteractionRequest } from "backend/src/acp/contract";
+import type { AcpElicitationField, AcpInteractionRequest } from "contracts/acp/contract";
 
 /** Normalize supported ACP forms; unknown schema types decline rather than inventing a UI. */
 export function normalizeElicitation(

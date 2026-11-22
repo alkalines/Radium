@@ -1,7 +1,7 @@
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
 import type { Id } from "../../convex/_generated/dataModel";
 import { chatEpochCanReleaseCustody, chatKeyIsStale } from "./chat-keys";
-import type { LegacyRecipient } from "./legacy-contract";
+import type { LegacyRecipient } from "contracts/e2ee/legacy-contract";
 import { workspaceKeyAvailable } from "./workspace-key-availability";
 
 /**

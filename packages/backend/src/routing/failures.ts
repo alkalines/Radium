@@ -1,6 +1,6 @@
 import { APICallError, RetryError } from "ai";
 import * as z from "zod";
-import type { CooldownReason, ErrorRule, ErrorRuleAction } from "./settings";
+import type { CooldownReason, ErrorRule, ErrorRuleAction } from "contracts/routing/settings";
 
 /**
  * Normalized upstream failure observed by one attempt. `body` is kept only in memory for

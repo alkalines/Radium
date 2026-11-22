@@ -3,8 +3,8 @@ import type {
   CodeModeCall,
   CodeModeInteraction,
   CodeModeOutput,
-} from "backend/src/chatroom/code-mode";
-import type { QuestionOutput, QuestionPrompt, TodoItem } from "backend/src/chatroom/session-tools";
+} from "contracts/chatroom/code-mode";
+import type { QuestionOutput, QuestionPrompt, TodoItem } from "contracts/chatroom/session-tools";
 
 import type { RunState } from "@/components/agentic/agent-status";
 import { isToolPart } from "./message-parts";
@@ -12,7 +12,7 @@ import { acpToolKind, isAcpToolPart, type AcpToolKind, type AcpToolPart } from "
 
 /**
  * Readers for the tool calls Chatroom can make (`packages/backend/src/http/aisdk.chat.ts`): the
- * session tools (`src/chatroom/session-tools.ts`), the Radium Worker tools
+ * session tools (`packages/contracts/src/chatroom/session-tools.ts`), the Radium Worker tools
  * (`src/worker/chat-tools.ts`), Exa web search, and arbitrary MCP tools. Only the Worker write and
  * Bash tools ask for approval; `question` waits for the user's answer instead.
  */

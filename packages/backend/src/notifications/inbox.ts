@@ -4,7 +4,7 @@ import { internalMutation, query } from "../../convex/_generated/server";
 import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import schema from "../../convex/schema";
-import { legacyBoxValidator } from "../e2ee/legacy-contract";
+import { legacyBoxValidator } from "contracts/e2ee/legacy-contract";
 import { deleteLegacySidecar, readMigrationState } from "../e2ee/migration-contract";
 import {
   notificationCategory,
@@ -13,9 +13,10 @@ import {
   notificationTitle,
   resolvedNotificationPreferencesValidator,
   resolveNotificationPreferences,
-} from "./contract";
+} from "contracts/notifications/contract";
 import { BROWSER_CLAIM_GRACE_MS, loadNotificationPreferences } from "./notify";
 import { webPushConfig } from "./push";
+import { zodToConvex } from "../zod-validators";
 
 /**
  * Browser side of delivery: the live list open tabs watch, the claim that makes one tab (and so
@@ -38,10 +39,10 @@ const PRUNE_BATCH = 500;
 const notificationViewValidator = v.object({
   _id: v.id("notifications"),
   kind: schema.tables.notifications.validator.fields.kind,
-  category: notificationCategoryValidator,
+  category: zodToConvex(notificationCategoryValidator),
   userId: v.string(),
   sealed: v.optional(v.object({ keyId: v.string(), box: v.bytes() })),
-  legacyContent: v.optional(legacyBoxValidator),
+  legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
   title: v.string(),
   body: v.string(),
   /** App-relative path the notification opens. */
@@ -184,7 +185,7 @@ export const prune = internalMutation({
 /** The caller's notification preferences with defaults filled in. */
 export const getPreferences = query({
   args: {},
-  returns: resolvedNotificationPreferencesValidator,
+  returns: zodToConvex(resolvedNotificationPreferencesValidator),
   handler: async (ctx) => {
     const user = await authComponent.safeGetAuthUser(ctx);
     if (!user) return resolveNotificationPreferences(undefined);
@@ -198,7 +199,7 @@ export const getPreferences = query({
  */
 export const setPreference = mutation({
   args: {
-    category: notificationCategoryValidator,
+    category: zodToConvex(notificationCategoryValidator),
     enabled: v.boolean(),
     sound: v.boolean(),
   },

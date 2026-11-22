@@ -26,8 +26,8 @@ import {
   type AcpProfile,
   type AcpSessionProof,
   type AcpSignedBinding,
-} from "backend/src/acp/contract";
-import { WORKER_APPROVAL_CLOCK_SKEW_MS } from "backend/src/worker/task-contract";
+} from "contracts/acp/contract";
+import { WORKER_APPROVAL_CLOCK_SKEW_MS } from "contracts/worker/task-contract";
 import { WorkerTrustError, type WorkerTrust } from "../e2ee/trust.js";
 import { verifyChatKey } from "../e2ee/chat-key.js";
 import type { AcpFrameSealer } from "./relay.js";

@@ -197,7 +197,7 @@ imported only for `session/fork`; `/experimental/v2` waits for M5.
 An agent always runs with its own models and credentials. Gateway mode is an
 additional **launch profile** of the same agent that sends its model calls
 through the Radium Gateway, gaining usage limits, multi-account routing, cost
-tracking and telemetry. Code: `packages/backend/src/acp/gateway.ts` (placeholders,
+tracking and telemetry. Code: `packages/contracts/src/acp/gateway.ts` (placeholders,
 templates, expansion), `packages/backend/src/worker/gateway.ts` (Worker key
 state), `packages/worker/src/acp/` (key store, profile processes).
 

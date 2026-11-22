@@ -5,7 +5,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { acpAgentDefinitionError, type AcpAgentDefinition } from "backend/src/acp/contract";
+import { acpAgentDefinitionError, type AcpAgentDefinition } from "contracts/acp/contract";
 import { AcpAgentProcess, agentReport, probeAgent } from "./process.js";
 
 vi.mock("node:child_process", async (original) => {

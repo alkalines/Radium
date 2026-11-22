@@ -56,7 +56,7 @@ import { Input } from "@/components/ui/input";
 import { openMessages, sealTitle } from "@/lib/crypto/chat-content";
 import { ensureChatKeys, writableChatKey } from "@/lib/crypto/chat-keys";
 import { ChatKeysRequiredError, openHistoricalChat } from "@/lib/crypto/legacy-chat";
-import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import { signAcpCommand } from "@/components/session/acp/acp-crypto";
 import { getMessageText } from "@/components/session/message-parts";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";

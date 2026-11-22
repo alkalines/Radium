@@ -1,34 +1,79 @@
+# Backing services of the new backend (`packages/server`, docs/Backend_Migration.md). The backend
+# and web app run on the host for now (`bun run --cwd packages/server dev`); their containers come
+# with the deployment rewrite (task 14, Phase 7). Every port is bound to 127.0.0.1 only.
+#
+#   cp .env.example .env    # then fill in the secrets
+#   docker compose up -d                       # Postgres, Valkey, Durable Streams
+#   docker compose --profile electric up -d    # plus Electric (optional)
+#
+# Tests use `docker-compose.test.yml` instead: a separate project that needs none of these secrets.
+name: radium
+
 services:
-  radium:
-    build:
-      context: packages/website
-      dockerfile: Dockerfile
-      args:
-        VITE_CONVEX_URL: ${VITE_CONVEX_URL:-http://localhost:3210}
-        VITE_CONVEX_SITE_URL: ${VITE_CONVEX_SITE_URL:-http://localhost:3211}
-    image: radium:local
-    ports:
-      - "${PORT:-3000}:3000"
-      - "${CONVEX_PORT:-3210}:3210"
-      - "${CONVEX_SITE_PORT:-3211}:3211"
-    volumes:
-      - convex-data:/convex/data
+  postgres:
+    image: postgres:18.7-alpine
+    # Logical replication is for Electric; it is harmless without it.
+    command:
+      [
+        "postgres",
+        "-c",
+        "wal_level=logical",
+        "-c",
+        "max_replication_slots=10",
+        "-c",
+        "max_wal_senders=10",
+      ]
     environment:
-      SITE_URL: ${SITE_URL:-http://localhost:3000}
-      SECRET_STORE_KEYS: ${SECRET_STORE_KEYS:?Set SECRET_STORE_KEYS to 1:<base64-32-byte-key>}
-      Openrouter_API_Key: ${Openrouter_API_Key:-}
-      AISDK_MaxRetries: ${AISDK_MaxRetries:-0}
-      INSTANCE_NAME: ${INSTANCE_NAME:-}
-      INSTANCE_SECRET: ${INSTANCE_SECRET:-}
-      CONVEX_CLOUD_ORIGIN: ${CONVEX_CLOUD_ORIGIN:-http://localhost:3210}
-      CONVEX_SITE_ORIGIN: ${CONVEX_SITE_ORIGIN:-http://localhost:3211}
-      CONVEX_URL: ${CONVEX_URL:-http://localhost:3210}
-      CONVEX_SITE_URL: ${CONVEX_SITE_URL:-http://localhost:3211}
-      VITE_CONVEX_URL: ${VITE_CONVEX_URL:-http://localhost:3210}
-      VITE_CONVEX_SITE_URL: ${VITE_CONVEX_SITE_URL:-http://localhost:3211}
-      DISABLE_BEACON: ${DISABLE_BEACON:-}
-      RUST_LOG: ${RUST_LOG:-info}
+      POSTGRES_USER: radium
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: radium
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    ports: ["127.0.0.1:${POSTGRES_PORT:-5432}:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "radium", "-d", "radium"]
+      interval: 2s
+      retries: 30
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:9.2-alpine
+    # Append-only file: sessions survive a restart in the cache too (Postgres stays the record).
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - valkey-data:/data
+    ports: ["127.0.0.1:${VALKEY_PORT:-6379}:6379"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      retries: 30
+    restart: unless-stopped
+
+  # Holds in-flight replies in plaintext until the backend deletes them: never back up or export
+  # its volume (docs/Backend_Migration/Live_Data.md, E2EE on streams).
+  streams:
+    build: docker/durable-streams
+    image: radium-durable-streams:0.3.0
+    environment:
+      STREAMS_TOKEN: ${STREAMS_TOKEN:?set STREAMS_TOKEN in .env}
+    volumes:
+      - streams-data:/data
+    ports: ["127.0.0.1:${STREAMS_PORT:-4437}:4437"]
+    restart: unless-stopped
+
+  electric:
+    profiles: [electric]
+    image: electricsql/electric:1.8.1
+    environment:
+      DATABASE_URL: postgresql://radium:${POSTGRES_PASSWORD}@postgres:5432/radium?sslmode=disable
+      ELECTRIC_SECRET: ${ELECTRIC_SECRET:?set ELECTRIC_SECRET in .env}
+    ports: ["127.0.0.1:${ELECTRIC_PORT:-3001}:3000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  convex-data:
+  postgres-data:
+  valkey-data:
+  streams-data:

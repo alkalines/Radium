@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "re
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
 
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { ChatWorkerSelection, ChatWorkerTool } from "backend/src/worker/chat-config";
+import type { ChatWorkerSelection, ChatWorkerTool } from "contracts/worker/chat-config";
 import { ProjectTile } from "@/components/harness/project-tile";
 import { ProjectDialog } from "@/components/projects/project-dialog";
 import { Button } from "@/components/ui/button";

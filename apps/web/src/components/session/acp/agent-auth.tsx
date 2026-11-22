@@ -5,7 +5,7 @@ import { LogInIcon, LogOutIcon } from "lucide-react";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { AcpAuthMethod } from "backend/src/acp/contract";
+import type { AcpAuthMethod } from "contracts/acp/contract";
 import { isKeyedWorkspace, signAcpCommand } from "./acp-crypto";
 import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";

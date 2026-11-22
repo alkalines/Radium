@@ -41,7 +41,7 @@ import { Switch } from "@/components/ui/switch";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
-import type { WorkspaceProviderView } from "backend/src/workspaces/provider";
+import type { WorkspaceProviderView } from "contracts/workspaces/provider";
 import { ImportProviderDialog } from "./import-provider-dialog";
 import { ModelManagerDialog } from "./model-manager-dialog";
 import { ProviderLogo } from "./provider-logo";

@@ -20,7 +20,7 @@ import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { isWorkerOnline } from "backend/src/worker/presence";
+import { isWorkerOnline } from "contracts/worker/presence";
 import { AgentStatus } from "@/components/agentic/agent-status";
 import { ProjectActionsMenu } from "@/components/projects/project-actions-menu";
 import { ProjectDialog } from "@/components/projects/project-dialog";

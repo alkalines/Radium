@@ -6,7 +6,7 @@ import {
   type RateLimitBucket,
   type StoredSession,
 } from "@opencoredev/loginwithchatgpt-server";
-import { OPENAI_CODEX_SLUG } from "../provider_slugs";
+import { OPENAI_CODEX_SLUG } from "contracts/provider_slugs";
 import { internal } from "../../convex/_generated/api";
 import type { ActionCtx } from "../../convex/_generated/server";
 import { authComponent } from "../../convex/auth";

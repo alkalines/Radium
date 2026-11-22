@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { ChatWorkerSelection } from "backend/src/worker/chat-config";
-import { WORKER_GRANT_TTL_MS } from "backend/src/worker/task-contract";
+import type { ChatWorkerSelection } from "contracts/worker/chat-config";
+import { WORKER_GRANT_TTL_MS } from "contracts/worker/task-contract";
 import {
   forgetWorkerApproval,
   recordWorkerApproval,

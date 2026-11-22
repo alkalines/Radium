@@ -8,9 +8,9 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { recordLimitEvent } from "../src/limits/events";
 import { resolveLimitSettings, type Meter } from "../src/limits/meters";
-import { sessionNotificationKind, type ChatRequestEnd } from "../src/notifications/session";
-import { chatInterruption } from "../src/chatroom/interruption";
-import { notificationAad } from "../src/notifications/contract";
+import { sessionNotificationKind, type ChatRequestEnd } from "contracts/notifications/session";
+import { chatInterruption } from "contracts/chatroom/interruption";
+import { notificationAad } from "contracts/notifications/contract";
 
 type AuthContext = {
   auth: { getUserIdentity: () => Promise<{ tokenIdentifier?: string } | null> };

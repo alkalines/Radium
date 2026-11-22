@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
-import type { AcpItem, AcpOp } from "backend/src/acp/contract";
+import type { AcpItem, AcpOp } from "contracts/acp/contract";
 import {
   applyAcpFrames,
   emptyAcpTimeline,
   startAcpEpoch,
   type AcpTimeline,
-} from "backend/src/acp/fold";
+} from "contracts/acp/fold";
 import { acpChatStatus, acpRunState, createAcpViewModel } from "./view-model";
 import { isAcpNoticePart, isAcpToolPart } from "./parts";
 import { getToolRunState } from "../tool-parts";

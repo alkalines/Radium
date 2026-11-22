@@ -21,7 +21,7 @@ import {
   type AcpStopReason,
   type AcpToolContent,
   type AcpTurnUsage,
-} from "backend/src/acp/contract";
+} from "contracts/acp/contract";
 
 type MessageItem = Extract<AcpItem, { text: string }>;
 type ToolItem = Extract<AcpItem, { kind: "tool" }>;

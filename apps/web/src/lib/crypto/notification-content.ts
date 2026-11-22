@@ -1,6 +1,6 @@
 import { openBox } from "radium-crypto";
-import { notificationAad } from "backend/src/notifications/contract";
-import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+import { notificationAad } from "contracts/notifications/contract";
+import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { openLegacyContent } from "./legacy-content";
 import { keyManager, useRememberedIdentity } from "./key-manager";

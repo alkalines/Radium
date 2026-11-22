@@ -19,11 +19,12 @@ import {
   parseDestinationEndpoint,
   type OtlpBundle,
 } from "../../src/telemetry/otlp";
-import type { LoadedBlob } from "../../src/telemetry/store";
+import type { LoadedBlob } from "contracts/telemetry/store";
 import { canonicalJson } from "../../src/telemetry/canonical";
 import type { DecomposedRequest } from "../../src/telemetry/decompose";
-import type { TelemetryAttempt } from "../../src/telemetry/validators";
-import { telemetryDestinationKindSchema } from "../../src/telemetry/validators";
+import type { TelemetryAttempt } from "contracts/telemetry/validators";
+import { telemetryDestinationKindSchema } from "contracts/telemetry/validators";
+import { zodToConvex } from "../../src/zod-validators";
 
 const HEADERS_SECRET = "headers";
 const MAX_DESTINATIONS = 20;
@@ -34,7 +35,7 @@ const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 
 const destinationView = v.object({
   _id: v.id("telemetry_destinations"),
-  kind: telemetryDestinationKindSchema,
+  kind: zodToConvex(telemetryDestinationKindSchema),
   name: v.string(),
   endpoint: v.string(),
   enabled: v.boolean(),
@@ -160,7 +161,7 @@ export const listDestinations = ownedWorkspaceQuery({
 /** Create an export destination; `headers` are stored encrypted in Secret Store. */
 export const createDestination = ownedWorkspaceMutation({
   args: {
-    kind: telemetryDestinationKindSchema,
+    kind: zodToConvex(telemetryDestinationKindSchema),
     name: v.string(),
     endpoint: v.string(),
     headers: v.optional(v.record(v.string(), v.string())),

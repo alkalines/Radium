@@ -18,7 +18,7 @@ import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
-import type { NotificationCategory } from "backend/src/notifications/contract";
+import type { NotificationCategory } from "contracts/notifications/contract";
 import { GroupList, Row, RowBlock, Tag } from "@/components/harness/group-list";
 import { PageHeader } from "@/components/harness/page-header";
 import { Button } from "@/components/ui/button";

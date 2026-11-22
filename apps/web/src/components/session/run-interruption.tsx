@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ChatInterruption } from "backend/src/chatroom/interruption";
+import type { ChatInterruption } from "contracts/chatroom/interruption";
 import { CheckIcon, CirclePauseIcon, CircleXIcon, CopyIcon, RotateCwIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";

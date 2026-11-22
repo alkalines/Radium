@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { Process } from "@oh-my-pi/pi-natives";
-import { WORKER_BASH_OUTPUT_BYTES, type WorkerBashRequest } from "backend/src/worker/bash-contract";
+import { WORKER_BASH_OUTPUT_BYTES, type WorkerBashRequest } from "contracts/worker/bash-contract";
 import { createBashExecutor } from "./service.js";
 
 interface BashResponse {

@@ -8,7 +8,7 @@ import {
   utf8Bytes,
   type AcpItemPatch,
   type AcpOp,
-} from "backend/src/acp/contract";
+} from "contracts/acp/contract";
 import { AcpTimeline, normalizeConfig, normalizeToolContent, normalizeTurnUsage } from "./timeline";
 
 function items(ops: AcpOp[]): AcpItemPatch[] {

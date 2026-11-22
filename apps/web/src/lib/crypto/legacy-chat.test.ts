@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { FileUIPart, UIMessage } from "ai";
 import type { ConvexReactClient } from "convex/react";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import { toBase64Url } from "radium-crypto";
 import * as chatContent from "./chat-content";
 import * as chatKeys from "./chat-keys";

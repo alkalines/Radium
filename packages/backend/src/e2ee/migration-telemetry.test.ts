@@ -1,6 +1,6 @@
 import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { notificationTitle } from "../notifications/contract";
+import { notificationTitle } from "contracts/notifications/contract";
 import { domain } from "./migration-telemetry";
 import { advanceProofStep, proofVerdict, startProof } from "./migration-telemetry-attribution";
 import { fakeDb, type Fake } from "./migration-telemetry-fake";

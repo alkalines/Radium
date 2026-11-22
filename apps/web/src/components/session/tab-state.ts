@@ -1,9 +1,9 @@
-import type { ToolSelection } from "backend/src/chatroom/tools";
+import type { ToolSelection } from "contracts/chatroom/tools";
 import {
   chatWorkerToolValidator,
   type ChatWorkerSelection,
   type ChatWorkerTool,
-} from "backend/src/worker/chat-config";
+} from "contracts/worker/chat-config";
 import type { ChatScope } from "./composer";
 import { restoreAgentId } from "./agents";
 
@@ -43,9 +43,9 @@ type TabStateMap = Record<string, SessionTabSnapshot>;
 // suffix whenever the snapshot shape changes so an old shape is ignored instead of misread.
 const storageKey = "radium.tab-state.v1";
 
-// The validator's literals are the source of truth for which Worker tools exist.
-const workerToolIds: ChatWorkerTool[] = chatWorkerToolValidator.members.map(
-  (member) => member.value,
+// The schema's literals are the source of truth for which Worker tools exist.
+const workerToolIds: ChatWorkerTool[] = chatWorkerToolValidator.options.map(
+  (option) => option.value,
 );
 
 /** The persisted snapshot of one Tab, or `undefined` when there is none or storage fails. */

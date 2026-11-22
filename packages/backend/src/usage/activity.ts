@@ -8,9 +8,9 @@ import {
 } from "../../convex/chatroom";
 import { requireOwnedWorkspace } from "../../convex/workspaces";
 import { folderKey, projectFolders } from "../acp/browser";
-import { inferModelAuthor, modelKey } from "../acp/models";
+import { inferModelAuthor, modelKey } from "contracts/acp/models";
 import { agentModelName, normalizeAcpUsage } from "./agent_usage";
-import { isTurnCovered, localAgentName, utcDay } from "./local_contract";
+import { isTurnCovered, localAgentName, utcDay } from "contracts/usage/local_contract";
 
 /** Rows aggregated per source; older rows in a busier window are dropped and flagged. */
 const WINDOW_LIMIT = 2000;

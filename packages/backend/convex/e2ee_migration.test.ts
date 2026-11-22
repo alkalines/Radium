@@ -19,9 +19,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { legacyAad, type LegacyBox } from "../src/e2ee/legacy-contract";
+import { legacyAad, type LegacyBox } from "contracts/e2ee/legacy-contract";
 import { deleteLegacySidecar, MAX_SEAL_SOURCE_BYTES, newJob, readMigrationState, requestCustodyRelease } from "../src/e2ee/migration-contract";
-import { notificationTitle } from "../src/notifications/contract";
+import { notificationTitle } from "contracts/notifications/contract";
 
 const modules = import.meta.glob("./**/*.ts");
 const previousSecretStoreKeys = process.env.SECRET_STORE_KEYS;

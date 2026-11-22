@@ -9,7 +9,7 @@ import type {
   AIProviderSDK_Config,
   AIProviderSDK_ModelSettings,
   AIProviderNpmPackage,
-} from "./types/ai_provider";
+} from "contracts/types/ai_provider";
 
 const appHeaders = {
   "HTTP-Referer": "https://github.com/alkalines/Radium",

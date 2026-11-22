@@ -6,7 +6,7 @@ import {
 import type { GenericCtx } from "@convex-dev/better-auth";
 import { internal } from "../../convex/_generated/api";
 import type { DataModel } from "../../convex/_generated/dataModel";
-import { parseRegistrationPayload } from "./contract";
+import { parseRegistrationPayload } from "contracts/e2ee/contract";
 import { resetPayload, signInPayload } from "./records";
 
 /** Account field holding the OPAQUE credential version (plugin `OPAQUE_ACCOUNT_FIELDS`). */

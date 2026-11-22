@@ -14,7 +14,7 @@ import {
   ACP_INTERACTION_RETENTION_MS,
   type AcpAgentReport,
   type AcpInteractionRequest,
-} from "../src/acp/contract";
+} from "contracts/acp/contract";
 import { normalizeWorkerKey, tokenDigest, workerIssuer } from "../src/worker/auth";
 
 vi.mock("./auth", () => ({

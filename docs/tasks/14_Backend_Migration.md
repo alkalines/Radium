@@ -1,6 +1,6 @@
 # 14 Backend Migration (Convex → Bun, Hono, Postgres)
 
-Status: **Phase 0 spikes done (2026-11-21); Phase 1 not started.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
+Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 not started.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
 
 This is several sessions of work, not one. Each phase ends with the docs updated and its verification recorded here. The Convex backend on `dev` stays the product until the cutover release. The new backend is built beside it and exercised against imported copies of a local deployment, never production data.
 
@@ -155,6 +155,85 @@ All spikes ran on this workstation against real services. Postgres 18.7, Valkey 
 - Web: `/api/*` forwarder replacing `/api/auth/$` and `/api/backend/$`; tRPC client with `@trpc/tanstack-react-query`.
 
 Verification: sign-up and OPAQUE sign-in against the new backend; session survives restart (Valkey + Postgres); `db:migrate` on empty DB; CI checks from the [migration policy](../Backend_Migration/Runtime.md#schema-migrations) running.
+
+### Phase 1 Results (2026-11-22)
+
+Decisions taken with the user before starting:
+
+- **The new backend is `packages/server`**, not a folder inside `packages/backend`. That package stays the Convex product until the cutover and is deleted whole in Phase 8 ([layout](../Backend_Migration/Runtime.md#packages)).
+- **Drizzle `1.0.0-rc.6`**, pinned exactly (with `drizzle-kit` `1.0.0-rc.6`), not 0.45. 1.0 changes the migration folder format and the relational query API; starting on it avoids converting both later. Better Auth uses its adapter's `relations-v2` entry for it.
+- **The web forwarder replaced both proxy routes now.** On this branch the web app signs in against the new backend, so screens still on Convex run without a Convex token until their slice moves. `dev` is unaffected.
+- **Zod is the one source of shared shapes**; the still-running Convex backend derives its `v` validators from it.
+- `dev` takes no Convex feature work during the migration, only Stage 1 fixes.
+
+What was built:
+
+- **`packages/contracts`.** Every runtime-neutral module that web or the Worker imported from `backend/src` moved or was split there, with validators rewritten as zod; no web or Worker source imports `backend/src` anymore. The one exception is the test `packages/worker/src/tasks.sealed.test.ts`, which imports `buildWorkerChatTools` (that function needs the Convex action context). Ids and bytes, which zod has no type for, go through `contracts/wire` (`idOf`, `bytes`). `packages/backend/src/zod-validators.ts` converts the zod schemas back to Convex validators. `convex-helpers`' `zodToConvex` couldn't be used: it maps any id that isn't its own `zid()`, and any custom schema, to `v.any()`. Checked before and after against a snapshot of the Convex surface: all 410 registered functions' `exportArgs`/`exportReturns`, the 3 schema exports and all 84 moved validators are byte-identical. The web typecheck also found a real bug the build had missed: `tab-state.ts` read `.members` of a Convex validator at runtime; it now uses the zod `.options`.
+- **Server skeleton:**
+  - Nitro `bun` preset with the Hono app as server entry. A runtime plugin starts and checks the runtime before traffic and closes connections on shutdown.
+  - `#drivers` alias, with `Bun.SQL` and `Bun.RedisClient`.
+  - zod env parsing.
+  - `/api/trpc` with the four base procedures.
+  - `/api/health`.
+- **Database:** column conventions and UUIDv7 ids. The migration runner (`db:migrate`) works as follows:
+  - one advisory lock per run, and one transaction per migration;
+  - backfills and the narrowing gate, plus `--to` for the importer;
+  - it refuses edited or unknown migrations;
+  - it records into Drizzle's own table.
+
+  `SCHEMA_VERSION` is generated after `drizzle-kit generate`, and startup refuses a database that is behind it. Drizzle's own `migrate()` was rejected: it runs everything in one transaction and has nowhere to put backfills.
+- **Outbox and tasks:**
+  - The `jobs` table supports `enqueueJob` in the caller's transaction, after-commit `dispatchJobs`, and a one-minute `jobs:sweep` Nitro task.
+  - Claims use `skip locked` with a lapsing claim, retries back off, and a job is parked after 8 attempts.
+  - Debounce uses `dedupe_key`.
+  - The Valkey lease is a fixed key per task.
+- **Auth:**
+  - Better Auth on Drizzle, with Postgres as the session record (`storeSessionInDatabase`). Valkey `secondaryStorage` holds the session cache, rate-limit windows and verification values, so there is no `verification` or `rateLimit` table.
+  - The OPAQUE plugin with hooks ported to Postgres (`src/e2ee/keys.ts`). Each write is one transaction under a per-user advisory lock. Unique indexes cover the key id and `(user, credential version)`, and a partial unique index allows one active identity per user.
+  - The ingress policy (origin check, body bound, proxy-secret client address) is ported unchanged.
+  - The OPAQUE per-account budget runs on a Valkey token bucket.
+  - `workspaces`, `workspace_members`, `workers` and `worker_keys` tables exist with only the columns the base procedures need; Phase 2 widens them.
+- **Compose:**
+  - `docker-compose.yml` runs Postgres 18.7 (`wal_level=logical`), Valkey 9.2 (AOF) and Durable Streams, with Electric under `--profile electric`. Every port binds to `127.0.0.1`, and secrets come from `.env`.
+  - The Durable Streams image is built from release v0.3.0. Its `checksums.txt` was verified for amd64 and arm64, and the image runs on distroless with `persist_config off`. Every request needs `Authorization: Bearer $STREAMS_TOKEN`; the gate is a Caddy matcher in front of the plugin.
+  - Tests use a separate `docker-compose.test.yml` (in-memory, fixed test credentials, ports 55432 and 56379), because the main file refuses to run without real secrets.
+- **Web:**
+  - `/api/$` forwards to `API_INTERNAL_URL`, streaming. It strips hop-by-hop and client-sent proxy headers, adds the proxy secret and client IP, passes redirects back, and drops the stale encoding headers.
+  - `apps/web/src/lib/auth-server.ts` is gone, and the root route no longer fetches a Convex token.
+  - tRPC uses `@trpc/tanstack-react-query`: one options proxy per router in `context.trpc`, same-origin in the browser, and direct to the backend with the incoming cookie during SSR.
+- **CI:** `.github/workflows/server.yml` runs typecheck, `drizzle-kit check`, regenerate-without-diff, `db:migrate` twice on an empty database, tests, and the Nitro build.
+
+Checks (this workstation, Bun 1.4.5, the compose services above):
+
+- `bun run --cwd packages/server test`: 5 files, 29 tests, all pass, in about 8 s against real Postgres and Valkey:
+  - **OPAQUE through the HTTP surface:** the plugin's own client signs up with a key bundle and signs in; a wrong password is refused; a foreign `Origin` gets 403; the session survives a backend restart and a Valkey `FLUSHDB`.
+  - **Base procedure boundaries:** owner, member, outsider, archived and unknown workspace. For Workers: a valid token, another workspace, a stale epoch, an expired token, and revocation while the token is still valid.
+  - **Key-bundle invariants under concurrency:** idempotent commit, key ids that can't be adopted, one active identity when two switches race, and retire-and-delete on rotation.
+  - **Outbox:** 30 jobs, with two sweeps and a dispatch racing, run exactly once. Also rollback, dedupe, `runAt`, backoff and parking; a lease is held by exactly one of 5.
+  - **Migration runner:** order, `--to`, idempotence, two concurrent runs, rollback of a failing migration, refusal of edited or unknown migrations, and the backfill gate.
+- `typecheck` is clean; `db:check` passes; `db:generate` reports no changes.
+- `db:migrate` on the empty dev database applied `20261122142511_foundation`, and a second run applied nothing.
+- The built server (`.output/server/index.mjs`) started against an unmigrated database exits with "The database is behind this build … run db:migrate first".
+- **In the browser, against the built server through the web forwarder:**
+  - Sign-up with a recovery key created one user, one `opaque` account with its registration record, one active identity, one key bundle and one session in Postgres.
+  - After a backend restart, `auth.me` and `get-session` still returned the user.
+  - After sign-out, `auth.me` returned 401; OPAQUE sign-in from the form returned the user again.
+  - Valkey held only `auth:`-prefixed keys, the `ratelimit:password-attempt:<hmac>` bucket and the sweep lease; Postgres has no `verification` or `rateLimit` table.
+- The Durable Streams container answered 401 without the token, then 201 and 204 with it.
+- `vite:build` passes, and the web bundle contains no server code (no `drizzle-orm`, `RedisClient` or `pg_advisory` strings).
+- The web `tsc` errors are unchanged by this work: 103, all in Better Auth UI organization, passkey and OAuth components or in backend files reached through `backend/src`. None are in the files touched here.
+- The contracts move kept every existing suite green:
+  - the root `bun run test` (contracts: 18 files, 72 tests; backend: 62 files, 614 tests, down by exactly the 9 test files that moved);
+  - the Worker typecheck (only its 2 pre-existing `preconnect` errors) and the full Worker suite (vitest 181, edit 28, bash 8).
+
+Not done or not covered:
+
+- **`signIn.revealClassicCredential` is off on the new backend**, which only means classic (pre-encryption) accounts get a fake OPAQUE login instead of `CLASSIC_CREDENTIAL`. The published `@alkalines/better-auth-opaque@0.2.0` does not contain that option; the build the workspace had used was an unpublished local one. `bun install` for this phase resolved the published build, so `packages/backend/convex/auth.ts` now fails typecheck on that option, and at runtime Convex would ignore it. Release 0.2.1 with the feature is open as [alkalines/better-auth-opaque#9](https://github.com/alkalines/better-auth-opaque/pull/9). After it is merged, tagged and the staged npm version approved, bump all three pins to 0.2.1 and turn the option back on in `src/auth/auth.ts`.
+- The CI workflow has not run on GitHub yet. Its steps were each run locally.
+- The custody release Convex's activation requested is not ported (custody ends in Stage 1).
+- Portable drivers, the object store driver and Durable Streams/Electric clients are not part of this phase.
+- The web auth client still loads `convexClient()` and the app still mounts `ConvexBetterAuthProvider`, because the Convex screens are typed against them. The provider asks `/api/auth/convex/token`, the new backend answers 404, and those screens stay signed out. Both go in Phase 5 with the Convex client.
+- `docker compose up --build` of the Durable Streams image was run by the user. The image itself was not inspected beyond the auth check above.
 
 ## Phase 2: Schema
 

@@ -3,7 +3,7 @@ import {
   acpAnswerError,
   type AcpInteractionAnswer,
   type AcpInteractionRequest,
-} from "backend/src/acp/contract";
+} from "contracts/acp/contract";
 import { ExternalLinkIcon, MessageCircleQuestionIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";

@@ -4,15 +4,15 @@ import {
   TILE_COLOR_NAMES,
   resolveTileColorName,
   type TileColorName,
-} from "backend/src/workspaces/colors";
-import { resolveWorkspaceIconName, type WorkspaceIconName } from "backend/src/workspaces/icons";
+} from "contracts/workspaces/colors";
+import { resolveWorkspaceIconName, type WorkspaceIconName } from "contracts/workspaces/icons";
 import { Button } from "@/components/ui/button";
 import { workspaceIconOptions } from "@/components/workspaces/workspace-icon";
 import { cn } from "@/lib/utils";
 
 /**
  * Color swatches and the icon grid for a workspace or Project tile. Values are persisted names
- * (`backend/src/workspaces/colors.ts`, `icons.ts`); unknown names show the defaults as selected.
+ * (`packages/contracts/src/workspaces/colors.ts`, `icons.ts`); unknown names show the defaults as selected.
  * The caller owns persistence: it may save on every pick (Settings) or on submit (dialogs).
  */
 export function TileAppearanceFields({

@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import type { ProviderPricing } from "../workspaces/provider";
+import type { ProviderPricing } from "contracts/workspaces/provider";
 
 /** BYOK usage metadata for operational estimates, not a credit or payment record. */
 export type completionUsage = {

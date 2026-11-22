@@ -3,7 +3,7 @@ import type { Doc, Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
 import { isWorkspaceProviderEnabled } from "../../convex/provider_records";
 import { credentialDisplayName } from "../workspaces/credentials";
-import { providerSnapshotFromCatalog, type ProviderSnapshot } from "../workspaces/provider";
+import { providerSnapshotFromCatalog, type ProviderSnapshot } from "contracts/workspaces/provider";
 import type { LimitAdapter } from "./adapter";
 import { limitAdapter } from "./adapters";
 import { recordLimitEvent, type LimitEvent } from "./events";

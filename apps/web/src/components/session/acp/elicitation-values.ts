@@ -2,7 +2,7 @@ import type {
   AcpElicitationField,
   AcpElicitationValue,
   AcpInteractionRequest,
-} from "backend/src/acp/contract";
+} from "contracts/acp/contract";
 
 export type FormRequest = Extract<AcpInteractionRequest, { kind: "elicitation"; mode: "form" }>;
 export type FormValues = Record<string, string | string[] | undefined>;

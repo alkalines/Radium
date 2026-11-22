@@ -2,7 +2,7 @@ import { convexQuery } from "@convex-dev/react-query";
 import { useQueries } from "@tanstack/react-query";
 import type { FunctionReturnType } from "convex/server";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { blobValue } from "backend/src/telemetry/store";
+import { blobValue } from "contracts/telemetry/store";
 import { ChevronDownIcon, HistoryIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 

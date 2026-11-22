@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { TodoItem } from "backend/src/chatroom/session-tools";
+import type { TodoItem } from "contracts/chatroom/session-tools";
 import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
 import { ChevronDownIcon, ListTodoIcon } from "lucide-react";

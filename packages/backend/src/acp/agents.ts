@@ -12,11 +12,12 @@ import {
   acpAgentDefinitionError,
   acpAgentDefinitionValidator,
   type AcpAgentDefinition,
-} from "./contract";
+} from "contracts/acp/contract";
+import { zodToConvex } from "../zod-validators";
 
 const definitionView = v.object({
   _id: v.id("acp_agents"),
-  ...acpAgentDefinitionValidator.fields,
+  ...zodToConvex(acpAgentDefinitionValidator).fields,
   updatedAt: v.number(),
 });
 
@@ -42,7 +43,10 @@ export const ListAgentDefinitions = ownedWorkspaceQuery({
 
 /** Agent IDs are immutable: existing Sessions keep their original agent binding. */
 export const SaveAgentDefinition = ownedWorkspaceMutation({
-  args: { id: v.optional(v.id("acp_agents")), definition: acpAgentDefinitionValidator },
+  args: {
+    id: v.optional(v.id("acp_agents")),
+    definition: zodToConvex(acpAgentDefinitionValidator),
+  },
   returns: v.id("acp_agents"),
   handler: async (ctx, args) => {
     const message = acpAgentDefinitionError(args.definition);
@@ -139,7 +143,7 @@ export const DeleteAgentDefinition = ownedWorkspaceMutation({
 /** Workspace comes only from the verified machine identity, never query arguments. */
 export const agentDefinitions = workerQuery({
   args: {},
-  returns: v.array(acpAgentDefinitionValidator),
+  returns: v.array(zodToConvex(acpAgentDefinitionValidator)),
   handler: async (ctx) => {
     const rows = await ctx.db
       .query("acp_agents")

@@ -14,9 +14,9 @@ import type {
   AcpInteractionAnswer,
   AcpInteractionRequest,
   AcpOp,
-} from "backend/src/acp/contract";
+} from "contracts/acp/contract";
 import { AcpHost } from "./host.js";
-import type { AcpGatewayAccess, AcpGatewayModel } from "backend/src/acp/gateway";
+import type { AcpGatewayAccess, AcpGatewayModel } from "contracts/acp/gateway";
 import type { GatewayKey, GatewayKeyStore } from "../auth/gateway.js";
 import type {
   AcpTransport,

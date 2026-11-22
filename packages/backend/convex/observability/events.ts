@@ -10,8 +10,9 @@ import {
   loggingEnvelopeSchema,
   LOGGING_LIMITS,
   LOGGING_SOURCES,
-} from "../../src/logging/contract";
+} from "contracts/logging/contract";
 import { logger } from "../../src/logging/server";
+import { zodToConvex } from "../../src/zod-validators";
 
 const rateLimiter = new RateLimiter(components.rateLimiter, {
   ingest: {
@@ -26,7 +27,7 @@ const rateLimiter = new RateLimiter(components.rateLimiter, {
  * supplies the actor identity; the wrapper derives it from the Better Auth user.
  */
 export const ingest = mutation({
-  args: loggingEnvelopeSchema.fields,
+  args: zodToConvex(loggingEnvelopeSchema).fields,
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const authUser = await authComponent.getAuthUser(ctx);

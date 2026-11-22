@@ -5,11 +5,12 @@ import { action } from "../maintenance";
 import { denyWorkerAuth as denied, workerMutation, workerQuery } from "./machine";
 import { ownedWorkspaceMutation, ownedWorkspaceQuery } from "../../convex/helpers";
 import { backendOrigin, ENROLLMENT_TTL, machineSigningKey, randomToken, tokenDigest } from "./auth";
-import { validChatWorkerDirectory } from "./chat-config";
+import { validChatWorkerDirectory } from "contracts/worker/chat-config";
 import { findWorkerPresence } from "./chat-selection";
-import { acpGatewayAccessValidator, keyTelemetryValidator } from "../acp/gateway";
+import { acpGatewayAccessValidator, keyTelemetryValidator } from "contracts/acp/gateway";
 import { findWorkerGateway } from "./gateway";
 import { deleteWorkerKeys } from "../e2ee/worker-keys";
+import { zodToConvex } from "../zod-validators";
 
 /**
  * Parent-app policy around the isolated workerIdentity persistence component.
@@ -30,7 +31,10 @@ const workerSummary = v.object({
   ...workerMetadata.fields,
   lastSeenAt: v.optional(v.number()),
   tempDirectory: v.optional(v.string()),
-  gateway: v.object({ access: acpGatewayAccessValidator, telemetry: keyTelemetryValidator }),
+  gateway: v.object({
+    access: zodToConvex(acpGatewayAccessValidator),
+    telemetry: zodToConvex(keyTelemetryValidator),
+  }),
 });
 
 /**

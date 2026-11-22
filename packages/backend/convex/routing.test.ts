@@ -6,7 +6,7 @@ import { convexTest } from "convex-test";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { secrets, workspaceProviderSecretNamespace } from "./secrets";
-import { DEFAULT_ROUTING_SETTINGS, type RoutingSettings } from "../src/routing/settings";
+import { DEFAULT_ROUTING_SETTINGS, type RoutingSettings } from "contracts/routing/settings";
 import type { Id } from "./_generated/dataModel";
 
 type AuthContext = {

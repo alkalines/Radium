@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { query } from "../../convex/_generated/server";
 import { authComponent } from "../../convex/auth";
 import type { Id, TableNames } from "../../convex/_generated/dataModel";
-import type { LegacyBox } from "./legacy-contract";
+import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import { requireWorkspaceAccessForUser, requireWorkspaceOwnedByUser, authorizeChatRecord } from "../../convex/workspaces";
 import { readMigrationState } from "./migration-contract";
 

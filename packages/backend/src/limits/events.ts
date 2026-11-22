@@ -1,19 +1,8 @@
-import { v, type Infer } from "convex/values";
+import type { LimitEventKind } from "contracts/limits/events";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx } from "../../convex/_generated/server";
 import { notify } from "../notifications/notify";
 import { meterFraction, type LimitSettings, type Meter } from "./meters";
-
-export const limitEventKindValidator = v.union(
-  v.literal("limit_low"),
-  v.literal("limit_critical"),
-  v.literal("limit_exhausted"),
-  v.literal("limit_reset"),
-  v.literal("credential_expired"),
-  v.literal("credential_restored"),
-  v.literal("poll_failed"),
-);
-export type LimitEventKind = Infer<typeof limitEventKindValidator>;
 
 /** Everything a limit event carries; stored whole so delivery channels need no other reads. */
 export type LimitEvent = {

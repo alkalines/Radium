@@ -12,7 +12,7 @@ import { authComponent } from "../../convex/auth";
 import { secrets, workspaceProviderSecretNamespace } from "../../convex/secrets";
 import { boundedMessage } from "../routing/failures";
 import { credentialSecretName, isCredentialEnabled } from "../workspaces/credentials";
-import type { ProviderSnapshot } from "../workspaces/provider";
+import type { ProviderSnapshot } from "contracts/workspaces/provider";
 import { LimitPollError, type LimitPollResult } from "./adapter";
 import { limitAdapter } from "./adapters";
 import { recordLimitEvent } from "./events";

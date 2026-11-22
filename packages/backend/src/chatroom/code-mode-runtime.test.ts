@@ -1,15 +1,15 @@
 import { tool, type ToolSet } from "ai";
 import { expect, test } from "vitest";
 import { z } from "zod";
-import type { CodeModeInteractionResponse, CodeModeOutput } from "./code-mode";
+import type { CodeModeInteractionResponse, CodeModeOutput } from "contracts/chatroom/code-mode";
 import {
   createCodeMode,
   type CodeModeInteractions,
   type CodeModeInventory,
-} from "./code-mode-runtime";
-import { buildSessionTools } from "./session-tools";
+} from "contracts/chatroom/code-mode-runtime";
+import { buildSessionTools } from "contracts/chatroom/session-tools";
 import { chatSystemPrompt } from "./system-prompt";
-import { QUESTION_TOOL_ID } from "./tools";
+import { QUESTION_TOOL_ID } from "contracts/chatroom/tools";
 
 /**
  * Interactions answered with `answer` from poll number `answerOnPoll` on (the runtime polls once

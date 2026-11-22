@@ -21,10 +21,10 @@ import {
   WORKER_EDIT_OUTPUT_BYTES,
   type WorkerEditRequest,
   type WorkerEditResult,
-} from "backend/src/worker/edit-contract";
-import { WORKER_BASH_OUTPUT_BYTES, type WorkerBashRequest } from "backend/src/worker/bash-contract";
-import { chatWorkerSessionId } from "backend/src/worker/chat-config";
-import { toArrayBuffer } from "backend/src/e2ee/contract";
+} from "contracts/worker/edit-contract";
+import { WORKER_BASH_OUTPUT_BYTES, type WorkerBashRequest } from "contracts/worker/bash-contract";
+import { chatWorkerSessionId } from "contracts/worker/chat-config";
+import { toArrayBuffer } from "contracts/e2ee/contract";
 import {
   parseWorkerToolInput,
   WORKER_APPROVAL_CLOCK_SKEW_MS,
@@ -38,7 +38,7 @@ import {
   workerTaskAad,
   type WorkerSealedTaskRequest,
   type WorkerToolOperation,
-} from "backend/src/worker/task-contract";
+} from "contracts/worker/task-contract";
 import { chatAudienceIncludes, verifyChatKey } from "./e2ee/chat-key.js";
 import type { WorkerTrust } from "./e2ee/trust.js";
 

@@ -1,6 +1,6 @@
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { legacyAad, type LegacyBox } from "backend/src/e2ee/legacy-contract";
+import { legacyAad, type LegacyBox } from "contracts/e2ee/legacy-contract";
 import { openBox, toBase64Url } from "radium-crypto";
 import { keyManager, KeysLockedError } from "./key-manager";
 import { getMemberKey, getOwnerKey } from "./workspace-keys";

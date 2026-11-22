@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import { useKeyStatus } from "./use-key-status";
 import { openLegacyContent } from "./legacy-content";
 import { secretGeneration } from "./runtime";

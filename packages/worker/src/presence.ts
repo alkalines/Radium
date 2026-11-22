@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { api } from "backend/convex/_generated/api";
-import { WORKER_HEARTBEAT_INTERVAL_MS } from "backend/src/worker/presence";
+import { WORKER_HEARTBEAT_INTERVAL_MS } from "contracts/worker/presence";
 
 /**
  * Create (if missing) and return the Worker's temp working directory: `radium` under the OS temp

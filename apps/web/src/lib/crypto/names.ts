@@ -1,8 +1,8 @@
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { legacyAad } from "backend/src/e2ee/legacy-contract";
+import { legacyAad } from "contracts/e2ee/legacy-contract";
 import { sealBox, utf8 } from "radium-crypto";
-import { normalizeDisplayName } from "backend/src/workspaces/names";
+import { normalizeDisplayName } from "contracts/workspaces/names";
 import { getCurrentMemberPublicKey } from "./workspace-keys";
 import { cryptoClient, buffer } from "./runtime";
 import { keyManager, KeysLockedError } from "./key-manager";

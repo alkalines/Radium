@@ -8,7 +8,7 @@ import {
   type OtlpBundle,
   type OtlpValue,
 } from "./otlp";
-import type { LoadedBlob, LoadedNode } from "./store";
+import type { LoadedBlob, LoadedNode } from "contracts/telemetry/store";
 
 function blob(value: unknown, kind: LoadedBlob["kind"] = "message"): LoadedBlob {
   return {

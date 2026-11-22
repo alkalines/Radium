@@ -10,15 +10,16 @@ import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { workspaceMutation, workspaceQuery } from "../../convex/helpers";
 import { requireWorkspaceAccessForUser } from "../../convex/workspaces";
-import { requireActiveWorkspaceWorker, validChatWorkerDirectory } from "../worker/chat-config";
+import { requireActiveWorkspaceWorker, validChatWorkerDirectory } from "contracts/worker/chat-config";
 import { workspaceWorkerMetadata } from "../worker/chat-selection";
 import { MAX_PROJECT_FOLDERS, projectFolderValidator, type ProjectFolder } from "./validators";
-import { isTileColorName } from "../workspaces/colors";
-import { isWorkspaceIconName } from "../workspaces/icons";
-import { normalizeDisplayName } from "../workspaces/names";
+import { isTileColorName } from "contracts/workspaces/colors";
+import { isWorkspaceIconName } from "contracts/workspaces/icons";
+import { normalizeDisplayName } from "contracts/workspaces/names";
 import { canManageProject } from "../workspaces/policy";
-import { legacyBoxValidator } from "../e2ee/legacy-contract";
+import { legacyBoxValidator } from "contracts/e2ee/legacy-contract";
 import { assertLegacyWritesAllowed, assertLegacyPlaintextAllowed, deleteLegacySidecar } from "../e2ee/migration-contract";
+import { zodToConvex } from "../zod-validators";
 
 /**
  * Projects group chats inside a workspace. Any workspace member may read and create them; the
@@ -35,7 +36,7 @@ const projectSummaryValidator = v.object({
   _id: v.id("projects"),
   _creationTime: v.number(),
   name: v.string(),
-  legacyContent: v.optional(legacyBoxValidator),
+  legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
   color: v.optional(v.string()),
   icon: v.optional(v.string()),
   folders: v.optional(v.array(projectFolderValidator)),

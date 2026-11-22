@@ -3,7 +3,7 @@ import type { ConvexClient } from "convex/browser";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORKER_HEARTBEAT_INTERVAL_MS } from "backend/src/worker/presence";
+import { WORKER_HEARTBEAT_INTERVAL_MS } from "contracts/worker/presence";
 import { prepareTempDirectory, startPresenceReporter } from "./presence.js";
 
 afterEach(() => {

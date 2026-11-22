@@ -1,8 +1,8 @@
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { AcpCommandInfo, AcpConfig, AcpDraftConfig } from "backend/src/acp/contract";
-import type { AcpFrame } from "backend/src/acp/fold";
-import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+import type { AcpCommandInfo, AcpConfig, AcpDraftConfig } from "contracts/acp/contract";
+import type { AcpFrame } from "contracts/acp/fold";
+import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import type { FunctionArgs } from "convex/server";
 import { cryptoClient } from "./runtime";
 import { openLegacyContent } from "./legacy-content";

@@ -14,7 +14,7 @@ import {
 } from "radium-crypto";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { legacyAad } from "../src/e2ee/legacy-contract";
+import { legacyAad } from "contracts/e2ee/legacy-contract";
 import { activeLegacyRecipient } from "../src/e2ee/legacy-crypto";
 import { currentChatPublicKey } from "../src/e2ee/chat-keys";
 import type { Doc, Id } from "./_generated/dataModel";

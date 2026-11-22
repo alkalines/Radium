@@ -1,6 +1,6 @@
 # ACP In Chatroom
 
-Status: **implemented.** Overview: [ACP Agents](../ACP.md). Code: `apps/web/src/components/session/acp/` — `useAcpSession` (subscriptions and actions), `view-model.ts` (items → messages, RunState), `acp-session-screen.tsx`, the permission/elicitation prompts, config controls and ACP tool renderers; frames are folded by `packages/backend/src/acp/fold.ts`. `SessionScreen` renders `AcpSessionScreen` for chats whose `GetChat.agent` is set.
+Status: **implemented.** Overview: [ACP Agents](../ACP.md). Code: `apps/web/src/components/session/acp/` — `useAcpSession` (subscriptions and actions), `view-model.ts` (items → messages, RunState), `acp-session-screen.tsx`, the permission/elicitation prompts, config controls and ACP tool renderers; frames are folded by `packages/contracts/src/acp/fold.ts`. `SessionScreen` renders `AcpSessionScreen` for chats whose `GetChat.agent` is set.
 
 An ACP Session uses the same Composer, `ModelPicker`, Tools trigger,
 `SessionWorkerControl`, `ContextUsage`, Trace Steps, Approval prompt, Question

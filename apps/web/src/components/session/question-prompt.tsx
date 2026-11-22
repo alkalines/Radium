@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { ToolUIPart } from "ai";
-import type { QuestionOutput } from "backend/src/chatroom/session-tools";
+import type { QuestionOutput } from "contracts/chatroom/session-tools";
 import { MessageCircleQuestionIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";

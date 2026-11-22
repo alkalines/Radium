@@ -34,7 +34,7 @@ import type {
   AcpInteractionRequest,
   AcpOp,
   AcpSignedBinding,
-} from "backend/src/acp/contract";
+} from "contracts/acp/contract";
 import { WorkerTrustError, type WorkerTrust } from "../e2ee/trust.js";
 import { AcpHost } from "./host.js";
 import { AcpSigned, arrayBuffer } from "./signed.js";

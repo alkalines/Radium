@@ -70,7 +70,7 @@ Use these terms in component names, props, `data-*` attributes, docs, and review
 | `--subtle-foreground` | `#707070`               | Group headings (`Today`), placeholders, inactive Tab titles.      |
 | `--primary`           | `#ededed`               | Primary button (near-white on dark). Not a brand color.           |
 | `--brand`             | Radium orange           | Default tile color and the empty Session glow. Never buttons or status. |
-| `--tile-<color>`      | `brand`, `red`, …       | Workspace and Project tiles only (`backend/src/workspaces/colors.ts`); white glyph on top. |
+| `--tile-<color>`      | `brand`, `red`, …       | Workspace and Project tiles only (`packages/contracts/src/workspaces/colors.ts`); white glyph on top. |
 
 Surfaces stack at most three deep: `--chrome` → `--background` → `--card`. Elevation is expressed by these steps only; `shadow-*` utilities MUST NOT be added on Harness screens (shadcn's own popover shadows are acceptable).
 

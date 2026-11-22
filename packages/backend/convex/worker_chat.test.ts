@@ -8,8 +8,8 @@ import type { Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import schema from "./schema";
 import { normalizeWorkerKey, tokenDigest, workerIssuer } from "../src/worker/auth";
-import { chatWorkerSessionId } from "../src/worker/chat-config";
-import { WORKER_TASK_RETENTION_MS } from "../src/worker/task-contract";
+import { chatWorkerSessionId } from "contracts/worker/chat-config";
+import { WORKER_TASK_RETENTION_MS } from "contracts/worker/task-contract";
 
 vi.mock("./auth", () => ({
   authComponent: {

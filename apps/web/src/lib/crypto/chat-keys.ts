@@ -1,5 +1,5 @@
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { AcpSignedBinding } from "backend/src/acp/contract";
+import type { AcpSignedBinding } from "contracts/acp/contract";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "backend/convex/_generated/api";
 import {

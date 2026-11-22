@@ -12,7 +12,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import type { ChatWorkerTool } from "backend/src/worker/chat-config";
+import type { ChatWorkerTool } from "contracts/worker/chat-config";
 import { Row } from "@/components/harness/group-list";
 import { cn } from "@/lib/utils";
 

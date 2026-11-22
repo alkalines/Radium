@@ -1,0 +1,89 @@
+name: Server
+
+# Checks of the new backend (packages/server) from the schema migration policy in
+# docs/Backend_Migration/Runtime.md: migrations match the schema, apply to an empty database, and
+# tests pass against real Postgres and Valkey. Applying to the previous release's database starts
+# with the first release on Postgres; there is none yet.
+
+on:
+  pull_request:
+    paths:
+      - "packages/server/**"
+      - "packages/contracts/**"
+      - "packages/crypto/**"
+      - "bun.lock"
+      - ".github/workflows/server.yml"
+  push:
+    branches: [dev]
+    paths:
+      - "packages/server/**"
+      - "packages/contracts/**"
+      - "packages/crypto/**"
+      - "bun.lock"
+      - ".github/workflows/server.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.7-alpine
+        env:
+          POSTGRES_USER: radium
+          POSTGRES_PASSWORD: radium-test
+          POSTGRES_DB: radium
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U radium -d radium"
+          --health-interval 2s
+          --health-retries 30
+      valkey:
+        image: valkey/valkey:9.2-alpine
+        ports: ["56379:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 2s
+          --health-retries 30
+    defaults:
+      run:
+        working-directory: packages/server
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.5
+
+      - run: bun install --frozen-lockfile
+        working-directory: .
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Migrations are consistent
+        run: bun run db:check
+
+      - name: Regenerating migrations produces no diff
+        run: |
+          bun run db:generate
+          if [ -n "$(git status --porcelain .)" ]; then
+            git status --porcelain .
+            echo "The schema changed without a committed migration: run bun run db:generate" >&2
+            exit 1
+          fi
+
+      - name: Migrations apply to an empty database, twice
+        env:
+          DATABASE_URL: postgres://radium:radium-test@127.0.0.1:55432/radium
+        run: |
+          bun run db:migrate
+          bun run db:migrate
+
+      - name: Tests
+        run: bun run test
+
+      - name: Nitro build (bun preset)
+        run: bun run build

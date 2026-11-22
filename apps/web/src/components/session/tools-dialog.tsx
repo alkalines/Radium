@@ -8,8 +8,8 @@ import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { BUILTIN_TOOL_SETS, type ToolSelection } from "backend/src/chatroom/tools";
-import type { ChatWorkerSelection } from "backend/src/worker/chat-config";
+import { BUILTIN_TOOL_SETS, type ToolSelection } from "contracts/chatroom/tools";
+import type { ChatWorkerSelection } from "contracts/worker/chat-config";
 import {
   ToolRow,
   builtinToolIcon,

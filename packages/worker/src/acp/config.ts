@@ -1,7 +1,7 @@
 import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve } from "node:path";
-import { forbiddenAgentEnv, type AcpAgentDefinition } from "backend/src/acp/contract";
+import { forbiddenAgentEnv, type AcpAgentDefinition } from "contracts/acp/contract";
 
 /** Resolve on the Worker's PATH, or require an executable file for explicit paths. */
 export async function resolveAgentCommand(command: string): Promise<string | null> {

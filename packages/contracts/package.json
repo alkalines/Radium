@@ -1,0 +1,26 @@
+{
+  "name": "contracts",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/codemode": "2.2.6",
+    "ai": "^7.0.165",
+    "effect": "4.1.0",
+    "radium-crypto": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "5.0.0",
+    "vitest": "^5.1.0"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  }
+}

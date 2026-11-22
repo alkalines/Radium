@@ -2,7 +2,11 @@ import { v } from "convex/values";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
 import { getDefaultWorkspaceForUser } from "../../convex/workspaces";
-import { BUILTIN_TOOL_SETS, enabledBuiltinToolSets, storedBuiltinToolSets } from "./tools";
+import {
+  BUILTIN_TOOL_SETS,
+  enabledBuiltinToolSets,
+  storedBuiltinToolSets,
+} from "contracts/chatroom/tools";
 
 /**
  * Workspace tool selections: which built-in tool sets and MCP servers are active for workspace

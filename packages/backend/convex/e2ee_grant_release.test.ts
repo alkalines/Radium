@@ -31,7 +31,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { legacyAad } from "../src/e2ee/legacy-contract";
+import { legacyAad } from "contracts/e2ee/legacy-contract";
 import type { EpochInput, GrantInput, RosterInput } from "../src/e2ee/workspace-contract";
 
 vi.mock("./auth", () => ({

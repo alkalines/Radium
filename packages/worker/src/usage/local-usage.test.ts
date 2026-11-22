@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { LocalUsageRow } from "backend/src/usage/local_contract";
+import type { LocalUsageRow } from "contracts/usage/local_contract";
 import {
   ccusageFailure,
   sessionRows,

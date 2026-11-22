@@ -10,8 +10,9 @@ import schema from "./schema";
 import { startCapture } from "../src/telemetry/capture";
 import { blobHash, nodeHash } from "../src/telemetry/hash";
 import { canonicalJson } from "../src/telemetry/canonical";
-import { loadBlob, loadChain, loadToolset, type LoadedBlob } from "../src/telemetry/store";
-import type { TelemetryAttempt, TelemetrySettings } from "../src/telemetry/validators";
+import { loadBlob, loadChain, loadToolset } from "../src/telemetry/store";
+import type { LoadedBlob } from "contracts/telemetry/store";
+import type { TelemetryAttempt, TelemetrySettings } from "contracts/telemetry/validators";
 
 vi.mock("./auth", () => ({
   authComponent: { getAuthUser: vi.fn(), getAnyUserById: vi.fn(), safeGetAuthUser: vi.fn() },

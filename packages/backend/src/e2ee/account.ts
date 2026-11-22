@@ -11,7 +11,7 @@ import {
 import { query } from "../../convex/_generated/server";
 import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
-import { decodeExactBytes } from "./contract";
+import { decodeExactBytes } from "contracts/e2ee/contract";
 
 /**
  * Account key status of the signed-in user for the web key manager: whether keys exist and the

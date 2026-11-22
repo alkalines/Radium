@@ -31,10 +31,10 @@ import {
   workspaceProviderSecretNamespace,
   type SecretNamespace,
 } from "./secrets";
-import { providerSnapshotFromCatalog } from "../src/workspaces/provider";
+import { providerSnapshotFromCatalog } from "contracts/workspaces/provider";
 import { MAX_PROVIDER_CREDENTIALS, credentialSecretName } from "../src/workspaces/credentials";
 import { loadSnapshotTarget, recordLoginPlan } from "../src/limits/store";
-import { OPENAI_CODEX_SLUG } from "../src/provider_slugs";
+import { OPENAI_CODEX_SLUG } from "contracts/provider_slugs";
 import { assertLegacyPlaintextAllowed } from "../src/e2ee/migration-contract";
 
 export const migrations = new Migrations(components.migrations, { schema });

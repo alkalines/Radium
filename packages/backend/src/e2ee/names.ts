@@ -5,13 +5,14 @@ import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
 import { requireWorkspaceAccessForUser } from "../../convex/workspaces";
 import { canManageProject } from "../workspaces/policy";
-import { legacyBoxValidator } from "./legacy-contract";
+import { legacyBoxValidator } from "contracts/e2ee/legacy-contract";
 import { activeLegacyRecipient } from "./legacy-crypto";
 import { assertLegacyWritesAllowed, deleteLegacySidecar } from "./migration-contract";
+import { zodToConvex } from "../zod-validators";
 
 /** Name updates contain ciphertext only; current member-key binding is rechecked atomically. */
 export const setName = mutation({
-  args: { target: v.union(v.id("workspaces"), v.id("projects")), content: legacyBoxValidator, expected: v.union(v.null(), legacyBoxValidator) },
+  args: { target: v.union(v.id("workspaces"), v.id("projects")), content: zodToConvex(legacyBoxValidator), expected: v.union(v.null(), zodToConvex(legacyBoxValidator)) },
   returns: v.null(),
   handler: async (ctx, { target, content, expected }) => {
     const identity = await authComponent.getAuthUser(ctx);
@@ -50,7 +51,7 @@ export const getName = query({
   args: { target: v.union(v.id("workspaces"), v.id("projects")) },
   returns: v.object({
     workspace: v.id("workspaces"), name: v.string(), icon: v.optional(v.string()),
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
   }),
   handler: async (ctx, { target }) => {
     const identity = await authComponent.getAuthUser(ctx);

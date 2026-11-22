@@ -7,8 +7,8 @@ import { ArchiveIcon, PlusIcon, RotateCcwIcon, UsersIcon, XIcon } from "lucide-r
 import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
-import type { TileColorName } from "backend/src/workspaces/colors";
-import type { WorkspaceIconName } from "backend/src/workspaces/icons";
+import type { TileColorName } from "contracts/workspaces/colors";
+import type { WorkspaceIconName } from "contracts/workspaces/icons";
 import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
 import { ProjectTile } from "@/components/harness/project-tile";
 import { TileAppearanceFields } from "@/components/harness/tile-appearance-fields";

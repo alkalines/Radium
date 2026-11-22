@@ -7,7 +7,7 @@ import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { isWorkerOnline } from "backend/src/worker/presence";
+import { isWorkerOnline } from "contracts/worker/presence";
 import { ProjectGlyph, type ProjectSummary } from "@/components/projects/project-glyph";
 import { AcpAgentIcon } from "@/components/session/acp/agent-icon";
 import { acpActionError } from "@/components/session/acp/use-acp-session";

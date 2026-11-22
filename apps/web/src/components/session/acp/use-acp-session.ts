@@ -14,14 +14,9 @@ import {
   type AcpCommandPayload,
   type AcpInteractionAnswer,
   type AcpInteractionRequest,
-} from "backend/src/acp/contract";
-import {
-  applyAcpFrames,
-  emptyAcpTimeline,
-  startAcpEpoch,
-  type AcpFrame,
-} from "backend/src/acp/fold";
-import { isWorkerOnline } from "backend/src/worker/presence";
+} from "contracts/acp/contract";
+import { applyAcpFrames, emptyAcpTimeline, startAcpEpoch, type AcpFrame } from "contracts/acp/fold";
+import { isWorkerOnline } from "contracts/worker/presence";
 import { acpBrowserTabId } from "./browser-tab";
 import { acpChatStatus, acpRunState, createAcpViewModel } from "./view-model";
 import {

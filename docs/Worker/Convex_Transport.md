@@ -53,7 +53,7 @@ loads the native editor for a valid request. No directory CLI option or local
 allowlist selects the execution folder. This path does not adapt an ACP agent.
 ACP execution, batched ACP output and its Convex functions are described in
 [ACP transport](../ACP/Transport.md); its runtime-neutral contract lives in
-`packages/backend/src/acp/contract.ts`. App-owned
+`packages/contracts/src/acp/contract.ts`. App-owned
 queries/mutations authorize callers before accessing the component; clients do
 not call component functions directly. Runtime-neutral wire contracts belong in
 `packages/backend/src/worker/` when introduced. Current Chatroom entry points

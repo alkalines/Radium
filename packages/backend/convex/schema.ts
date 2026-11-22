@@ -1,15 +1,15 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-import { acpGatewayAccessValidator, keyTelemetryValidator } from "../src/acp/gateway";
-import { acpProfileValidator } from "../src/acp/contract";
+import { acpGatewayAccessValidator, keyTelemetryValidator } from "contracts/acp/gateway";
+import { acpProfileValidator } from "contracts/acp/contract";
 import { publicKey as workerPublicKey } from "worker-component";
 import { completionPricingSchema, completionUsageSchema } from "../src/usage/completion";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
-import { workerChatCallFields, workerTaskFields } from "../src/worker/task-contract";
-import { chatWorkerSelectionValidator, chatWorkerToolValidator } from "../src/worker/chat-config";
+import { workerChatCallFields, workerTaskFields } from "contracts/worker/task-contract";
+import { chatWorkerSelectionValidator, chatWorkerToolValidator } from "contracts/worker/chat-config";
 import { projectFolderValidator } from "../src/projects/validators";
 import { systemPromptSettingsValidator } from "../src/chatroom/system-prompt";
-import { codeModeInteractionResponseValidator } from "../src/chatroom/code-mode";
+import { codeModeInteractionResponseValidator } from "contracts/chatroom/code-mode";
 import {
   legacyTelemetrySpanKindSchema,
   legacyTelemetryStatusSchema,
@@ -23,30 +23,30 @@ import {
   telemetrySettingsSchema,
   telemetrySourceSchema,
   telemetryUsageSchema,
-} from "../src/telemetry/validators";
+} from "contracts/telemetry/validators";
 import {
   providerModelValidator,
   providerNpmValidator,
   providerPricingValidator,
   providerSnapshotValidator,
-} from "../src/workspaces/provider";
+} from "contracts/workspaces/provider";
 import {
   cooldownReasonValidator,
   providerRoutingValidator,
   routingSettingsValidator,
-} from "../src/routing/settings";
+} from "contracts/routing/settings";
 import {
   alertStateValidator,
   credentialBudgetValidator,
   limitSettingsValidator,
   meterValidator,
 } from "../src/limits/meters";
-import { limitEventKindValidator } from "../src/limits/events";
+import { limitEventKindValidator } from "contracts/limits/events";
 import {
   notificationPreferencesValidator,
   sessionNotificationKindValidator,
-} from "../src/notifications/contract";
-import { chatInterruptionValidator } from "../src/chatroom/interruption";
+} from "contracts/notifications/contract";
+import { chatInterruptionValidator } from "contracts/chatroom/interruption";
 import {
   acpChatAgentValidator,
   acpSessionStatusValidator,
@@ -76,14 +76,15 @@ import {
   acpDeletedTargetValidator,
   acpSealedRequestValidator,
   acpSealedAnswerValidator,
-} from "../src/acp/contract";
+} from "contracts/acp/contract";
 import { agentTurnPricingValidator, modelsDevMatchValidator } from "../src/usage/agent_usage";
-import { storedLocalUsageModelValidator } from "../src/usage/local_contract";
-import { identityStatusValidator } from "../src/e2ee/contract";
-import { legacyBoxValidator } from "../src/e2ee/legacy-contract";
+import { storedLocalUsageModelValidator } from "contracts/usage/local_contract";
+import { identityStatusValidator } from "contracts/e2ee/contract";
+import { legacyBoxValidator } from "contracts/e2ee/legacy-contract";
 import { migrationStateFields, migrationJobFields, legacyCustodyFields } from "../src/e2ee/migration-contract";
 import { telemetryProofFields, telemetryRevisionFields } from "../src/e2ee/migration-telemetry-contract";
 import { acpDeferredCleanupValidator } from "../src/acp/deferred-contract";
+import { zodToConvex, zodToConvexFields } from "../src/zod-validators";
 
 export default defineSchema({
   e2ee_migration_state: defineTable(migrationStateFields).index("by_key", ["key"]),
@@ -106,16 +107,16 @@ export default defineSchema({
   /** Owner-defined launch configuration, shared by every Worker in the workspace. */
   acp_agents: defineTable({
     workspace: v.id("workspaces"),
-    ...acpAgentDefinitionValidator.fields,
+    ...zodToConvex(acpAgentDefinitionValidator).fields,
     updatedAt: v.number(),
   }).index("by_workspace_and_agentId", ["workspace", "agentId"]),
   /** Owner-only agent session catalog, independent of Radium chat creation. */
   acp_agent_sessions: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     workspace: v.id("workspaces"),
     worker: v.string(),
     agentId: v.string(),
-    ...acpAgentSessionEntryValidator.fields,
+    ...zodToConvex(acpAgentSessionEntryValidator).fields,
     chat: v.optional(v.id("aisdk_chats")),
   })
     .index("by_workspace_and_agentId_and_updatedAt", ["workspace", "agentId", "updatedAt"])
@@ -135,36 +136,36 @@ export default defineSchema({
     .index("by_sessionId_and_worker", ["workspace", "sessionId", "worker"]),
   /** Durable ACP metadata; conversation content belongs to the agent on its Worker. */
   acp_sessions: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
-    profile: v.optional(acpProfileValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
+    profile: v.optional(zodToConvex(acpProfileValidator)),
     chat: v.id("aisdk_chats"),
     workspace: v.id("workspaces"),
     worker: v.string(),
     agentId: v.string(),
     cwd: v.string(),
     sessionId: v.optional(v.string()),
-    status: acpSessionStatusValidator,
+    status: zodToConvex(acpSessionStatusValidator),
     epoch: v.number(),
     warm: v.boolean(),
     warmSince: v.optional(v.number()),
     /** Cooling cleared this epoch and every older one; the Worker must open a newer epoch. */
     cooledEpoch: v.optional(v.number()),
-    stopReason: v.optional(acpStopReasonValidator),
+    stopReason: v.optional(zodToConvex(acpStopReasonValidator)),
     error: v.optional(v.string()),
-    config: v.optional(acpConfigValidator),
-    commands: v.optional(v.array(acpCommandInfoValidator)),
-    usage: v.optional(acpUsageValidator),
-    turnUsage: v.optional(acpTurnUsageValidator),
-    history: v.optional(acpHistoryValidator),
-    draft: v.optional(acpDraftConfigValidator),
+    config: v.optional(zodToConvex(acpConfigValidator)),
+    commands: v.optional(v.array(zodToConvex(acpCommandInfoValidator))),
+    usage: v.optional(zodToConvex(acpUsageValidator)),
+    turnUsage: v.optional(zodToConvex(acpTurnUsageValidator)),
+    history: v.optional(zodToConvex(acpHistoryValidator)),
+    draft: v.optional(zodToConvex(acpDraftConfigValidator)),
     turnBy: v.optional(v.string()),
     userTitled: v.optional(v.boolean()),
     /** Creator-signed binding (keyed workspaces); Workers execute nothing for a chat without it. */
-    binding: v.optional(acpSignedBindingValidator),
+    binding: v.optional(zodToConvex(acpSignedBindingValidator)),
     /** Who bound `sessionId` to this chat; a paired Worker refuses an unproven session id. */
-    sessionProof: v.optional(acpSessionProofValidator),
+    sessionProof: v.optional(zodToConvex(acpSessionProofValidator)),
     /** Keyed chats: the error text sealed to the chat key; `error` then holds generic text only. */
-    sealedError: v.optional(acpSealedBoxValidator),
+    sealedError: v.optional(zodToConvex(acpSealedBoxValidator)),
     updatedAt: v.number(),
   })
     .index("by_chat", ["chat"])
@@ -178,7 +179,7 @@ export default defineSchema({
     .index("by_sessionId", ["workspace", "sessionId"]),
   /**
    * Coding-CLI usage read from a Worker machine's own logs by ccusage: one row per session per
-   * UTC day, token counts and costs only (`src/usage/local_contract.ts`). Models ccusage could
+   * UTC day, token counts and costs only (`packages/contracts/src/usage/local_contract.ts`). Models ccusage could
    * not price get Radium's estimate; `priceKey` is set while one waits for a models.dev lookup.
    */
   local_usage: defineTable({
@@ -190,7 +191,7 @@ export default defineSchema({
     syncedAt: v.number(),
     lastActivity: v.number(),
     totalTokens: v.number(),
-    models: v.array(storedLocalUsageModelValidator),
+    models: v.array(zodToConvex(storedLocalUsageModelValidator)),
     priceKey: v.optional(v.string()),
   })
     .index("by_workspace_and_day", ["workspace", "day"])
@@ -219,9 +220,9 @@ export default defineSchema({
     userId: v.optional(v.string()),
     startedAt: v.number(),
     endedAt: v.number(),
-    stopReason: v.optional(acpStopReasonValidator),
-    model: v.optional(acpTurnModelValidator),
-    tokens: v.optional(acpTurnUsageValidator),
+    stopReason: v.optional(zodToConvex(acpStopReasonValidator)),
+    model: v.optional(zodToConvex(acpTurnModelValidator)),
+    tokens: v.optional(zodToConvex(acpTurnUsageValidator)),
     /** The turn's share of the agent's cumulative cost, in the agent's currency. */
     agentCost: v.optional(v.object({ amount: v.number(), currency: v.string() })),
     pricing: agentTurnPricingValidator,
@@ -254,25 +255,25 @@ export default defineSchema({
     nextSeq: v.number(),
     bytes: v.number(),
     /** Keyed chats: the Worker-signed capsule every frame of this epoch is sealed under. */
-    capsule: v.optional(acpStreamCapsuleValidator),
+    capsule: v.optional(zodToConvex(acpStreamCapsuleValidator)),
   }).index("by_chat_and_epoch", ["chat", "epoch"]),
   /** Command payloads exist only until the assigned Worker claims them. */
   acp_commands: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     workspace: v.id("workspaces"),
     worker: v.string(),
     chat: v.optional(v.id("aisdk_chats")),
-    kind: acpCommandKindValidator,
+    kind: zodToConvex(acpCommandKindValidator),
     /** Agent-level target survives payload erasure, so sync admission can debounce claimed work. */
     agentId: v.optional(v.string()),
-    payload: v.optional(acpCommandPayloadValidator),
+    payload: v.optional(zodToConvex(acpCommandPayloadValidator)),
     /** Keyed workspaces: the sealed, user-signed command; erased on claim like `payload`. */
-    signed: v.optional(acpSignedCommandValidator),
+    signed: v.optional(zodToConvex(acpSignedCommandValidator)),
     /** `close`/`delete` in keyed workspaces: the deleted chat's binding snapshot. */
-    target: v.optional(acpDeletedTargetValidator),
+    target: v.optional(zodToConvex(acpDeletedTargetValidator)),
     clientId: v.string(),
     by: v.string(),
-    status: acpCommandStatusValidator,
+    status: zodToConvex(acpCommandStatusValidator),
     error: v.optional(v.string()),
     result: v.optional(v.string()),
     claimedAt: v.optional(v.number()),
@@ -285,18 +286,18 @@ export default defineSchema({
     .index("by_status", ["status"]),
   /** Durable decisions are relayed once, then retained briefly for retries. */
   acp_interactions: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     chat: v.id("aisdk_chats"),
     workspace: v.id("workspaces"),
     worker: v.string(),
     requestKey: v.string(),
     kind: v.union(v.literal("permission"), v.literal("elicitation")),
     /** Plaintext request (keyless workspaces) or the Worker-sealed, Worker-signed one. */
-    request: v.optional(acpInteractionRequestValidator),
-    sealedRequest: v.optional(acpSealedRequestValidator),
-    status: acpInteractionStatusValidator,
-    answer: v.optional(acpInteractionAnswerValidator),
-    sealedAnswer: v.optional(acpSealedAnswerValidator),
+    request: v.optional(zodToConvex(acpInteractionRequestValidator)),
+    sealedRequest: v.optional(zodToConvex(acpSealedRequestValidator)),
+    status: zodToConvex(acpInteractionStatusValidator),
+    answer: v.optional(zodToConvex(acpInteractionAnswerValidator)),
+    sealedAnswer: v.optional(zodToConvex(acpSealedAnswerValidator)),
     answeredBy: v.optional(v.string()),
     answeredAt: v.optional(v.number()),
     resolvedAt: v.optional(v.number()),
@@ -308,13 +309,13 @@ export default defineSchema({
     .index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
   /** Viewer-gated normalized output; no ACP content is saved in chat_messages. */
   chat_frames: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     chat: v.id("aisdk_chats"),
     stream: v.string(),
     seqFrom: v.number(),
     seqTo: v.number(),
     format: v.literal("acp"),
-    kind: acpFrameKindValidator,
+    kind: zodToConvex(acpFrameKindValidator),
     /** JSON ops, or sealed bytes under the epoch capsule in keyed workspaces. */
     payload: v.union(v.string(), v.bytes()),
   })
@@ -330,10 +331,10 @@ export default defineSchema({
     .index("by_chat_and_lastSeenAt", ["chat", "lastSeenAt"]),
   /** Worker-owned agent availability; presence is deliberately not part of session reads. */
   worker_agents: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     workspace: v.id("workspaces"),
     worker: v.string(),
-    ...acpAgentReportValidator.fields,
+    ...zodToConvex(acpAgentReportValidator).fields,
     sessionsSync: v.optional(
       v.object({
         status: v.union(v.literal("running"), v.literal("done"), v.literal("failed")),
@@ -348,12 +349,12 @@ export default defineSchema({
     .index("by_worker_and_agentId", ["workspace", "worker", "agentId"])
     .index("by_workspace_and_agentId", ["workspace", "agentId"]),
   /** Ephemeral Worker handoff status, with optional correlation to durable chat history. */
-  worker_tasks: defineTable(workerTaskFields)
+  worker_tasks: defineTable(zodToConvexFields(workerTaskFields))
     .index("by_worker_request", ["workspace", "workerId", "requestId"])
     .index("by_worker_status", ["workspace", "workerId", "status", "operation"])
     .index("by_status_terminalAt", ["status", "terminalAt"]),
   /** Durable chat tool-call idempotency and output receipts; internal-only access. */
-  worker_chat_calls: defineTable(workerChatCallFields)
+  worker_chat_calls: defineTable(zodToConvexFields(workerChatCallFields))
     .index("by_chat_call_stage", ["chatId", "toolCallId", "stage"])
     .index("by_task", ["taskId"]),
   /** App authorization scope for a component-owned enrollment receipt; no setup secret. */
@@ -368,15 +369,15 @@ export default defineSchema({
   worker_gateway: defineTable({
     workspace: v.id("workspaces"),
     worker: v.string(),
-    access: acpGatewayAccessValidator,
-    telemetry: keyTelemetryValidator,
+    access: zodToConvex(acpGatewayAccessValidator),
+    telemetry: zodToConvex(keyTelemetryValidator),
     key: v.optional(v.id("api_keys")),
     updatedAt: v.number(),
   })
     .index("by_workspace_and_worker", ["workspace", "worker"])
     .index("by_key", ["key"]),
   worker_presence: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     workspace: v.id("workspaces"),
     workerId: v.string(),
     lastSeenAt: v.number(),
@@ -402,12 +403,12 @@ export default defineSchema({
    * membership remain future work.
    */
   workspaces: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     ownerType: v.literal("user"),
     ownerId: v.string(), // Better Auth user ID
     name: v.string(),
     icon: v.optional(v.string()),
-    /** Tile color name from `src/workspaces/colors.ts`; unknown names resolve to the default. */
+    /** Tile color name from `packages/contracts/src/workspaces/colors.ts`; unknown names resolve to the default. */
     color: v.optional(v.string()),
     archivedAt: v.optional(v.number()),
     /** Transitional mapping retained until the legacy tables are retired. */
@@ -440,11 +441,11 @@ export default defineSchema({
     enabled: v.boolean(),
     active: v.boolean(),
     /** Workspace-owned endpoint and model mapping; absent only before backfill. */
-    snapshot: v.optional(providerSnapshotValidator),
+    snapshot: v.optional(zodToConvex(providerSnapshotValidator)),
     /** Explicit deletion/disable tombstone that blocks legacy resurrection. */
     deletedAt: v.optional(v.number()),
     /** Owner routing overrides (priority, weight, cooling, error rules); absent means defaults. */
-    routing: v.optional(providerRoutingValidator),
+    routing: v.optional(zodToConvex(providerRoutingValidator)),
   })
     .index("by_workspace", ["workspace"])
     .index("by_workspace_and_provider", ["workspace", "provider"]),
@@ -511,15 +512,15 @@ export default defineSchema({
     defaultModel: v.optional(v.string()),
     titleModel: v.optional(v.string()),
     enableChainOfThought: v.optional(v.boolean()),
-    telemetry: v.optional(telemetrySettingsSchema),
+    telemetry: v.optional(zodToConvex(telemetrySettingsSchema)),
     builtinToolSets: v.array(v.string()),
-    /** Default-on built-in tool sets switched off (`src/chatroom/tools.ts`); absent means none. */
+    /** Default-on built-in tool sets switched off (`packages/contracts/src/chatroom/tools.ts`); absent means none. */
     disabledBuiltinToolSets: v.optional(v.array(v.string())),
     mcpServers: v.array(v.id("mcp_servers")),
     /** Worker tools preselected when a Worker is picked for a new chat; absent means none. */
-    workerTools: v.optional(v.array(chatWorkerToolValidator)),
+    workerTools: v.optional(v.array(zodToConvex(chatWorkerToolValidator))),
     /** Gateway routing strategy, session affinity, retry, and cooldown; absent means defaults. */
-    routing: v.optional(routingSettingsValidator),
+    routing: v.optional(zodToConvex(routingSettingsValidator)),
     /** Usage-limit alert thresholds; absent means defaults. */
     limits: v.optional(limitSettingsValidator),
     /** Chatroom system prompt switches (`src/chatroom/system-prompt.ts`); absent means all on. */
@@ -531,7 +532,7 @@ export default defineSchema({
    * (one of `folders`) are owner-set and pick the Worker working directory for its chats.
    */
   projects: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     workspace: v.id("workspaces"),
     userId: v.string(), // Better Auth ID of the creator
     name: v.string(),
@@ -546,7 +547,7 @@ export default defineSchema({
     pinnedModels: v.array(v.string()),
     hiddenModels: v.array(v.string()),
     /** Notification categories switched off or silenced; absent means defaults. */
-    notifications: v.optional(notificationPreferencesValidator),
+    notifications: v.optional(zodToConvex(notificationPreferencesValidator)),
   }).index("by_userId", ["userId"]),
   /**
    * Account identities (`src/e2ee/`): public keys, the identity seeds sealed under the AMK, and
@@ -563,7 +564,7 @@ export default defineSchema({
     secrets: v.bytes(),
     selfSignature: v.bytes(),
     recoveryWrapper: v.bytes(),
-    status: identityStatusValidator,
+    status: zodToConvex(identityStatusValidator),
     createdAt: v.number(),
     retiredAt: v.optional(v.number()),
   })
@@ -779,10 +780,10 @@ export default defineSchema({
    * unclaimed ones fall back to push (`delivery`). Kept 7 days.
    */
   notifications: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     userId: v.string(), // Better Auth ID of the recipient
     workspace: v.optional(v.id("workspaces")),
-    kind: v.union(sessionNotificationKindValidator, limitEventKindValidator),
+    kind: v.union(zodToConvex(sessionNotificationKindValidator), zodToConvex(limitEventKindValidator)),
     title: v.string(),
     body: v.string(),
     /** Identity-bound notification content; plaintext fields above are legacy or generic. */
@@ -886,7 +887,7 @@ export default defineSchema({
       requestedServiceTier: v.optional(v.string()),
       inferenceMode: v.optional(v.string()),
       quoteSource: v.optional(v.string()),
-      quote: v.optional(providerPricingValidator),
+      quote: v.optional(zodToConvex(providerPricingValidator)),
     }),
     response: v.object({
       genId: v.string(),
@@ -898,7 +899,7 @@ export default defineSchema({
       gen_time: v.number(),
       finish_reason: v.string(),
       servedServiceTier: v.optional(v.string()),
-      servedQuote: v.optional(providerPricingValidator),
+      servedQuote: v.optional(zodToConvex(providerPricingValidator)),
     }),
   })
     .index("by_balance", ["bill.balance"])
@@ -970,7 +971,7 @@ export default defineSchema({
   providers: defineTable({
     slug: v.string(),
     name: v.string(),
-    npm: providerNpmValidator,
+    npm: zodToConvex(providerNpmValidator),
     env: v.array(v.string()),
     catalogue_provider: v.optional(v.string()),
     credential_type: v.optional(v.union(v.literal("api_key"), v.literal("oauth"))),
@@ -978,7 +979,7 @@ export default defineSchema({
     doc: v.optional(v.string()),
     api: v.optional(v.string()),
     enabled: v.boolean(),
-    models: v.array(providerModelValidator),
+    models: v.array(zodToConvex(providerModelValidator)),
   }).index("by_slug", ["slug"]),
   subscription_state: defineTable({
     provider: v.string(),
@@ -998,7 +999,7 @@ export default defineSchema({
     provider: v.string(),
     credential: v.optional(v.id("workspace_credentials")),
     model: v.string(),
-    reason: cooldownReasonValidator,
+    reason: zodToConvex(cooldownReasonValidator),
     nextRetryAt: v.number(),
     backoffLevel: v.number(),
     status: v.optional(v.number()),
@@ -1061,7 +1062,7 @@ export default defineSchema({
    */
   limit_events: defineTable({
     workspace: v.id("workspaces"),
-    kind: limitEventKindValidator,
+    kind: zodToConvex(limitEventKindValidator),
     provider: v.string(),
     providerName: v.string(),
     credential: v.optional(v.id("workspace_credentials")),
@@ -1084,7 +1085,7 @@ export default defineSchema({
    * bindings keep the provider and let the strategy choose the credential.
    */
   routing_sessions: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     legacyHashVersion: v.optional(v.number()),
     workspace: v.id("workspaces"),
     key: v.string(),
@@ -1164,7 +1165,7 @@ export default defineSchema({
     /** Better Auth ID of the user whose request runs the program; only they can answer. */
     userId: v.string(),
     kind: v.union(v.literal("approval"), v.literal("question")),
-    response: v.optional(codeModeInteractionResponseValidator),
+    response: v.optional(zodToConvex(codeModeInteractionResponseValidator)),
     /** Answer deadline plus a grace period; past it the row is only garbage. */
     expiresAt: v.number(),
   }).index("by_expiresAt", ["expiresAt"]),
@@ -1177,12 +1178,12 @@ export default defineSchema({
     defaultModel: v.optional(v.string()),
     titleModel: v.optional(v.string()),
     enableChainOfThought: v.optional(v.boolean()),
-    telemetry: v.optional(telemetrySettingsSchema),
+    telemetry: v.optional(zodToConvex(telemetrySettingsSchema)),
     builtinToolSets: v.array(v.string()),
     mcpServers: v.array(v.id("mcp_servers")),
   }).index("by_userId", ["userId"]),
   aisdk_chats: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     userId: v.string(), // Better Auth ID
     /** Deprecated routing pointer retained until ownership backfill completes. */
     balance: v.optional(v.id("balances")),
@@ -1192,7 +1193,7 @@ export default defineSchema({
      * Absent means personal (legacy).
      */
     scope: v.optional(v.union(v.literal("personal"), v.literal("shared"), v.literal("workspace"))),
-    agent: v.optional(acpChatAgentValidator),
+    agent: v.optional(zodToConvex(acpChatAgentValidator)),
     /**
      * Deprecated embedded history. Messages live in `chat_messages`; `migrations.chatMessagesToTable`
      * moves legacy histories out and every save clears this field. Narrow once that backfill is
@@ -1207,8 +1208,8 @@ export default defineSchema({
     pinnedAt: v.optional(v.number()),
     activeStream: v.optional(v.boolean()),
     lastInteractionAt: v.optional(v.number()),
-    /** How the latest request stopped short, if it did (`src/chatroom/interruption.ts`). */
-    interruption: v.optional(chatInterruptionValidator),
+    /** How the latest request stopped short, if it did (`packages/contracts/src/chatroom/interruption.ts`). */
+    interruption: v.optional(zodToConvex(chatInterruptionValidator)),
     /**
      * Per-chat tool override. When absent, the chat inherits workspace defaults,
      * including the legacy settings fallback during migration.
@@ -1225,7 +1226,7 @@ export default defineSchema({
      * Owner-selected Worker tools, optional Worker, and server-derived directory (Project folder,
      * else the Worker's temp directory); dispatch rechecks authority.
      */
-    worker: v.optional(chatWorkerSelectionValidator),
+    worker: v.optional(zodToConvex(chatWorkerSelectionValidator)),
     /** Optional Project grouping in the same workspace; never grants visibility. */
     project: v.optional(v.id("projects")),
     /**
@@ -1283,7 +1284,7 @@ export default defineSchema({
    * `revision` let saves skip unchanged rows without reading content.
    */
   chat_messages: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     chat: v.id("aisdk_chats"),
     position: v.number(),
     message: v.optional(messageSchema),
@@ -1297,7 +1298,7 @@ export default defineSchema({
    * last row. `url` is the storage URL persisted in message file parts.
    */
   chat_files: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     workspace: v.id("workspaces"),
     /** Better Auth ID of the uploader. */
     userId: v.string(),
@@ -1333,18 +1334,18 @@ export default defineSchema({
    * inline limit, in file storage (`storage`); neither is set when content recording was off.
    */
   telemetry_blobs: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     legacyHashVersion: v.optional(v.number()),
     custodyFree: v.optional(v.boolean()),
     custodyFreeGeneration: v.optional(v.number()),
     workspace: v.id("workspaces"),
     hash: v.string(),
-    kind: telemetryBlobKindSchema,
+    kind: zodToConvex(telemetryBlobKindSchema),
     /** UTF-8 byte length of the canonical JSON. */
     size: v.number(),
     content: v.optional(v.string()),
     storage: v.optional(v.id("_storage")),
-    meta: v.optional(telemetryBlobMetaSchema),
+    meta: v.optional(zodToConvex(telemetryBlobMetaSchema)),
     sealed: v.optional(v.object({
       epoch: v.number(),
       requestId: v.string(),
@@ -1371,7 +1372,7 @@ export default defineSchema({
    * siblings instead of replacing history.
    */
   telemetry_nodes: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     legacyHashVersion: v.optional(v.number()),
     custodyFree: v.optional(v.boolean()),
     custodyFreeGeneration: v.optional(v.number()),
@@ -1389,7 +1390,7 @@ export default defineSchema({
     .index("by_blob", ["blob"]),
   /** A conversation or agent run grouped by the routing session key. */
   telemetry_sessions: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     legacyHashVersion: v.optional(v.number()),
     workspace: v.id("workspaces"),
     key: v.string(),
@@ -1403,11 +1404,11 @@ export default defineSchema({
     .index("by_workspace_and_parentKey", ["workspace", "parentKey"]),
   /** One captured Gateway request: pointers into blobs/nodes plus routing, timing, and usage. */
   telemetry_requests: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     workspace: v.id("workspaces"),
     /** Gateway request ID; idempotency key for capture. */
     requestId: v.string(),
-    source: telemetrySourceSchema,
+    source: zodToConvex(telemetrySourceSchema),
     apiKey: v.optional(v.id("api_keys")),
     userId: v.optional(v.string()),
     chatId: v.optional(v.id("aisdk_chats")),
@@ -1418,14 +1419,14 @@ export default defineSchema({
     provider: v.optional(v.string()),
     credential: v.optional(v.id("workspace_credentials")),
     stream: v.boolean(),
-    status: telemetryRequestStatusSchema,
+    status: zodToConvex(telemetryRequestStatusSchema),
     startedAt: v.number(),
     endedAt: v.number(),
     durationMs: v.number(),
     ttftMs: v.optional(v.number()),
     generationMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
-    usage: v.optional(telemetryUsageSchema),
+    usage: v.optional(zodToConvex(telemetryUsageSchema)),
     requestedServiceTier: v.optional(v.string()),
     servedServiceTier: v.optional(v.string()),
     estimatedCost: v.optional(v.number()),
@@ -1442,7 +1443,7 @@ export default defineSchema({
       envelope: v.bytes(),
     })),
     canceled: v.optional(v.boolean()),
-    attempts: v.array(telemetryAttemptSchema),
+    attempts: v.array(zodToConvex(telemetryAttemptSchema)),
     /** Last client message node; absent when the request had no non-system messages. */
     input: v.optional(v.id("telemetry_nodes")),
     /** Model output node, a child of `input`. */
@@ -1456,8 +1457,8 @@ export default defineSchema({
     headers: v.optional(v.id("telemetry_blobs")),
     recordsInputs: v.boolean(),
     recordsOutputs: v.boolean(),
-    lineage: telemetryLineageSchema,
-    changes: v.optional(telemetryChangesSchema),
+    lineage: zodToConvex(telemetryLineageSchema),
+    changes: v.optional(zodToConvex(telemetryChangesSchema)),
     /** Rows migrated from the old AI SDK traces; payloads are opaque `legacy` blobs. */
     legacy: v.optional(
       v.object({
@@ -1490,7 +1491,7 @@ export default defineSchema({
   /** Workspace export destinations; header secrets live in Secret Store under `secretName`. */
   telemetry_destinations: defineTable({
     workspace: v.id("workspaces"),
-    kind: telemetryDestinationKindSchema,
+    kind: zodToConvex(telemetryDestinationKindSchema),
     name: v.string(),
     endpoint: v.string(),
     secretName: v.optional(v.string()),
@@ -1506,7 +1507,7 @@ export default defineSchema({
   }).index("by_workspace", ["workspace"]),
   /** Deprecated: AI SDK traces. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_traces: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     /** Deprecated attribution pointer retained for historical traces. */
     balance: v.optional(v.id("balances")),
     key: v.optional(v.id("keys")),
@@ -1515,19 +1516,19 @@ export default defineSchema({
     chatCompletionId: v.optional(v.id("chat_completions")),
     userId: v.string(),
     chatId: v.optional(v.id("aisdk_chats")),
-    source: telemetrySourceSchema,
+    source: zodToConvex(telemetrySourceSchema),
     requestId: v.string(),
     callId: v.string(),
     operationId: v.string(),
     functionId: v.string(),
     provider: v.string(),
     model: v.string(),
-    status: legacyTelemetryStatusSchema,
+    status: zodToConvex(legacyTelemetryStatusSchema),
     startedAt: v.number(),
     endedAt: v.optional(v.number()),
     durationMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
-    usage: v.optional(telemetryUsageSchema),
+    usage: v.optional(zodToConvex(telemetryUsageSchema)),
     stepCount: v.optional(v.number()),
     toolCallCount: v.optional(v.number()),
     error: v.optional(v.string()),
@@ -1541,14 +1542,14 @@ export default defineSchema({
     .index("by_chat_and_startedAt", ["chatId", "startedAt"]),
   /** Deprecated: AI SDK spans. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_spans: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     trace: v.id("telemetry_traces"),
     /** Deprecated attribution pointer retained for historical spans. */
     balance: v.optional(v.id("balances")),
     workspace: v.optional(v.id("workspaces")),
-    kind: legacyTelemetrySpanKindSchema,
+    kind: zodToConvex(legacyTelemetrySpanKindSchema),
     name: v.string(),
-    status: legacyTelemetryStatusSchema,
+    status: zodToConvex(legacyTelemetryStatusSchema),
     startedAt: v.number(),
     endedAt: v.number(),
     durationMs: v.number(),
@@ -1558,7 +1559,7 @@ export default defineSchema({
     toolName: v.optional(v.string()),
     toolCallId: v.optional(v.string()),
     finishReason: v.optional(v.string()),
-    usage: v.optional(telemetryUsageSchema),
+    usage: v.optional(zodToConvex(telemetryUsageSchema)),
     error: v.optional(v.string()),
   })
     .index("by_trace_and_startedAt", ["trace", "startedAt"])
@@ -1566,7 +1567,7 @@ export default defineSchema({
     .index("by_workspace_and_startedAt", ["workspace", "startedAt"]),
   /** Deprecated: AI SDK payloads. Read only by `migrations:telemetryTracesToRequests`. */
   telemetry_payloads: defineTable({
-    legacyContent: v.optional(legacyBoxValidator),
+    legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
     trace: v.id("telemetry_traces"),
     span: v.optional(v.id("telemetry_spans")),
     inputJson: v.optional(v.string()),

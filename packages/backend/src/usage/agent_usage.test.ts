@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { ModelsDevApi } from "../models_dev";
+import type { ModelsDevApi } from "contracts/models_dev";
 import { matchModelsDev, normalizeAcpUsage, workspaceQuote } from "./agent_usage";
 import { estimateCompletionCost } from "./completion";
 

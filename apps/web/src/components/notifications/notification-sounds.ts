@@ -1,4 +1,4 @@
-import type { NotificationCategory } from "backend/src/notifications/contract";
+import type { NotificationCategory } from "contracts/notifications/contract";
 
 /**
  * Notification cues synthesized with Web Audio, so the app ships no audio files. Each note is a

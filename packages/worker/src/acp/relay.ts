@@ -6,7 +6,7 @@ import {
   type AcpFrameInput,
   type AcpFrameKind,
   type AcpOp,
-} from "backend/src/acp/contract";
+} from "contracts/acp/contract";
 import type { AcpTimeline } from "./timeline";
 import type { AcpEpochCapsule, AcpTransport } from "./transport";
 

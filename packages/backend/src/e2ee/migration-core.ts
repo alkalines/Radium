@@ -15,9 +15,9 @@ import {
   type QueryCtx,
 } from "../../convex/_generated/server";
 import { secrets } from "../../convex/secrets";
-import { resumeNotificationSealingReference } from "../notifications/contract";
+import { resumeNotificationSealingReference } from "../notifications/resume-sealing";
 import { resumeDeferredCleanupReference } from "../acp/deferred-contract";
-import { legacyBoxValidator, type LegacyBox, type LegacyRecipient } from "./legacy-contract";
+import { legacyBoxValidator, type LegacyBox, type LegacyRecipient } from "contracts/e2ee/legacy-contract";
 import { domain as chat } from "./migration-chat";
 import {
   CUSTODY_REGISTRY_TABLE,
@@ -48,6 +48,7 @@ import { domain as names } from "./migration-names";
 import { domain as relay } from "./migration-relay";
 import { domain as telemetry } from "./migration-telemetry";
 import { scheduleProofRefresh } from "./migration-telemetry-proofs";
+import { zodToConvex } from "../zod-validators";
 
 /** Secret Store locator of the custody seed; `endCustody` removes it. */
 export const custody = { namespace: "e2ee:custody" as const, name: "seed" };
@@ -400,7 +401,7 @@ export const commitSeal = internalMutation({
     table: v.string(),
     record: v.string(),
     digest: v.string(),
-    sealed: legacyBoxValidator,
+    sealed: zodToConvex(legacyBoxValidator),
   },
   handler: async (ctx, args): Promise<CommitOutcome> => {
     const live = await liveRealJob(ctx, args, "seal");
@@ -446,7 +447,7 @@ export const commitRelease = internalMutation({
     run: v.number(),
     entry: v.id("e2ee_legacy_custody"),
     digest: v.string(),
-    sealed: legacyBoxValidator,
+    sealed: zodToConvex(legacyBoxValidator),
   },
   handler: async (ctx, args): Promise<CommitOutcome> => {
     const live = await liveRealJob(ctx, args, "release");

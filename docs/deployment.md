@@ -28,6 +28,7 @@ container and release paths are currently blocked and unverified pending the
 | `WEB_PUSH_VAPID_PRIVATE_KEY` | Web Push          | Convex secret              | Matching VAPID private key that signs push requests                                                                                           |
 | `WEB_PUSH_SUBJECT`           | No                | Convex                     | VAPID contact (`mailto:` or `https:`); defaults to `SITE_URL`                                                                                 |
 | `RADIUM_MAINTENANCE`         | No                | Convex                     | Maintenance mode of the last Convex version: `drain` or `1` ([below](#last-convex-version-migration-status-and-maintenance-mode))             |
+| `API_INTERNAL_URL`           | New backend       | Web server                 | Origin the web server forwards `/api/*` to, such as `http://127.0.0.1:3100` ([below](#new-backend-development))                              |
 
 `VITE_*` values are public and embedded at build time. Never put provider API
 keys or other secrets in a `VITE_*` variable.
@@ -55,10 +56,7 @@ Chatroom uses the existing private issuer configuration to derive scoped write
 approval signatures; no additional approval secret is required. Issuer-secret
 rotation invalidates pending Worker tool approvals. See [Worker tools in Chatroom](Worker/Chatroom.md).
 
-The frontend server also reads `VITE_CONVEX_SITE_URL` for its generic
-`/api/backend/*` proxy, forwarding to the Convex site's `/api/*` routes. See the
-[subscription provider guide](Radium_Gateway/Subscriptions.md) for the Hono
-subscription routes and device-auth flow.
+On the `refactor/abandon-convex` branch the frontend server forwards every `/api/*` request (Better Auth, tRPC, subscription routes) to the new backend at `API_INTERNAL_URL` ([new backend development](#new-backend-development)), not to the Convex site. Screens still on Convex run without a Convex token there until their slice is ported (task 14). See the [subscription provider guide](Radium_Gateway/Subscriptions.md) for the Hono subscription routes and device-auth flow.
 
 Generate local secrets with:
 
@@ -121,6 +119,32 @@ stored per workspace (headers in Secret Store). Remote endpoints must use HTTPS;
 plain HTTP is accepted only for loopback addresses. The former `OTEL_EXPORTER_*`
 and `OTEL_SERVICE_NAME` variables are no longer read and can be unset. See
 [Gateway telemetry](Radium_Gateway/Telemetry.md#export).
+
+## New Backend Development
+
+The new backend (`packages/server`, [backend migration](Backend_Migration.md)) is in progress on the `refactor/abandon-convex` branch: auth (Better Auth with OPAQUE), the tRPC base and the job outbox work; domain screens are still on Convex. Its configuration is `packages/server/.env.example` ([variables](Backend_Migration/Runtime.md#configuration)).
+
+1. Backing services. `docker-compose.yml` runs Postgres, Valkey and Durable Streams on `127.0.0.1` (Electric with `--profile electric`). Its secrets come from the root `.env`; copy `.env.example` and fill every value:
+
+   ```bash
+   cp .env.example .env   # POSTGRES_PASSWORD, STREAMS_TOKEN, ELECTRIC_SECRET
+   docker compose up -d --build --wait
+   ```
+
+   The Durable Streams image is built from the upstream release binary, checked against the release checksums (`docker/durable-streams/`). It requires `Authorization: Bearer $STREAMS_TOKEN` on every request and holds in-flight replies in plaintext, so never back up or export its volume.
+
+2. Backend: copy `packages/server/.env.example` to `packages/server/.env`, point `DATABASE_URL` at the compose Postgres, set `BETTER_AUTH_SECRET` and `OPAQUE_SERVER_SETUP` (`bunx better-auth-opaque create-setup`), then:
+
+   ```bash
+   bun run --cwd packages/server db:migrate
+   bun run --cwd packages/server dev        # or: build, then start
+   ```
+
+   The server refuses to start while the database is behind its migrations; it never migrates on its own.
+
+3. Web: set `API_INTERNAL_URL` (the backend origin) in `apps/web/.env.local`, plus the same `AUTH_PROXY_SECRET` on both sides, then `bun run --cwd apps/web vite:dev`.
+
+Tests run against `docker-compose.test.yml` (in-memory Postgres and Valkey on ports 55432 and 56379, fixed test credentials): `docker compose -f docker-compose.test.yml up -d --wait`, then `bun run --cwd packages/server test`.
 
 ## Convex Cloud Development
 
@@ -294,6 +318,8 @@ The full-image path is currently blocked and unverified. The existing workspace
 layout audit found container build-context and dependency-path drift; this
 session documents the intended path but does not repair broad container
 infrastructure. Do not present the commands below as a working quickstart.
+
+On the `refactor/abandon-convex` branch `docker-compose.yml` no longer builds this image; it runs the new backend's services ([new backend development](#new-backend-development)). The commands below describe the Convex-era image only, and the deployment rewrite replaces this section (task 14, Phase 7).
 
 The intended `Dockerfile` path packages the TanStack Start server, Convex backend,
 deployment code, and startup orchestration in one image. The intended ports are

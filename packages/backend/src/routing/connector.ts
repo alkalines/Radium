@@ -5,7 +5,7 @@ import { createLimitCapture, type LimitCapture } from "../limits/capture";
 import Providers from "../providers";
 import { createChatGPTSubscriptionFetch } from "../subscriptions/chatgpt";
 import { CHATGPT_SUBSCRIPTION_NPM } from "../subscriptions/chatgpt_session";
-import type { AIProviderSDK_ModelSettings } from "../types/ai_provider";
+import type { AIProviderSDK_ModelSettings } from "contracts/types/ai_provider";
 import type { LanguageModel } from "ai";
 
 /** A routed provider credential and its AI SDK model factory for one attempt. */

@@ -22,13 +22,13 @@ import {
   serviceTiersForModel,
   providerSnapshotFromCatalog,
   type ProviderSnapshot,
-} from "../src/workspaces/provider";
+} from "contracts/workspaces/provider";
 import { canAccessWorkspace } from "../src/workspaces/policy";
 import {
   assertValidPlacement,
   resolveProviderRouting,
   type ProviderRouting,
-} from "../src/routing/settings";
+} from "contracts/routing/settings";
 import {
   MAX_PROVIDER_CREDENTIALS,
   assertRequiredCredentials,
@@ -46,6 +46,7 @@ import {
   recordLoginPlan,
   removeLimitRow,
 } from "../src/limits/store";
+import { zodToConvex } from "../src/zod-validators";
 
 type SecretReadResult = Awaited<ReturnType<typeof secrets.get>>;
 type SecretContext = QueryCtx | MutationCtx;
@@ -224,7 +225,7 @@ async function resolveAuthor(
 
 const importModelValidator = v.object({
   global: globalModelValidator,
-  provider: providerModelValidator,
+  provider: zodToConvex(providerModelValidator),
 });
 
 /**
@@ -268,7 +269,7 @@ export const importProvider = mutation({
     provider: v.object({
       slug: v.string(),
       name: v.string(),
-      npm: providerNpmValidator,
+      npm: zodToConvex(providerNpmValidator),
       env: v.array(v.string()),
       catalogue_provider: v.optional(v.string()),
       credential_type: v.optional(v.union(v.literal("api_key"), v.literal("oauth"))),
@@ -376,7 +377,7 @@ export const setProviderModelServiceTiers = mutation({
     workspace: v.id("workspaces"),
     slug: v.string(),
     model: v.string(),
-    service_tiers: serviceTiersValidator,
+    service_tiers: zodToConvex(serviceTiersValidator),
   },
   handler: async (ctx, args) => {
     const { configuration, provider } = await requireWorkspaceProvider(

@@ -1,6 +1,6 @@
-import type { LoadedBlob } from "backend/src/telemetry/store";
-import { blobValue } from "backend/src/telemetry/store";
-import { diffTools } from "backend/src/telemetry/reads";
+import type { LoadedBlob } from "contracts/telemetry/store";
+import { blobValue } from "contracts/telemetry/store";
+import { diffTools } from "contracts/telemetry/reads";
 import type { RunState } from "@/components/agentic/agent-status";
 
 /** Request status as stored by the backend. */

@@ -1,4 +1,4 @@
-import type { AcpToolContent } from "backend/src/acp/contract";
+import type { AcpToolContent } from "contracts/acp/contract";
 import { diffLines } from "@/components/gateway/telemetry-utils";
 import type { DiffFile, DiffLine } from "../tool-diff";
 import { acpToolKind, type AcpToolItem } from "./parts";

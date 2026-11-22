@@ -12,7 +12,7 @@ import {
   MAX_PROVIDER_CREDENTIALS,
 } from "../workspaces/credentials";
 import { limitAdapter } from "./adapters";
-import { limitEventKindValidator } from "./events";
+import { limitEventKindValidator } from "contracts/limits/events";
 import {
   assertValidBudget,
   assertValidLimitSettings,
@@ -28,6 +28,7 @@ import {
   refreshBudget as refreshBudgetMeter,
   updateSnapshot,
 } from "./store";
+import { zodToConvex } from "../zod-validators";
 
 const DEFAULT_EVENT_LIMIT = 50;
 const MAX_EVENT_LIMIT = 200;
@@ -64,7 +65,7 @@ const credentialLimitsValidator = v.object({
 
 const limitEventViewValidator = v.object({
   _id: v.id("limit_events"),
-  kind: limitEventKindValidator,
+  kind: zodToConvex(limitEventKindValidator),
   provider: v.string(),
   credential: v.optional(v.id("workspace_credentials")),
   credentialName: v.string(),

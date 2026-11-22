@@ -10,7 +10,7 @@ import {
   EMPTY_TOOL_SELECTION,
   WEB_SEARCH_TOOL_ID,
   type ToolSelection,
-} from "backend/src/chatroom/tools";
+} from "contracts/chatroom/tools";
 import { GroupList, Row, RowBlock, Tag } from "@/components/harness/group-list";
 import { WorkspacePageHeader, ownerOnlyNotice } from "@/components/settings/workspace-page-header";
 import { Button } from "@/components/ui/button";

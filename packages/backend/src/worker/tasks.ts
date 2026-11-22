@@ -19,14 +19,14 @@ import { requireDispatchableWorker } from "../e2ee/worker-keys";
 import { assertLegacyPlaintextAllowed, assertLegacyWritesAllowed } from "../e2ee/migration-contract";
 import { deleteRelayRow } from "../e2ee/migration-relay";
 import { workerMutation, workerQuery } from "./machine";
-import { chatWorkerSessionId, validChatWorkerDirectory } from "./chat-config";
+import { chatWorkerSessionId, validChatWorkerDirectory } from "contracts/worker/chat-config";
 import {
   workerBashRequest,
   validWorkerBashRequest,
   workerBashRequestKey,
   WORKER_BASH_OUTPUT_BYTES,
   type WorkerBashRequest,
-} from "./bash-contract";
+} from "contracts/worker/bash-contract";
 import {
   validWorkerEditRequest,
   workerEditDispatchRequest,
@@ -35,7 +35,7 @@ import {
   WORKER_EDIT_OUTPUT_BYTES,
   type WorkerEditRequest,
   type WorkerEditResult,
-} from "./edit-contract";
+} from "contracts/worker/edit-contract";
 import {
   canTransitionWorkerTask,
   WORKER_CHAT_CALL_CLEANUP_BATCH,
@@ -53,7 +53,8 @@ import {
   type WorkerChatStage,
   workerTaskRecord,
   workerTaskStatus,
-} from "./task-contract";
+} from "contracts/worker/task-contract";
+import { zodToConvex } from "../zod-validators";
 
 function taskDenied(): never {
   throw new ConvexError({ code: "WORKER_TASK_DENIED" });
@@ -150,10 +151,10 @@ export const create = internalMutation({
 /** Bounded subscription to one status of this machine's own assignments. */
 export const assigned = workerQuery({
   args: {
-    status: workerTaskStatus,
+    status: zodToConvex(workerTaskStatus),
     operation: v.optional(v.union(v.literal("edit"), v.literal("bash"))),
   },
-  returns: v.array(workerTaskRecord),
+  returns: v.array(zodToConvex(workerTaskRecord)),
   handler: async (ctx, args) =>
     await ctx.db
       .query("worker_tasks")
@@ -178,9 +179,9 @@ export const updateStatus = workerMutation({
   args: {
     taskId: v.id("worker_tasks"),
     expectedRevision: v.number(),
-    status: workerTaskStatus,
+    status: zodToConvex(workerTaskStatus),
   },
-  returns: workerTaskRecord,
+  returns: zodToConvex(workerTaskRecord),
   handler: async (ctx, args) => {
     const task = await ctx.db.get(args.taskId);
     if (
@@ -369,10 +370,10 @@ export const dispatchChatEdit = internalMutation({
     userId: v.string(),
     workerId: v.string(),
     directory: v.string(),
-    tool: workerChatTool,
+    tool: zodToConvex(workerChatTool),
     toolCallId: v.string(),
-    stage: workerChatStage,
-    request: v.union(workerEditDispatchRequest, workerBashRequest),
+    stage: zodToConvex(workerChatStage),
+    request: v.union(zodToConvex(workerEditDispatchRequest), zodToConvex(workerBashRequest)),
   },
   returns: v.object({ taskId: v.id("worker_tasks") }),
   handler: async (ctx, args) => {
@@ -603,10 +604,10 @@ export const dispatchSealedChatTask = internalMutation({
     userId: v.string(),
     workerId: v.string(),
     directory: v.string(),
-    tool: workerChatTool,
+    tool: zodToConvex(workerChatTool),
     toolCallId: v.string(),
-    stage: workerChatStage,
-    sealed: workerSealedTask,
+    stage: zodToConvex(workerChatStage),
+    sealed: zodToConvex(workerSealedTask),
     receiptEpoch: v.optional(v.number()),
   },
   returns: v.object({ taskId: v.id("worker_tasks"), replay: v.boolean() }),
@@ -702,7 +703,7 @@ export const chatEditOutcome = internalQuery({
     userId: v.string(),
     taskId: v.id("worker_tasks"),
   },
-  returns: v.union(v.null(), workerEditResult),
+  returns: v.union(v.null(), zodToConvex(workerEditResult)),
   handler: async (ctx, args) => {
     const authorized = await authorizeChatOwner(ctx, args.chatId, args.userId);
     const call = await ctx.db
@@ -761,7 +762,7 @@ async function assignedToolTask(
 /** Shared file/Bash claim: a per-process token prevents duplicate execution. */
 export const claimEdit = workerMutation({
   args: { taskId: v.id("worker_tasks"), claimId: v.string() },
-  returns: v.union(v.null(), workerTaskRecord),
+  returns: v.union(v.null(), zodToConvex(workerTaskRecord)),
   handler: async (ctx, args) => {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(args.claimId)) return taskDenied();
     const task = await assignedToolTask(ctx, args.taskId);
@@ -789,10 +790,10 @@ export const completeEdit = workerMutation({
     taskId: v.id("worker_tasks"),
     claimId: v.string(),
     expectedRevision: v.number(),
-    result: workerEditResult,
+    result: zodToConvex(workerEditResult),
   },
   returns: v.union(
-    workerTaskRecord,
+    zodToConvex(workerTaskRecord),
     v.object({ receiptAcknowledged: v.literal(true) }),
     v.object({ receiptDiscarded: v.literal(true) }),
   ),

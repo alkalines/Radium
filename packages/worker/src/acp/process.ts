@@ -17,7 +17,7 @@ import {
   acpAgentDefinitionError,
   type AcpAgentDefinition,
   type AcpAgentReport,
-} from "backend/src/acp/contract";
+} from "contracts/acp/contract";
 import { agentEnvironment, resolveAgentCommand } from "./config.js";
 
 /** Local protocol callbacks; raw requests never cross the Convex boundary. */

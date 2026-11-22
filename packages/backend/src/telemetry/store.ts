@@ -1,47 +1,12 @@
+import type { LoadedBlob, LoadedNode } from "contracts/telemetry/store";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import type { QueryCtx } from "../../convex/_generated/server";
-import type { LegacyBox } from "../e2ee/legacy-contract";
-import type { TelemetryBlobKind, TelemetryBlobMeta } from "./validators";
 
 /**
  * Largest canonical JSON (UTF-8 bytes) stored inline on a blob row. Larger content goes to
  * file storage so a blob document stays well under Convex's 1 MiB document limit.
  */
 export const INLINE_BLOB_LIMIT = 900_000;
-
-/**
- * A blob as returned to readers. Content stays canonical JSON text: captured payloads carry
- * keys Convex values reject (`$schema` in tool schemas, `$`-prefixed metadata) and nesting
- * deeper than Convex allows, so it crosses function boundaries as a string. Parse with
- * `blobValue`.
- */
-export type LoadedBlob = {
-  id: Id<"telemetry_blobs">;
-  hash: string;
-  kind: TelemetryBlobKind;
-  size: number;
-  meta?: TelemetryBlobMeta;
-  truncated?: boolean;
-  /** Canonical JSON; absent when content recording was off or the content is in file storage. */
-  content?: string;
-  /** Signed file URL for content above the inline limit. */
-  storageUrl?: string;
-  legacyContent?: LegacyBox;
-  sealed?: {
-    epoch: number;
-    requestId: string;
-    capsule: ArrayBuffer;
-    envelope?: ArrayBuffer;
-    storageUrl?: string;
-  };
-  /** True when only the fingerprint and metadata were captured. */
-  redacted: boolean;
-};
-
-/** Parsed blob content, or `undefined` when the content is not inline. */
-export function blobValue(blob: { content?: string } | null | undefined): unknown {
-  return blob?.content === undefined ? undefined : JSON.parse(blob.content);
-}
 
 /** Resolve one blob; `workspace` guards against cross-workspace pointers. */
 export async function loadBlob(
@@ -76,13 +41,6 @@ async function toLoadedBlob(
     redacted: blob.content === undefined && blob.storage === undefined && blob.sealed === undefined && blob.legacyContent === undefined,
   };
 }
-
-export type LoadedNode = {
-  id: Id<"telemetry_nodes">;
-  depth: number;
-  origin: "input" | "output";
-  message: LoadedBlob;
-};
 
 /**
  * Walk up to `limit` nodes from `leaf` toward the root and return them oldest-first.

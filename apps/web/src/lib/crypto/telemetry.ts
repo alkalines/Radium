@@ -1,5 +1,5 @@
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { LoadedBlob } from "backend/src/telemetry/store";
+import type { LoadedBlob } from "contracts/telemetry/store";
 import {
   CryptoError,
   decodeCapsule,
@@ -13,7 +13,7 @@ import { keyManager, KeysLockedError } from "./key-manager";
 import { bytes } from "./runtime";
 import { trust } from "./trust-store";
 import { CustodialContentError, openLegacyContent } from "./legacy-content";
-import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import { getOwnerKey } from "./workspace-keys";
 
 type Sealed = {

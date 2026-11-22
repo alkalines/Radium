@@ -1,7 +1,7 @@
 import type { Doc } from "../../convex/_generated/dataModel";
 import type { MutationCtx } from "../../convex/_generated/server";
 import { chatMemberIds, setChatMembers } from "../chatroom/members";
-import type { AcpSignedBinding } from "../acp/contract";
+import type { AcpSignedBinding } from "contracts/acp/contract";
 import { findSession } from "../acp/policy";
 import { verifyNextBinding } from "../acp/sealed";
 import {

@@ -32,19 +32,24 @@ import {
   workspaceMcpSecretNamespace,
 } from "../../convex/secrets";
 import { createInternalGatewayProvider } from "../../convex/ai_gateway";
-import { validateChatWorkerSelection, type ChatWorkerSelection } from "../worker/chat-config";
+import {
+  validateChatWorkerSelection,
+  type ChatWorkerSelection,
+} from "contracts/worker/chat-config";
 import {
   buildWorkerChatTools,
-  parseWorkerApprovals,
   resolveWorkerChatTransport,
   workerChatApprovalSecret,
+} from "../worker/chat-tools";
+import {
+  parseWorkerApprovals,
   workerCodeModeInteractions,
   type WorkerApprovalSignature,
-} from "../worker/chat-tools";
-import { buildSessionTools } from "../chatroom/session-tools";
-import { CODE_MODE_TOOL_SET_ID, QUESTION_TOOL_ID } from "../chatroom/tools";
-import { CODE_MODE_TOOL_NAME, type CodeModeInteractionKind } from "../chatroom/code-mode";
-import { createCodeMode, type CodeModeInventory } from "../chatroom/code-mode-runtime";
+} from "contracts/worker/chat-tools";
+import { buildSessionTools } from "contracts/chatroom/session-tools";
+import { CODE_MODE_TOOL_SET_ID, QUESTION_TOOL_ID } from "contracts/chatroom/tools";
+import { CODE_MODE_TOOL_NAME, type CodeModeInteractionKind } from "contracts/chatroom/code-mode";
+import { createCodeMode, type CodeModeInventory } from "contracts/chatroom/code-mode-runtime";
 import { chatSystemPrompt } from "../chatroom/system-prompt";
 import type { SettledGeneration } from "./chat_completion";
 import {
@@ -54,13 +59,13 @@ import {
   type GatewayErrorPayload,
 } from "../routing/failures";
 import { formatInferenceError } from "../chatroom/inference-errors";
-import { chatInterruption } from "../chatroom/interruption";
+import { chatInterruption } from "contracts/chatroom/interruption";
 import { logger } from "../logging/server";
-import { sessionNotificationKind } from "../notifications/session";
+import { sessionNotificationKind } from "contracts/notifications/session";
 import { inlineStoredFiles, storedFileUrls } from "../chatroom/files";
 import { sealChatMessages, sealChatTitle } from "../chatroom/sealing";
 import { firstUserMessageText, generateChatTitle } from "../chatroom/titles";
-import { decodeExactBytes, toArrayBuffer } from "../e2ee/contract";
+import { decodeExactBytes, toArrayBuffer } from "contracts/e2ee/contract";
 
 /**
  * Model calls one chat request may make before it stops. A request still calling tools at the cap

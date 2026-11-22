@@ -8,7 +8,7 @@ import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { validChatWorkerDirectory } from "backend/src/worker/chat-config";
+import { validChatWorkerDirectory } from "contracts/worker/chat-config";
 import { TileAppearanceFields } from "@/components/harness/tile-appearance-fields";
 import { Button } from "@/components/ui/button";
 import {

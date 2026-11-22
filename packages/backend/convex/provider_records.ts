@@ -4,7 +4,7 @@ import {
   providerSnapshotFromCatalog,
   serviceTiersForModel,
   type ProviderSnapshot,
-} from "../src/workspaces/provider";
+} from "contracts/workspaces/provider";
 
 type ProviderContext = QueryCtx | MutationCtx;
 

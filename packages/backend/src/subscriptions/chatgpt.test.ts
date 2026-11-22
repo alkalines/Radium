@@ -2,7 +2,7 @@ import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { internal } from "../../convex/_generated/api";
-import { OPENAI_CODEX_SLUG } from "../provider_slugs";
+import { OPENAI_CODEX_SLUG } from "contracts/provider_slugs";
 import { CHATGPT_SUBSCRIPTION_PATH } from "./paths";
 
 const mocks = vi.hoisted(() => ({

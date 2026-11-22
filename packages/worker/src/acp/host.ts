@@ -29,13 +29,13 @@ import {
   type AcpInteractionRequest,
   type AcpTurnReport,
   type AcpProfile,
-} from "backend/src/acp/contract";
-import { selectedAcpModel } from "backend/src/acp/models";
+} from "contracts/acp/contract";
+import { selectedAcpModel } from "contracts/acp/models";
 import {
   acpGatewayProfileOffered,
   expandGatewayEnv,
   type AcpGatewayAccess,
-} from "backend/src/acp/gateway";
+} from "contracts/acp/gateway";
 import type { GatewayKey, GatewayKeyStore } from "../auth/gateway.js";
 import { agentEnvironment, resolveAgentCommand } from "./config.js";
 import { AcpAgentProcess, agentReport, probeAgent } from "./process.js";
@@ -59,7 +59,7 @@ import {
 } from "./signed.js";
 import type { WorkerTrust } from "../e2ee/trust.js";
 import { prepareTempDirectory } from "../presence.js";
-import { validChatWorkerDirectory } from "backend/src/worker/chat-config";
+import { validChatWorkerDirectory } from "contracts/worker/chat-config";
 import type {
   AcpTransport,
   AcpAnsweredInteraction,

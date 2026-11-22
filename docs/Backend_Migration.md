@@ -1,6 +1,6 @@
 # Backend Migration: Convex to Bun, Hono, Postgres
 
-Status: **planned, not started.** Nothing in this guide is implemented. The running system is still the Convex backend described in [architecture](architecture.md). Execution plan and status: [task 14](tasks/14_Backend_Migration.md).
+Status: **in progress.** Phase 1 (foundation: `packages/contracts`, `packages/server` with auth, tRPC base, migrations and outbox, compose services, web `/api/*` forwarder) is implemented on the branch; domains, live data and the importer are not. The running product is still the Convex backend described in [architecture](architecture.md). Execution plan and status: [task 14](tasks/14_Backend_Migration.md).
 
 Focused guides:
 

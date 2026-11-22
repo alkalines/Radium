@@ -1,5 +1,5 @@
 import { authClient } from "./auth-client";
-import { handler } from "./auth-server";
+import { forwardToBackend } from "./backend-forwarder";
 
 type GetSessionParams = {
   headers?: Headers;
@@ -24,7 +24,7 @@ export const auth = {
   api: {
     async getSession(params?: GetSessionParams) {
       if (params?.baseURL) {
-        const response = await handler(
+        const response = await forwardToBackend(
           new Request(getSessionUrl(params.baseURL), {
             headers: params.headers,
           }),

@@ -24,7 +24,7 @@ component does not make a cloud-configured deployment local.
 
 ## Envelope
 
-The shared contract in `packages/backend/src/logging/contract.ts` is version `1`:
+The shared contract in `packages/contracts/src/logging/contract.ts` is version `1`:
 
 | Field         | Meaning                                                                |
 | ------------- | ---------------------------------------------------------------------- |

@@ -17,7 +17,7 @@ import { setupWorker, createMachineTokenFetcher } from "../../worker/src/auth";
 import { readWorkerState } from "../../worker/src/state";
 import { workerMutation } from "../src/worker/machine";
 import { makeFunctionReference } from "convex/server";
-import type { ChatWorkerSelection } from "../src/worker/chat-config";
+import type { ChatWorkerSelection } from "contracts/worker/chat-config";
 import { v } from "convex/values";
 
 vi.mock("./auth", () => ({

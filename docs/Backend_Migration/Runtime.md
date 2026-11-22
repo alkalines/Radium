@@ -1,6 +1,6 @@
 # Backend Runtime And Code Layout
 
-Status: **planned.** Part of the [backend migration](../Backend_Migration.md). Covers how the new backend is organized, how one codebase deploys to Bun or to serverless targets, and the conventions that replace Convex's.
+Status: **Phase 1 (foundation) implemented** in `packages/server`; domains, live layer and importer are still planned. Part of the [backend migration](../Backend_Migration.md). Covers how the new backend is organized, how one codebase deploys to Bun or to serverless targets, and the conventions that replace Convex's.
 
 The goal is a backend that reads like an ordinary TypeScript service, with no shape inherited from Convex. Port domain _behavior_ and its tests; rewrite the mechanics. The `AGENTS.md` code-clarity rules apply unchanged.
 
@@ -8,45 +8,62 @@ The goal is a backend that reads like an ordinary TypeScript service, with no sh
 
 ```
 packages/
-  contracts/        runtime-neutral code shared by web, Worker and backend (new)
+  contracts/        runtime-neutral code shared by web, Worker and backend
   crypto/           unchanged (radium-crypto)
-  backend/
-    drizzle/        generated SQL migrations + journal (committed)
-    nitro.config.ts Nitro build: preset, scheduled tasks, driver aliases
+  backend/          the Convex backend, unchanged until it is deleted (Phase 8)
+  server/           the new backend (package `server`)
+    drizzle/        generated SQL migrations, one folder per migration (committed)
+    nitro.config.ts Nitro build: preset, scheduled tasks, driver alias, runtime plugin
     server.ts       Nitro server entry: exports the Hono app
     src/
       app.ts        createApp(): the Hono app (all routes, tRPC mount)
-      drivers/      db, kv, objects: bun.ts and portable.ts (chosen at build time)
-      db/           Drizzle client type, schema barrel, ids, migrator, backfills/
-      trpc/         init, context, procedures (session/workspace/owned/worker), root router
-      http/         non-tRPC routes: gateway, auth, worker auth, chat stream, stream/shape proxies
-      jobs/         outbox dispatcher; scheduled jobs as Nitro tasks
+      config.ts     environment parsing (zod); errors name variables, never values
+      runtime.ts    Runtime (config, drivers, auth, job handlers), start checks, process runtime
+      kv.ts         typed Valkey commands over the driver's raw `send`, Lua scripts by EVALSHA
+      drivers/      db, kv (objects with its first consumer): bun.ts, later portable.ts
+      db/           column conventions, schema barrel, ids, migration runner, schema version, backfills/
+      trpc/         init, procedures (public/session/workspace/owned/worker), root router
+      plugins/      Nitro runtime plugins (start the runtime before traffic, close on shutdown)
+      jobs/         outbox (enqueue, dispatch, sweep), handler registry, leases, tasks/
       import-convex/  frozen baseline schema + mappings (see Convex_Import.md)
       <domain>/     schema.ts, services, router.ts, tests: one folder per domain
     bin/
-      migrate.ts    applies SQL migrations and backfills
-      import-convex.ts  one-time importer
+      migrate.ts         applies SQL migrations and backfills
+      schema-version.ts  writes src/db/schema-version.ts after drizzle-kit generate
+      import-convex.ts   one-time importer
+    test/           Vitest global setup (template database) and per-file runtime helper
   worker/           Radium Worker: tRPC client + stream reader (transport rewritten)
 apps/web            tRPC client, TanStack Query, TanStack DB collections, /api/* forwarder
 ```
 
-Deleted at the end: `packages/backend/convex/`, `packages/worker-component/`, `scripts/convex-ready.ts`, and every `convex`, `@convex-dev/*`, `convex-helpers`, `convex-secret-store` and `convex-test` dependency.
+The new backend is its own package rather than a folder inside `packages/backend`: that package's `src/` is Convex-era code with Convex-shaped names, an edge-runtime Vitest setup and a Convex tsconfig, and it stays the product until the cutover. Deleting it in Phase 8 is then one directory.
+
+Deleted at the end: `packages/backend/` (including `convex/`), `packages/worker-component/`, `scripts/convex-ready.ts`, and every `convex`, `@convex-dev/*`, `convex-helpers`, `convex-secret-store` and `convex-test` dependency.
 
 Domains: `auth`, `workspaces` (with projects, preferences), `gateway` (providers, models, credentials, keys, routing, limits, subscriptions), `chatroom` (chats, messages, files, titles, code mode, tools), `acp`, `worker` (identity, tasks, presence, gateway access), `e2ee`, `telemetry`, `usage`, `notifications`, `logging`. Each domain owns its tables, its authorization checks and its queries, so database access and authorization stay together as `AGENTS.md` requires. Other domains call a domain's exported service functions, never its tables.
 
 ### `packages/contracts`
 
-The web app imports 67 files from `backend/src/*` today, several of them runtime code (`acp/fold`, `models_dev`, `worker/presence`, `chatroom/tools`). That import direction stops. Code needed by more than one of web, Worker and backend, and free of server dependencies, moves to `packages/contracts`: zod schemas for wire shapes, branded id types, ACP op types and fold, presence windows, limits and constants. The web app imports only `contracts`, `crypto` and the backend's `AppRouter` **type**.
+Status: **created** (Phase 1). Runtime-neutral code needed by more than one of web, Worker and backend lives in `packages/contracts` (package `contracts`, sources exported as `contracts/<path>`, mirroring their old `backend/src/<path>` locations): the ACP contract, op types and fold; presence windows; Worker task, edit, Bash and chat contracts; chat tool names, session tools and the Code Mode runtime; e2ee wire contracts (`parseRegistrationPayload`, OPAQUE payload types, `legacyAad`); notification, logging, routing, usage, telemetry and limit-event contracts; models.dev mapping, provider snapshots and slugs; workspace colors, icons, names and selection. The web app and the Worker import none of `backend/src` any more; their remaining backend imports are the generated Convex bindings (Phase 5) and one Worker test that drives the Convex-bound `buildWorkerChatTools`. At the end of the migration the web app imports only `contracts`, `crypto` and the backend's `AppRouter` **type**.
+
+Contracts depends only on `zod`, `radium-crypto`, `ai`, `@opencode/codemode` and `effect` (the last three for session tools and the Code Mode runtime); it never imports `convex` or any server package. Its tests run in Node and edge-runtime (`bun run --cwd packages/contracts test`, part of the root `bun run test`).
+
+Shapes are zod schemas. Two cases zod has no type for go through `contracts/wire`: `idOf("table")` is a string schema typed as a branded `Id<"table">` (structurally the same as Convex's `Id`), and `bytes()` is the one binary schema, an `ArrayBuffer` for now so the later switch to base64url text happens in one place. Both register in the `wireTypes` registry.
+
+While Convex still runs, its schema and function validators are derived from these zod schemas by `packages/backend/src/zod-validators.ts` (`zodToConvex`, `zodToConvexFields`): ids become `v.id(table)`, bytes `v.bytes()`. `convex-helpers`' `zodToConvex` cannot express either (it knows only its own `zid()` and maps other custom schemas to `v.any()`), so the converter covers exactly the subset contracts use and throws on anything else. The derived Convex schema and every function's argument and return validators were checked byte-identical to the hand-written `v` validators they replace.
 
 ## Deployment Targets: Nitro
 
 The backend is a **Nitro v3** project whose server entry is the Hono app. Nitro supplies what would otherwise be per-vendor glue: one build per **preset** (`bun`, `node_server`, `deno_server`, `cloudflare_module`, `vercel`, `netlify`, `aws_lambda`, …), runtime config from env, startup and shutdown hooks, `waitUntil` where the platform has one, and scheduled tasks wired to the platform's native scheduler. The web app already builds with Nitro (`nitro()` in `apps/web/vite.config.mts`), so this adds a toolchain we already run rather than a new one, and no vendor SDK enters domain code.
 
 ```ts
-// packages/backend/server.ts
+// packages/server/server.ts
 import { createApp } from "./src/app";
-export default createApp(); // Hono app; Nitro adapts it to the preset
+import { useProcessRuntime } from "./src/runtime";
+export default createApp(useProcessRuntime); // Hono app; Nitro adapts it to the preset
 ```
+
+`createApp` takes the function that resolves the request's `Runtime` (config, drivers, Better Auth, Worker token verifier, job handlers). Long-lived presets pass the process runtime, which `src/plugins/runtime.ts` starts and checks before Nitro serves traffic; a serverless preset will pass a per-request one.
 
 Nitro is used for build, deploy, config, lifecycle and tasks. Its data layers are **not** used:
 
@@ -65,9 +82,11 @@ Only three things differ by runtime. Each has a Bun implementation and a portabl
 | `kv`: the Valkey commands we use     | `Bun.RedisClient` (`send` for scripts and `GETDEL`)                                       | `@redis/client` (node-redis core) over TCP; not the `redis` meta-package, which bundles about 1.3 MB of module clients                                                              |
 | `objects`: put, get, delete, presign | `Bun.S3Client` (any S3-compatible store) or a local-disk adapter for single-node installs | `aws4fetch` against any S3-compatible API (S3, R2, MinIO, Garage)                                                                                                                   |
 
-Durable Streams and Electric are reached with `fetch` and `@durable-streams/client` everywhere, so they need no driver. The Drizzle type is the common `PgDatabase<…, typeof schema>`; any driver-specific feature (Bun SQL's `sql.array`, Postgres.js `sql.json`) outside `src/drivers/` is a review blocker. Phase 0 verified the alias in both directions on Nitro's `bun` and `node_server` presets; `bun` is marked external in `nitro.config.ts` so rolldown doesn't warn that it can't resolve it.
+Durable Streams and Electric are reached with `fetch` and `@durable-streams/client` everywhere, so they need no driver. The Drizzle type is `Database` in `src/drivers/types.ts`, `PgAsyncDatabase<PgQueryResultHKT, typeof relations>`, which a transaction also satisfies; any driver-specific feature (Bun SQL's `sql.array`, Postgres.js `sql.json`) outside `src/drivers/` is a review blocker. Valkey is the `Kv` interface, one raw `send(command, args)`, which both `Bun.RedisClient` and node-redis's `sendCommand` provide; `src/kv.ts` types the commands in use and runs Lua scripts with `EVALSHA`, sending the source only on `NOSCRIPT`. Phase 0 verified the alias in both directions on Nitro's `bun` and `node_server` presets; `bun` is marked external (`rolldownConfig.external`) so rolldown doesn't warn that it can't resolve it. Outside Nitro (Vitest, `bin/`), `#drivers` resolves through the `imports` field of `packages/server/package.json`.
 
-Lifetime differs by preset. Long-lived presets (`bun`, `node_server`, `deno_server`) create pools and Valkey connections once in a Nitro startup plugin. Serverless presets create them per request where the platform forbids shared sockets. Services receive drivers through the Hono/tRPC context, never module singletons, so both lifetimes run the same code.
+Phase 1 ships only `drivers/bun.ts` with `db` and `kv`. The object-store driver arrives with its first consumer (chat files, Phase 3) and `drivers/portable.ts` with the serverless presets (Phase 7).
+
+Lifetime differs by preset. Long-lived presets (`bun`, `node_server`, `deno_server`) create pools and Valkey connections once, in the Nitro runtime plugin, and close them on Nitro's `close` hook. Serverless presets create them per request where the platform forbids shared sockets. Services receive drivers through the Hono/tRPC context, never module singletons, so both lifetimes run the same code.
 
 ### Long-lived vs serverless presets
 
@@ -98,6 +117,8 @@ Vendor primitives that Nitro does not abstract (Durable Objects, Workflows, Queu
 
 `AISDK_MaxRetries` is declared in `convex.config.ts` but never read; drop it unless the port wires it. Web: `VITE_CONVEX_URL`/`VITE_CONVEX_SITE_URL` go away; the web server gets `API_INTERNAL_URL` (where `/api/*` is forwarded) and the browser needs no backend URL at all.
 
+`src/config.ts` parses only what the implemented code reads: in Phase 1 `SITE_URL`, `API_URL` (both validated as an HTTPS origin, or HTTP on loopback), `DATABASE_URL`, `VALKEY_URL`, `BETTER_AUTH_SECRET`, `OPAQUE_SERVER_SETUP`, and optionally `AUTH_PROXY_SECRET` and `WORKER_AUTH_JWKS`. Each later slice adds its own variables there. A parse error lists the variable names and never their values. `packages/server/.env.example` mirrors the schema.
+
 ## HTTP Surface
 
 | Path (backend)                               | Auth                                                                | Notes                                                                                 |
@@ -112,33 +133,34 @@ Vendor primitives that Nitro does not abstract (Durable Objects, Workflows, Queu
 | `/api/files/*`                               | Session                                                             | Presign upload, register, download redirect, and legacy Convex storage URL resolution |
 | `/api/subscription/chatgpt-subscription/*`   | Session + owned workspace                                           | Unchanged                                                                             |
 
-The web server forwards `/api/*` to `API_INTERNAL_URL` as a streaming pass-through. This generalizes `apps/web/src/app/api/backend/$.ts` and absorbs the auth proxy's header handling: strip client-sent proxy headers, add `x-radium-proxy-secret` and the client IP. SSR prefetch calls the backend the same way with the incoming cookie forwarded. When web and backend are deployed to the same host, the forward stays on the internal network.
+The web server forwards `/api/*` to `API_INTERNAL_URL` as a streaming pass-through (`apps/web/src/app/api/$.ts`, `apps/web/src/lib/backend-forwarder.ts`; it replaced `/api/auth/$` and `/api/backend/$`). It drops hop-by-hop and client-sent proxy headers, adds `x-radium-proxy-secret` and the client IP when `AUTH_PROXY_SECRET` is set, passes redirects back instead of following them, and strips `content-encoding`/`content-length` from the response. SSR calls the backend directly with the incoming cookie (`apps/web/src/lib/trpc.ts`). When web and backend are deployed to the same host, the forward stays on the internal network. `/api/health` answers `ok` without touching Postgres or Valkey.
 
 ## tRPC Conventions
 
 - One router per domain (`src/<domain>/router.ts`), merged in `src/trpc/router.ts`. Procedure names are camelCase verbs (`chats.list`, `chats.rename`), not the mixed `GetChat`/`ListChats` casing Convex grew.
 - Procedures are thin. They parse input with zod (shared schemas from `contracts`), call one service function, and map domain errors to `TRPCError` codes. Services take `(drivers, actor, input)` and own authorization.
-- Base procedures replace the Convex wrappers:
+- Base procedures replace the Convex wrappers (`src/trpc/init.ts`):
   - `publicProcedure`;
-  - `sessionProcedure`: Better Auth session resolved once per request (Valkey `secondaryStorage` cache);
-  - `workspaceProcedure`: input has `workspace`; checks owner or direct member, archived workspaces rejected;
-  - `ownedWorkspaceProcedure`;
-  - `workerProcedure`: ES256 JWT verified with `jose` against `WORKER_AUTH_JWKS`, issuer `API_URL`, kind `worker`; then the identity epoch and revocation are re-checked (Valkey cache, invalidated on revoke). This is the same check `src/worker/machine.ts` does after `ctx.auth`.
+  - `sessionProcedure`: Better Auth session resolved once per request (Valkey `secondaryStorage` cache, Postgres on a miss); `UNAUTHORIZED` without one;
+  - `workspaceProcedure`: input has `workspace`; owner or direct member in one query (`src/workspaces/access.ts`), archived workspaces rejected; `ctx.access.role` is `owner` or `member`. Outsider, archived and unknown all get the same `NOT_FOUND`;
+  - `ownedWorkspaceProcedure`: the same, owners only, members also get `NOT_FOUND`;
+  - `workerProcedure`: `Authorization: Bearer` ES256 JWT verified with `jose` against `WORKER_AUTH_JWKS` (issuer `${API_URL}/api/worker`, audience `radium-worker`, kind `worker`); then key, Worker status, identity epoch and workspace are re-read from Postgres on every call (`src/worker/auth.ts`), the check `packages/backend/src/worker/machine.ts` does after `ctx.auth`. One indexed join per call; a Valkey cache, invalidated on revoke, can come with the Worker slice if that join ever shows up in load. Without `WORKER_AUTH_JWKS` every Worker call is refused.
 - Personal-chat privacy lives in the `chatroom` service's access function (today `authorizeChatForUser`), reused by tRPC, `/api/chat`, the stream proxy and the shape proxy. There is one implementation.
 - Outputs are plain JSON. Binary fields cross the wire as base64url strings defined in `contracts` (Convex's `v.bytes()`/`ArrayBuffer` transport disappears); `radium-crypto` already works on `Uint8Array`.
 - Pagination is keyset-based (`(last_interaction_at, id)` cursors), replacing `paginate` and convex-helpers' merged streams.
-- Web client: `@trpc/tanstack-react-query` with `httpBatchLink` to the same origin. Route loaders prefetch with `queryOptions`; mutations invalidate exact query keys, and invalidation events from streams do the same for other tabs and devices ([Live data](Live_Data.md#invalidation-events)). The `expectAuth` gate of `ConvexQueryClient` is unnecessary because cookies go with every request.
+- Web client: `@trpc/tanstack-react-query` (`createTRPCOptionsProxy`, created per router in `apps/web/src/router.tsx` and passed as `context.trpc`) with `httpBatchLink` to the same origin in the browser and to `API_INTERNAL_URL` during SSR. Route loaders prefetch with `queryOptions`; mutations invalidate exact query keys, and invalidation events from streams do the same for other tabs and devices ([Live data](Live_Data.md#invalidation-events)). The `expectAuth` gate of `ConvexQueryClient` is unnecessary because cookies go with every request.
 
 tRPC subscriptions are **not** used. Live data comes from streams and shapes over plain HTTP, which keeps the backend stateless on both runtimes.
 
 ## Auth
 
-- Better Auth with `drizzleAdapter(db, { provider: "pg" })`; its tables are generated into the `auth` domain schema by the Better Auth CLI. Never hand-edit that file, same rule as today's generated component schema.
-- `secondaryStorage` on Valkey for sessions and Better Auth's rate limiter (replaces `rateLimit.storage: "database"`).
-- Plugins: `@alkalines/better-auth-opaque` with the same options and `createOpaqueHooks`. The hooks call the `e2ee` service directly instead of `ctx.runMutation(internal.e2ee.*)`. The `convex()` plugin and its `jwks` table are removed; there is no Convex JWT anymore.
+- Better Auth with the Drizzle adapter's `relations-v2` entry (`@better-auth/drizzle-adapter/relations-v2`, the one for Drizzle 1.0); its tables are generated into `src/auth/schema.ts` by `bun run auth:schema` from `src/auth/schema-config.ts`. Never hand-edit or reformat that file, same rule as today's generated component schema. The generator writes `timestamp` without time zone for Better Auth's own columns; Drizzle writes and reads them as UTC regardless of the session time zone, and SQL comparing them with `now()` must cast. New Better Auth ids are UUIDv7 text (`advanced.database.generateId`), like every other table.
+- `secondaryStorage` on Valkey (`src/auth/secondary-storage.ts`, keys prefixed `auth:`) for the session cache, Better Auth's per-address rate-limit counters (fixed windows by an `INCR`+`EXPIRE` script) and short-lived verification values (OPAQUE login state, reset tokens), so there is no `verification` or `rateLimit` table. `session.storeSessionInDatabase` keeps sessions in Postgres as the record: a Valkey flush or restart signs nobody out, and imported sessions work.
+- Plugins: `@alkalines/better-auth-opaque` with the same options and hooks (`src/e2ee/hooks.ts`). The hooks call the `e2ee` service (`src/e2ee/keys.ts`) directly instead of `ctx.runMutation(internal.e2ee.*)`; each write is one transaction holding a per-user advisory lock, plus unique indexes on key id and `(user, credential version)` and a partial unique index for one active identity per user. The custody release that Convex's activation requested is not ported ([narrow first](Convex_Import.md#preconditions)). `signIn.revealClassicCredential` waits for plugin 0.2.1: published 0.2.0 does not have it ([task 14](../tasks/14_Backend_Migration.md#phase-1-results-2026-11-22)). The `convex()` plugin and its `jwks` table are removed; there is no Convex JWT anymore. Startup runs `auth.api.validateOpaqueSetup()`.
+- The OPAQUE ingress policy (`src/auth/ingress.ts`) is the Convex one: `Origin === SITE_URL` on OPAQUE POSTs, a 256 KiB body bound, and the client address from the proxy headers only with `AUTH_PROXY_SECRET`, otherwise the connection peer (srvx's `request.ip`).
 - Cookies live on the web origin because the browser only talks to it. Existing sessions survive the move when `BETTER_AUTH_SECRET` and the session rows are carried ([import](Convex_Import.md#better-auth)).
 - Gateway API keys: the `rad-sk-…` SHA-512 hash lookup stays; the resolved key-to-workspace mapping is cached in Valkey for a short TTL and deleted on revoke.
-- Rate limits (`@convex-dev/rate-limiter` call sites: Worker setup 10/min, challenge 120/min, OPAQUE account attempts, device recovery offers and takes, log ingest) become Valkey fixed-window or token-bucket counters in one `ratelimit` helper owned by `auth`.
+- Rate limits (`@convex-dev/rate-limiter` call sites: Worker setup 10/min, challenge 120/min, OPAQUE account attempts, device recovery offers and takes, log ingest) become Valkey token buckets through `takeToken` in `src/auth/ratelimit.ts` (one Lua script, server time, the key expires once the bucket would be full). The OPAQUE per-account budget (30 per hour) uses it from Phase 1.
 
 ## Database Conventions
 
@@ -182,11 +204,12 @@ The E2EE freeze flag (`assertLegacyWritesAllowed`) is not ported: the importer r
 
 Almost every `ctx.scheduler.runAfter` call is `runAfter(0)`, meaning "run after this mutation commits": title generation, notification sealing and push, usage pricing, telemetry export, cascades. The replacement is a `jobs` table written **in the same transaction** as the change that needs it:
 
-`jobs(id, kind, payload jsonb, run_at, dedupe_key unique null, attempts, locked_until, last_error)`
+`jobs(id, kind, payload jsonb, run_at, dedupe_key unique null, attempts, locked_until, last_error, failed_at)` (`src/jobs/`)
 
-- After commit, the request hands the new job ids to the dispatcher: in-process on long-lived presets, inside `waitUntil` on serverless presets that have it.
-- A sweep every minute claims due jobs with `for update skip locked` and runs them, which covers crashes, deploys and delayed jobs (`run_at`: notification fallback after 10 s, superseded epoch deletion after 60 s, budget debounce after 5 s).
-- Handlers are idempotent and bounded. A failed job retries with backoff up to a limit, then stays visible for operators.
+- `enqueueJob(tx, …)` writes the row in the caller's transaction; with a `dedupeKey`, a job with the same key that is still queued wins and the new one is dropped (debounce).
+- After commit, the request hands the new job ids to `dispatchJobs` through `runtime.defer`: in-process on long-lived presets, inside `waitUntil` on serverless presets that have it.
+- A sweep every minute (`jobs:sweep`) claims due jobs and runs them, which covers crashes, deploys and delayed jobs (`run_at`: notification fallback after 10 s, superseded epoch deletion after 60 s, budget debounce after 5 s). Claiming is one `update … where id in (select … for update skip locked) returning` that stamps `locked_until` (5 minutes) and counts the attempt, so concurrent sweeps, replicas and after-commit dispatches never run one job twice. A runner that dies loses its claim when `locked_until` passes.
+- Handlers (`src/jobs/handlers.ts`, by kind) are idempotent and bounded; delivery is at least once. A finished job is deleted. A failed one retries with exponential backoff from 10 s (capped at one hour), and after 8 attempts it is parked with `failed_at` and `last_error` for operators; parked jobs are never claimed again. Error messages are stored, so handlers throw messages without secrets.
 
 pg-boss and graphile-worker were considered and rejected: both want a long-running Node poller on a direct connection, which doesn't fit serverless presets and would leave two job systems.
 
@@ -204,7 +227,7 @@ pg-boss and graphile-worker were considered and rejected: both want a long-runni
 | `chat_files.prunePendingUploads` (1 h)                                                                     | `files.orphans` job over object-store keys vs `chat_files`                                                          |
 | `telemetryRetention.pruneExpired` (1 h)                                                                    | `telemetry.retention` job                                                                                           |
 
-These run as Nitro tasks (`src/jobs/tasks/*`, registered through `tasks` in `nitro.config.ts` with absolute handler paths, since Nitro only scans `serverDir`; `scheduledTasks` there too), plus the one-minute outbox sweep. Each run takes a Valkey lease, so several replicas or overlapping serverless invocations run it once. The lease is a fixed key per task (`SET lease:<task> <id> NX PX <ms>`) with a TTL a little shorter than the interval. Keying it by time slot double-ran in Phase 0 when replicas fired on either side of a slot boundary. Phase 0 verified `scheduledTasks` on the `bun` and `node_server` presets. Nitro tasks are still marked experimental; if that blocks us, the long-lived presets fall back to `Bun.cron` in a startup plugin.
+These run as Nitro tasks (`src/jobs/tasks/*`, registered through `tasks` in `nitro.config.ts` with absolute handler paths, since Nitro only scans `serverDir`; `scheduledTasks` there too), plus the one-minute outbox sweep. Each run takes a Valkey lease (`claimLease` in `src/jobs/lease.ts`), so several replicas or overlapping serverless invocations run it once. The lease is a fixed key per task (`SET lease:<task> <id> NX PX <ms>`) with a TTL a little shorter than the interval, and it is never released early. Keying it by time slot double-ran in Phase 0 when replicas fired on either side of a slot boundary. Phase 0 verified `scheduledTasks` on the `bun` and `node_server` presets. Nitro tasks are still marked experimental; if that blocks us, the long-lived presets fall back to `Bun.cron` in a startup plugin.
 
 ## Object Storage
 
@@ -218,16 +241,16 @@ The `secrets` table keeps `convex-secret-store`'s envelope exactly: a per-secret
 
 This is the policy that lets any install upgrade from any earlier release.
 
-- **SQL migrations**: `drizzle-kit generate` writes `packages/backend/drizzle/NNNN_<name>.sql` and its journal in the same PR as the schema change. Merged migrations are never edited; fixes are new migrations.
-- **Backfills**: `src/db/backfills/NNNN_<name>.ts` exports `run` (idempotent, bounded batches, resumable) and `verify` (exhaustive, returns issue counts). Progress and the last verify result live in a `backfills` table.
-- **Widen → backfill → verify → switch → narrow** across at least two releases. A narrowing migration refuses to apply unless the matching backfill's recorded `verify` is clean. Same discipline as `convex/migrations.ts`, enforced by the runner instead of by convention.
-- **One command**: `bun run --cwd packages/backend db:migrate` takes a Postgres advisory lock, applies pending SQL migrations in order, then pending backfills, then records the schema version. Because every migration since the Postgres baseline stays in the repo, an install on any earlier release reaches the current one in a single run. A squash to a new baseline happens only at a major version that documents the minimum version to upgrade from.
-- **Boot check**: the server compares the recorded schema version with the one it was built for. If the database is behind, it refuses to start (long-lived presets) or answers `503` (serverless presets). It never migrates on its own. Operators and CI run `db:migrate` with a direct `DATABASE_URL`, never through a pooler.
-- **CI**: on every PR, `drizzle-kit check`; regenerating must produce no diff; migrations apply to an empty database **and** to a snapshot of the previous release's database; backfill `verify` runs on that snapshot. Release jobs run `db:migrate` against a target only with explicit authorization (`AGENTS.md`).
+- **SQL migrations**: `bun run --cwd packages/server db:generate` runs `drizzle-kit generate` (Drizzle 1.0: one folder per migration, `drizzle/<timestamp>_<name>/migration.sql` plus its snapshot, no journal) and then `bin/schema-version.ts`, which records the newest migration in `src/db/schema-version.ts`. Both land in the same PR as the schema change. Merged migrations are never edited; fixes are new migrations.
+- **Backfills**: `src/db/backfills/NNNN_<name>.ts` exports a `Backfill` (`after`, optional `narrowedBy`, `run`: idempotent, bounded batches, resumable; `verify`: exhaustive, returns issue counts), listed in `src/db/backfills/index.ts`. The last verify result lives in `drizzle.backfills`.
+- **Widen → backfill → verify → switch → narrow** across at least two releases. A backfill runs after its `after` migration on every `db:migrate` until its verify is clean, then never again. A narrowing migration (`narrowedBy`) refuses to apply until that verify is clean. Same discipline as `convex/migrations.ts`, enforced by the runner instead of by convention.
+- **One command**: `bun run --cwd packages/server db:migrate [--to <migration>]` (`src/db/migrate.ts`) holds a Postgres advisory lock for the whole run, applies each pending migration in its own transaction, interleaved with the backfills that follow it, and records it in Drizzle's own `drizzle.__drizzle_migrations` table (same columns, so Drizzle's tooling reads the same history). It refuses a database that has a migration the build does not know or whose file changed since it was applied. Drizzle's own `migrate()` is not used: it applies everything in one transaction and has no place for backfills, the narrowing gate or `--to`. Because every migration since the Postgres baseline stays in the repo, an install on any earlier release reaches the current one in a single run. A squash to a new baseline happens only at a major version that documents the minimum version to upgrade from. A migration that cannot run in a transaction (`create index concurrently`) needs a runner change first.
+- **Boot check**: at start the server checks that the database has applied `SCHEMA_VERSION`, the newest migration it was built with. A database behind it makes a long-lived server exit before serving (serverless presets will answer `503`); a database ahead passes, since widen-before-narrow keeps older builds working. It never migrates on its own. Operators and CI run `db:migrate` with a direct `DATABASE_URL`, never through a pooler.
+- **CI** (`.github/workflows/server.yml`): on every PR touching the server, contracts or crypto, `drizzle-kit check`; regenerating must produce no diff; migrations apply twice to an empty database; tests and the Nitro build run. Applying to a snapshot of the previous release's database, with backfill `verify` on it, starts with the first Postgres release. Release jobs run `db:migrate` against a target only with explicit authorization (`AGENTS.md`).
 
 ## Verification
 
-- Vitest stays the runner (`import { … } from "vitest"`). Backend tests run against **real** Postgres and Valkey from a `test` profile in `docker-compose.yml`, plus `@durable-streams/server` in memory. Each test file gets a fresh database cloned from a migrated template, so tests are isolated and fast.
+- Vitest stays the runner (`import { … } from "vitest"`), run under Bun (`bun --bun vitest`) because the drivers are Bun's. Backend tests run against **real** Postgres and Valkey from `docker-compose.test.yml` (a separate file, because `docker-compose.yml` requires real secrets for every command; Durable Streams joins in Phase 4 with `@durable-streams/server` in memory). The global setup migrates a template database once per run with the real runner; each test file gets a fresh database cloned from it and a Valkey database of its own (one per worker, at most 8 workers). `TEST_POSTGRES_URL` and `TEST_VALKEY_URL` override the locations.
 - Router tests use `createCaller` with real sessions, covering authorization boundaries first: owner, member, outsider, personal-chat privacy, Worker revocation.
 - Every invariant in [the table above](#transactions-and-invariants) has a concurrency test.
 - The importer has fixture-based tests (a small Convex export ZIP in the repo, generated from a local deployment) and a rehearsal procedure ([runbook](Convex_Import.md#runbook)).

@@ -10,7 +10,7 @@ import {
 } from "../../convex/_generated/server";
 import { internal } from "../../convex/_generated/api";
 import { requireAccessibleChat } from "../../convex/workspaces";
-import { legacyBoxValidator } from "../e2ee/legacy-contract";
+import { legacyBoxValidator } from "contracts/e2ee/legacy-contract";
 import {
   assertLegacyPlaintextAllowed,
   assertLegacyWritesAllowed,
@@ -18,7 +18,7 @@ import {
   isLegacyStorage,
 } from "../e2ee/migration-contract";
 import { workspaceMutation } from "../../convex/helpers";
-import { decodeExactBytes } from "../e2ee/contract";
+import { decodeExactBytes } from "contracts/e2ee/contract";
 import { CAPSULE_BYTES, decodeCapsule } from "radium-crypto";
 import { assertPlaintextChatWriteAllowed } from "./legacy";
 import {
@@ -27,6 +27,7 @@ import {
   parseFileFragment,
   stripFileFragment,
 } from "./sealing";
+import { zodToConvex } from "../zod-validators";
 
 /**
  * Chat attachments live in Convex File Storage, never inline in chat documents. The browser
@@ -73,7 +74,7 @@ export const historicalFile = query({
   args: { chatId: v.id("aisdk_chats"), url: v.string() },
   returns: v.union(
     v.null(),
-    v.object({ recordId: v.id("chat_files"), legacyContent: legacyBoxValidator }),
+    v.object({ recordId: v.id("chat_files"), legacyContent: zodToConvex(legacyBoxValidator) }),
   ),
   handler: async (ctx, { chatId, url }) => {
     const { workspace } = await requireAccessibleChat(ctx, chatId);

@@ -10,7 +10,7 @@ import {
   LOCAL_USAGE_SYNC_INTERVAL_MS,
   utcDay,
   type LocalUsageRow,
-} from "backend/src/usage/local_contract";
+} from "contracts/usage/local_contract";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CCUSAGE_TIMEOUT_MS = 120_000;

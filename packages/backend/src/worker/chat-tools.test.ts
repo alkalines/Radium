@@ -12,7 +12,7 @@ import {
 import type { ActionCtx } from "../../convex/_generated/server";
 import type { Id } from "../../convex/_generated/dataModel";
 import { buildWorkerChatTools, workerChatApprovalSecret } from "./chat-tools";
-import { workerChatTaskRequestId, workerTaskAad } from "./task-contract";
+import { workerChatTaskRequestId, workerTaskAad } from "contracts/worker/task-contract";
 
 const scope = {
   chatId: "chat-test" as Id<"aisdk_chats">,

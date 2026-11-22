@@ -18,7 +18,7 @@ import type { Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import schema from "./schema";
 import { normalizeWorkerKey, tokenDigest, workerIssuer } from "../src/worker/auth";
-import type { AcpAgentDefinition, AcpAgentReport } from "../src/acp/contract";
+import type { AcpAgentDefinition, AcpAgentReport } from "contracts/acp/contract";
 import type * as WorkerKeys from "../src/e2ee/worker-keys";
 
 vi.mock("./auth", () => ({

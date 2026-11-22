@@ -11,8 +11,8 @@ same short retention; they are not durable conversation history.
 
 ## Entry Points And Authorization
 
-- `packages/backend/src/worker/task-contract.ts`: validators, transitions and retention.
-- `packages/backend/src/worker/edit-contract.ts`: edit requests, results and size bounds.
+- `packages/contracts/src/worker/task-contract.ts`: validators, transitions and retention.
+- `packages/contracts/src/worker/edit-contract.ts`: edit requests, results and size bounds.
 - `packages/worker/src/tasks.ts`: serialized consumption and result delivery.
 - `packages/backend/src/worker/tasks.ts`: creation, machine reads/updates and cleanup.
 - `packages/backend/convex/worker_tasks.ts`: thin registered Convex exports.
@@ -205,7 +205,7 @@ The task stores only `sealed: { keyId, encapsulated, request }` (bytes, bounded)
 backend checks owner, chat, selected Worker/directory/tool, stage shape and that
 `keyId` is still the certified key. A stage dispatched before returns `replay` and
 the action reports a fixed "already executed" outcome. The request plaintext
-(`WorkerSealedTaskRequest` in `src/worker/task-contract.ts`) carries the user's
+(`WorkerSealedTaskRequest` in `packages/contracts/src/worker/task-contract.ts`) carries the user's
 authorization: a per-call approval signature (`toolApprovalStatement` over the exact
 input JSON, `approvedAt` and the receipt's chat key epoch) for Edit/Create/Bash, or the
 chat's standing grant (`toolGrantStatement`, binding the receipt audience) for Read. The

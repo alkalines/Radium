@@ -22,13 +22,13 @@ import type {
   AcpSignedCommand,
   AcpStopReason,
   AcpTurnReport,
-} from "./contract";
+} from "contracts/acp/contract";
 import {
   ACP_SEALED_ERROR_TEXT,
   ACP_SEALED_SHORT_BYTES,
   ACP_WARM_SESSIONS_MAX,
   validAcpToken,
-} from "./contract";
+} from "contracts/acp/contract";
 
 type ReadCtx = QueryCtx | MutationCtx;
 

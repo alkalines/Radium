@@ -8,7 +8,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "../../convex/_generated/server";
-import { ACP_BUSY_STATUSES } from "../acp/contract";
+import { ACP_BUSY_STATUSES } from "contracts/acp/contract";
 import { readMigrationState } from "./migration-contract";
 import { activeWorkBlocker } from "./migration-relay";
 

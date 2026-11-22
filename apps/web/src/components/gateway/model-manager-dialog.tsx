@@ -41,11 +41,11 @@ import {
   fetchOpenRouterServiceTiers,
   mapModelsDevModel,
   type MappedModel,
-} from "backend/src/models_dev";
+} from "contracts/models_dev";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
-import type { WorkspaceProviderView } from "backend/src/workspaces/provider";
+import type { WorkspaceProviderView } from "contracts/workspaces/provider";
 import { formatPerMillion, formatTokens, useModelsDevCatalogue } from "./models-dev-catalogue";
 import { ProviderLogo } from "./provider-logo";
 

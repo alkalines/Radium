@@ -1,7 +1,7 @@
 import type { ChatStatus, UIMessage } from "ai";
-import type { AcpItem, AcpSessionStatus, AcpStopReason } from "backend/src/acp/contract";
-import { acpItemsInOrder, type AcpTimeline } from "backend/src/acp/fold";
-import type { TodoItem } from "backend/src/chatroom/session-tools";
+import type { AcpItem, AcpSessionStatus, AcpStopReason } from "contracts/acp/contract";
+import { acpItemsInOrder, type AcpTimeline } from "contracts/acp/fold";
+import type { TodoItem } from "contracts/chatroom/session-tools";
 import type { RunState } from "@/components/agentic/agent-status";
 import { acpToolPart, type AcpNoticePart, type AcpToolItem, type AcpToolPart } from "./parts";
 

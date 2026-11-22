@@ -1,4 +1,4 @@
-import type { RoutingStrategy } from "./settings";
+import type { RoutingStrategy } from "contracts/routing/settings";
 
 /** An eligible provider as seen by the selection strategies. */
 export type SelectionCandidate = {

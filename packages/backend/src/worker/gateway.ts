@@ -5,10 +5,11 @@ import { components } from "../../convex/_generated/api";
 import { ownedWorkspaceMutation } from "../../convex/helpers";
 import { generateApiKey, hashText } from "../../convex/keys";
 import { workspaceOpenaiModels } from "../../convex/models";
-import { acpGatewayAccessValidator, keyTelemetryValidator } from "../acp/gateway";
-import { requireActiveWorkspaceWorker } from "./chat-config";
+import { acpGatewayAccessValidator, keyTelemetryValidator } from "contracts/acp/gateway";
+import { requireActiveWorkspaceWorker } from "contracts/worker/chat-config";
 import { workspaceWorkerMetadata } from "./chat-selection";
 import { workerMutation, workerQuery } from "./machine";
+import { zodToConvex } from "../zod-validators";
 
 export function findWorkerGateway(
   ctx: QueryCtx | MutationCtx,
@@ -68,7 +69,7 @@ export const issueGatewayKey = ownedWorkspaceMutation({
 });
 
 export const setGatewayTelemetry = ownedWorkspaceMutation({
-  args: { workerId: v.string(), telemetry: keyTelemetryValidator },
+  args: { workerId: v.string(), telemetry: zodToConvex(keyTelemetryValidator) },
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireWorker(ctx, ctx.workspace._id, args.workerId);
@@ -91,7 +92,10 @@ export const setGatewayTelemetry = ownedWorkspaceMutation({
 
 export const gatewayState = workerQuery({
   args: {},
-  returns: v.object({ access: acpGatewayAccessValidator, keyId: v.optional(v.id("api_keys")) }),
+  returns: v.object({
+    access: zodToConvex(acpGatewayAccessValidator),
+    keyId: v.optional(v.id("api_keys")),
+  }),
   handler: async (ctx) => {
     const row = await findWorkerGateway(ctx, ctx.worker.workspaceId, ctx.worker.workerId);
     return { access: row?.access ?? "off", ...(row?.key ? { keyId: row.key } : {}) };

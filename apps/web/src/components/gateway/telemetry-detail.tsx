@@ -4,7 +4,7 @@ import { Link } from "@tanstack/react-router";
 import type { FunctionReturnType } from "convex/server";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { ArrowLeftIcon, ArrowRightIcon, CircleAlertIcon, CopyIcon } from "lucide-react";
-import { blobValue } from "backend/src/telemetry/store";
+import { blobValue } from "contracts/telemetry/store";
 
 import { AgentStatus, type RunState } from "@/components/agentic/agent-status";
 import { Tag } from "@/components/harness/group-list";

@@ -2,9 +2,10 @@ import { createRouter } from "@tanstack/react-router";
 import { QueryClient } from "@tanstack/react-query";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
 import { ConvexQueryClient } from "@convex-dev/react-query";
+import { createTrpc } from "./lib/trpc";
 import { routeTree } from "./routeTree.gen";
 
-/** Creates the app router with a Convex-backed query client for this render. */
+/** Creates the app router with a Convex-backed query client and tRPC for this render. */
 export function getRouter() {
   const convexUrl = (import.meta as any).env.VITE_CONVEX_URL!;
   if (!convexUrl) {
@@ -29,7 +30,7 @@ export function getRouter() {
   const router = createRouter({
     routeTree,
     defaultPreload: "intent",
-    context: { queryClient, convexQueryClient },
+    context: { queryClient, convexQueryClient, trpc: createTrpc(queryClient) },
     scrollRestoration: true,
   });
   setupRouterSsrQueryIntegration({ router, queryClient });

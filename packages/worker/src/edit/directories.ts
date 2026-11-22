@@ -1,6 +1,6 @@
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { validWorkerEditRequest, type WorkerEditRequest } from "backend/src/worker/edit-contract";
+import { validWorkerEditRequest, type WorkerEditRequest } from "contracts/worker/edit-contract";
 import type { WorkerEditService } from "./service.js";
 
 interface DirectorySession {

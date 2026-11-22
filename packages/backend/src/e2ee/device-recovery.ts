@@ -5,7 +5,11 @@ import { components } from "../../convex/_generated/api";
 import { internalMutation } from "../../convex/_generated/server";
 import { mutation } from "../maintenance";
 import { authComponent } from "../../convex/auth";
-import { decodeExactBytes, DEVICE_RECOVERY_SLOT_BYTES, DEVICE_RECOVERY_TTL_MS } from "./contract";
+import {
+  decodeExactBytes,
+  DEVICE_RECOVERY_SLOT_BYTES,
+  DEVICE_RECOVERY_TTL_MS,
+} from "contracts/e2ee/contract";
 
 /**
  * Password reset through another device where the user is still unlocked (docs/E2EE/

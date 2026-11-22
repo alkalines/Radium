@@ -1,5 +1,5 @@
 import type { DynamicToolUIPart } from "ai";
-import type { AcpItem } from "backend/src/acp/contract";
+import type { AcpItem } from "contracts/acp/contract";
 
 /**
  * How ACP timeline items enter the shared Session renderers (`docs/ACP/Interactions.md#view-model`).

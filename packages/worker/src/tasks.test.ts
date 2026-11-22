@@ -5,8 +5,8 @@ import { ConvexError } from "convex/values";
 import { getFunctionName } from "convex/server";
 import { api } from "backend/convex/_generated/api";
 import { consumeEditTasks } from "./tasks.js";
-import type { WorkerEditRequest } from "backend/src/worker/edit-contract";
-import type { WorkerBashRequest } from "backend/src/worker/bash-contract";
+import type { WorkerEditRequest } from "contracts/worker/edit-contract";
+import type { WorkerBashRequest } from "contracts/worker/bash-contract";
 
 type Task = FunctionReturnType<typeof api.worker_tasks.assigned>[number];
 function isClaim(fn: unknown) {

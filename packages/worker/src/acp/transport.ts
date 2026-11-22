@@ -19,8 +19,8 @@ import type {
   AcpTurnUsage,
   AcpUsage,
   AcpProfile,
-} from "backend/src/acp/contract";
-import type { AcpGatewayAccess, AcpGatewayModel } from "backend/src/acp/gateway";
+} from "contracts/acp/contract";
+import type { AcpGatewayAccess, AcpGatewayModel } from "contracts/acp/gateway";
 
 /**
  * Keyed-workspace facts the server holds about a chat: the creator's signed binding and the

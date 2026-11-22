@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { forbiddenAgentEnv, type AcpAgentDefinition } from "backend/src/acp/contract";
+import { forbiddenAgentEnv, type AcpAgentDefinition } from "contracts/acp/contract";
 import { agentEnvironment } from "./config.js";
 
 const definition: AcpAgentDefinition = {

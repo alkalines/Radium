@@ -17,9 +17,9 @@ import {
   acpAnswerError,
   type AcpAgentReport,
   type AcpInteractionRequest,
-} from "../src/acp/contract";
+} from "contracts/acp/contract";
 import { normalizeRegistryAgents } from "../src/acp/agents";
-import { ACP_AGENT_DEFINITIONS_MAX, type AcpAgentDefinition } from "../src/acp/contract";
+import { ACP_AGENT_DEFINITIONS_MAX, type AcpAgentDefinition } from "contracts/acp/contract";
 
 vi.mock("./auth", () => ({
   authComponent: {

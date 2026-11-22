@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { WorkerEditService } from "./service.js";
-import type { WorkerEditRequest } from "backend/src/worker/edit-contract";
+import type { WorkerEditRequest } from "contracts/worker/edit-contract";
 import { WorkerDirectoryEdits } from "./directories.js";
 
 type WorkerWriteMode = "edit" | "create";

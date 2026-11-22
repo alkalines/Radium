@@ -6,7 +6,7 @@ import { convexTest } from "convex-test";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { secrets, workspaceProviderSecretNamespace } from "./secrets";
-import { OPENAI_CODEX_SLUG } from "../src/provider_slugs";
+import { OPENAI_CODEX_SLUG } from "contracts/provider_slugs";
 import type { Id } from "./_generated/dataModel";
 
 type AuthContext = {

@@ -5,8 +5,8 @@ import {
   ACP_SEALED_ERROR_TEXT,
   ACP_WORKER_ERROR_CODES,
   isPersistedAcpErrorCode,
-} from "../acp/contract";
-import { workerChatTaskRequestId } from "../worker/task-contract";
+} from "contracts/acp/contract";
+import { workerChatTaskRequestId } from "contracts/worker/task-contract";
 
 vi.mock("./legacy-crypto", () => ({
   activeLegacyRecipient: vi.fn(

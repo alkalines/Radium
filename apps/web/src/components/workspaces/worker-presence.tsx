@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { isWorkerOnline } from "backend/src/worker/presence";
+import { isWorkerOnline } from "contracts/worker/presence";
 import { cn } from "@/lib/utils";
 
 // Online means a heartbeat inside `WORKER_ONLINE_WINDOW_MS` (60 s); a 15 s clock keeps the label at

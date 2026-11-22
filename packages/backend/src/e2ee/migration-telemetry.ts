@@ -1,9 +1,9 @@
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
 import { findWorkspaceForLegacyBalance } from "../../convex/workspaces";
-import { limitNotificationBody, notificationTitle } from "../notifications/contract";
+import { limitNotificationBody, notificationTitle } from "contracts/notifications/contract";
 import { workspaceHash } from "../telemetry/hash";
-import type { LegacyBox, LegacyRecipient } from "./legacy-contract";
+import type { LegacyBox, LegacyRecipient } from "contracts/e2ee/legacy-contract";
 import { activeLegacyRecipient } from "./legacy-crypto";
 import type { LegacyAdapter } from "./migration-contract";
 import { blobScheme, KEYED_HASH_VERSION, messageSessionKey, nodeScheme, REKEYED_HASH_VERSION } from "./migration-telemetry-provenance";

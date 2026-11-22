@@ -3,7 +3,7 @@ import { query } from "../../convex/_generated/server";
 import { mutation } from "../maintenance";
 import { requireAccessibleChat } from "../../convex/workspaces";
 import { acpError, accessibleSession, admitWarm, findSession, relayFrozen } from "./policy";
-import { validAcpToken } from "./contract";
+import { validAcpToken } from "contracts/acp/contract";
 
 /**
  * Heartbeat only an authorized visible chat; non-ACP chats do not create presence rows. While the

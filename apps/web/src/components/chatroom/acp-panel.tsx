@@ -15,9 +15,9 @@ import { toast } from "sonner";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { acpAgentDefinitionError, type AcpAgentDefinition } from "backend/src/acp/contract";
-import { ACP_GATEWAY_PLACEHOLDERS, ACP_GATEWAY_TEMPLATES } from "backend/src/acp/gateway";
-import { isWorkerOnline } from "backend/src/worker/presence";
+import { acpAgentDefinitionError, type AcpAgentDefinition } from "contracts/acp/contract";
+import { ACP_GATEWAY_PLACEHOLDERS, ACP_GATEWAY_TEMPLATES } from "contracts/acp/gateway";
+import { isWorkerOnline } from "contracts/worker/presence";
 import { AgentStatus, type RunState } from "@/components/agentic/agent-status";
 import { GroupList, Row, RowBlock, Tag } from "@/components/harness/group-list";
 import { AcpMark } from "@/components/icons/acp-mark";

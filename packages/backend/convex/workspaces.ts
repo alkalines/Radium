@@ -12,14 +12,15 @@ import { mutation } from "../src/maintenance";
 import { authComponent, createAuth } from "./auth";
 import schema from "./schema";
 import { canAccessResolvedChat, canAccessWorkspace, canManageChat } from "../src/workspaces/policy";
-import { isWorkspaceIconName } from "../src/workspaces/icons";
-import { isTileColorName } from "../src/workspaces/colors";
-import { normalizeDisplayName } from "../src/workspaces/names";
+import { isWorkspaceIconName } from "contracts/workspaces/icons";
+import { isTileColorName } from "contracts/workspaces/colors";
+import { normalizeDisplayName } from "contracts/workspaces/names";
 import { isChatMember } from "../src/chatroom/members";
 import { workspaceKeysValidator, invalidKeys } from "../src/e2ee/workspace-contract";
 import { clearWorkspaceJoins, insertWorkspaceEpoch } from "../src/e2ee/workspace-keys";
-import { legacyBoxValidator } from "../src/e2ee/legacy-contract";
+import { legacyBoxValidator } from "contracts/e2ee/legacy-contract";
 import { assertLegacyWritesAllowed, assertLegacyPlaintextAllowed } from "../src/e2ee/migration-contract";
+import { zodToConvex } from "../src/zod-validators";
 
 const MAX_WORKSPACES = 100;
 const MAX_MEMBERS = 200;
@@ -30,7 +31,7 @@ const workspaceSummaryValidator = v.object({
   _id: v.id("workspaces"),
   _creationTime: v.number(),
   name: v.string(),
-  legacyContent: v.optional(legacyBoxValidator),
+  legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
   icon: v.optional(v.string()),
   color: v.optional(v.string()),
   ownerType: v.literal("user"),

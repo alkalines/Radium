@@ -1,9 +1,10 @@
 import { v, type Infer } from "convex/values";
-import type { AcpTurnUsage } from "../acp/contract";
-import { inferModelAuthor, modelKey, nameKey } from "../acp/models";
-import { mapModelsDevModel, type ModelsDevApi, type ModelsDevModel } from "../models_dev";
-import { providerPricingValidator, type ProviderPricing } from "../workspaces/provider";
+import type { AcpTurnUsage } from "contracts/acp/contract";
+import { inferModelAuthor, modelKey, nameKey } from "contracts/acp/models";
+import { mapModelsDevModel, type ModelsDevApi, type ModelsDevModel } from "contracts/models_dev";
+import { providerPricingValidator, type ProviderPricing } from "contracts/workspaces/provider";
 import type { completionUsage } from "./completion";
+import { zodToConvex } from "../zod-validators";
 
 /**
  * ACP agent usage. Agents call their own providers, so Radium never sees the requests: the Worker
@@ -36,7 +37,7 @@ export const modelsDevMatchValidator = v.object({
   modelId: v.string(),
   name: v.string(),
   slug: v.string(),
-  pricing: providerPricingValidator,
+  pricing: zodToConvex(providerPricingValidator),
 });
 export type ModelsDevMatch = Infer<typeof modelsDevMatchValidator>;
 

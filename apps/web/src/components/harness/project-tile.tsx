@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { resolveTileColorName } from "backend/src/workspaces/colors";
+import { resolveTileColorName } from "contracts/workspaces/colors";
 import { cn } from "@/lib/utils";
 
 /**

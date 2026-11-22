@@ -8,7 +8,7 @@ import {
   type WorkerMutationCtx,
   type WorkerQueryCtx,
 } from "../worker/machine";
-import { validChatWorkerDirectory } from "../worker/chat-config";
+import { validChatWorkerDirectory } from "contracts/worker/chat-config";
 import { chatKeyIsStale } from "../e2ee/chat-keys";
 import {
   ACP_AGENT_DEFINITIONS_MAX,
@@ -44,7 +44,7 @@ import {
   acpSealedBoxValidator,
   acpSealedRequestValidator,
   acpStreamCapsuleValidator,
-} from "./contract";
+} from "contracts/acp/contract";
 import {
   acpError,
   applySessionPatch,
@@ -63,6 +63,7 @@ import {
 } from "./sealed";
 import { assertLegacyPlaintextAllowed, legacyPlaintextAllowed } from "../e2ee/migration-contract";
 import { deleteRelayRow } from "../e2ee/migration-relay";
+import { zodToConvex } from "../zod-validators";
 
 /** Pending intent for this verified machine, without transient prompt payloads. */
 export const assignedCommands = workerQuery({
@@ -280,11 +281,11 @@ export const openInteraction = workerMutation({
   args: {
     chat: v.id("aisdk_chats"),
     requestKey: v.string(),
-    request: v.optional(acpInteractionRequestValidator),
+    request: v.optional(zodToConvex(acpInteractionRequestValidator)),
     sealed: v.optional(
       v.object({
         kind: v.union(v.literal("permission"), v.literal("elicitation")),
-        ...acpSealedRequestValidator.fields,
+        ...zodToConvex(acpSealedRequestValidator).fields,
       }),
     ),
   },
@@ -424,7 +425,7 @@ export const startEpoch = workerMutation({
   args: {
     chat: v.id("aisdk_chats"),
     epoch: v.number(),
-    capsule: v.optional(acpStreamCapsuleValidator),
+    capsule: v.optional(zodToConvex(acpStreamCapsuleValidator)),
   },
   handler: async (ctx, args) => {
     const session = await machineSession(ctx, args.chat);
@@ -488,7 +489,7 @@ export const startEpoch = workerMutation({
  * and, once the workspace has keys, on a stream started before them.
  */
 export const appendFrames = workerMutation({
-  args: { chat: v.id("aisdk_chats"), epoch: v.number(), frames: v.array(acpFrameInputValidator) },
+  args: { chat: v.id("aisdk_chats"), epoch: v.number(), frames: v.array(zodToConvex(acpFrameInputValidator)) },
   handler: async (ctx, args) => {
     const session = await machineSession(ctx, args.chat);
     if (!session.warm || session.epoch !== args.epoch) return { accepted: false, bytes: 0 };
@@ -570,21 +571,21 @@ export const updateSession = workerMutation({
   args: {
     chat: v.id("aisdk_chats"),
     patch: v.object({
-      status: v.optional(acpSessionStatusValidator),
-      stopReason: v.optional(acpStopReasonValidator),
+      status: v.optional(zodToConvex(acpSessionStatusValidator)),
+      stopReason: v.optional(zodToConvex(acpStopReasonValidator)),
       error: v.optional(v.union(v.string(), v.null())),
-      config: v.optional(acpConfigValidator),
-      commands: v.optional(v.array(acpCommandInfoValidator)),
-      usage: v.optional(acpUsageValidator),
-      turnUsage: v.optional(acpTurnUsageValidator),
-      history: v.optional(acpHistoryValidator),
+      config: v.optional(zodToConvex(acpConfigValidator)),
+      commands: v.optional(v.array(zodToConvex(acpCommandInfoValidator))),
+      usage: v.optional(zodToConvex(acpUsageValidator)),
+      turnUsage: v.optional(zodToConvex(acpTurnUsageValidator)),
+      history: v.optional(zodToConvex(acpHistoryValidator)),
       sessionId: v.optional(v.string()),
       title: v.optional(v.string()),
-      sealedTitle: v.optional(acpSealedBoxValidator),
-      sealedError: v.optional(v.union(acpSealedBoxValidator, v.null())),
-      indexTitle: v.optional(v.object({ ...acpSealedBoxValidator.fields, tag: v.string() })),
+      sealedTitle: v.optional(zodToConvex(acpSealedBoxValidator)),
+      sealedError: v.optional(v.union(zodToConvex(acpSealedBoxValidator), v.null())),
+      indexTitle: v.optional(v.object({ ...zodToConvex(acpSealedBoxValidator).fields, tag: v.string() })),
       sessionProof: v.optional(v.bytes()),
-      turn: v.optional(acpTurnReportValidator),
+      turn: v.optional(zodToConvex(acpTurnReportValidator)),
     }),
   },
   returns: v.null(),
@@ -652,12 +653,12 @@ export const chatKey = workerQuery({
 
 /** Replace this machine's bounded catalog, retaining defaults across probe-only reports. */
 export const reportAgents = workerMutation({
-  args: { agents: v.array(acpAgentReportValidator) },
+  args: { agents: v.array(zodToConvex(acpAgentReportValidator)) },
   returns: v.record(
     v.string(),
     v.object({
-      config: v.optional(acpConfigValidator),
-      commands: v.optional(v.array(acpCommandInfoValidator)),
+      config: v.optional(zodToConvex(acpConfigValidator)),
+      commands: v.optional(v.array(zodToConvex(acpCommandInfoValidator))),
     }),
   ),
   handler: async (ctx, { agents }) => {
@@ -704,7 +705,7 @@ export const reportAgents = workerMutation({
 /** This Worker's small agent index, read once before computing a metadata-only diff. */
 export const knownAgentSessions = workerQuery({
   args: { agentId: v.string() },
-  returns: v.array(acpAgentSessionEntryValidator),
+  returns: v.array(zodToConvex(acpAgentSessionEntryValidator)),
   handler: async (ctx, { agentId }) => {
     const rows = await ctx.db
       .query("acp_agent_sessions")
@@ -730,7 +731,7 @@ export const knownAgentSessions = workerQuery({
 export const syncAgentSessions = workerMutation({
   args: {
     agentId: v.string(),
-    upserts: v.array(acpAgentSessionEntryValidator),
+    upserts: v.array(zodToConvex(acpAgentSessionEntryValidator)),
     removals: v.array(v.string()),
     start: v.optional(v.boolean()),
     finish: v.optional(

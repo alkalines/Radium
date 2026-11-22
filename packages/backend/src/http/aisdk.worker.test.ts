@@ -25,8 +25,8 @@ vi.mock("ai", async () => ({
 }));
 
 import { handleAISDKChat } from "./aisdk.chat";
-import { CODE_MODE_TOOL_SET_ID, QUESTION_TOOL_ID } from "../chatroom/tools";
-import { CODE_MODE_TOOL_NAME } from "../chatroom/code-mode";
+import { CODE_MODE_TOOL_SET_ID, QUESTION_TOOL_ID } from "contracts/chatroom/tools";
+import { CODE_MODE_TOOL_NAME } from "contracts/chatroom/code-mode";
 
 /**
  * The fixture's resolved selection enables only the `question` session set, so `todo_write`

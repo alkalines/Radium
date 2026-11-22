@@ -8,12 +8,12 @@ import {
   ACP_COMMAND_RETENTION_MS,
   ACP_INTERACTION_RETENTION_MS,
   acpStream,
-} from "./contract";
+} from "contracts/acp/contract";
 import { applySessionPatch, enqueue, enqueueSigned, findAgent, findSession, relayFrozen } from "./policy";
 import { verifySignedCommand, workspaceHasKeys } from "./sealed";
 import { legacyPlaintextAllowed } from "../e2ee/migration-contract";
 import { deleteRelayRow } from "../e2ee/migration-relay";
-import type { AcpSignedCommand } from "./contract";
+import type { AcpSignedCommand } from "contracts/acp/contract";
 import { deferredCleanupKey, resumeDeferredCleanupReference } from "./deferred-contract";
 
 const BATCH = 32;

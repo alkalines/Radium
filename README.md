@@ -69,23 +69,12 @@ collectors or webhooks.
 
 ### Self-Hosted By Design
 
-The repository contains intended full-image and frontend-only container paths for
-self-hosting. Those container and release paths are currently blocked and
-unverified pending the [workspace-layout audit](docs/tasks/09_Workspace_Operations.md);
-do not treat the command below as a working quickstart until that task is
-resolved. The verified development path uses the website package and Convex
-Cloud described below.
-
-Intended full-image invocation (currently blocked/unverified):
-
-```bash
-SECRET_STORE_KEYS="1:$(openssl rand -base64 32)" \
-docker compose up --build
-```
-
-The intended full image would deploy the bundled Convex functions at startup and
-persist backend state in a Docker volume; this behavior is not currently a
-verified release path.
+Radium is moving off Convex to a self-hostable stack of ordinary services: a
+Bun + Hono backend on Postgres, Valkey and Durable Streams
+([backend migration](docs/Backend_Migration.md)). That work is in progress;
+`docker-compose.yml` runs its backing services for development, and the
+container and release paths are rewritten when the migration lands. Until then
+there is no supported self-hosted quickstart.
 
 [Read the deployment guide](docs/deployment.md)
 

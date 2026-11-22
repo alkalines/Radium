@@ -1,7 +1,7 @@
 import type { FileUIPart, UIMessage } from "ai";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { LegacyBox } from "backend/src/e2ee/legacy-contract";
+import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import { fromBase64Url } from "radium-crypto";
 import {
   parseFileFragment,

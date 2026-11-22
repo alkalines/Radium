@@ -15,7 +15,7 @@ import {
   sharedPrefixDepth,
   summarizeRequests,
   type LineageParent,
-} from "../../src/telemetry/reads";
+} from "contracts/telemetry/reads";
 import {
   loadBlob,
   loadChain,
@@ -25,7 +25,8 @@ import {
   telemetryRequestStatusSchema,
   telemetrySettingsSchema,
   type TelemetrySettings,
-} from "../../src/telemetry/validators";
+} from "contracts/telemetry/validators";
+import { zodToConvex } from "../../src/zod-validators";
 
 const defaultSettings: TelemetrySettings = {
   enabled: false,
@@ -61,7 +62,7 @@ function newCaches(): Caches {
 /** Read workspace telemetry capture preferences; owner-only. */
 export const getSettings = ownedWorkspaceQuery({
   args: {},
-  returns: telemetrySettingsSchema,
+  returns: zodToConvex(telemetrySettingsSchema),
   handler: async (ctx) => ctx.workspace.settings.telemetry ?? defaultSettings,
 });
 
@@ -104,7 +105,7 @@ export const setSettings = ownedWorkspaceMutation({
 /** Capture settings for server-side callers; archived or missing workspaces never capture. */
 export const getSettingsForWorkspace = internalQuery({
   args: { workspace: v.id("workspaces") },
-  returns: telemetrySettingsSchema,
+  returns: zodToConvex(telemetrySettingsSchema),
   handler: async (ctx, args) => {
     const workspace = await ctx.db.get("workspaces", args.workspace);
     if (!workspace || workspace.archivedAt !== undefined) return defaultSettings;
@@ -258,7 +259,7 @@ export const listRequests = ownedWorkspaceQuery({
   args: {
     paginationOpts: paginationOptsValidator,
     session: v.optional(v.id("telemetry_sessions")),
-    status: v.optional(telemetryRequestStatusSchema),
+    status: v.optional(zodToConvex(telemetryRequestStatusSchema)),
     model: v.optional(v.string()),
   },
   handler: async (ctx, args) => {

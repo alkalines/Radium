@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { AcpToolContent } from "backend/src/acp/contract";
+import type { AcpToolContent } from "contracts/acp/contract";
 import { TerminalLog } from "@/components/agentic/terminal-log";
 import { Markdown } from "@/components/markdown";
 import { DiffCodeBlock, ToolCodeBlock, languageForPath } from "../tool-code";

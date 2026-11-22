@@ -4,19 +4,19 @@
 
 ChatGPT Subscription (OpenAI Codex) uses device login through
 `@opencoredev/loginwithchatgpt-server`. The credentials form calls the same-origin
-`/api/backend/subscription/chatgpt-subscription/*` endpoint with a `workspace`
-query parameter. The generic frontend proxy forwards it to
-`/api/subscription/chatgpt-subscription/*` on `VITE_CONVEX_SITE_URL`.
+`/api/subscription/chatgpt-subscription/*` endpoint with a `workspace`
+query parameter, and the web server's `/api/*` forwarder passes it to the backend.
 
 ### Routing And Responsibilities
 
-- `apps/web/src/app/api/backend/$.ts` forwards all supported HTTP methods from
-  `/api/backend/*` to `/api/*` on the configured Convex site. For example,
-  `/api/backend/openai/v1/models` forwards to `/api/openai/v1/models`. It preserves
-  query parameters, request bodies, authentication headers, cookies, response
-  bodies (including streams), status, and Set-Cookie headers. Redirects are passed
-  through rather than followed server-side. The proxy adds no authentication of
-  its own; each Convex endpoint enforces its existing policy.
+- `apps/web/src/app/api/$.ts` forwards all supported HTTP methods for `/api/*`
+  to the same path on the backend (`API_INTERNAL_URL`). It preserves query
+  parameters, request bodies, cookies, response bodies (including streams),
+  status, and Set-Cookie headers. Redirects are passed through rather than
+  followed server-side. The forwarder adds no authentication of its own; each
+  backend endpoint enforces its policy. On the `refactor/abandon-convex` branch
+  that backend is `packages/server`, which serves these routes once the Gateway
+  slice is ported (task 14, Phase 3); the Convex routes below are what it ports.
 - `packages/backend/src/http/router.ts` mounts the Hono subscription router
   alongside Gateway and Chatroom handlers. `packages/backend/convex/http.ts`
   connects the app using `HttpRouterWithHono` from `convex-helpers/server/hono`

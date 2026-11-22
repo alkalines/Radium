@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import type { AcpInteractionRequest } from "backend/src/acp/contract";
+import type { AcpInteractionRequest } from "contracts/acp/contract";
 import { ShieldAlertIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";

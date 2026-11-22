@@ -21,8 +21,10 @@ server routes. File routes live in `src/app/`, with the route directory set in
 `vite.config.mts`. `src/router.tsx` connects TanStack Router, React Query, and
 Convex React Query.
 
-The auth proxy at `src/app/api/auth/$.ts` connects the web origin to Better
-Auth. It is separate from the gateway API.
+The `/api/*` forwarder at `src/app/api/$.ts` connects the web origin to the
+backend: Better Auth, tRPC and the subscription routes. On the
+`refactor/abandon-convex` branch it targets the new backend (`API_INTERNAL_URL`,
+[backend migration](Backend_Migration.md)); it is separate from the gateway API.
 
 ### Convex
 

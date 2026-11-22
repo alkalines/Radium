@@ -5,7 +5,7 @@ import {
   LOGGING_SOURCES,
   type LoggingEventInput,
   type LoggingLevel,
-} from "./contract";
+} from "contracts/logging/contract";
 
 export type BackendLogInput = Omit<LoggingEventInput, "product" | "source">;
 type BackendLogFields = Omit<BackendLogInput, "event" | "level">;

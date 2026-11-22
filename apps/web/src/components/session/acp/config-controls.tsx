@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import type { AcpConfig, AcpConfigOption, AcpDraftConfig } from "backend/src/acp/contract";
-import { inferModelAuthor, modelKey, nameKey } from "backend/src/acp/models";
+import type { AcpConfig, AcpConfigOption, AcpDraftConfig } from "contracts/acp/contract";
+import { inferModelAuthor, modelKey, nameKey } from "contracts/acp/models";
 import { ChevronDownIcon, SlidersHorizontalIcon } from "lucide-react";
 
 import { footerTriggerClassName, ModelPicker } from "../model-picker";

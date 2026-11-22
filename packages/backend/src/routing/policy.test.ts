@@ -9,7 +9,7 @@ import {
 } from "./selection";
 import { clientSessionId, extractRoutingSession } from "./session";
 import type { ChatCompletions_RequestBody_Type } from "@/types/openai/types";
-import type { ProviderPricing } from "../workspaces/provider";
+import type { ProviderPricing } from "contracts/workspaces/provider";
 
 const NOW = 1_000_000;
 

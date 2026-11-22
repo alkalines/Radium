@@ -7,7 +7,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { authComponent } from "./auth";
 import { messageSchema, queuedMessageSchema } from "./aisdk_schemas";
-import { legacyBoxValidator } from "../src/e2ee/legacy-contract";
+import { legacyBoxValidator } from "contracts/e2ee/legacy-contract";
 import { assertLegacyWritesAllowed, deleteLegacySidecar } from "../src/e2ee/migration-contract";
 import { assertPlaintextChatWriteAllowed } from "../src/chatroom/legacy";
 import { invalidateTelemetryProofs } from "../src/e2ee/migration-telemetry-proofs";
@@ -28,7 +28,7 @@ import {
   chatWorkerGrantValidator,
   chatWorkerSelectionValidator,
   type ChatWorkerSelection,
-} from "../src/worker/chat-config";
+} from "contracts/worker/chat-config";
 import {
   attachChatWorkerGrant,
   rederiveChatWorkerDirectory,
@@ -36,10 +36,10 @@ import {
 } from "../src/worker/chat-selection";
 import { requireWorkspaceProject } from "../src/projects/projects";
 import { storedSelection, toolSelectionValidator } from "../src/chatroom/tool-selection";
-import { chatInterruptionValidator } from "../src/chatroom/interruption";
+import { chatInterruptionValidator } from "contracts/chatroom/interruption";
 import { findSession, requireChatActor } from "../src/acp/policy";
 import { queueChatDeletion } from "../src/acp/retention";
-import { acpSignedBindingValidator, acpSignedCommandValidator } from "../src/acp/contract";
+import { acpSignedBindingValidator, acpSignedCommandValidator } from "contracts/acp/contract";
 import {
   activeIdentityFor,
   chatKeyInputValidator,
@@ -67,6 +67,7 @@ import {
 import { generateChatTitle } from "../src/chatroom/titles";
 import { createInternalGatewayProvider } from "./ai_gateway";
 import { changeChatScope } from "../src/e2ee/chat-scope";
+import { zodToConvex } from "../src/zod-validators";
 
 const chatScopeValidator = v.union(
   v.literal("personal"),
@@ -103,7 +104,7 @@ export const CreateChat = workspaceMutation({
         fileUrls: v.array(v.string()),
       }),
     ),
-    worker: v.optional(chatWorkerSelectionValidator),
+    worker: v.optional(zodToConvex(chatWorkerSelectionValidator)),
     project: v.optional(v.id("projects")),
     tools: v.optional(toolSelectionValidator),
   },
@@ -323,7 +324,7 @@ export const EditChat = internalMutation({
     sealedTitle: v.optional(sealedBoxValidator),
     activeStream: v.optional(v.boolean()),
     messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
-    interruption: v.optional(chatInterruptionValidator),
+    interruption: v.optional(zodToConvex(chatInterruptionValidator)),
     chatId: v.id("aisdk_chats"),
   },
   returns: v.union(v.string(), v.null()),
@@ -415,16 +416,16 @@ export const GetChat = query({
       canManage: v.boolean(),
       canManageScope: v.boolean(),
       title: v.optional(v.string()),
-      legacyContent: v.optional(legacyBoxValidator),
+      legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
       e2eeId: v.union(v.string(), v.null()),
       keyEpoch: v.union(v.number(), v.null()),
       rekey: v.boolean(),
       sealedTitle: v.union(sealedBoxValidator, v.null()),
       sealedQueue: v.union(sealedBoxValidator, v.null()),
       activeStream: v.optional(v.boolean()),
-      interruption: v.union(chatInterruptionValidator, v.null()),
+      interruption: v.union(zodToConvex(chatInterruptionValidator), v.null()),
       messages_queue: v.optional(v.union(queuedMessageSchema, v.null())),
-      worker: v.optional(chatWorkerSelectionValidator),
+      worker: v.optional(zodToConvex(chatWorkerSelectionValidator)),
       agent: schema.tables.aisdk_chats.validator.fields.agent,
       project: v.union(v.id("projects"), v.null()),
     }),
@@ -472,7 +473,7 @@ export const GetChatMessages = query({
         message: v.optional(messageSchema),
         sealed: v.optional(v.object({ capsuleId: v.string(), envelope: v.bytes() })),
         recordId: v.optional(v.string()),
-        legacyContent: v.optional(legacyBoxValidator),
+        legacyContent: v.optional(zodToConvex(legacyBoxValidator)),
       }),
     ),
     capsules: v.array(chatCapsuleValidator),
@@ -626,7 +627,7 @@ export const regenerateTitle = action({
 export const SetChatWorker = mutation({
   args: {
     chatId: v.id("aisdk_chats"),
-    selection: v.union(chatWorkerSelectionValidator, v.null()),
+    selection: v.union(zodToConvex(chatWorkerSelectionValidator), v.null()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -663,7 +664,7 @@ export const SetChatWorkerGrant = mutation({
     chatId: v.id("aisdk_chats"),
     workerId: v.string(),
     directory: v.string(),
-    grant: chatWorkerGrantValidator,
+    grant: zodToConvex(chatWorkerGrantValidator),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -723,7 +724,7 @@ export const SetChatScope = mutation({
     keys: v.optional(
       v.object({ rotate: v.optional(chatKeyInputValidator), wraps: v.array(wrapInputValidator) }),
     ),
-    acpBinding: v.optional(acpSignedBindingValidator),
+    acpBinding: v.optional(zodToConvex(acpSignedBindingValidator)),
   },
   returns: v.object({ scope: chatScopeValidator }),
   handler: async (ctx, args) => {
@@ -839,7 +840,7 @@ export const DeleteChat = mutation({
   args: {
     chatId: v.id("aisdk_chats"),
     deleteInAgent: v.optional(v.boolean()),
-    acpCommand: v.optional(acpSignedCommandValidator),
+    acpCommand: v.optional(zodToConvex(acpSignedCommandValidator)),
   },
   handler: async (ctx, args) => {
     const identity = await authComponent.getAuthUser(ctx);

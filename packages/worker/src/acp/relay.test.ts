@@ -5,7 +5,7 @@ import {
   utf8Bytes,
   type AcpFrameInput,
   type AcpOp,
-} from "backend/src/acp/contract";
+} from "contracts/acp/contract";
 import { AcpRelay, type AcpRelayOptions } from "./relay";
 import { AcpTimeline } from "./timeline";
 import type { AcpTransport } from "./transport";

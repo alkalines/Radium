@@ -2,7 +2,7 @@ import type {
   ChatCompletions_NotStreaming_ResponseBody_Type,
   ChatCompletions_Streaming_Chunk_Type,
 } from "@/types/openai/types";
-import type { TelemetryBlobMeta } from "./validators";
+import type { TelemetryBlobMeta } from "contracts/telemetry/validators";
 
 /** A JSON object as parsed from a request or response body. */
 type JsonObject = Record<string, unknown>;

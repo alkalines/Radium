@@ -18,7 +18,7 @@ import {
   type AcpCommandKind,
   type AcpSignedBinding,
   type AcpSignedCommand,
-} from "./contract";
+} from "contracts/acp/contract";
 import { acpError } from "./policy";
 
 /**

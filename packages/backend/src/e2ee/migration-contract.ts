@@ -2,7 +2,7 @@ import { makeFunctionReference, type NamedTableInfo, type Query } from "convex/s
 import { v, type Infer } from "convex/values";
 import type { DataModel, Doc, Id, TableNames } from "../../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../../convex/_generated/server";
-import type { LegacyBox, LegacyRecipient } from "./legacy-contract";
+import type { LegacyBox, LegacyRecipient } from "contracts/e2ee/legacy-contract";
 
 /**
  * Singleton cutover state. `generation` changes on every freeze transition, so a verification proof

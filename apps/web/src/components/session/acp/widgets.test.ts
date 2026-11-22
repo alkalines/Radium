@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolUIPart, UIMessage } from "ai";
-import { acpAnswerError, type AcpConfig, type AcpToolContent } from "backend/src/acp/contract";
+import { acpAnswerError, type AcpConfig, type AcpToolContent } from "contracts/acp/contract";
 import { getLatestTodos, getToolKind, getToolRunState } from "../tool-parts";
 import { countDiffLines } from "../tool-diff";
 import { acpModelConfig, applyAcpDraft } from "./config-controls";

@@ -7,7 +7,10 @@ import { api, components, internal } from "./_generated/api";
 import type { QueryCtx } from "./_generated/server";
 import schema from "./schema";
 import { normalizeWorkerKey, tokenDigest, workerIssuer } from "../src/worker/auth";
-import { WORKER_TASK_CLEANUP_BATCH, WORKER_TASK_RETENTION_MS } from "../src/worker/task-contract";
+import {
+  WORKER_TASK_CLEANUP_BATCH,
+  WORKER_TASK_RETENTION_MS,
+} from "contracts/worker/task-contract";
 
 vi.mock("./auth", () => ({
   authComponent: {
