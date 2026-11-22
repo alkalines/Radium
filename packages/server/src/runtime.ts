@@ -4,6 +4,7 @@ import { loadConfig, type Config } from "./config";
 import { hasSchemaVersion } from "./db/migrate";
 import { SCHEMA_VERSION } from "./db/schema-version";
 import type { Drivers } from "./drivers/types";
+import { SecretKeyring } from "./gateway/secrets";
 import { jobHandlers } from "./jobs/handlers";
 import type { JobHandlers } from "./jobs/outbox";
 import { createWorkerTokenVerifier, type WorkerTokenVerifier } from "./worker/auth";
@@ -18,6 +19,13 @@ export interface Runtime {
   drivers: Drivers;
   auth: Auth;
   workerTokens: WorkerTokenVerifier | null;
+  /** Key-encryption keys of the Secret Store (`gateway/secrets.ts`). */
+  secrets: SecretKeyring;
+  /**
+   * Outbound HTTP to upstream providers (Gateway inference, usage-limit polls). The global
+   * `fetch` in production; tests replace it so they never touch the network.
+   */
+  fetch: typeof fetch;
   jobs: JobHandlers;
   /**
    * Keeps work running after the response (after-commit job dispatch). Failures are logged, never
@@ -43,6 +51,8 @@ export function createRuntime(
       opaqueServerSetup: config.OPAQUE_SERVER_SETUP,
     }),
     workerTokens: createWorkerTokenVerifier(config.API_URL, config.WORKER_AUTH_JWKS),
+    secrets: new SecretKeyring(config.SECRET_STORE_KEYS),
+    fetch: globalThis.fetch.bind(globalThis),
     jobs,
     defer(work) {
       work.catch((error: unknown) => {

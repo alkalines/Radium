@@ -53,7 +53,7 @@ export const workspacesRouter = router({
       setWorkspaceColor(ctx.runtime.drivers.db, ctx.access.workspace, input.color),
     ),
   archive: ownedWorkspaceProcedure.mutation(({ ctx }) =>
-    archiveWorkspace(ctx.runtime.drivers.db, ctx.access.workspace),
+    archiveWorkspace(ctx.runtime.drivers.db, ctx.runtime.drivers.kv, ctx.access.workspace),
   ),
   /** Not a workspace procedure: archived workspaces refuse those. Ownership is checked inside. */
   restore: sessionProcedure

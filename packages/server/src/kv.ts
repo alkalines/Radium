@@ -40,6 +40,32 @@ export async function kvTake(kv: Kv, key: string): Promise<string | null> {
   return typeof value === "string" ? value : null;
 }
 
+/** Values of `fields` in hash `key`, in order; `null` for fields that do not exist. */
+export async function kvHashGet(kv: Kv, key: string, fields: string[]): Promise<(string | null)[]> {
+  if (fields.length === 0) return [];
+  const values = (await kv.send("HMGET", [key, ...fields])) as unknown[];
+  return values.map((value) => (typeof value === "string" ? value : null));
+}
+
+/** Every field of hash `key` (empty when it does not exist). */
+export async function kvHashGetAll(kv: Kv, key: string): Promise<Record<string, string>> {
+  const value = await kv.send("HGETALL", [key]);
+  if (Array.isArray(value)) {
+    // RESP2 answers a flat `[field, value, …]` list.
+    const entries: Record<string, string> = {};
+    for (let index = 0; index + 1 < value.length; index += 2) {
+      entries[String(value[index])] = String(value[index + 1]);
+    }
+    return entries;
+  }
+  return { ...(value as Record<string, string> | null) };
+}
+
+/** Deletes `fields` of hash `key`. */
+export async function kvHashDelete(kv: Kv, key: string, fields: string[]) {
+  if (fields.length > 0) await kv.send("HDEL", [key, ...fields]);
+}
+
 /** A Lua script run with `EVALSHA`, loaded on first use or after a server restart. */
 export type KvScript = { source: string; sha: Promise<string> };
 

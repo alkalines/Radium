@@ -10,6 +10,9 @@ import { databaseUrl, TEMPLATE_DATABASE, TEST_POSTGRES_URL, TEST_VALKEY_URL } fr
 /** Web origin the test runtimes trust; auth requests must send it as `Origin`. */
 export const TEST_SITE_URL = "http://localhost:3000";
 
+/** Secret Store KEK (version 1) of every test runtime; standard base64 of 32 bytes. */
+export const TEST_SECRET_STORE_KEY = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+
 export type TestRuntime = {
   runtime: Runtime;
   app: App;
@@ -44,6 +47,8 @@ export async function createTestRuntime(
     VALKEY_URL: `${TEST_VALKEY_URL}/${Number(process.env.VITEST_POOL_ID ?? "1") % 16}`,
     BETTER_AUTH_SECRET: crypto.randomUUID() + crypto.randomUUID(),
     OPAQUE_SERVER_SETUP: opaqueServer.createSetup(),
+    SECRET_STORE_KEYS: `1:${TEST_SECRET_STORE_KEY}`,
+    TELEMETRY_HASH_SECRET: "ZWZnaGlqa2xtbm9wcXJzdHV2d3h5ent8fX5_gIGCg4Q",
     ...options.env,
   });
 

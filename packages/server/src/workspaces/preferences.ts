@@ -1,4 +1,8 @@
 import { eq } from "drizzle-orm";
+import {
+  resolveNotificationPreferences,
+  type NotificationPreferences,
+} from "contracts/notifications/contract";
 import type { Database } from "../drivers/types";
 import { AppError } from "../errors";
 import { userPreferences } from "./schema";
@@ -24,6 +28,18 @@ export async function getModelPreferences(db: Database, userId: string): Promise
     .from(userPreferences)
     .where(eq(userPreferences.userId, userId));
   return row ?? { pinnedModels: [], hiddenModels: [] };
+}
+
+/** The user's resolved notification preferences: the defaults for every category never set. */
+export async function notificationPreferences(
+  db: Database,
+  userId: string,
+): Promise<NotificationPreferences> {
+  const [row] = await db
+    .select({ notifications: userPreferences.notifications })
+    .from(userPreferences)
+    .where(eq(userPreferences.userId, userId));
+  return resolveNotificationPreferences(row?.notifications ?? undefined);
 }
 
 /**

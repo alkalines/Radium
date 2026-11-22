@@ -4,8 +4,9 @@ import type { Id } from "contracts/wire";
 import { isTileColorName } from "contracts/workspaces/colors";
 import { workspaceHasChats } from "../chatroom/chats";
 import type { StoredJson } from "../db/columns";
-import type { Database } from "../drivers/types";
+import type { Database, Kv } from "../drivers/types";
 import { AppError } from "../errors";
+import { invalidateWorkspaceKeys } from "../gateway/keys";
 import { workspaceMembers, workspaces } from "./schema";
 
 /**
@@ -173,9 +174,10 @@ export async function setWorkspaceColor(db: Database, workspace: Workspace, colo
 
 /**
  * Archives an owned workspace that holds no chats, keeping its records. The owner keeps at least
- * one active workspace. Archived workspaces refuse every request until restored.
+ * one active workspace. Archived workspaces refuse every request until restored; their Gateway
+ * keys stop resolving at once (the key cache is invalidated after commit).
  */
-export async function archiveWorkspace(db: Database, workspace: Workspace) {
+export async function archiveWorkspace(db: Database, kv: Kv, workspace: Workspace) {
   await db.transaction(async (tx) => {
     await lockOwner(tx, workspace.ownerId);
     const [active] = await tx
@@ -200,6 +202,7 @@ export async function archiveWorkspace(db: Database, workspace: Workspace) {
       .set({ archivedAt: new Date() })
       .where(eq(workspaces.id, workspace.id));
   });
+  await invalidateWorkspaceKeys(db, kv, workspace.id);
 }
 
 /** Restores an archived workspace `userId` owns; its members regain access. */
@@ -225,6 +228,21 @@ export async function workspaceUserIds(db: Database, workspace: Workspace): Prom
     .where(eq(workspaceMembers.workspace, workspace.id))
     .limit(MAX_MEMBERS + 1);
   return [workspace.ownerId, ...members.map((row) => row.userId)];
+}
+
+/**
+ * The owner of an active workspace, or `null` when it is archived or gone: the audience of
+ * owner-only notifications, which archived workspaces do not send.
+ */
+export async function activeWorkspaceOwner(
+  db: Database,
+  workspaceId: string,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ ownerId: workspaces.ownerId })
+    .from(workspaces)
+    .where(and(eq(workspaces.id, workspaceId), isNull(workspaces.archivedAt)));
+  return row?.ownerId ?? null;
 }
 
 /** Records the workspace's current key epoch; called by `../e2ee/workspace-keys.ts` only. */

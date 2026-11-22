@@ -1,0 +1,47 @@
+{
+  "type": "diff",
+  "version": "10",
+  "dialect": "postgres",
+  "id": "c3a9ab8b-4cbc-48a9-ba01-d6ea85233f13",
+  "prevIds": [
+    "0de64b3e-85ad-4cea-8929-1ff1b1412aa9"
+  ],
+  "footprints": [
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "workspace_settings",
+        "routing"
+      ],
+      "writes": [
+        "s|col|public.workspace_settings.routing",
+        "n|col|public.workspace_settings.routing",
+        "e|col|public.workspace_settings.routing"
+      ],
+      "reads": [
+        "n|tbl|public.workspace_settings",
+        "n|sch|public"
+      ]
+    }
+  ],
+  "deltas": [
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "workspace_settings",
+        "name": "routing",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    }
+  ]
+}

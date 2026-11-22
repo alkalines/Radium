@@ -11,6 +11,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { keyTelemetryValidator } from "contracts/acp/gateway";
+import type { AlertState, Meter } from "contracts/limits/meters";
 import { limitEventKindValidator } from "contracts/limits/events";
 import type { GlobalModelInput } from "contracts/models_dev";
 import type { ProviderRouting } from "contracts/routing/settings";
@@ -18,46 +19,6 @@ import { providerNpmValidator, type ProviderSnapshot } from "contracts/workspace
 import { checkIn, createdAt, id, instant, json, literals } from "../db/columns";
 import { workers } from "../worker/schema";
 import { workspaces } from "../workspaces/schema";
-
-/*
- * Usage-limit shapes. They have no contracts home yet; these mirror
- * `packages/backend/src/limits/meters.ts` until the Gateway domain owns them.
- */
-
-/**
- * One usage meter: every upstream signal (response headers, usage polls, error bodies) and the
- * owner's metered budget normalizes to this. Fraction used is derived, never stored. Times are ms
- * epochs.
- */
-export type Meter = {
-  /** Stable per adapter, e.g. `codex:primary`, `openrouter:key`, `budget`. */
-  id: string;
-  label: string;
-  /** `account` meters are shared by every key of the upstream account. */
-  scope: "credential" | "account";
-  unit: "percent" | "usd" | "requests" | "credits";
-  /** Percent meters: 0-100; other units: amount used. */
-  used?: number;
-  /** Absent for percent meters and uncapped balances. */
-  limit?: number;
-  /** Balances without a cap. */
-  remaining?: number;
-  /** Window length; absent means the meter never resets. */
-  windowSeconds?: number;
-  resetsAt?: number;
-  source: "header" | "poll" | "error" | "metered";
-  observedAt: number;
-};
-
-/** Highest alert already fired for a meter; cleared by a reset or by hysteresis. */
-export type AlertState = {
-  meter: string;
-  level: "low" | "critical" | "exhausted";
-  resetsAt?: number;
-};
-
-/** Workspace usage-limit alert thresholds: percent used, and USD under which a balance meter alerts. */
-export type LimitSettings = { warnPercent: number; criticalPercent: number; lowBalance: number };
 
 const BUDGET_PERIODS = ["day", "week", "month"] as const;
 const MODEL_TYPES = ["chat", "embedding", "image-generation"] as const;

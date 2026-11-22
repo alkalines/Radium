@@ -1,6 +1,7 @@
 import { trpcServer } from "@hono/trpc-server";
 import { Hono } from "hono";
 import { prepareAuthRequest } from "./auth/ingress";
+import { mountGatewayRoutes } from "./gateway/http";
 import type { Runtime } from "./runtime";
 import { appRouter } from "./trpc/router";
 
@@ -40,6 +41,8 @@ export function createApp(resolveRuntime: () => Promise<Runtime>): App {
     }
     return await runtime.auth.handler(prepared);
   });
+
+  mountGatewayRoutes(app);
 
   app.use(
     "/api/trpc/*",

@@ -12,6 +12,19 @@ export async function workspaceHasChats(db: Database, workspace: string): Promis
   return row !== undefined;
 }
 
+/** Whether chat `chatId` exists in `workspace` (telemetry attribution refuses another workspace's chat). */
+export async function chatInWorkspace(
+  db: Database,
+  chatId: string,
+  workspace: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: chats.id })
+    .from(chats)
+    .where(and(eq(chats.id, chatId), eq(chats.workspace, workspace)));
+  return row !== undefined;
+}
+
 /**
  * Detaches a user removed from `workspace` from its chats, in the caller's transaction: the chats
  * they were a member of and the `shared` chats they created are flagged `rekey` (a removed

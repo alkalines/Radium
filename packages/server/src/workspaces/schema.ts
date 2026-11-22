@@ -11,12 +11,12 @@ import {
 } from "drizzle-orm/pg-core";
 import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import type { StoredNotificationPreferences } from "contracts/notifications/contract";
+import type { LimitSettings } from "contracts/limits/meters";
 import type { RoutingSettings } from "contracts/routing/settings";
 import { chatWorkerToolValidator } from "contracts/worker/chat-config";
 import { user } from "../auth/schema";
 import { mcpServers } from "../chatroom/schema";
 import { createdAt, id, instant, json, literals } from "../db/columns";
-import type { LimitSettings } from "../gateway/schema";
 import { workers } from "../worker/schema";
 
 const WORKER_TOOLS = literals(chatWorkerToolValidator);
@@ -105,6 +105,8 @@ export const workspaceSettings = pgTable(
     disabledBuiltinToolSets: text("disabled_builtin_tool_sets").array().notNull().default([]),
     /** Worker tools preselected when a Worker is picked for a new chat. */
     workerTools: text("worker_tools").array().notNull().default([]),
+    /** Gateway routing strategy, session affinity, retry and cooldown; null means the defaults. */
+    routing: json<RoutingSettings>("routing"),
     /** Usage-limit alert thresholds; null means the defaults. */
     limits: json<LimitSettings>("limits"),
     /**

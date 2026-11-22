@@ -19,6 +19,7 @@ import {
   workspaceUserIds,
   type Workspace,
 } from "../workspaces/workspaces";
+import { workspaces } from "../workspaces/schema";
 import {
   e2eeIdentities,
   e2eeInvites,
@@ -627,4 +628,27 @@ export async function currentMemberRecipient(
     throw new Error("Current workspace key epoch is missing.");
   }
   return { kind: "workspace_member", ...row };
+}
+
+/**
+ * The current epoch's public owner key: the recipient of content the server seals for the
+ * workspace owner only (Gateway telemetry). Null for a keyless workspace or one without a current
+ * epoch row. Private key material never reaches the server.
+ */
+export async function workspaceOwnerSealingKey(
+  db: Database,
+  workspaceId: string,
+): Promise<{ epoch: number; publicKey: Uint8Array } | null> {
+  const [row] = await db
+    .select({ epoch: e2eeWorkspaceEpochs.epoch, publicKey: e2eeWorkspaceEpochs.ownerPublicKey })
+    .from(workspaces)
+    .innerJoin(
+      e2eeWorkspaceEpochs,
+      and(
+        eq(e2eeWorkspaceEpochs.workspace, workspaces.id),
+        eq(e2eeWorkspaceEpochs.epoch, workspaces.keyEpoch),
+      ),
+    )
+    .where(eq(workspaces.id, workspaceId));
+  return row ?? null;
 }

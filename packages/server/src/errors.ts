@@ -13,3 +13,16 @@ export class AppError extends Error {
     this.name = "AppError";
   }
 }
+
+/**
+ * Runs a contracts validator that refuses with a plain `Error` (`assertValidPlacement`,
+ * `assertValidRoutingSettings`, …) and turns its message into a `BAD_REQUEST` refusal. Those
+ * messages describe the caller's own input, never stored data.
+ */
+export function assertValid(check: () => void) {
+  try {
+    check();
+  } catch (error) {
+    throw new AppError("BAD_REQUEST", error instanceof Error ? error.message : "Invalid input.");
+  }
+}

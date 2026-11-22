@@ -1,4 +1,6 @@
 import { authRouter } from "../auth/router";
+import { limitsRouter } from "../gateway/limits/router";
+import { keysRouter, modelsRouter, providersRouter, routingRouter } from "../gateway/router";
 import { preferencesRouter, projectsRouter, workspacesRouter } from "../workspaces/router";
 import { router } from "./init";
 
@@ -8,6 +10,11 @@ export const appRouter = router({
   workspaces: workspacesRouter,
   projects: projectsRouter,
   preferences: preferencesRouter,
+  providers: providersRouter,
+  models: modelsRouter,
+  keys: keysRouter,
+  routing: routingRouter,
+  limits: limitsRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { parseSecretStoreKeys } from "./gateway/secrets";
 
 /**
  * An origin the backend can be reached at: HTTPS, or HTTP on loopback for local development.
@@ -48,6 +49,28 @@ const configSchema = z.object({
   AUTH_PROXY_SECRET: optional,
   /** Public issuer keys for Worker access tokens; without them every Worker call is refused. */
   WORKER_AUTH_JWKS: optional,
+  /**
+   * Key-encryption keys of the `secrets` table, `version:base64,…` (the `convex-secret-store`
+   * format and values); the highest version wraps new secrets.
+   */
+  SECRET_STORE_KEYS: required.transform((value, context) => {
+    try {
+      return parseSecretStoreKeys(value);
+    } catch (error) {
+      context.addIssue({ code: "custom", message: (error as Error).message });
+      return z.NEVER;
+    }
+  }),
+  /**
+   * Base64url 32-byte key for workspace-scoped fingerprints (routing session hashes, telemetry
+   * content hashes). Without it, message-hash session affinity and telemetry capture are off.
+   */
+  TELEMETRY_HASH_SECRET: optional.refine(
+    (value) => value === undefined || /^[A-Za-z0-9_-]{43}$/.test(value),
+    "must be a base64url-encoded 32-byte key",
+  ),
+  /** Signs the Login with ChatGPT session cookie; without it the ChatGPT subscription is off. */
+  LWC_SECRET: optional,
 });
 
 /** Validated runtime configuration. Read once at startup from the environment. */
