@@ -45,6 +45,7 @@ import {
   type WorkerToolOption,
 } from "./tool-catalog";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
+import { useAccount } from "@/lib/use-account";
 
 /**
  * Chatroom → Tools settings: the workspace *defaults* a new Session starts with (built-in tool
@@ -55,8 +56,7 @@ import { useWorkspace } from "@/components/workspaces/workspace-provider";
 export function ToolsPanel() {
   const { workspace, workspaceId } = useWorkspace();
   const isOwner = workspace?.role === "owner";
-  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
-  const signedIn = userInfo !== undefined && typeof userInfo !== "string";
+  const { signedIn, signInRequired } = useAccount();
   const { data: servers } = useQuery(
     convexQuery(
       api.aisdk_tools.listMcpServers,
@@ -210,7 +210,7 @@ export function ToolsPanel() {
         title="MCP servers"
         description="Connect Model Context Protocol servers to expose their tools to your chats."
       >
-        {!signedIn && userInfo !== undefined && (
+        {signInRequired && (
           <RowBlock className="text-sm text-muted-foreground">Sign in to add MCP servers.</RowBlock>
         )}
 

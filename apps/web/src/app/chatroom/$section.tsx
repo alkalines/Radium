@@ -1,4 +1,3 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { createFileRoute, notFound } from "@tanstack/react-router";
 
 import { chatroomSections } from "@/components/chatroom/chatroom-settings";
@@ -8,7 +7,6 @@ import { ToolsPanel } from "@/components/chatroom/tools-panel";
 import { WorkspaceSettingsGate } from "@/components/settings/workspace-settings-gate";
 import { WorkerManagement } from "@/components/workspaces/worker-management";
 import { requireSession } from "@/lib/require-session";
-import { api } from "backend/convex/_generated/api";
 
 export const Route = createFileRoute("/chatroom/$section")({
   staticData: {
@@ -23,8 +21,8 @@ export const Route = createFileRoute("/chatroom/$section")({
     const session = await requireSession({ queryClient, location });
     return { session };
   },
-  loader: ({ context: { queryClient } }) => {
-    void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+  loader: ({ context: { queryClient, trpc } }) => {
+    void queryClient.prefetchQuery(trpc.auth.me.queryOptions());
   },
   component: ChatroomPage,
 });

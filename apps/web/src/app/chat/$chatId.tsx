@@ -23,13 +23,13 @@ export const Route = createFileRoute("/chat/$chatId")({
     const session = await requireSession({ queryClient, location });
     return { session };
   },
-  loader: async ({ context: { queryClient }, params: { chatId } }) => {
+  loader: async ({ context: { queryClient, trpc }, params: { chatId } }) => {
     const id = chatId as Id<"aisdk_chats">;
     const chat = queryClient.prefetchQuery(convexQuery(api.aisdk.GetChat, { chatId: id }));
     const messages = queryClient.prefetchQuery(
       convexQuery(api.aisdk.GetChatMessages, { chatId: id }),
     );
-    void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+    void queryClient.prefetchQuery(trpc.auth.me.queryOptions());
 
     // The Session screen renders a spinner until the chat and its messages load. Streamed results
     // land before hydration but after the server rendered that spinner, so the server waits for

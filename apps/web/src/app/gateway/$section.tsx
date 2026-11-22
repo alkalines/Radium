@@ -1,4 +1,3 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { createFileRoute, notFound } from "@tanstack/react-router";
 import type { ComponentType } from "react";
 
@@ -10,7 +9,6 @@ import { ProvidersPanel } from "@/components/gateway/providers-panel";
 import { RoutingPanel } from "@/components/gateway/routing-panel";
 import { WorkspaceSettingsGate } from "@/components/settings/workspace-settings-gate";
 import { requireSession } from "@/lib/require-session";
-import { api } from "backend/convex/_generated/api";
 
 export const Route = createFileRoute("/gateway/$section")({
   staticData: {
@@ -25,8 +23,8 @@ export const Route = createFileRoute("/gateway/$section")({
     const session = await requireSession({ queryClient, location });
     return { session };
   },
-  loader: ({ context: { queryClient } }) => {
-    void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+  loader: ({ context: { queryClient, trpc } }) => {
+    void queryClient.prefetchQuery(trpc.auth.me.queryOptions());
   },
   component: GatewayPage,
 });

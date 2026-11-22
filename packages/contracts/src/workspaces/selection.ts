@@ -1,5 +1,5 @@
 export type WorkspaceSelectionItem = {
-  _id: string;
+  id: string;
 };
 
 /**
@@ -12,7 +12,7 @@ export function selectWorkspace<T extends WorkspaceSelectionItem>(
   preferredId: string | undefined,
   pendingId: string | undefined,
 ): T | undefined {
-  const selected = workspaces.find((item) => item._id === preferredId);
+  const selected = workspaces.find((item) => item.id === preferredId);
   if (selected) return selected;
 
   if (pendingId !== undefined && pendingId === preferredId) return undefined;

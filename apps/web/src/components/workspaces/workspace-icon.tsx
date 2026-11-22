@@ -42,7 +42,7 @@ export const workspaceIconOptions = WORKSPACE_ICON_NAMES.map((name) => ({
   icon: iconComponents[name],
 }));
 
-export function WorkspaceIcon({ name, ...props }: { name?: string } & ComponentProps<"svg">) {
-  const Icon = iconComponents[resolveWorkspaceIconName(name)];
+export function WorkspaceIcon({ name, ...props }: { name?: string | null } & Omit<ComponentProps<"svg">, "name">) {
+  const Icon = iconComponents[resolveWorkspaceIconName(name ?? undefined)];
   return <Icon {...props} />;
 }

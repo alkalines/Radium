@@ -9,7 +9,7 @@ import {
 } from "react";
 import type { UIMessage } from "ai";
 import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation } from "convex/react";
 import { AnimatePresence } from "motion/react";
@@ -60,6 +60,7 @@ import { openHistoricalChat } from "@/lib/crypto/legacy-chat";
 import { changeChatScope, ensureChatKeys } from "@/lib/crypto/chat-keys";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { authClient } from "@/lib/auth-client";
+import { useTrpc } from "@/lib/trpc";
 
 function subscribeVisibility(onChange: () => void) {
   document.addEventListener("visibilitychange", onChange);
@@ -95,6 +96,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   const { session, timeline, messages, runState } = acp;
   const navigate = useNavigate();
   const { workspaces } = useWorkspace();
+  const trpc = useTrpc();
   const { data: chatResult, error: chatError } = useQuery(
     convexQuery(api.aisdk.GetChat, { chatId }),
   );
@@ -121,7 +123,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   }, [chatId, isVisible, keyStatus, needsBinding, legacyNeedsImport]);
   const unavailable = Boolean(chatError || acp.sessionError) || typeof chatResult === "string";
   const { data: projectsData } = useQuery(
-    convexQuery(api.projects.list, chat ? { workspace: chat.workspace } : "skip"),
+    trpc.projects.list.queryOptions(chat ? { workspace: chat.workspace } : skipToken),
   );
   // The React Query cache keeps ciphertext; only these local rows carry decrypted names. A stable
   // array keeps the hook from re-opening names on every render.
@@ -162,12 +164,16 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     onUnavailable(tabId);
   }, [onUnavailable, tabId, unavailable]);
 
-  const selectedProject = projects.find((project) => project._id === chat?.project);
+  const selectedProject = projects.find((project) => project.id === chat?.project);
   const projectKnown = chat !== undefined && (!chat.project || projectsData !== undefined);
   const projectHint = useMemo((): TabProjectHint | null | undefined => {
     if (!projectKnown) return undefined;
     if (!selectedProject) return null;
-    return { name: selectedProject.name, color: selectedProject.color, icon: selectedProject.icon };
+    return {
+      name: selectedProject.name,
+      color: selectedProject.color ?? undefined,
+      icon: selectedProject.icon ?? undefined,
+    };
   }, [projectKnown, selectedProject]);
   // Keyed Sessions carry a sealed title (like built-in chats); legacy ones a plaintext title.
   const [openedTitle, setOpenedTitle] = useState<{ box: ArrayBuffer; title: string }>();
@@ -299,7 +305,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   const gatewayAccess = session?.gateway?.access;
   const gatewayBlocked = gatewayAccess !== undefined && gatewayAccess !== "active";
   const isOwner = workspaces.some(
-    (candidate) => candidate._id === chat?.workspace && candidate.role === "owner",
+    (candidate) => candidate.id === chat?.workspace && candidate.role === "owner",
   );
   const canSend =
     acp.workerOnline &&

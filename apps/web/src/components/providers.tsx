@@ -78,7 +78,7 @@ function OperationalLogging({ children }: { children: ReactNode }) {
 }
 
 /**
- * Convex query keys do not include the Better Auth identity, so discard the
+ * Neither Convex nor tRPC query keys include the Better Auth identity, so discard the whole
  * client cache before a different user can reuse the previous user's data. The
  * convex-helpers subscription cache (Home's paginated lists) stays mounted with
  * its descendants hidden, and `ReleaseCachedQueries` ends the subscriptions they
@@ -109,7 +109,7 @@ function ConvexAuthQueryCache({ children }: { children: ReactNode }) {
     if (cacheIdentity.userId) void keyManager.forget(cacheIdentity.userId);
 
     // Hide descendants until the previous user's identity-scoped data is gone.
-    queryClient.removeQueries({ queryKey: ["convexQuery"] });
+    queryClient.removeQueries();
     setCacheIdentity({ initialized: true, userId });
   }, [
     cacheIdentity.initialized,

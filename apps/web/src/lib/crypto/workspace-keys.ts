@@ -1,3 +1,4 @@
+import { trpcClient } from "@/lib/trpc-client";
 import { setEncryptedName } from "./names";
 import { api } from "backend/convex/_generated/api";
 import type { Doc, Id } from "backend/convex/_generated/dataModel";
@@ -682,22 +683,25 @@ export async function bootstrapWorkspace(workspaceId: Id<"workspaces">): Promise
     ...keys,
   });
 }
-/** Creates a workspace then bootstraps keys as soon as its Convex ID is available. */
+/** Creates a workspace then bootstraps keys as soon as its ID is available. */
 export async function createKeyedWorkspace(name: string): Promise<Id<"workspaces">> {
   if (keyManager.getSnapshot().state !== "unlocked") throw new KeysLockedError();
-  const workspace = await cryptoClient().mutation(api.workspaces.create, { name: "Workspace" });
+  const workspace = await trpcClient().workspaces.create.mutate();
   await bootstrapWorkspace(workspace);
   await setEncryptedName({ target: workspace, workspace, table: "workspaces", name });
   return workspace;
 }
-/** Removes a member and rotates both workspace keys, grants and roster in one backend mutation. */
+/**
+ * Removes a member and rotates both workspace keys, grants and roster in one backend mutation.
+ * The rotation travels in tRPC's wire form: every binary field is unpadded base64url text.
+ */
 export async function removeMemberWithRotation(
   workspaceId: Id<"workspaces">,
   email: string,
   userId: string,
 ): Promise<void> {
   const raw = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
-  const rotation = raw.keyEpoch
+  const keys = raw.keyEpoch
     ? await createEpoch(
         workspaceId,
         raw.keyEpoch + 1,
@@ -705,10 +709,27 @@ export async function removeMemberWithRotation(
         userId,
       )
     : undefined;
-  await cryptoClient().mutation(api.workspaces.removeMember, {
+  await trpcClient().workspaces.removeMember.mutate({
     workspace: workspaceId,
     email,
-    rotation,
+    rotation: keys && {
+      epoch: {
+        ...keys.epoch,
+        memberPublicKey: toBase64Url(bytes(keys.epoch.memberPublicKey)),
+        ownerPublicKey: toBase64Url(bytes(keys.epoch.ownerPublicKey)),
+      },
+      grants: keys.grants.map((grant) => ({
+        ...grant,
+        sealed: toBase64Url(bytes(grant.sealed)),
+        signature: toBase64Url(bytes(grant.signature)),
+      })),
+      roster: {
+        version: keys.roster.version,
+        signerKeyId: keys.roster.signerKeyId,
+        body: toBase64Url(bytes(keys.roster.body)),
+        signature: toBase64Url(bytes(keys.roster.signature)),
+      },
+    },
   });
 }
 /** Starts a new workspace epoch after loss of the sole owner's historical owner key. */

@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestRuntime, type TestRuntime } from "../../test/runtime";
+import { classicUser } from "../../test/users";
 import { WORKER_AUDIENCE, workerIssuer } from "../worker/auth";
 import { workerKeys, workers } from "../worker/schema";
 import { workspaceMembers, workspaces } from "../workspaces/schema";
@@ -29,34 +30,6 @@ const ids = {
   worker: "",
   key: "",
 };
-
-/**
- * A signed-in user without the OPAQUE round trips (each costs a 2 GiB Argon2id derivation): a
- * classic password account, as accounts created before encryption have, signed in through
- * Better Auth's own endpoint. Returns its id and session cookie.
- */
-async function classicUser(email: string) {
-  const password = "a long enough password";
-  const context = await test.runtime.auth.$context;
-  const created = await context.internalAdapter.createUser(
-    { email, name: email },
-    { method: "admin" },
-  );
-  await context.internalAdapter.linkAccount({
-    userId: created.id,
-    providerId: "credential",
-    accountId: created.id,
-    password: await context.password.hash(password),
-  });
-  const { headers } = await test.runtime.auth.api.signInEmail({
-    body: { email, password },
-    returnHeaders: true,
-  });
-  return {
-    id: created.id,
-    headers: new Headers({ cookie: headers.getSetCookie()[0]!.split(";")[0]! }),
-  };
-}
 
 function caller(headers: Headers) {
   return probe.createCaller({ runtime: test.runtime, headers });
@@ -92,7 +65,7 @@ beforeAll(async () => {
   const { db } = test.runtime.drivers;
 
   for (const role of ["owner", "member", "outsider"] as const) {
-    const signedIn = await classicUser(`${role}@example.test`);
+    const signedIn = await classicUser(test.runtime, `${role}@example.test`);
     ids[role] = signedIn.id;
     headers[role] = signedIn.headers;
   }

@@ -1,12 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import { ArchiveIcon, PlusIcon, RotateCcwIcon, UsersIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
 import type { TileColorName } from "contracts/workspaces/colors";
 import type { WorkspaceIconName } from "contracts/workspaces/icons";
 import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
@@ -41,12 +38,10 @@ import { WorkspaceKeys } from "./workspace-keys";
 import { createKeyedWorkspace, removeMemberWithRotation } from "@/lib/crypto/workspace-keys";
 import { setEncryptedName } from "@/lib/crypto/names";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
+import { useTrpc } from "@/lib/trpc";
+import type { AppRouter } from "server/router";
 
-type WorkspaceMemberList = Exclude<FunctionReturnType<typeof api.workspaces.listMembers>, string>;
-type ArchivedWorkspaceList = Exclude<
-  FunctionReturnType<typeof api.workspaces.listArchived>,
-  string
->;
+type WorkspaceMemberList = inferRouterOutputs<AppRouter>["workspaces"]["listMembers"];
 
 /**
  * General settings of the current workspace (`docs/Interface_Design.md` §5.2): its name, its
@@ -58,24 +53,29 @@ type ArchivedWorkspaceList = Exclude<
 export function WorkspaceManagement() {
   const { workspaces, workspace, workspaceId, isLoading, error, isProvisioning, setWorkspace } =
     useWorkspace();
-  const setWorkspaceColor = useMutation(api.workspaces.setColor);
-  const archiveWorkspace = useMutation(api.workspaces.archive);
-  const restoreWorkspace = useMutation(api.workspaces.restore);
-  const addMember = useMutation(api.workspaces.addMember);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { mutateAsync: setWorkspaceColor } = useMutation(trpc.workspaces.setColor.mutationOptions());
+  const { mutateAsync: archiveWorkspace } = useMutation(trpc.workspaces.archive.mutationOptions());
+  const { mutateAsync: restoreWorkspace } = useMutation(trpc.workspaces.restore.mutationOptions());
+  const { mutateAsync: addMember } = useMutation(trpc.workspaces.addMember.mutationOptions());
   const ownedWorkspaceCount = workspaces.filter((item) => item.role === "owner").length;
   const isOwner = workspace?.role === "owner";
 
+  // The workspace lists are not live: every change below refetches them once it has succeeded.
+  const refreshWorkspaces = () =>
+    queryClient.invalidateQueries({ queryKey: trpc.workspaces.pathKey() });
+
   const { data: archivedData, error: archivedError } = useQuery(
-    convexQuery(api.workspaces.listArchived, {}),
+    trpc.workspaces.listArchived.queryOptions(),
   );
   const { data: membersData, error: membersError } = useQuery(
-    convexQuery(
-      api.workspaces.listMembers,
-      isOwner && workspaceId ? { workspace: workspaceId } : "skip",
+    trpc.workspaces.listMembers.queryOptions(
+      isOwner && workspaceId ? { workspace: workspaceId } : skipToken,
     ),
   );
-  const archived = useDecryptedNames(Array.isArray(archivedData) ? archivedData : ([] as ArchivedWorkspaceList), "workspaces");
-  const members = Array.isArray(membersData) ? membersData : ([] as WorkspaceMemberList);
+  const archived = useDecryptedNames(archivedData ?? [], "workspaces");
+  const members = membersData ?? [];
 
   const [nameDialog, setNameDialog] = useState<"create" | "rename" | null>(null);
   const [renameTarget, setRenameTarget] = useState<WorkspaceSummary | null>(null);
@@ -113,10 +113,12 @@ export function WorkspaceManagement() {
     try {
       if (nameDialog === "create") {
         const created = await createKeyedWorkspace(trimmed);
+        await refreshWorkspaces();
         setWorkspace(created);
         toast.success("Workspace created.");
       } else if (renameTarget) {
-        await setEncryptedName({ target: renameTarget._id, workspace: renameTarget._id, table: "workspaces", name: trimmed === renameTarget.name ? undefined : trimmed });
+        await setEncryptedName({ target: renameTarget.id, workspace: renameTarget.id, table: "workspaces", name: trimmed === renameTarget.name ? undefined : trimmed });
+        await refreshWorkspaces();
         toast.success("Workspace renamed.");
       }
       setNameDialog(null);
@@ -131,7 +133,8 @@ export function WorkspaceManagement() {
     if (!archiveTarget || pendingAction) return;
     setPendingAction("archive");
     try {
-      await archiveWorkspace({ workspace: archiveTarget._id });
+      await archiveWorkspace({ workspace: archiveTarget.id });
+      await refreshWorkspaces();
       setArchiveTarget(null);
       toast.success("Workspace archived.");
     } catch (error) {
@@ -148,10 +151,11 @@ export function WorkspaceManagement() {
     setPendingAction("appearance");
     try {
       if ("icon" in change) {
-        await setEncryptedName({ target: workspace._id, workspace: workspace._id, table: "workspaces", icon: change.icon });
+        await setEncryptedName({ target: workspace.id, workspace: workspace.id, table: "workspaces", icon: change.icon });
       } else {
-        await setWorkspaceColor({ workspace: workspace._id, color: change.color });
+        await setWorkspaceColor({ workspace: workspace.id, color: change.color });
       }
+      await refreshWorkspaces();
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to update workspace appearance.",
@@ -161,13 +165,14 @@ export function WorkspaceManagement() {
     }
   }
 
-  async function restore(target: ArchivedWorkspaceList[number]) {
+  async function restore(target: WorkspaceSummary) {
     if (pendingAction) return;
     const workspaceAtStart = workspaceId;
-    setPendingAction(target._id);
+    setPendingAction(target.id);
     try {
-      await restoreWorkspace({ workspace: target._id });
-      if (workspaceIdRef.current === workspaceAtStart) setWorkspace(target._id);
+      await restoreWorkspace({ workspace: target.id });
+      await refreshWorkspaces();
+      if (workspaceIdRef.current === workspaceAtStart) setWorkspace(target.id);
       toast.success("Workspace restored.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to restore workspace.");
@@ -183,6 +188,7 @@ export function WorkspaceManagement() {
     setPendingAction("add-member");
     try {
       await addMember({ workspace: workspaceId, email });
+      await refreshWorkspaces();
       setMemberEmail("");
       toast.success("Member added.");
     } catch (error) {
@@ -199,6 +205,7 @@ export function WorkspaceManagement() {
       const member = members.find((item) => item.email === email);
       if (!member) throw new Error("Member unavailable");
       await removeMemberWithRotation(workspaceId, email, member.userId);
+      await refreshWorkspaces();
       toast.success("Member removed.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to remove member.");
@@ -551,11 +558,11 @@ function ArchivedRows({
   pendingAction,
   onRestore,
 }: {
-  archived: ArchivedWorkspaceList;
+  archived: WorkspaceSummary[];
   isLoading: boolean;
   hasError: boolean;
   pendingAction: string | null;
-  onRestore: (target: ArchivedWorkspaceList[number]) => void;
+  onRestore: (target: WorkspaceSummary) => void;
 }) {
   if (hasError) {
     return (
@@ -573,7 +580,7 @@ function ArchivedRows({
 
   return archived.map((item) => (
     <Row
-      key={item._id}
+      key={item.id}
       leading={<WorkspaceIcon name={item.icon} className="size-4 shrink-0 text-muted-foreground" />}
       title={item.name}
     >
@@ -583,7 +590,7 @@ function ArchivedRows({
         disabled={pendingAction !== null}
         onClick={() => onRestore(item)}
       >
-        {pendingAction === item._id ? (
+        {pendingAction === item.id ? (
           <Spinner data-icon="inline-start" />
         ) : (
           <RotateCcwIcon data-icon="inline-start" />

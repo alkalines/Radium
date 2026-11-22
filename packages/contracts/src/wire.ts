@@ -1,3 +1,4 @@
+import { fromBase64Url } from "radium-crypto";
 import { z } from "zod";
 
 /**
@@ -32,4 +33,24 @@ export function bytes() {
   const schema = z.custom<ArrayBuffer>((value) => value instanceof ArrayBuffer);
   wireTypes.add(schema, { kind: "bytes" });
   return schema;
+}
+
+/**
+ * Schema of a binary field on the tRPC wire: unpadded canonical base64url text, parsed to a
+ * `Uint8Array` of at most `maxBytes`. The length is checked before decoding, so oversized input
+ * is never decoded. Outputs send the same text form (`toBase64Url`). Replaces {@link bytes} as
+ * each slice moves off Convex.
+ */
+export function base64urlBytes(maxBytes: number) {
+  return z
+    .string()
+    .max(Math.ceil((maxBytes * 4) / 3))
+    .transform((text, ctx) => {
+      try {
+        return fromBase64Url(text);
+      } catch {
+        ctx.addIssue({ code: "custom", message: "Invalid base64url bytes" });
+        return z.NEVER;
+      }
+    });
 }

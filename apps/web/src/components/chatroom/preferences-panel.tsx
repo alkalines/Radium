@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { api } from "backend/convex/_generated/api";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
+import { useAccount } from "@/lib/use-account";
 
 /**
  * Chat defaults of the current workspace (owner-only; the route gates members): the model new
@@ -23,8 +24,7 @@ import { useWorkspace } from "@/components/workspaces/workspace-provider";
  */
 export function PreferencesPanel() {
   const { workspaceId } = useWorkspace();
-  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
-  const signedIn = userInfo !== undefined && typeof userInfo !== "string";
+  const { signedIn, signInRequired, isPending: isAccountPending } = useAccount();
   const { data: models } = useQuery(
     convexQuery(api.models.availableModels, workspaceId ? { workspace: workspaceId } : "skip"),
   );
@@ -125,10 +125,9 @@ export function PreferencesPanel() {
     [signedIn, setSystemPromptSettings, workspaceId],
   );
 
-  const signInRequired = userInfo !== undefined && typeof userInfo === "string";
-  const modelsLoading = userInfo === undefined || models === undefined;
-  const chainOfThoughtLoading = userInfo === undefined || chainOfThoughtEnabled === undefined;
-  const systemPromptLoading = userInfo === undefined || systemPrompt === undefined;
+  const modelsLoading = isAccountPending || models === undefined;
+  const chainOfThoughtLoading = isAccountPending || chainOfThoughtEnabled === undefined;
+  const systemPromptLoading = isAccountPending || systemPrompt === undefined;
 
   return (
     <>

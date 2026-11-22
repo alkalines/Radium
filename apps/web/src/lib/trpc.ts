@@ -1,9 +1,11 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { useRouter } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequestHeaders } from "@tanstack/react-start/server";
 import { createTRPCClient, httpBatchLink } from "@trpc/client";
 import { createTRPCOptionsProxy, type TRPCOptionsProxy } from "@trpc/tanstack-react-query";
 import type { AppRouter } from "server/router";
+import { browserTrpcUrl } from "./trpc-client";
 
 /**
  * Where tRPC calls go. Browsers call their own origin, which forwards `/api/*` to the backend.
@@ -19,7 +21,7 @@ const trpcTarget = createIsomorphicFn()
     const cookie = getRequestHeaders().get("cookie");
     return { url: new URL("/api/trpc", backendUrl).toString(), headers: cookie ? { cookie } : {} };
   })
-  .client(() => ({ url: "/api/trpc", headers: {} }));
+  .client(() => ({ url: browserTrpcUrl, headers: {} }));
 
 /**
  * tRPC for one router instance (one per server render, one in the browser): query and mutation
@@ -35,3 +37,8 @@ export function createTrpc(queryClient: QueryClient): Trpc {
 }
 
 export type Trpc = TRPCOptionsProxy<AppRouter>;
+
+/** The router's tRPC options proxy, for components; loaders read it from the route context. */
+export function useTrpc(): Trpc {
+  return useRouter().options.context.trpc;
+}

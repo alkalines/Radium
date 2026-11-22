@@ -1,23 +1,30 @@
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
+import { useTrpc } from "@/lib/trpc";
 
 const noModels: string[] = [];
 
 /**
- * The signed-in user's model preferences (`api.preferences`): pinned models show first in a
+ * The signed-in user's model preferences (`preferences` router): pinned models show first in a
  * `Pinned` group and hidden models leave pickers unless currently selected. User-level, so they
  * follow the user across workspaces; slugs of models a workspace cannot route are simply unused.
  * ACP agent models pin as `acp:<agentId>:<model>` (see `ModelPicker`'s `pinScope`).
  * Setters report failures with a toast; pinning un-hides and hiding un-pins on the server.
  */
 export function useModelPreferences() {
-  const { data } = useQuery(convexQuery(api.preferences.get, {}));
-  const setModelPinnedMutation = useMutation(api.preferences.setModelPinned);
-  const setModelHiddenMutation = useMutation(api.preferences.setModelHidden);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { data } = useQuery(trpc.preferences.get.queryOptions());
+  // Pinning un-hides and hiding un-pins, so either change refreshes the one preferences read.
+  const refreshPreferences = () =>
+    queryClient.invalidateQueries({ queryKey: trpc.preferences.get.queryKey() });
+  const { mutateAsync: setModelPinnedMutation } = useMutation(
+    trpc.preferences.setModelPinned.mutationOptions({ onSuccess: refreshPreferences }),
+  );
+  const { mutateAsync: setModelHiddenMutation } = useMutation(
+    trpc.preferences.setModelHidden.mutationOptions({ onSuccess: refreshPreferences }),
+  );
 
   async function setModelPinned(model: string, pinned: boolean) {
     try {

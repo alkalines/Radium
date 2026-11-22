@@ -1,6 +1,3 @@
-import { convexQuery } from "@convex-dev/react-query";
-import { useMutation } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
 import {
   createContext,
   useCallback,
@@ -10,24 +7,26 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { TRPCClientErrorLike } from "@trpc/client";
+import type { inferRouterOutputs } from "@trpc/server";
 
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { useConvexAuth } from "convex/react";
 import { selectWorkspace } from "contracts/workspaces/selection";
+import type { AppRouter } from "server/router";
+import { authClient } from "@/lib/auth-client";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
+import { useTrpc } from "@/lib/trpc";
 
-type WorkspaceList = Exclude<FunctionReturnType<typeof api.workspaces.list>, string>;
 /** Workspace summary exposed to the active workspace context and its consumers. */
-export type WorkspaceSummary = WorkspaceList[number];
+export type WorkspaceSummary = inferRouterOutputs<AppRouter>["workspaces"]["list"][number];
 
 type WorkspaceContextValue = {
   workspaces: WorkspaceSummary[];
   workspace?: WorkspaceSummary;
   workspaceId?: Id<"workspaces">;
   isLoading: boolean;
-  error: Error | null;
+  error: TRPCClientErrorLike<AppRouter> | null;
   isProvisioning: boolean;
   provisionError: Error | null;
   retryProvisioning: () => void;
@@ -44,11 +43,18 @@ const STORAGE_KEY = "radium.workspace";
  * the appropriate state and retry provisioning without changing selection.
  */
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
-  const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { data: session, isPending: isSessionPending } = authClient.useSession();
+  const isAuthenticated = Boolean(session);
   const { data, isPending, error } = useQuery(
-    convexQuery(api.workspaces.list, isAuthenticated ? {} : "skip"),
+    trpc.workspaces.list.queryOptions(isAuthenticated ? undefined : skipToken),
   );
-  const ensurePersonalWorkspace = useMutation(api.workspaces.ensurePersonalWorkspace);
+  const { mutateAsync: ensurePersonalWorkspace } = useMutation(
+    trpc.workspaces.ensurePersonal.mutationOptions({
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.workspaces.pathKey() }),
+    }),
+  );
   const provisioned = useRef(false);
   const pendingSelection = useRef<string | undefined>(undefined);
   const [preferredId, setPreferredId] = useState<string>();
@@ -60,7 +66,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     provisioned.current = true;
     setIsProvisioning(true);
     setProvisionError(null);
-    void ensurePersonalWorkspace({})
+    void ensurePersonalWorkspace()
       .catch((error: unknown) => {
         provisioned.current = false;
         setProvisionError(
@@ -83,8 +89,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (stored) setPreferredId(stored);
   }, []);
 
-  const workspaces = useDecryptedNames(Array.isArray(data) ? data : [], "workspaces");
-  // A create/restore mutation can resolve before the list subscription includes its result.
+  const workspaces = useDecryptedNames(data ?? [], "workspaces");
+  // A create/restore mutation can resolve before the refetched list includes its result.
   // Keep the selection pending instead of immediately falling back to the old workspace.
   const workspace = selectWorkspace(workspaces, preferredId, pendingSelection.current);
 
@@ -92,7 +98,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (
       !isAuthenticated ||
       isPending ||
-      !Array.isArray(data) ||
+      !data ||
       data.length > 0 ||
       provisioned.current
     ) {
@@ -104,7 +110,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (
       pendingSelection.current &&
-      workspaces.some((item) => item._id === pendingSelection.current)
+      workspaces.some((item) => item.id === pendingSelection.current)
     ) {
       pendingSelection.current = undefined;
     }
@@ -112,14 +118,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!workspace) return;
-    setPreferredId((current) => (current === workspace._id ? current : workspace._id));
+    setPreferredId((current) => (current === workspace.id ? current : workspace.id));
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(STORAGE_KEY, workspace._id);
+      window.localStorage.setItem(STORAGE_KEY, workspace.id);
     }
   }, [workspace]);
 
   function setWorkspace(workspaceId: Id<"workspaces">) {
-    pendingSelection.current = workspaces.some((item) => item._id === workspaceId)
+    pendingSelection.current = workspaces.some((item) => item.id === workspaceId)
       ? undefined
       : workspaceId;
     setPreferredId(workspaceId);
@@ -131,8 +137,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       value={{
         workspaces,
         workspace,
-        workspaceId: workspace?._id,
-        isLoading: authLoading || (isAuthenticated && isPending),
+        workspaceId: workspace?.id,
+        isLoading: isSessionPending || (isAuthenticated && isPending),
         error,
         isProvisioning,
         provisionError,

@@ -1,7 +1,7 @@
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { legacyAad, type LegacyBox } from "contracts/e2ee/legacy-contract";
-import { openBox, toBase64Url } from "radium-crypto";
+import { fromBase64Url, openBox, toBase64Url } from "radium-crypto";
 import { keyManager, KeysLockedError } from "./key-manager";
 import { getMemberKey, getOwnerKey } from "./workspace-keys";
 import { openChatSeed } from "./chat-keys";
@@ -19,12 +19,18 @@ export type LegacyContentContext = {
   chatId?: Id<"aisdk_chats">;
 };
 
+/**
+ * A stored box as its source delivers it: Convex sends `box` as an `ArrayBuffer`, tRPC as unpadded
+ * base64url text.
+ */
+export type SealedLegacyBox = Omit<LegacyBox, "box"> & { box: ArrayBuffer | string };
+
 /** Opens historical content locally; results are never cached in React Query or persistent storage. */
-export async function openLegacyContent<T = Record<string, unknown>>(sealed: LegacyBox, context: LegacyContentContext): Promise<T> {
+export async function openLegacyContent<T = Record<string, unknown>>(sealed: SealedLegacyBox, context: LegacyContentContext): Promise<T> {
   if (sealed.kind === "custody") throw new CustodialContentError();
   if (keyManager.getSnapshot().state !== "unlocked") throw new KeysLockedError();
   const generation = secretGeneration();
-  let box = new Uint8Array(sealed.box);
+  let box = typeof sealed.box === "string" ? fromBase64Url(sealed.box) : new Uint8Array(sealed.box);
   if (sealed.storageId) {
     if (box.byteLength !== 0) throw new Error("Ambiguous historical envelope storage");
     const url = await cryptoClient().query(api.e2ee_legacy.storageUrl, { table: context.table, record: context.record });

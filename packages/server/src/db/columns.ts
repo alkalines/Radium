@@ -31,13 +31,15 @@ export const bytes = customType<{ data: Uint8Array; driverData: Uint8Array }>({
  * `contracts/wire` `bytes()`) is unpadded base64url text, the planned wire format. Binary at the
  * top level of a row is a `bytea` column instead ({@link bytes}).
  */
-export type StoredJson<T> = T extends ArrayBuffer | Uint8Array
-  ? string
-  : T extends readonly (infer Item)[]
-    ? StoredJson<Item>[]
-    : T extends object
-      ? { [Key in keyof T]: StoredJson<T[Key]> }
-      : T;
+export type StoredJson<T> = T extends string
+  ? T
+  : T extends ArrayBuffer | Uint8Array
+    ? string
+    : T extends readonly (infer Item)[]
+      ? StoredJson<Item>[]
+      : T extends object
+        ? { [Key in keyof T]: StoredJson<T[Key]> }
+        : T;
 
 /**
  * `jsonb` for a nested shape that SQL never filters on, typed as the stored form of `T`. Services

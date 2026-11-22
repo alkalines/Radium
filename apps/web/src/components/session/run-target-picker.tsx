@@ -61,7 +61,7 @@ export function SessionProjectTile({
   project,
   className,
 }: {
-  project: { color?: string; icon?: string };
+  project: { color?: string | null; icon?: string | null };
   className?: string;
 }) {
   return (
@@ -485,14 +485,14 @@ function usePendingProjectSelection(
   });
 
   useEffect(() => {
-    const created = projects?.find((candidate) => candidate._id === pendingId.current);
+    const created = projects?.find((candidate) => candidate.id === pendingId.current);
     if (!created) return;
     pendingId.current = undefined;
     latestOnProjectChange.current(created);
   }, [projects]);
 
   return (projectId: Id<"projects">) => {
-    const listed = projects?.find((candidate) => candidate._id === projectId);
+    const listed = projects?.find((candidate) => candidate.id === projectId);
     if (listed) {
       onProjectChange(listed);
       return;
@@ -529,10 +529,10 @@ function ProjectOptions({
         <CommandGroup heading="Projects">
           {projects.map((candidate) => (
             <CommandItem
-              key={candidate._id}
-              value={candidate._id}
+              key={candidate.id}
+              value={candidate.id}
               keywords={[candidate.name]}
-              data-checked={candidate._id === project?._id}
+              data-checked={candidate.id === project?.id}
               onSelect={() => onSelect(candidate)}
             >
               <SessionProjectTile project={candidate} />

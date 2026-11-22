@@ -94,12 +94,12 @@ export function WorkspaceSwitcher({ variant }: { variant: "chip" | "heading" }) 
         <DropdownMenuRadioGroup
           value={workspaceId ?? ""}
           onValueChange={(id) => {
-            const next = workspaces.find((candidate) => candidate._id === id);
-            if (next) setWorkspace(next._id);
+            const next = workspaces.find((candidate) => candidate.id === id);
+            if (next) setWorkspace(next.id);
           }}
         >
           {workspaces.map((candidate) => (
-            <DropdownMenuRadioItem key={candidate._id} value={candidate._id}>
+            <DropdownMenuRadioItem key={candidate.id} value={candidate.id}>
               <ProjectTile color={candidate.color}>
                 <WorkspaceIcon name={candidate.icon} />
               </ProjectTile>

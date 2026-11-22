@@ -1,10 +1,8 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { createFileRoute, Outlet, useRouterState } from "@tanstack/react-router";
 
 import { TelemetryPanel } from "@/components/gateway/telemetry-panel";
 import { WorkspaceSettingsGate } from "@/components/settings/workspace-settings-gate";
 import { requireSession } from "@/lib/require-session";
-import { api } from "backend/convex/_generated/api";
 
 export const Route = createFileRoute("/gateway/telemetry")({
   staticData: {
@@ -16,8 +14,8 @@ export const Route = createFileRoute("/gateway/telemetry")({
     const session = await requireSession({ queryClient, location });
     return { session };
   },
-  loader: ({ context: { queryClient } }) => {
-    void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+  loader: ({ context: { queryClient, trpc } }) => {
+    void queryClient.prefetchQuery(trpc.auth.me.queryOptions());
   },
   component: TelemetryRoute,
 });

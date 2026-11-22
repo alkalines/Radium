@@ -1,7 +1,6 @@
 import { type FormEvent, useId, useRef, useState } from "react";
 import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FunctionReturnType } from "convex/server";
 import { PlusIcon, StarIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -32,6 +31,7 @@ import {
 import { WorkerPresence, useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { cn } from "@/lib/utils";
 import { setEncryptedName } from "@/lib/crypto/names";
+import { useTrpc } from "@/lib/trpc";
 import { ProjectGlyph, type ProjectSummary } from "./project-glyph";
 
 /** Matches the backend's Project name limit. */
@@ -104,8 +104,8 @@ function ProjectForm({
   const savedDefaultWorkerId = project?.defaultWorkerId;
 
   const [name, setName] = useState(project?.name ?? "");
-  const [color, setColor] = useState(project?.color);
-  const [icon, setIcon] = useState(project?.icon);
+  const [color, setColor] = useState(project?.color ?? null);
+  const [icon, setIcon] = useState(project?.icon ?? null);
   const [rows, setRows] = useState<FolderRow[]>(() =>
     savedFolders.map((folder) => ({
       key: `saved-${folder.workerId}`,
@@ -118,8 +118,12 @@ function ProjectForm({
   const [isSaving, setIsSaving] = useState(false);
   const nextRowKey = useRef(0);
 
-  const createProject = useMutation(api.projects.create);
-  const updateProject = useMutation(api.projects.update);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { mutateAsync: createProject } = useMutation(trpc.projects.create.mutationOptions());
+  const { mutateAsync: updateProject } = useMutation(trpc.projects.update.mutationOptions());
+  // Project lists are not live; the dialog refetches them once its writes (and name seal) landed.
+  const refreshProjects = () => queryClient.invalidateQueries({ queryKey: trpc.projects.pathKey() });
   // Worker identities are owner-only; members never see the Workers section.
   const { data: workersData } = useQuery(
     convexQuery(api.workers.list, isOwner ? { workspace: workspaceId } : "skip"),
@@ -159,26 +163,29 @@ function ProjectForm({
             ));
         const isDefaultChanged = isOwner && nextDefault !== savedDefaultWorkerId;
         await updateProject({
-          project: project._id,
-          color,
+          project: project.id,
+          color: color ?? undefined,
           ...(areFoldersChanged ? { folders } : {}),
           ...(isDefaultChanged ? { defaultWorkerId: nextDefault ?? null } : {}),
         });
-        await setEncryptedName({ target: project._id, workspace: workspaceId, table: "projects", name: trimmedName === project.name ? undefined : trimmedName, icon });
+        await setEncryptedName({ target: project.id, workspace: workspaceId, table: "projects", name: trimmedName === project.name ? undefined : trimmedName, icon: icon ?? undefined });
+        await refreshProjects();
         toast.success("Project saved.");
       } else {
         const created = await createProject({
           workspace: workspaceId,
-          name: "Project",
-          color,
+          color: color ?? undefined,
           ...(isOwner && folders.length > 0 ? { folders, defaultWorkerId: nextDefault } : {}),
         });
-        await setEncryptedName({ target: created, workspace: workspaceId, table: "projects", name: trimmedName, icon });
+        await setEncryptedName({ target: created, workspace: workspaceId, table: "projects", name: trimmedName, icon: icon ?? undefined });
+        await refreshProjects();
         toast.success("Project created.");
         onCreated?.(created);
       }
       onDone();
     } catch (error) {
+      // A failed name seal still follows a written Project, so the list changed either way.
+      await refreshProjects();
       toast.error(error instanceof Error ? error.message : "Could not save the project.");
     } finally {
       setIsSaving(false);

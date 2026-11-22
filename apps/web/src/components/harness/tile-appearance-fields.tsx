@@ -22,14 +22,14 @@ export function TileAppearanceFields({
   onColorChange,
   onIconChange,
 }: {
-  color?: string;
-  icon?: string;
+  color?: string | null;
+  icon?: string | null;
   disabled?: boolean;
   onColorChange: (color: TileColorName) => void;
   onIconChange: (icon: WorkspaceIconName) => void;
 }) {
-  const selectedColor = resolveTileColorName(color);
-  const selectedIcon = resolveWorkspaceIconName(icon);
+  const selectedColor = resolveTileColorName(color ?? undefined);
+  const selectedIcon = resolveWorkspaceIconName(icon ?? undefined);
 
   return (
     <div className="flex flex-col gap-3">

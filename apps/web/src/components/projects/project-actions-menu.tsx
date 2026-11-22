@@ -1,9 +1,8 @@
 import { useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontalIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import {
   AlertDialog,
@@ -23,6 +22,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useTrpc } from "@/lib/trpc";
 import { ProjectDialog } from "./project-dialog";
 import type { ProjectSummary } from "./project-glyph";
 
@@ -43,12 +43,15 @@ export function ProjectActionsMenu({
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const removeProject = useMutation(api.projects.remove);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { mutateAsync: removeProject } = useMutation(trpc.projects.remove.mutationOptions());
 
   async function confirmDelete() {
     setIsDeleting(true);
     try {
-      await removeProject({ project: project._id });
+      await removeProject({ project: project.id });
+      await queryClient.invalidateQueries({ queryKey: trpc.projects.pathKey() });
       toast.success("Project deleted. Its sessions are kept.");
       setIsDeleteOpen(false);
     } catch (error) {

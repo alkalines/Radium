@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { selectWorkspace } from "./selection";
 
-const workspaces = [{ _id: "first" }, { _id: "second" }];
+const workspaces = [{ id: "first" }, { id: "second" }];
 
 describe("workspace selection", () => {
   test("falls back to the first workspace when no IDs are set", () => {

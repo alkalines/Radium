@@ -1,6 +1,6 @@
 # Backend Runtime And Code Layout
 
-Status: **Phase 1 (foundation) and Phase 2 (schema) implemented** in `packages/server`; domain services, live layer and importer are still planned. Part of the [backend migration](../Backend_Migration.md). Covers how the new backend is organized, how one codebase deploys to Bun or to serverless targets, and the conventions that replace Convex's.
+Status: **Phase 1 (foundation), Phase 2 (schema) and the first Phase 3 slice (workspaces, members, Projects, preferences) implemented** in `packages/server`; the other domain slices, live layer and importer are still planned. Part of the [backend migration](../Backend_Migration.md). Covers how the new backend is organized, how one codebase deploys to Bun or to serverless targets, and the conventions that replace Convex's.
 
 The goal is a backend that reads like an ordinary TypeScript service, with no shape inherited from Convex. Port domain _behavior_ and its tests; rewrite the mechanics. The `AGENTS.md` code-clarity rules apply unchanged.
 
@@ -138,7 +138,8 @@ The web server forwards `/api/*` to `API_INTERNAL_URL` as a streaming pass-throu
 ## tRPC Conventions
 
 - One router per domain (`src/<domain>/router.ts`), merged in `src/trpc/router.ts`. Procedure names are camelCase verbs (`chats.list`, `chats.rename`), not the mixed `GetChat`/`ListChats` casing Convex grew.
-- Procedures are thin. They parse input with zod (shared schemas from `contracts`), call one service function, and map domain errors to `TRPCError` codes. Services take `(drivers, actor, input)` and own authorization.
+- Procedures are thin. They parse input with zod (shared schemas from `contracts`) and call one service function. Services take `(drivers, actor, input)` and own authorization.
+- Services refuse with `AppError(code, message)` (`src/errors.ts`: `BAD_REQUEST`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`), never with tRPC errors, so they stay transport-neutral. `publicProcedure`, the base of every procedure, turns an `AppError` into the `TRPCError` of the same code and message. Anything else is an internal error: the client gets `Internal server error` with no stack, and the server logs only the innermost cause's name and message (Drizzle's query error, whose message lists statement parameters, is never logged).
 - Base procedures replace the Convex wrappers (`src/trpc/init.ts`):
   - `publicProcedure`;
   - `sessionProcedure`: Better Auth session resolved once per request (Valkey `secondaryStorage` cache, Postgres on a miss); `UNAUTHORIZED` without one;
@@ -146,7 +147,7 @@ The web server forwards `/api/*` to `API_INTERNAL_URL` as a streaming pass-throu
   - `ownedWorkspaceProcedure`: the same, owners only, members also get `NOT_FOUND`;
   - `workerProcedure`: `Authorization: Bearer` ES256 JWT verified with `jose` against `WORKER_AUTH_JWKS` (issuer `${API_URL}/api/worker`, audience `radium-worker`, kind `worker`); then key, Worker status, identity epoch and workspace are re-read from Postgres on every call (`src/worker/auth.ts`), the check `packages/backend/src/worker/machine.ts` does after `ctx.auth`. One indexed join per call; a Valkey cache, invalidated on revoke, can come with the Worker slice if that join ever shows up in load. Without `WORKER_AUTH_JWKS` every Worker call is refused.
 - Personal-chat privacy lives in the `chatroom` service's access function (today `authorizeChatForUser`), reused by tRPC, `/api/chat`, the stream proxy and the shape proxy. There is one implementation.
-- Outputs are plain JSON. Binary fields cross the wire as base64url strings defined in `contracts` (Convex's `v.bytes()`/`ArrayBuffer` transport disappears); `radium-crypto` already works on `Uint8Array`.
+- Outputs are plain JSON. Binary fields cross the wire as unpadded base64url strings: inputs parse them with `base64urlBytes(maxBytes)` from `contracts/wire` (length bounded before decoding, `Uint8Array` after), outputs send `toBase64Url` text. Convex's `v.bytes()`/`ArrayBuffer` transport disappears slice by slice; `radium-crypto` already works on `Uint8Array`. Sealed boxes stored in `jsonb` (`legacy_content`) are already in that text form (`StoredJson`).
 - Pagination is keyset-based (`(last_interaction_at, id)` cursors), replacing `paginate` and convex-helpers' merged streams.
 - Web client: `@trpc/tanstack-react-query` (`createTRPCOptionsProxy`, created per router in `apps/web/src/router.tsx` and passed as `context.trpc`) with `httpBatchLink` to the same origin in the browser and to `API_INTERNAL_URL` during SSR. Route loaders prefetch with `queryOptions`; mutations invalidate exact query keys, and invalidation events from streams do the same for other tabs and devices ([Live data](Live_Data.md#invalidation-events)). The `expectAuth` gate of `ConvexQueryClient` is unnecessary because cookies go with every request.
 
@@ -197,8 +198,13 @@ Each of these relied on Convex serializing mutations. Each gets a concurrency te
 | Budget recompute debounce                                                               | `runAfter(5s)`                                | outbox job with a unique dedupe key                                                                                             |
 | Notification claimed by a tab vs push fallback                                          | row CAS                                       | conditional `update … where seen_at is null returning`                                                                          |
 | Uniqueness by `.unique()` (`api_keys.hash`, viewers by tab, presence, streams by epoch) | throws on duplicates                          | unique constraints (or Valkey keys for moved state)                                                                             |
+| One personal workspace on first sign-in; at most 100 owned; keep one active on archive  | count then insert/patch                       | per-owner advisory lock (`workspaces:<user>`) for the transaction (`src/workspaces/workspaces.ts`)                              |
+| Workspace key epoch advances once (member removal, rotation, bootstrap)                 | read `keyEpoch` then insert                   | workspace row locked `for no key update` (`lockWorkspace`), plus the unique `(workspace, epoch)` and `(workspace, version)`     |
+| Sealed name compare-and-swap                                                            | compare in mutation                           | same, under the workspace row lock (and the Project row lock for Project names)                                                 |
+| At most 200 Projects per workspace, 200 members per workspace                           | count then insert                             | per-workspace advisory lock (Projects) or the workspace row lock (members)                                                      |
+| Model pins from several tabs all apply                                                  | read-modify-write                             | `insert … on conflict do nothing`, then the row `for update`                                                                    |
 
-The E2EE freeze flag (`assertLegacyWritesAllowed`) is not ported: the importer requires a completed cutover ([narrow first](Convex_Import.md#preconditions)).
+The E2EE freeze flag (`assertLegacyWritesAllowed`) and the plaintext gate (`assertLegacyPlaintextAllowed`) are not ported: the importer requires a completed cutover ([narrow first](Convex_Import.md#preconditions)), after which plaintext names and icons are never accepted. The new backend therefore has no plaintext rename or icon endpoint for workspaces and Projects; clients seal both to the workspace member key (`workspaces.setName`, `projects.setName`).
 
 ## Jobs
 

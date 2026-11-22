@@ -156,7 +156,7 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
         let display = canShow && content ? { ...notification, ...content } : notification;
         if (status.state === "unlocked" && status.userId === notification.userId &&
             notification.category === "limits" && notification.workspace) {
-          const workspace = latest.current.workspaces.find((item) => item._id === notification.workspace);
+          const workspace = latest.current.workspaces.find((item) => item.id === notification.workspace);
           if (workspace) {
             display = { ...display, body: display.body === "Workspace" ? workspace.name : `${workspace.name} · ${display.body}` };
           }

@@ -10,7 +10,7 @@ import {
 } from "ai";
 import { useChat } from "@ai-sdk/react";
 import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useAction, useMutation } from "convex/react";
 import { AnimatePresence } from "motion/react";
@@ -57,6 +57,8 @@ import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { authClient } from "@/lib/auth-client";
 import { variants } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { useTrpc } from "@/lib/trpc";
+import { useAccount } from "@/lib/use-account";
 import {
   agentAvailability,
   builtInAgent,
@@ -263,7 +265,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
 }: SessionScreenProps & { onAcpCreated: (chatId: Id<"aisdk_chats">, prompt?: string) => void }) {
   const navigate = useNavigate();
   const { workspaceId, workspaces } = useWorkspace();
-  const { data: userInfo } = useQuery(convexQuery(api.auth.userInfo, {}));
+  const trpc = useTrpc();
+  const { signedIn, isPending: isAccountPending } = useAccount();
   const { data: authSession } = authClient.useSession();
   const { data: chatResult, error: chatError } = useQuery(
     convexQuery(api.aisdk.GetChat, chatId ? { chatId } : "skip"),
@@ -316,9 +319,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   // An existing chat's settings belong to its own workspace; a draft uses the current one.
   const settingsWorkspaceId = chat?.workspace ?? workspaceId;
   const isOwner = workspaces.some(
-    (candidate) => candidate._id === settingsWorkspaceId && candidate.role === "owner",
+    (candidate) => candidate.id === settingsWorkspaceId && candidate.role === "owner",
   );
-  const signedIn = userInfo !== undefined && typeof userInfo !== "string";
   const { data: workspaceKeyState } = useQuery(
     convexQuery(
       api.e2ee.workspaceKeyState,
@@ -472,9 +474,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     ),
   );
   const { data: projectsData } = useQuery(
-    convexQuery(
-      api.projects.list,
-      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    trpc.projects.list.queryOptions(
+      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : skipToken,
     ),
   );
   // Every use below sees decrypted names; `undefined` still means the list is loading.
@@ -674,12 +675,12 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   // Saved chats read their Project from Convex; a draft's Project must exist in its workspace.
   let projectId: string | null = chat?.project ?? null;
   if (usesDraftChoices) projectId = choicesAreStale ? null : draftProject;
-  const selectedProject = projects?.find((candidate) => candidate._id === projectId) ?? null;
+  const selectedProject = projects?.find((candidate) => candidate.id === projectId) ?? null;
 
   // A draft's Project can disappear (deleted, or never in this workspace after a restore).
   useEffect(() => {
     if (chatId || !draftProject || !projects || choicesAreStale) return;
-    if (projects.some((candidate) => candidate._id === draftProject)) return;
+    if (projects.some((candidate) => candidate.id === draftProject)) return;
     setDraftProject(null);
   }, [chatId, choicesAreStale, draftProject, projects]);
 
@@ -691,7 +692,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
    */
   const selectDraftProject = useCallback(
     (project: SessionProject | null) => {
-      setDraftProject(project?._id ?? null);
+      setDraftProject(project?.id ?? null);
       if (!project || !isOwner) return;
 
       const folders = project.folders ?? [];
@@ -724,7 +725,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     if (isOwner && workerToolDefaults === undefined) return;
     if (isOwner && workers === undefined && !workersError) return;
     seedProjectId.current = undefined;
-    const project = projects.find((candidate) => candidate._id === requested);
+    const project = projects.find((candidate) => candidate.id === requested);
     if (project) selectDraftProject(project);
   }, [
     chatId,
@@ -765,7 +766,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       (isContentEnabled && (isChatContentPending || persistedMessages === undefined)));
   const isWaitingForDefault =
     !(chatModel || queuedModel) &&
-    (userInfo === undefined || (signedIn && defaultModelQuery.isPending));
+    (isAccountPending || (signedIn && defaultModelQuery.isPending));
   const isModelLoading =
     isModelListLoading ||
     (hasModels && !explicitModel && (isWaitingForChat || isWaitingForDefault));
@@ -1256,7 +1257,11 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const projectHint = useMemo((): TabProjectHint | null | undefined => {
     if (!isProjectKnown) return undefined;
     if (!selectedProject) return null;
-    return { name: selectedProject.name, color: selectedProject.color, icon: selectedProject.icon };
+    return {
+      name: selectedProject.name,
+      color: selectedProject.color ?? undefined,
+      icon: selectedProject.icon ?? undefined,
+    };
   }, [isProjectKnown, selectedProject]);
   useEffect(() => {
     onTabHint(tabId, {
@@ -1334,7 +1339,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           workspace: settingsWorkspaceId,
           scope: keyed ? draftScope : draftScope === "workspace" ? "workspace" : "personal",
           ...(keyed && draftScope === "shared" ? { members } : {}),
-          project: selectedProject?._id,
+          project: selectedProject?.id,
           worker: draftWorker.workerId,
           agentId: agent.agentId,
           profile: agent.profile,
@@ -1451,7 +1456,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         scope: draftScope,
         members: draftScope === "shared" ? sharedMembers : undefined,
         ...(workerSelection ? { worker: workerSelection } : {}),
-        ...(selectedProject ? { project: selectedProject._id } : {}),
+        ...(selectedProject ? { project: selectedProject.id } : {}),
         // Only a draft whose tools were changed carries an override; otherwise the chat follows
         // the workspace defaults. MCP server ids round-trip as strings and Convex narrows them.
         ...(toolOverride

@@ -1,6 +1,6 @@
 # 14 Backend Migration (Convex → Bun, Hono, Postgres)
 
-Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 schema done (2026-11-22); Phase 3 not started.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
+Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 schema done (2026-11-22); Phase 3 slice 1 (workspaces) done (2026-11-22), slices 2–6 not started.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
 
 This is several sessions of work, not one. Each phase ends with the docs updated and its verification recorded here. The Convex backend on `dev` stays the product until the cutover release. The new backend is built beside it and exercised against imported copies of a local deployment, never production data.
 
@@ -298,6 +298,52 @@ One slice per session, each a tRPC router + services + tests, ported from `packa
 6. `worker`: identity, enrollment, machine auth, presence, tasks, gateway access; `acp`: definitions, sessions, commands, interactions, catalog, usage
 
 Acceptance per slice: authorization boundary tests (owner, member, outsider, personal-chat privacy, revoked Worker) pass; the slice's web screens work against the new backend on an imported local copy.
+
+### Slice 1 Results: Workspaces (2026-11-22)
+
+Decisions taken with the user before starting:
+
+- One slice this session.
+- Cross-slice pieces that member removal needs are ported now as exported services of their own domain, not deferred: `chatroom/chats.ts` (`detachWorkspaceMember`, `workspaceHasChats`) and `e2ee/workspace-keys.ts` (epochs, grants, rosters, `clearWorkspaceJoins`, key availability). Slices 3 and 4 build on them.
+- The slice's web callers move to tRPC now and are checked in the browser on fresh accounts, because the importer (Phase 6) does not exist yet.
+- The legacy bridge is not ported (`balances` mapping in `ensurePersonalWorkspace`, `ensureForLegacyBalance`, `assertLegacy*` gates).
+
+What was built (`packages/server/src/workspaces/`, routers `workspaces`, `projects`, `preferences`):
+
+- **Workspaces**: `list`, `listArchived`, `ensurePersonal`, `create`, `setColor`, `archive`, `restore`. Members: `listMembers`, `addMember`, `removeMember`. Sealed names: `workspaces.sealedName`/`setName`, `projects.sealedName`/`setName` (Convex `e2ee_legacy.getName`/`setName`).
+- **Projects**: `list`, `create`, `update`, `remove`. Folders are `project_folders` rows rewritten in one transaction; deleting a Project detaches chats through the `set null` foreign key instead of batched continuations.
+- **Preferences**: `get`, `setModelPinned`, `setModelHidden`. `auth.me` (Phase 1) replaces `auth.userInfo`.
+- **Errors**: services throw `AppError`; the base procedure maps it, and internal errors reach the client as a generic message ([tRPC conventions](../Backend_Migration/Runtime.md#trpc-conventions)).
+- **Bytes on the wire**: `base64urlBytes(max)` in `contracts/wire` (used by the rotation and sealed-name inputs).
+- **Web**: workspace provider and management, Project dialog, menus and lists, model preferences and the `auth.me` loaders/panels use tRPC. Signed-in state comes from the Better Auth session (there is no Convex token on this branch). `lib/trpc-client.ts` is the browser's imperative client for `lib/crypto`; it is separate from `lib/trpc.ts` because the notification service worker bundles `lib/crypto`. On an account switch the whole query cache is dropped, since tRPC keys carry no user. Workspace and Project summaries use `id`, not `_id`.
+
+Behavior changes from Convex:
+
+- The server never accepts a plaintext workspace or Project name or icon. `workspaces.create` and `projects.create` take no name, and there is no `rename`/`setIcon`. After cutover Convex refused them anyway.
+- `addMember` refuses a 201st member (`Member limit reached.`). Convex accepted it, after which every roster and grant check of the workspace failed.
+- Member removal is one transaction: no `continueMemberRemoval` batches.
+
+Checks (this workstation, test compose services, then the dev compose services):
+
+- `bun run --cwd packages/server test`: 6 files, 45 tests pass. `workspaces.test.ts` covers owner, member, outsider and archived boundaries for every procedure family, member removal with rotation (refused without one, refused for a keyless workspace or a forged roster, and two concurrent removals with the same next epoch: exactly one lands, chat members and joins are cleared, the right chats are flagged `rekey`), sealed-name compare-and-swap and key checks, Project folder rules (revoked, foreign and unknown Workers; unchanged folders on a revoked Worker stay editable), and chat detachment.
+- Concurrency tests checked failing-then-passing: removing the owner advisory lock or the preferences row lock made `ensurePersonal` (5 parallel calls), the archive race and 10 parallel pins fail; restored, they pass.
+- Server `typecheck` clean; contracts tests (72) pass; web `tsc` has the same 103 pre-existing errors and no new ones; `vite:build` passes.
+- In the browser, against the built server through the web forwarder, with two fresh OPAQUE accounts:
+  - the first sign-in provisioned one personal workspace;
+  - `listMembers` showed the owner; adding the second account by upper-case email listed it as a member;
+  - setting the color saved `teal`;
+  - with a second workspace, archiving moved it to the archived list and restoring brought it back;
+  - creating a Project stored color `green` with the placeholder name and no plaintext, and Home listed it;
+  - pin and hide calls sent from the page kept the lists exclusive. They were not sent from a model picker, because model lists are still on Convex.
+  - The server logged no internal error.
+
+Not done or not covered:
+
+- **Sealed names and keyed member removal were not exercised in the browser.** The key manager still unlocks and reads workspace keys through Convex, so on this branch it stays locked ("Encryption keys are locked on this device"). Project and workspace name and icon edits and `createKeyedWorkspace` stop there until slice 4 moves the E2EE reads; the server side of both is covered by tests. A Project created from the dialog keeps the placeholder name until then.
+- The Project and member limit locks have no concurrency test (200 rows each).
+- A replaced sealed name whose old box lived in Convex storage (`storageId`) leaves that object unreferenced; names are under 16 KiB, so none is expected. The `files.orphans` job (chatroom slice) covers it.
+- `nitro dev` cannot load the `bun` drivers (it runs Node workers), so browser checks use the built server (`bun .output/server/index.mjs`).
+- The web screens were not checked on an imported copy; that needs the importer (Phase 6).
 
 ## Phase 4: Live Layer
 

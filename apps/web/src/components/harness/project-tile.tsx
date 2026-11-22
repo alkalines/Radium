@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 /**
  * Square tile that identifies a Project or workspace in lists, Tabs, and the Session context.
  * Pass an `initial`, or an icon as `children` (workspaces and Projects carry an icon name).
- * `color` is a persisted tile color name; missing or unknown names use the brand color.
+ * `color` is a persisted tile color name; missing (`null`/`undefined`) or unknown names use the brand color.
  */
 export function ProjectTile({
   initial,
@@ -15,14 +15,14 @@ export function ProjectTile({
   className,
 }: {
   initial?: string;
-  color?: string;
+  color?: string | null;
   children?: ReactNode;
   className?: string;
 }) {
   return (
     <span
       aria-hidden="true"
-      style={{ backgroundColor: `var(--tile-${resolveTileColorName(color)})` }}
+      style={{ backgroundColor: `var(--tile-${resolveTileColorName(color ?? undefined)})` }}
       className={cn(
         // `!` beats the `[&_svg:not([class*='size-'])]:size-4` rule of menu items and buttons,
         // which would otherwise grow the glyph to the tile's full size, and the focused-item

@@ -20,7 +20,7 @@ const searchThreshold = 8;
 
 /**
  * Settings → Account → Models: the signed-in user's pin and hide choices for the models the
- * current workspace can route. Preferences are user-level (`api.preferences`), so they follow the
+ * current workspace can route. Preferences are user-level (`preferences` router), so they follow the
  * user into every workspace; the list itself comes from the current workspace because that is
  * what the pickers offer. Rows keep their catalogue order so toggling never moves them.
  */

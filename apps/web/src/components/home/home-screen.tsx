@@ -1,6 +1,6 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -52,6 +52,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { newTabId } from "@/components/window/window-tabs";
 import { useFrontendLogger } from "@/lib/logging";
+import { useTrpc } from "@/lib/trpc";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 import { SessionActionsMenu } from "./session-actions-menu";
 import {
@@ -147,20 +148,21 @@ export function HomeScreen() {
       ? agents.find((agent) => agent.agentId === agentSelection.agentId)
       : undefined;
 
+  const trpc = useTrpc();
   const { data: projectsData, error: projectsError } = useQuery(
-    convexQuery(api.projects.list, workspaceId ? { workspace: workspaceId } : "skip"),
+    trpc.projects.list.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
   );
-  const projects = useDecryptedNames(Array.isArray(projectsData) ? projectsData : [], "projects", workspaceId);
+  const projects = useDecryptedNames(projectsData ?? [], "projects", workspaceId);
   // A selection made in another workspace, or of a Project deleted since, shows all sessions.
   const isSelectionCurrent =
     projectSelection !== null && projectSelection.workspace === workspaceId;
   const isNoProjectSelected = isSelectionCurrent && projectSelection.project === null;
   let selectedProject: ProjectSummary | undefined;
   if (isSelectionCurrent) {
-    selectedProject = projects.find((project) => project._id === projectSelection.project);
+    selectedProject = projects.find((project) => project.id === projectSelection.project);
   }
   // `undefined` lists every session; `null` lists sessions without a Project.
-  let projectFilter: Id<"projects"> | null | undefined = selectedProject?._id;
+  let projectFilter: Id<"projects"> | null | undefined = selectedProject?.id;
   if (isNoProjectSelected) projectFilter = null;
 
   // Refreshes the agents' session indexes whenever the owner looks at a session list, as opening
@@ -298,7 +300,7 @@ export function HomeScreen() {
   }
 
   let projectList;
-  if (projectsError || typeof projectsData === "string") {
+  if (projectsError) {
     projectList = <p className="px-3 text-sm text-muted-foreground">Projects unavailable</p>;
   } else if (projectsData !== undefined && projects.length === 0) {
     projectList = (
@@ -336,10 +338,10 @@ export function HomeScreen() {
         </SideColumnItem>
         {projects.map((project) => (
           <SideColumnItem
-            key={project._id}
-            isActive={project._id === selectedProject?._id}
+            key={project.id}
+            isActive={project.id === selectedProject?.id}
             title={project.name}
-            onClick={() => toggleProject(project._id)}
+            onClick={() => toggleProject(project.id)}
           >
             <ProjectGlyph project={project} />
             <span className="truncate">{project.name}</span>
@@ -435,9 +437,9 @@ export function HomeScreen() {
             {selectedProject.name}
           </h1>
           {isOwner ? (
-            <ProjectUsageButton workspaceId={workspaceId} project={selectedProject._id} />
+            <ProjectUsageButton workspaceId={workspaceId} project={selectedProject.id} />
           ) : null}
-          <Button variant="ghost" size="sm" onClick={() => openNewSession(selectedProject._id)}>
+          <Button variant="ghost" size="sm" onClick={() => openNewSession(selectedProject.id)}>
             <SquarePenIcon data-icon="inline-start" />
             New session
           </Button>
@@ -709,7 +711,7 @@ function SessionList({
     (row) => row.at,
     (row) => row.kind === "chat" && Boolean(row.session.pinnedAt),
   );
-  const projectsById = new Map(projects.map((project) => [project._id, project]));
+  const projectsById = new Map(projects.map((project) => [project.id, project]));
 
   return (
     <>

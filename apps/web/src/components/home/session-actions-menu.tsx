@@ -136,7 +136,7 @@ export function SessionActionsMenu({
 
   const isBusy = pendingAction !== null;
   const displayTitle = session.title?.trim() || "Untitled session";
-  const currentProject = projects.find((project) => project._id === session.project);
+  const currentProject = projects.find((project) => project.id === session.project);
 
   /** Runs one mutation; a string result is a backend refusal, a throw is a failure. */
   async function run(action: string, mutate: () => Promise<unknown>) {
@@ -199,8 +199,8 @@ export function SessionActionsMenu({
   /** Picking a Project only stages the move; `confirmMove` applies it. */
   function requestMove(value: string) {
     if (value === (session.project ?? noProject)) return;
-    const target = projects.find((project) => project._id === value) ?? null;
-    setMoveTarget({ id: target?._id ?? null, name: target?.name ?? "No project" });
+    const target = projects.find((project) => project.id === value) ?? null;
+    setMoveTarget({ id: target?.id ?? null, name: target?.name ?? "No project" });
     setIsMoveOpen(true);
   }
 
@@ -335,7 +335,7 @@ export function SessionActionsMenu({
                     </DropdownMenuRadioItem>
                     {projects.length > 0 ? <DropdownMenuSeparator /> : null}
                     {projects.map((project) => (
-                      <DropdownMenuRadioItem key={project._id} value={project._id}>
+                      <DropdownMenuRadioItem key={project.id} value={project.id}>
                         <ProjectGlyph project={project} />
                         <span className="truncate">{project.name}</span>
                       </DropdownMenuRadioItem>

@@ -1,5 +1,6 @@
 import { initTRPC, TRPCError } from "@trpc/server";
 import * as z from "zod";
+import { AppError } from "../errors";
 import type { Runtime } from "../runtime";
 import { resolveWorker } from "../worker/auth";
 import { workspaceAccess } from "../workspaces/access";
@@ -7,18 +8,32 @@ import { workspaceAccess } from "../workspaces/access";
 /** Per-request tRPC context: the runtime and the request's headers (cookies, bearer token). */
 export type Context = { runtime: Runtime; headers: Headers };
 
-const t = initTRPC.context<Context>().create();
+const t = initTRPC.context<Context>().create({
+  // Only domain refusals (`AppError`) carry their message to the client. An internal error's
+  // message may hold SQL, parameters or driver details, so the client gets a generic one.
+  errorFormatter: ({ shape, error }) =>
+    error.code === "INTERNAL_SERVER_ERROR"
+      ? { ...shape, message: "Internal server error", data: { ...shape.data, stack: undefined } }
+      : shape,
+});
 
 export const router = t.router;
 
-/** No caller identity. */
-export const publicProcedure = t.procedure;
+/** No caller identity. Every procedure builds on it, so domain errors map in one place. */
+export const publicProcedure = t.procedure.use(async ({ next }) => {
+  const result = await next();
+  if (!result.ok && result.error.cause instanceof AppError) {
+    const cause = result.error.cause;
+    throw new TRPCError({ code: cause.code, message: cause.message, cause });
+  }
+  return result;
+});
 
 /**
  * A signed-in user. The Better Auth session is resolved once per request: from the Valkey cache,
  * or from Postgres when the cache misses.
  */
-export const sessionProcedure = t.procedure.use(async ({ ctx, next }) => {
+export const sessionProcedure = publicProcedure.use(async ({ ctx, next }) => {
   const session = await ctx.runtime.auth.api.getSession({ headers: ctx.headers });
   if (!session) {
     throw new TRPCError({ code: "UNAUTHORIZED" });
@@ -54,7 +69,7 @@ export const ownedWorkspaceProcedure = workspaceProcedure.use(async ({ ctx, next
  * re-checked against current state on every call (`../worker/auth.ts`), so revocation applies
  * immediately. This grants identity only; handlers still check capabilities and assignments.
  */
-export const workerProcedure = t.procedure.use(async ({ ctx, next }) => {
+export const workerProcedure = publicProcedure.use(async ({ ctx, next }) => {
   const authorization = ctx.headers.get("authorization");
   const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : null;
   const worker = token

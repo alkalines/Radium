@@ -1,11 +1,11 @@
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
 
-import { api } from "backend/convex/_generated/api";
+import type { AppRouter } from "server/router";
 import { ProjectTile } from "@/components/harness/project-tile";
 import { WorkspaceIcon } from "@/components/workspaces/workspace-icon";
 
-/** One Project as listed by `api.projects.list`; `folder` is only present for workspace owners. */
-export type ProjectSummary = FunctionReturnType<typeof api.projects.list>[number];
+/** One Project as listed by `projects.list`; `folders` are only present for workspace owners. */
+export type ProjectSummary = inferRouterOutputs<AppRouter>["projects"]["list"][number];
 
 /**
  * A Project's tile: its color with its icon. Projects reuse the workspace icon set, so unknown
@@ -15,7 +15,7 @@ export function ProjectGlyph({
   project,
   className,
 }: {
-  project: Pick<ProjectSummary, "color" | "icon">;
+  project: { color?: string | null; icon?: string | null };
   className?: string;
 }) {
   return (

@@ -50,8 +50,29 @@ export function createApp(resolveRuntime: () => Promise<Runtime>): App {
         runtime: c.get("runtime") as Runtime,
         headers: c.req.raw.headers,
       }),
+      onError: ({ error, path }) => {
+        if (error.code === "INTERNAL_SERVER_ERROR") {
+          console.error(`tRPC ${path ?? "?"} failed:`, internalErrorSummary(error.cause));
+        }
+      },
     }),
   );
 
   return app;
+}
+
+/**
+ * What an internal error may log: the innermost cause's name and message. Drizzle's own query
+ * error is skipped because its message lists the statement's parameters (user data, key
+ * material); the driver error under it names the failed constraint or condition only.
+ */
+function internalErrorSummary(error: unknown): string {
+  let current = error;
+  while (current instanceof Error && current.cause instanceof Error) {
+    current = current.cause;
+  }
+  if (!(current instanceof Error) || current.name === "DrizzleQueryError") {
+    return "unknown error";
+  }
+  return `${current.name}: ${current.message.slice(0, 200)}`;
 }

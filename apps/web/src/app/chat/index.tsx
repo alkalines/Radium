@@ -1,7 +1,5 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 
-import { api } from "backend/convex/_generated/api";
 import { requireSession } from "@/lib/require-session";
 
 /**
@@ -23,8 +21,8 @@ export const Route = createFileRoute("/chat/")({
     const session = await requireSession({ queryClient, location });
     return { session };
   },
-  loader: ({ context: { queryClient } }) => {
-    void queryClient.prefetchQuery(convexQuery(api.auth.userInfo, {}));
+  loader: ({ context: { queryClient, trpc } }) => {
+    void queryClient.prefetchQuery(trpc.auth.me.queryOptions());
   },
   component: () => null,
 });

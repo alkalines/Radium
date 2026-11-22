@@ -43,7 +43,7 @@ export function WorkspaceKeySync() {
       <IdentityTrustSurface />
       {status.state === "unlocked"
         ? workspaces.map((workspace) => (
-            <WorkspaceSync key={workspace._id} workspaceId={workspace._id} />
+            <WorkspaceSync key={workspace.id} workspaceId={workspace.id} />
           ))
         : null}
     </>

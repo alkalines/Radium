@@ -372,7 +372,7 @@ export function AgentSessions({
             </h2>
             <ul className="flex flex-col">
               {group.sessions.map((row) => {
-                const project = projects.find((item) => item._id === row.project);
+                const project = projects.find((item) => item.id === row.project);
                 const worker = workers.find((item) => item.workerId === row.worker);
                 const offline =
                   workersLoaded &&

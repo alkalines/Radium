@@ -2,6 +2,7 @@ import type { FunctionReturnType } from "convex/server";
 
 import type { api } from "backend/convex/_generated/api";
 import type { AcpProfile } from "contracts/acp/contract";
+import type { ProjectSummary } from "@/components/projects/project-glyph";
 import { acpGatewayProfileOffered } from "contracts/acp/gateway";
 import { isWorkerOnline } from "contracts/worker/presence";
 
@@ -11,7 +12,7 @@ export type SessionAgentRow = FunctionReturnType<typeof api.acp.ListAgents>[numb
 export type SessionAgentDefinition = FunctionReturnType<
   typeof api.acp.ListAgentDefinitions
 >[number];
-export type SessionProject = FunctionReturnType<typeof api.projects.list>[number];
+export type SessionProject = ProjectSummary;
 
 type BuiltInAgent = { id: string; name: string; protocol: "built-in" };
 export type AcpSessionAgent = Pick<SessionAgentDefinition, "agentId" | "name" | "icon"> & {

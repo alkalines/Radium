@@ -1,5 +1,5 @@
 import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useQuery } from "@tanstack/react-query";
 import type { FunctionReturnType } from "convex/server";
 import {
   ActivityIcon,
@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/chart";
 import { Progress } from "@/components/ui/progress";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
+import { useTrpc } from "@/lib/trpc";
 import {
   Select,
   SelectContent,
@@ -149,12 +150,13 @@ export function ActivityPanel({
   useEffect(() => setSources(readSources()), []);
   const since = useMemo(() => Date.now() - Number(range) * DAY, [range]);
   const { workspaceId } = useWorkspace();
+  const trpc = useTrpc();
   const { data: projectsData } = useQuery(
-    convexQuery(api.projects.list, workspaceId ? { workspace: workspaceId } : "skip"),
+    trpc.projects.list.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
   );
   const projects = useDecryptedNames(projectsData ?? [], "projects", workspaceId);
   const projectFilter =
-    project === "none" || projects?.some((candidate) => candidate._id === project)
+    project === "none" || projects?.some((candidate) => candidate.id === project)
       ? (project as Id<"projects"> | "none")
       : undefined;
   const { data: activity } = useQuery(
@@ -244,7 +246,7 @@ export function ActivityPanel({
               <SelectSeparator />
               <SelectGroup>
                 {projects.map((candidate) => (
-                  <SelectItem key={candidate._id} value={candidate._id}>
+                  <SelectItem key={candidate.id} value={candidate.id}>
                     {candidate.name}
                   </SelectItem>
                 ))}

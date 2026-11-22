@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import { useKeyStatus } from "./use-key-status";
-import { openLegacyContent } from "./legacy-content";
+import { openLegacyContent, type SealedLegacyBox } from "./legacy-content";
 import { secretGeneration } from "./runtime";
 
-type NamedRow = { _id: string; name: string; icon?: string; legacyContent?: LegacyBox };
+type NamedRow = { id: string; name: string; icon?: string | null; legacyContent?: SealedLegacyBox | null };
 
 /** Decrypted display names stay in component memory and disappear synchronously on lock/input changes. */
 export function useDecryptedNames<T extends NamedRow>(rows: readonly T[], table: "workspaces" | "projects", workspace?: Id<"workspaces">): T[] {
@@ -20,11 +19,11 @@ export function useDecryptedNames<T extends NamedRow>(rows: readonly T[], table:
       if (!row.legacyContent || row.legacyContent.kind === "custody") return row;
       try {
         const value = await openLegacyContent<{ name?: unknown; icon?: unknown }>(row.legacyContent, {
-          table, record: row._id, workspace: table === "workspaces" ? row._id as Id<"workspaces"> : workspace,
+          table, record: row.id, workspace: table === "workspaces" ? row.id as Id<"workspaces"> : workspace,
         });
         if (typeof value.name !== "string" || (value.icon !== undefined && typeof value.icon !== "string")) throw new Error("Invalid encrypted name");
-        return { ...row, name: value.name, icon: value.icon as string | undefined };
-      } catch { return { ...row, name: "Encrypted name", icon: undefined }; }
+        return { ...row, name: value.name, icon: (value.icon as string | undefined) ?? null };
+      } catch { return { ...row, name: "Encrypted name", icon: null }; }
     })).then(result => {
       if (active && generation === secretGeneration()) setOpened({ source: rows, generation, rows: result });
     });
@@ -32,6 +31,6 @@ export function useDecryptedNames<T extends NamedRow>(rows: readonly T[], table:
   }, [rows, table, workspace, status, generation]);
   if (status.state === "unlocked" && opened?.source === rows && opened.generation === generation) return opened.rows;
   return rows.map(row => row.legacyContent
-    ? { ...row, name: row.legacyContent.kind === "custody" ? "Not yet end-to-end encrypted" : "Encrypted name", icon: undefined }
+    ? { ...row, name: row.legacyContent.kind === "custody" ? "Not yet end-to-end encrypted" : "Encrypted name", icon: null }
     : row);
 }
