@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation } from "@tanstack/react-query";
 import {
   ArrowLeftIcon,
   BrainIcon,
@@ -45,8 +45,9 @@ import {
   type ModelsDevProvider,
 } from "contracts/models_dev";
 import type { AIProviderNpmPackage } from "contracts/types/ai_provider";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import { useTrpc } from "@/lib/trpc";
+import { useInvalidateGateway } from "./use-invalidate-gateway";
 import { formatPerMillion, formatTokens, useModelsDevCatalogue } from "./models-dev-catalogue";
 import { CustomProviderForm } from "./custom-provider-form";
 import { ProviderLogo } from "./provider-logo";
@@ -267,8 +268,12 @@ function ConfigureProvider({
   onBack: () => void;
   onDone: () => void;
 }) {
-  const importProvider = useMutation(api.providers.importProvider);
-  const createCredential = useMutation(api.providers.createCredential);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: importProvider } = useMutation(trpc.providers.importProvider.mutationOptions());
+  const { mutateAsync: createCredential } = useMutation(
+    trpc.providers.createCredential.mutationOptions(),
+  );
 
   const mapped = useMemo<MappedModel[]>(
     () =>
@@ -380,6 +385,7 @@ function ConfigureProvider({
           credentials,
         });
       }
+      await invalidate();
 
       toast.success(`Imported ${provider.name} with ${chosen.length} models.`);
       onDone();

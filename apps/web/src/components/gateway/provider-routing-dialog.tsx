@@ -1,6 +1,6 @@
 import { Fragment, useRef, useState } from "react";
-import { useMutation } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import { useMutation } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import { PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -33,7 +33,6 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import {
   ROUTING_LIMITS,
@@ -42,11 +41,13 @@ import {
   type ProviderRouting,
   type RoutingStrategy,
 } from "contracts/routing/settings";
+import type { AppRouter } from "server/router";
+import { useTrpc } from "@/lib/trpc";
 import { ProviderLogo } from "./provider-logo";
+import { useInvalidateGateway } from "./use-invalidate-gateway";
 
-export type RoutingProvider = FunctionReturnType<
-  typeof api.routing.getConfiguration
->["providers"][number];
+export type RoutingProvider =
+  inferRouterOutputs<AppRouter>["routing"]["getConfiguration"]["providers"][number];
 
 const actionOptions: Array<{ value: ErrorRuleAction; label: string }> = [
   { value: "stop", label: "Stop" },
@@ -72,7 +73,7 @@ type RoutingDraft = {
 };
 
 type CredentialDraft = {
-  credential: Id<"workspace_credentials">;
+  credential: string;
   name: string;
   enabled: boolean;
   priority: string;
@@ -80,7 +81,7 @@ type CredentialDraft = {
 };
 
 type CredentialPlacement = {
-  credential: Id<"workspace_credentials">;
+  credential: string;
   priority: number;
   weight: number;
 };
@@ -98,7 +99,7 @@ export function parseInteger(text: string, min: number, max: number): number | u
 /**
  * Edits one provider's routing overrides (priority, weight, cooling, error rules) and its
  * credentials' priority and weight inside the provider, saved together through
- * `api.routing.setProviderRouting` (overrides as a full replacement, only changed credentials).
+ * `routing.setProviderRouting` (overrides as a full replacement, only changed credentials).
  * Owner only; the route gates members.
  */
 export function ProviderRoutingDialog({
@@ -145,7 +146,9 @@ function ProviderRoutingForm({
   workspaceId: Id<"workspaces">;
   onClose: () => void;
 }) {
-  const save = useMutation(api.routing.setProviderRouting);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: save } = useMutation(trpc.routing.setProviderRouting.mutationOptions());
   const initial = provider.routing;
   const [priority, setPriority] = useState(String(initial.priority));
   const [weight, setWeight] = useState(String(initial.weight));
@@ -157,7 +160,7 @@ function ProviderRoutingForm({
   const nextRuleKey = useRef(initial.errorRules.length);
   const [credentials, setCredentials] = useState<CredentialDraft[]>(() =>
     provider.credentials.map((credential) => ({
-      credential: credential._id,
+      credential: credential.id,
       name: credential.name,
       enabled: credential.enabled,
       priority: String(credential.priority),
@@ -184,7 +187,7 @@ function ProviderRoutingForm({
   }
 
   function updateCredential(
-    credential: Id<"workspace_credentials">,
+    credential: string,
     patch: Partial<Pick<CredentialDraft, "priority" | "weight">>,
   ) {
     setCredentials((current) =>
@@ -223,6 +226,7 @@ function ProviderRoutingForm({
         routing,
         credentials: placements,
       });
+      await invalidate();
       toast.success(`Saved routing for ${provider.name}.`);
       onClose();
     } catch (saveError) {
@@ -549,7 +553,7 @@ function buildCredentialPlacements(
       return `${draft.name}: weight must be a whole number from 0 to ${ROUTING_LIMITS.maxWeight}.`;
     }
 
-    const current = saved.find((credential) => credential._id === draft.credential);
+    const current = saved.find((credential) => credential.id === draft.credential);
     if (current?.priority !== priority || current.weight !== weight) {
       placements.push({ credential: draft.credential, priority, weight });
     }

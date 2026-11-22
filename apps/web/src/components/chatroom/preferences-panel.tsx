@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useQuery } from "@tanstack/react-query";
 import { useMutation } from "convex/react";
 import { ChevronDownIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -14,6 +14,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { api } from "backend/convex/_generated/api";
+import { useTrpc } from "@/lib/trpc";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { useAccount } from "@/lib/use-account";
 
@@ -25,8 +26,9 @@ import { useAccount } from "@/lib/use-account";
 export function PreferencesPanel() {
   const { workspaceId } = useWorkspace();
   const { signedIn, signInRequired, isPending: isAccountPending } = useAccount();
+  const trpc = useTrpc();
   const { data: models } = useQuery(
-    convexQuery(api.models.availableModels, workspaceId ? { workspace: workspaceId } : "skip"),
+    trpc.models.availableModels.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
   );
   const { data: defaultModel } = useQuery(
     convexQuery(

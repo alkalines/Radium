@@ -1,9 +1,6 @@
 import { useState } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
-import { ConvexError } from "convex/values";
-import type { FunctionReturnType } from "convex/server";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import { CheckIcon, CopyIcon, KeySquareIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -38,33 +35,40 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import type { AppRouter } from "server/router";
+import { useTrpc } from "@/lib/trpc";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 
-type KeyRow = FunctionReturnType<typeof api.keys.listKeys>[number];
+type KeyRow = inferRouterOutputs<AppRouter>["keys"]["list"][number];
 
 function keyError(error: unknown, fallback: string): string {
-  if (error instanceof ConvexError && typeof error.data === "string") return error.data;
   return error instanceof Error ? error.message : fallback;
 }
 
 export function KeysPanel() {
   const { workspaceId } = useWorkspace();
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
   const { data: keys } = useQuery(
-    convexQuery(api.keys.listKeys, workspaceId ? { workspace: workspaceId } : "skip"),
+    trpc.keys.list.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
   );
-  const setKeyTelemetry = useMutation(api.keys.setKeyTelemetry);
+  const { mutateAsync: setKeyTelemetry } = useMutation(trpc.keys.setKeyTelemetry.mutationOptions());
 
   const [createOpen, setCreateOpen] = useState(false);
   const [deleting, setDeleting] = useState<KeyRow | null>(null);
   const [savingTelemetry, setSavingTelemetry] = useState<string | null>(null);
 
   async function changeTelemetry(key: KeyRow, enabled: boolean) {
-    if (key.source !== "workspace" || savingTelemetry) return;
-    setSavingTelemetry(key._id);
+    if (!workspaceId || key.worker || savingTelemetry) return;
+    setSavingTelemetry(key.id);
     try {
-      await setKeyTelemetry({ key: key._id, telemetry: enabled ? "workspace" : "off" });
+      await setKeyTelemetry({
+        workspace: workspaceId,
+        key: key.id,
+        telemetry: enabled ? "workspace" : "off",
+      });
+      await queryClient.invalidateQueries({ queryKey: trpc.keys.pathKey() });
     } catch (error) {
       toast.error(keyError(error, "Failed to update key telemetry."));
     } finally {
@@ -118,27 +122,23 @@ export function KeysPanel() {
         <GroupList title="Keys">
           {keys.map((key) => (
             <Row
-              key={key._id}
+              key={key.id}
               icon={KeySquareIcon}
               title={key.name}
               tag={
-                key.source === "legacy"
-                  ? "Historical"
-                  : key.worker
-                    ? key.worker.name === key.name
-                      ? "Worker"
-                      : `Worker · ${key.worker.name}`
-                    : "Workspace"
+                key.worker
+                  ? key.worker.name === key.name
+                    ? "Worker"
+                    : `Worker · ${key.worker.name}`
+                  : "Workspace"
               }
-              description={<span className="font-mono text-xs">{key.preview ?? "rad-sk-…"}</span>}
+              description={<span className="font-mono text-xs">{key.preview}</span>}
             >
-              {key.source === "workspace" ? (
-                <KeyTelemetrySwitch
-                  keyRow={key}
-                  disabled={savingTelemetry !== null}
-                  onChange={(enabled) => void changeTelemetry(key, enabled)}
-                />
-              ) : null}
+              <KeyTelemetrySwitch
+                keyRow={key}
+                disabled={savingTelemetry !== null}
+                onChange={(enabled) => void changeTelemetry(key, enabled)}
+              />
               <Button
                 variant="ghost"
                 size="icon-xs"
@@ -169,11 +169,11 @@ function KeyTelemetrySwitch({
   disabled,
   onChange,
 }: {
-  keyRow: Extract<KeyRow, { source: "workspace" }>;
+  keyRow: KeyRow;
   disabled: boolean;
   onChange: (enabled: boolean) => void;
 }) {
-  const isWorkerKey = keyRow.worker !== undefined;
+  const isWorkerKey = keyRow.worker !== null;
   const enabled = keyRow.telemetry === "workspace";
   return (
     <Tooltip>
@@ -208,7 +208,14 @@ function CreateKeyDialog({
   onOpenChange: (open: boolean) => void;
   workspaceId: Id<"workspaces"> | undefined;
 }) {
-  const createKey = useMutation(api.keys.createKey);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  // The plaintext key lives only in this mutation's result and the `created` state below; the
+  // mutation is reset when the dialog closes and never kept past its observer.
+  const {
+    mutateAsync: createKey,
+    reset: resetCreateKey,
+  } = useMutation({ ...trpc.keys.create.mutationOptions(), gcTime: 0 });
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<string | null>(null);
@@ -217,6 +224,7 @@ function CreateKeyDialog({
   function reset() {
     setName("");
     setCreated(null);
+    resetCreateKey();
     setCopied(false);
   }
 
@@ -229,6 +237,7 @@ function CreateKeyDialog({
         name: name.trim(),
       });
       setCreated(result.key);
+      await queryClient.invalidateQueries({ queryKey: trpc.keys.pathKey() });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to create key.");
     } finally {
@@ -316,20 +325,17 @@ function RevokeKeyDialog({
   workspaceId: Id<"workspaces"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
-  const deleteKey = useMutation(api.keys.deleteKey);
-  const deleteLegacyKey = useMutation(api.keys.deleteLegacyKey);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { mutateAsync: deleteKey } = useMutation(trpc.keys.delete.mutationOptions());
   const [submitting, setSubmitting] = useState(false);
 
   async function confirm() {
-    if (!target) return;
+    if (!target || !workspaceId) return;
     setSubmitting(true);
     try {
-      if (target.source === "legacy") {
-        if (!workspaceId) return;
-        await deleteLegacyKey({ workspace: workspaceId, keyId: target._id });
-      } else {
-        await deleteKey({ key: target._id });
-      }
+      await deleteKey({ workspace: workspaceId, key: target.id });
+      await queryClient.invalidateQueries({ queryKey: trpc.keys.pathKey() });
       toast.success(`Revoked ${target.name}.`);
       onOpenChange(false);
     } catch (error) {
@@ -345,10 +351,8 @@ function RevokeKeyDialog({
         <DialogHeader>
           <DialogTitle>Revoke {target?.name}?</DialogTitle>
           <DialogDescription>
-            {target?.source === "legacy"
-              ? "This historical key will stop working immediately. This cannot be undone."
-              : "Requests using this key will immediately stop working. This cannot be undone."}
-            {target?.source === "workspace" && target.worker
+            Requests using this key will immediately stop working. This cannot be undone.
+            {target?.worker
               ? " The Worker's Gateway agents stop until the owner issues a new key."
               : null}
           </DialogDescription>

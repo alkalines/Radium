@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useAction, useMutation } from "convex/react";
 import { GaugeIcon, RefreshCwIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -27,8 +25,8 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
+import { useTrpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import {
   MeterBar,
@@ -79,12 +77,15 @@ const budgetPeriodLabels: Record<BudgetPeriod, string> = {
  */
 export function LimitsPanel() {
   const { workspaceId } = useWorkspace();
-  const args = workspaceId ? { workspace: workspaceId } : "skip";
-  const { data: limits, error } = useQuery(convexQuery(api.limits.list, args));
+  const trpc = useTrpc();
+  const args = workspaceId ? { workspace: workspaceId } : skipToken;
+  const { data: limits, error } = useQuery(trpc.limits.list.queryOptions(args));
   const { data: settings, error: settingsError } = useQuery(
-    convexQuery(api.limits.getSettings, args),
+    trpc.limits.getSettings.queryOptions(args),
   );
-  const { data: events } = useQuery(convexQuery(api.limits.listEvents, args));
+  const { data: events } = useQuery(
+    trpc.limits.listEvents.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
+  );
 
   // `limits.list` is in provider order, then creation order; grouping keeps both.
   const groups = useMemo(() => {
@@ -254,13 +255,16 @@ function RefreshButton({
   workspaceId: Id<"workspaces">;
   limits: CredentialLimits;
 }) {
-  const refresh = useAction(api.limits.refresh);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { mutateAsync: refresh } = useMutation(trpc.limits.refresh.mutationOptions());
   const [pending, setPending] = useState(false);
 
   async function run() {
     setPending(true);
     try {
       await refresh({ workspace: workspaceId, credential: limits.credential });
+      await queryClient.invalidateQueries({ queryKey: trpc.limits.pathKey() });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to refresh limits.");
     } finally {
@@ -335,7 +339,9 @@ function ThresholdsForm({
   workspaceId: Id<"workspaces">;
   settings: LimitSettings;
 }) {
-  const saveSettings = useMutation(api.limits.setSettings);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { mutateAsync: saveSettings } = useMutation(trpc.limits.setSettings.mutationOptions());
 
   async function update(patch: Partial<LimitSettings>) {
     const next = { ...settings, ...patch };
@@ -348,6 +354,7 @@ function ThresholdsForm({
           lowBalance: next.lowBalance,
         },
       });
+      await queryClient.invalidateQueries({ queryKey: trpc.limits.pathKey() });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to update thresholds.");
     }
@@ -488,7 +495,7 @@ function EventList({ events }: { events: LimitEvent[] | undefined }) {
           const kind = eventKinds[event.kind];
           return (
             <Row
-              key={event._id}
+              key={event.id}
               leading={<ProviderLogo slug={event.provider} className="size-8" />}
               title={<span title={event.message}>{event.message}</span>}
               description={

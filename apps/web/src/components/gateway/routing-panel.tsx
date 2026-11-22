@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useMutation } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
 import { RouteIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -35,7 +33,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
-import { api } from "backend/convex/_generated/api";
+import { useTrpc } from "@/lib/trpc";
 import type { Id } from "backend/convex/_generated/dataModel";
 import {
   ROUTING_LIMITS,
@@ -43,6 +41,7 @@ import {
   type RoutingSettings,
   type RoutingStrategy,
 } from "contracts/routing/settings";
+import type { AppRouter } from "server/router";
 import { ProviderLogo } from "./provider-logo";
 import {
   ProviderRoutingDialog,
@@ -50,7 +49,7 @@ import {
   type RoutingProvider,
 } from "./provider-routing-dialog";
 
-type Cooldown = FunctionReturnType<typeof api.routing.getConfiguration>["cooldowns"][number];
+type Cooldown = inferRouterOutputs<AppRouter>["routing"]["getConfiguration"]["cooldowns"][number];
 
 type Option<T extends string> = { value: T; label: string; description: string };
 
@@ -104,10 +103,12 @@ const reasonLabels: Record<CooldownReason, string> = {
  */
 export function RoutingPanel() {
   const { workspaceId } = useWorkspace();
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
   const { data: configuration, error } = useQuery(
-    convexQuery(api.routing.getConfiguration, workspaceId ? { workspace: workspaceId } : "skip"),
+    trpc.routing.getConfiguration.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
   );
-  const resetCooldown = useMutation(api.routing.resetCooldown);
+  const { mutateAsync: resetCooldown } = useMutation(trpc.routing.resetCooldown.mutationOptions());
   const now = useCooldownClock(configuration?.cooldowns);
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
   const [resetting, setResetting] = useState<string | null>(null);
@@ -117,11 +118,12 @@ export function RoutingPanel() {
     configuration?.providers.find((provider) => provider.slug === editingSlug) ?? null;
 
   /** Clears one cooldown row, or every cooldown of the provider when `cooldown` is omitted. */
-  async function reset(provider: string, cooldown?: Id<"routing_cooldowns">) {
+  async function reset(provider: string, cooldown?: string) {
     if (!workspaceId) return;
     setResetting(cooldown ?? provider);
     try {
       await resetCooldown({ workspace: workspaceId, provider, cooldown });
+      await queryClient.invalidateQueries({ queryKey: trpc.routing.pathKey() });
     } catch (resetError) {
       toast.error(resetError instanceof Error ? resetError.message : "Failed to reset cooldown.");
     } finally {
@@ -171,7 +173,7 @@ export function RoutingPanel() {
               cooldowns={configuration.cooldowns}
               now={now}
               resetting={resetting}
-              onReset={(cooldown) => void reset(cooldown.provider, cooldown._id)}
+              onReset={(cooldown) => void reset(cooldown.provider, cooldown.id)}
             />
           ) : null}
         </>
@@ -199,7 +201,9 @@ function RoutingSettingsForm({
   workspaceId: Id<"workspaces">;
   settings: RoutingSettings;
 }) {
-  const saveSettings = useMutation(api.routing.setSettings);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { mutateAsync: saveSettings } = useMutation(trpc.routing.setSettings.mutationOptions());
   // Saves replace the whole object, so an edit made while an earlier save is in flight builds on
   // that save instead of on the query result it has not updated yet.
   const [pending, setPending] = useState<RoutingSettings | null>(null);
@@ -217,6 +221,7 @@ function RoutingSettingsForm({
     savesInFlight.current += 1;
     try {
       await saveSettings({ workspace: workspaceId, settings: next });
+      await queryClient.invalidateQueries({ queryKey: trpc.routing.pathKey() });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to update routing settings.");
       pendingRef.current = null;
@@ -494,7 +499,7 @@ function CooldownList({
 
           return (
             <Row
-              key={cooldown._id}
+              key={cooldown.id}
               leading={<ProviderLogo slug={cooldown.provider} className="size-8" />}
               title={
                 <span title={subject}>
@@ -509,13 +514,13 @@ function CooldownList({
               }
               tag={reasonLabels[cooldown.reason]}
               description={
-                <span title={cooldown.message}>
+                <span title={cooldown.message ?? undefined}>
                   {cooldown.model ? (
                     <span className="font-mono text-xs">{cooldown.model}</span>
                   ) : (
                     "All models"
                   )}
-                  {cooldown.status !== undefined ? (
+                  {cooldown.status !== null ? (
                     <span className="tabular-nums"> · {cooldown.status}</span>
                   ) : null}
                   <span className="tabular-nums">
@@ -728,18 +733,15 @@ function providerDetails(
 
   // `model === ""` blocks every model of one credential; other rows block one model of one.
   const credentialWide = active.filter((cooldown) => cooldown.model === "");
-  const blockedCredentials = new Set(
-    credentialWide.map((cooldown) => cooldown.credential ?? "legacy"),
-  );
+  const blockedCredentials = new Set(credentialWide.map((cooldown) => cooldown.credential));
   const blockedModels = new Set(
     active.filter((cooldown) => cooldown.model !== "").map((cooldown) => cooldown.model),
   );
 
-  // Without listed credentials (a legacy one), any credential-wide cooldown blocks the provider.
   const allBlocked =
     blockedCredentials.size > 0 &&
     (enabledCredentials.length === 0 ||
-      enabledCredentials.every((credential) => blockedCredentials.has(credential._id)));
+      enabledCredentials.every((credential) => blockedCredentials.has(credential.id)));
   if (allBlocked) {
     // Every enabled credential rests, so the provider serves again when the first one returns.
     const nextRetryAt = Math.min(...credentialWide.map((cooldown) => cooldown.nextRetryAt));

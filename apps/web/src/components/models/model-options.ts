@@ -1,12 +1,12 @@
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
 
-import type { api } from "backend/convex/_generated/api";
+import type { AppRouter } from "server/router";
 
 /**
- * A model the current workspace can route, as returned by `api.models.availableModels`: the
+ * A model the current workspace can route, as returned by `models.availableModels`: the
  * global catalogue entry plus every enabled workspace provider that serves it (first = default).
  */
-export type AvailableModel = FunctionReturnType<typeof api.models.availableModels>[number];
+export type AvailableModel = inferRouterOutputs<AppRouter>["models"]["availableModels"][number];
 
 /** One upstream that can serve a model; `logo` is a models.dev provider slug. */
 export type ModelProviderOption = {

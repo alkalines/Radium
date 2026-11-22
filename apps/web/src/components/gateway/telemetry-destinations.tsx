@@ -1,4 +1,4 @@
-import { useId, useMemo, useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useAction, useMutation } from "convex/react";
@@ -31,12 +31,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import { useTrpc } from "@/lib/trpc";
 
 type Destination = FunctionReturnType<
   typeof api.observability.telemetryExport.listDestinations
 >[number];
-type ListedKey = FunctionReturnType<typeof api.keys.listKeys>[number];
-type WorkspaceKey = Extract<ListedKey, { source: "workspace" }>;
 type Kind = Destination["kind"];
 type HeaderRow = { name: string; value: string };
 
@@ -196,11 +195,9 @@ function DestinationDialog({
   const fieldId = useId();
   const createDestination = useMutation(api.observability.telemetryExport.createDestination);
   const updateDestination = useMutation(api.observability.telemetryExport.updateDestination);
-  const { data: keys } = useQuery(convexQuery(api.keys.listKeys, { workspace: workspaceId }));
-  // Legacy keys are not Gateway API key rows and cannot be targeted by a destination.
-  const apiKeys = useMemo(
-    () => keys?.filter((key): key is WorkspaceKey => key.source === "workspace") ?? [],
-    [keys],
+  const trpc = useTrpc();
+  const { data: apiKeys = [], isPending: keysLoading } = useQuery(
+    trpc.keys.list.queryOptions({ workspace: workspaceId }),
   );
 
   const [kind, setKind] = useState<Kind>(existing?.kind ?? "otlp");
@@ -209,8 +206,8 @@ function DestinationDialog({
   const [enabled, setEnabled] = useState(existing?.enabled ?? true);
   const [privacyMode, setPrivacyMode] = useState(existing?.privacyMode ?? true);
   const [sampling, setSampling] = useState(String(Math.round((existing?.samplingRate ?? 1) * 100)));
-  const [include, setInclude] = useState<Id<"api_keys">[]>(existing?.includeApiKeys ?? []);
-  const [exclude, setExclude] = useState<Id<"api_keys">[]>(existing?.excludeApiKeys ?? []);
+  const [include, setInclude] = useState<string[]>(existing?.includeApiKeys ?? []);
+  const [exclude, setExclude] = useState<string[]>(existing?.excludeApiKeys ?? []);
   const [replaceHeaders, setReplaceHeaders] = useState(!existing?.hasHeaders);
   const [headers, setHeaders] = useState<HeaderRow[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -223,7 +220,7 @@ function DestinationDialog({
     samplingPercent <= 100;
   const canSubmit = name.trim() !== "" && endpoint.trim() !== "" && samplingValid;
 
-  function toggleKey(list: "include" | "exclude", id: Id<"api_keys">, checked: boolean) {
+  function toggleKey(list: "include" | "exclude", id: string, checked: boolean) {
     const [setThis, setOther] =
       list === "include" ? [setInclude, setExclude] : [setExclude, setInclude];
     setThis((current) => (checked ? [...current, id] : current.filter((item) => item !== id)));
@@ -250,8 +247,10 @@ function DestinationDialog({
       enabled,
       privacyMode,
       samplingRate: samplingPercent / 100,
-      includeApiKeys: include,
-      excludeApiKeys: exclude,
+      // Destinations are still Convex rows until the observability slice moves; the key ids are
+      // the Gateway's, and the Convex validator only types them as its own ids.
+      includeApiKeys: include as Id<"api_keys">[],
+      excludeApiKeys: exclude as Id<"api_keys">[],
     };
 
     setSubmitting(true);
@@ -456,9 +455,7 @@ function DestinationDialog({
               <FieldLabel>API keys</FieldLabel>
               {apiKeys.length === 0 ? (
                 <FieldDescription>
-                  {keys === undefined
-                    ? "Loading keys…"
-                    : "No API keys yet, so every request matches."}
+                  {keysLoading ? "Loading keys…" : "No API keys yet, so every request matches."}
                 </FieldDescription>
               ) : (
                 <>
@@ -470,25 +467,25 @@ function DestinationDialog({
                     </li>
                     {apiKeys.map((key) => (
                       <li
-                        key={key._id}
+                        key={key.id}
                         className="flex items-center gap-3 border-b py-2 last:border-b-0"
                       >
                         <span className="min-w-0 flex-1 truncate text-sm">{key.name}</span>
                         <span className="flex w-14 justify-center">
                           <Checkbox
                             aria-label={`Only export requests from ${key.name}`}
-                            checked={include.includes(key._id)}
+                            checked={include.includes(key.id)}
                             onCheckedChange={(checked) =>
-                              toggleKey("include", key._id, checked === true)
+                              toggleKey("include", key.id, checked === true)
                             }
                           />
                         </span>
                         <span className="flex w-14 justify-center">
                           <Checkbox
                             aria-label={`Skip requests from ${key.name}`}
-                            checked={exclude.includes(key._id)}
+                            checked={exclude.includes(key.id)}
                             onCheckedChange={(checked) =>
-                              toggleKey("exclude", key._id, checked === true)
+                              toggleKey("exclude", key.id, checked === true)
                             }
                           />
                         </span>

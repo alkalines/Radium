@@ -456,9 +456,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     error: modelsError,
     isFetching: modelsFetching,
   } = useQuery(
-    convexQuery(
-      api.models.availableModels,
-      settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    trpc.models.availableModels.queryOptions(
+      settingsWorkspaceId ? { workspace: settingsWorkspaceId } : skipToken,
     ),
   );
   const defaultModelQuery = useQuery(

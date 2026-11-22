@@ -1,5 +1,6 @@
 import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { useMutation } from "convex/react";
+import { useMutation } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import {
   ArrowLeftIcon,
   BrainIcon,
@@ -42,12 +43,16 @@ import {
   mapModelsDevModel,
   type MappedModel,
 } from "contracts/models_dev";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import type { AppRouter } from "server/router";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
-import type { WorkspaceProviderView } from "contracts/workspaces/provider";
+import { useTrpc } from "@/lib/trpc";
 import { formatPerMillion, formatTokens, useModelsDevCatalogue } from "./models-dev-catalogue";
 import { ProviderLogo } from "./provider-logo";
+import { useInvalidateGateway } from "./use-invalidate-gateway";
+
+/** One configured provider from `providers.list`: its snapshot plus id and state. */
+export type ProviderView = inferRouterOutputs<AppRouter>["providers"]["list"][number];
 
 type ManagerView = "list" | "catalogue" | "refresh" | "custom" | "tiers";
 
@@ -55,7 +60,7 @@ export function ModelManagerDialog({
   provider,
   onOpenChange,
 }: {
-  provider: WorkspaceProviderView | null;
+  provider: ProviderView | null;
   onOpenChange: (open: boolean) => void;
 }) {
   const { workspaceId } = useWorkspace();
@@ -116,14 +121,18 @@ function ManagerList({
   onAddCustom,
   onEditTiers,
 }: {
-  provider: WorkspaceProviderView;
+  provider: ProviderView;
   workspaceId: Id<"workspaces"> | undefined;
   onAddCatalogue: () => void;
   onRefresh: () => void;
   onAddCustom: () => void;
   onEditTiers: (model: string) => void;
 }) {
-  const removeModel = useMutation(api.providers.removeProviderModel);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: removeModel } = useMutation(
+    trpc.providers.removeProviderModel.mutationOptions(),
+  );
   const [removing, setRemoving] = useState<string | null>(null);
 
   async function remove(model: string) {
@@ -131,6 +140,7 @@ function ManagerList({
     try {
       if (!workspaceId) return;
       await removeModel({ workspace: workspaceId, slug: provider.slug, model });
+      await invalidate();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to remove model.");
     } finally {
@@ -234,13 +244,15 @@ function AddFromCatalogue({
   onBack,
   refresh,
 }: {
-  provider: WorkspaceProviderView;
+  provider: ProviderView;
   workspaceId: Id<"workspaces"> | undefined;
   refresh: boolean;
   onBack: () => void;
 }) {
   const { catalogue, error } = useModelsDevCatalogue(true);
-  const addModels = useMutation(api.providers.addProviderModels);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: addModels } = useMutation(trpc.providers.addProviderModels.mutationOptions());
 
   const existing = useMemo(
     () => new Set(provider.models.map((model) => model.model)),
@@ -338,6 +350,7 @@ function AddFromCatalogue({
           };
         }),
       });
+      await invalidate();
       toast.success(
         `${refresh ? "Refreshed" : "Added"} ${chosen.length} model${chosen.length === 1 ? "" : "s"}.`,
       );
@@ -513,12 +526,12 @@ type TierRate = {
   cacheWrite: string;
   cacheWrite1h: string;
   source?: string;
-  thresholds?: WorkspaceProviderView["models"][number]["pricing"]["tiers"];
+  thresholds?: ProviderView["models"][number]["pricing"]["tiers"];
 };
 
 export function initialTierRates(
-  tiers: WorkspaceProviderView["models"][number]["service_tiers"] = [],
-  base?: WorkspaceProviderView["models"][number]["pricing"],
+  tiers: ProviderView["models"][number]["service_tiers"] = [],
+  base?: ProviderView["models"][number]["pricing"],
 ): TierRate[] {
   const ids = [
     ...new Set(["default", "flex", "priority", "ultrafast", ...tiers.map((tier) => tier.id)]),
@@ -651,12 +664,16 @@ function EditModelTiers({
   workspaceId,
   onBack,
 }: {
-  provider: WorkspaceProviderView;
+  provider: ProviderView;
   modelId: string;
   workspaceId: Id<"workspaces"> | undefined;
   onBack: () => void;
 }) {
-  const update = useMutation(api.providers.setProviderModelServiceTiers);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: update } = useMutation(
+    trpc.providers.setProviderModelServiceTiers.mutationOptions(),
+  );
   const model = provider.models.find((entry) => entry.model === modelId);
   const [tierRates, setTierRates] = useState(() =>
     initialTierRates(model?.service_tiers, model?.pricing),
@@ -673,6 +690,7 @@ function EditModelTiers({
         model: modelId,
         service_tiers: tierPricing(tierRates),
       });
+      await invalidate();
       toast.success("Service tiers updated.");
       onBack();
     } catch (error) {
@@ -708,11 +726,13 @@ function AddCustomModel({
   workspaceId,
   onBack,
 }: {
-  provider: WorkspaceProviderView;
+  provider: ProviderView;
   workspaceId: Id<"workspaces"> | undefined;
   onBack: () => void;
 }) {
-  const addModels = useMutation(api.providers.addProviderModels);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: addModels } = useMutation(trpc.providers.addProviderModels.mutationOptions());
 
   const [name, setName] = useState("");
   const [upstreamId, setUpstreamId] = useState("");
@@ -791,6 +811,7 @@ function AddCustomModel({
           },
         ],
       });
+      await invalidate();
       toast.success(`Added ${name.trim()}.`);
       onBack();
     } catch (error) {

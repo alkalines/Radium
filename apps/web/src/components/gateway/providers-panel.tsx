@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
+import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
 import {
   MoreHorizontalIcon,
   PlusIcon,
@@ -38,12 +36,12 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
-import type { WorkspaceProviderView } from "contracts/workspaces/provider";
+import { useTrpc } from "@/lib/trpc";
 import { ImportProviderDialog } from "./import-provider-dialog";
-import { ModelManagerDialog } from "./model-manager-dialog";
+import { ModelManagerDialog, type ProviderView } from "./model-manager-dialog";
+import { useInvalidateGateway } from "./use-invalidate-gateway";
 import { ProviderLogo } from "./provider-logo";
 
 /**
@@ -86,14 +84,13 @@ function useMinimumLoading(isLoading: boolean, minMs = 450): boolean {
 
 export function ProvidersPanel() {
   const { workspaceId } = useWorkspace();
-  const { data: providers } = useQuery(
-    convexQuery(api.providers.list, workspaceId ? { workspace: workspaceId } : "skip"),
-  );
-  const setEnabled = useMutation(api.providers.setEnabled);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const input = workspaceId ? { workspace: workspaceId } : skipToken;
+  const { data: providers } = useQuery(trpc.providers.list.queryOptions(input));
+  const { mutateAsync: setEnabled } = useMutation(trpc.providers.setEnabled.mutationOptions());
 
-  const { data: credentials } = useQuery(
-    convexQuery(api.providers.listCredentials, workspaceId ? { workspace: workspaceId } : "skip"),
-  );
+  const { data: credentials } = useQuery(trpc.providers.listCredentials.queryOptions(input));
 
   // Disabled credentials are kept but never routed, so they do not make a provider connected.
   const connectedSlugs = useMemo(() => {
@@ -120,6 +117,7 @@ export function ProvidersPanel() {
     try {
       if (!workspaceId) return;
       await setEnabled({ workspace: workspaceId, slug, enabled });
+      await invalidate();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to update provider.");
     }
@@ -169,7 +167,7 @@ export function ProvidersPanel() {
             const disconnected = needsKey && !connectedSlugs.has(provider.slug);
             return (
               <Row
-                key={provider._id}
+                key={provider.id}
                 data-disabled={!provider.enabled}
                 className="data-[disabled=true]:opacity-60"
                 leading={<ProviderLogo slug={provider.slug} className="size-8" />}
@@ -242,11 +240,13 @@ function DeleteProviderDialog({
   workspaceId,
   onOpenChange,
 }: {
-  provider: WorkspaceProviderView | null;
+  provider: ProviderView | null;
   workspaceId: Id<"workspaces"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
-  const deleteProvider = useMutation(api.providers.deleteProvider);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: deleteProvider } = useMutation(trpc.providers.deleteProvider.mutationOptions());
   const [submitting, setSubmitting] = useState(false);
 
   async function confirm() {
@@ -254,6 +254,8 @@ function DeleteProviderDialog({
     setSubmitting(true);
     try {
       await deleteProvider({ workspace: workspaceId, slug: provider.slug });
+      // Deleting a provider also removes its credentials and their limits.
+      await invalidate();
       toast.success(`Deleted ${provider.name}.`);
       onOpenChange(false);
     } catch (error) {

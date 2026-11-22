@@ -1,9 +1,8 @@
 import { useState } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useQuery } from "@tanstack/react-query";
 import { SearchIcon } from "lucide-react";
 
-import { api } from "backend/convex/_generated/api";
+import { useTrpc } from "@/lib/trpc";
 import { ModelAuthorLogo } from "./model-list";
 import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
 import { PageHeader } from "@/components/harness/page-header";
@@ -26,8 +25,9 @@ const searchThreshold = 8;
  */
 export function ModelPreferencesPanel() {
   const { workspace, workspaceId, isLoading: isWorkspaceLoading } = useWorkspace();
+  const trpc = useTrpc();
   const { data: models } = useQuery(
-    convexQuery(api.models.availableModels, workspaceId ? { workspace: workspaceId } : "skip"),
+    trpc.models.availableModels.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
   );
   const {
     pinnedModels,

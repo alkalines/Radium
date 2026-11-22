@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation } from "@tanstack/react-query";
 import { ArrowLeftIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -17,8 +17,9 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { SUPPORTED_NPM } from "contracts/models_dev";
 import type { AIProviderNpmPackage } from "contracts/types/ai_provider";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import { useTrpc } from "@/lib/trpc";
+import { useInvalidateGateway } from "./use-invalidate-gateway";
 
 /** Sensible default credential env var for each SDK package. */
 const DEFAULT_ENV: Partial<Record<AIProviderNpmPackage, string>> = {
@@ -52,7 +53,9 @@ export function CustomProviderForm({
   onBack: () => void;
   onDone: () => void;
 }) {
-  const importProvider = useMutation(api.providers.importProvider);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: importProvider } = useMutation(trpc.providers.importProvider.mutationOptions());
 
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
@@ -105,6 +108,7 @@ export function CustomProviderForm({
         },
         models: [],
       });
+      await invalidate();
       toast.success(`Created ${name.trim()}. Add models from the model manager.`);
       onDone();
     } catch (error) {

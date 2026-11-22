@@ -1,6 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useQuery } from "@tanstack/react-query";
 import { KeyRoundIcon } from "lucide-react";
 
 import { AgentStatus } from "@/components/agentic/agent-status";
@@ -16,7 +15,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "backend/convex/_generated/api";
+import { useTrpc } from "@/lib/trpc";
 import {
   CredentialsDialog,
   type CredentialsTarget,
@@ -66,12 +65,10 @@ function PoolStatus({ oauth, credentials }: { oauth: boolean; credentials: Provi
 
 export function CredentialsPanel() {
   const { workspaceId } = useWorkspace();
-  const { data: providers } = useQuery(
-    convexQuery(api.providers.list, workspaceId ? { workspace: workspaceId } : "skip"),
-  );
-  const { data: credentials } = useQuery(
-    convexQuery(api.providers.listCredentials, workspaceId ? { workspace: workspaceId } : "skip"),
-  );
+  const trpc = useTrpc();
+  const input = workspaceId ? { workspace: workspaceId } : skipToken;
+  const { data: providers } = useQuery(trpc.providers.list.queryOptions(input));
+  const { data: credentials } = useQuery(trpc.providers.listCredentials.queryOptions(input));
 
   const credentialsBySlug = useMemo(() => {
     const map = new Map<string, ProviderCredential[]>();
@@ -126,7 +123,7 @@ export function CredentialsPanel() {
             const oauth = provider.credential_type === "oauth";
             return (
               <Row
-                key={provider._id}
+                key={provider.id}
                 leading={<ProviderLogo slug={provider.slug} className="size-8" />}
                 title={provider.name}
                 description={credentialSummary(provider)}

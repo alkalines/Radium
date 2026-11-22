@@ -1,15 +1,17 @@
 import { useSyncExternalStore } from "react";
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { api } from "backend/convex/_generated/api";
+import type { AppRouter } from "server/router";
 
-/** One pooled credential's limits from `api.limits.list` (owner-only). */
-export type CredentialLimits = FunctionReturnType<typeof api.limits.list>[number];
+type LimitsOutputs = inferRouterOutputs<AppRouter>["limits"];
+
+/** One pooled credential's limits from `limits.list` (owner-only). */
+export type CredentialLimits = LimitsOutputs["list"][number];
 export type Meter = CredentialLimits["meters"][number];
-export type LimitSettings = FunctionReturnType<typeof api.limits.getSettings>;
-export type LimitEvent = FunctionReturnType<typeof api.limits.listEvents>[number];
+export type LimitSettings = LimitsOutputs["getSettings"];
+export type LimitEvent = LimitsOutputs["listEvents"][number];
 export type BudgetPeriod = NonNullable<CredentialLimits["budget"]>["period"];
 
 /**
@@ -286,7 +288,7 @@ export function formatPollError(
   pollError: NonNullable<CredentialLimits["pollError"]>,
   now: number,
 ): string {
-  const status = pollError.status !== undefined ? ` (${pollError.status})` : "";
+  const status = pollError.status !== null ? ` (${pollError.status})` : "";
   const age = now > 0 ? ` · ${formatAge(pollError.at, now)}` : "";
   return `Poll failed${status}: ${pollError.message}${age}`;
 }

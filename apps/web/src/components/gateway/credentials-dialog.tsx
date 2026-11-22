@@ -7,10 +7,8 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import {
   CheckIcon,
   CopyIcon,
@@ -54,8 +52,8 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import type { AppRouter } from "server/router";
 import {
   CompactCredentialMeters,
   formatPlan,
@@ -64,7 +62,8 @@ import {
   type LimitSettings,
 } from "./limit-meters";
 import { ProviderLogo } from "./provider-logo";
-import { authClient } from "@/lib/auth-client";
+import { useInvalidateGateway } from "./use-invalidate-gateway";
+import { useTrpc } from "@/lib/trpc";
 
 export type CredentialsTarget = {
   slug: string;
@@ -74,13 +73,11 @@ export type CredentialsTarget = {
   oauth_flow?: string;
 };
 
-/**
- * One pooled credential from `api.providers.listCredentials`. Values are masked previews only;
- * `_id` is absent for a legacy credential that has not been migrated to its own row yet.
- */
-export type ProviderCredential = FunctionReturnType<typeof api.providers.listCredentials>[number];
+/** One pooled credential from `providers.listCredentials`. Values are masked previews only. */
+export type ProviderCredential =
+  inferRouterOutputs<AppRouter>["providers"]["listCredentials"][number];
 
-// Backend route behind the `/api/*` forwarder; the new backend serves it from the Gateway slice on.
+// Same-origin route behind the `/api/*` forwarder; it authenticates with the session cookie.
 const CHATGPT_BASE_PATH = "/api/subscription/chatgpt-subscription";
 
 function errorMessage(error: unknown, fallback: string) {
@@ -160,7 +157,11 @@ function ApiKeyPool({
   workspaceId: Id<"workspaces">;
   credentials: ProviderCredential[];
 }) {
-  const createCredential = useMutation(api.providers.createCredential);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: createCredential } = useMutation(
+    trpc.providers.createCredential.mutationOptions(),
+  );
   const fieldId = useId();
   const [adding, setAdding] = useState(credentials.length === 0);
   const [label, setLabel] = useState("");
@@ -181,6 +182,7 @@ function ApiKeyPool({
         label: label.trim() || undefined,
         credentials: values,
       });
+      await invalidate();
       toast.success(`Added a ${target.name} key.`);
       setLabel("");
       setValues({});
@@ -262,8 +264,8 @@ function ApiKeyPool({
 
 /**
  * Contract for one OAuth sign-in flow. A flow adds one account to the provider's pool on the
- * server; it never lists or removes accounts (the Convex query and `deleteCredential` own that).
- * `onConnected` fires once per completed sign-in.
+ * server; it never lists or removes accounts (`providers.listCredentials` and
+ * `providers.deleteCredential` own that). `onConnected` fires once per completed sign-in.
  */
 type OAuthFlowProps = {
   workspaceId: Id<"workspaces">;
@@ -317,31 +319,34 @@ function OAuthAccountPool({
 
 /**
  * ChatGPT device-code sign-in. Every completed login adds an account on the server
- * (re-authorizing a connected account replaces its session), so the Convex query refreshes the
- * account list on its own.
+ * (re-authorizing a connected account replaces its session), so the credential queries are
+ * invalidated once a login completes.
  */
 function ChatGPTDeviceFlow({ workspaceId, onConnected }: OAuthFlowProps) {
+  const invalidate = useInvalidateGateway();
   const oauthFetch = useCallback(
     async (input: RequestInfo | URL, init?: RequestInit) => {
-      // Scope the request to this workspace while retaining the browser session.
+      // Scope the request to this workspace; the same-origin forwarder carries the session cookie.
       const url = new URL(
         typeof input === "string" || input instanceof URL ? input : input.url,
         window.location.origin,
       );
       url.searchParams.set("workspace", workspaceId);
-      const { data } = await authClient.convex.token({ fetchOptions: { throw: false } });
-      const headers = new Headers(init?.headers);
-      if (data?.token) headers.set("Authorization", `Bearer ${data.token}`);
-      return fetch(url, { ...init, headers, credentials: "include" });
+      return fetch(url, { ...init, credentials: "include" });
     },
     [workspaceId],
   );
+
+  const connected = () => {
+    void invalidate();
+    onConnected();
+  };
 
   return (
     <LoginWithChatGPT
       basePath={CHATGPT_BASE_PATH}
       fetch={oauthFetch as typeof fetch}
-      onAuthenticated={onConnected}
+      onAuthenticated={connected}
     >
       {(state) => <ChatGPTLogin state={state} />}
     </LoginWithChatGPT>
@@ -458,7 +463,7 @@ function ChatGPTLogin({ state }: { state: UseLoginWithChatGPTResult }) {
  * The provider's credentials in fill-first order. Every credential with a row can be relabeled.
  * Passing `env` marks them as API keys: previews render as Machine text and values can be
  * replaced. OAuth accounts never take new values here; signing in again replaces a session.
- * Rows show their tightest usage meters from `api.limits.list`, joined by credential id; Edit
+ * Rows show their tightest usage meters from `limits.list`, joined by credential id; Edit
  * waits for that query so the budget fields start from the stored budget.
  */
 function CredentialList({
@@ -472,10 +477,11 @@ function CredentialList({
   credentials: ProviderCredential[];
   env?: string[];
 }) {
-  const [editingId, setEditingId] = useState<Id<"workspace_credentials"> | null>(null);
-  const limitsQuery = useQuery(convexQuery(api.limits.list, { workspace: workspaceId }));
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const trpc = useTrpc();
+  const limitsQuery = useQuery(trpc.limits.list.queryOptions({ workspace: workspaceId }));
   const { data: limitSettings } = useQuery(
-    convexQuery(api.limits.getSettings, { workspace: workspaceId }),
+    trpc.limits.getSettings.queryOptions({ workspace: workspaceId }),
   );
   const limitsByCredential = useMemo(
     () => new Map(limitsQuery.data?.map((entry) => [entry.credential, entry])),
@@ -487,15 +493,13 @@ function CredentialList({
   return (
     <GroupList title={title}>
       {credentials.map((credential) => {
-        const credentialId = credential._id;
-        const key = credentialId ?? `legacy:${credential.provider}`;
-        const limits = credentialId ? limitsByCredential.get(credentialId) : undefined;
+        const credentialId = credential.id;
+        const limits = limitsByCredential.get(credentialId);
 
-        // Legacy credentials (no row yet) can only be removed, so they are never editable.
-        if (credentialId && credentialId === editingId) {
+        if (credentialId === editingId) {
           return (
             <CredentialEditForm
-              key={key}
+              key={credentialId}
               workspaceId={workspaceId}
               credentialId={credentialId}
               credential={credential}
@@ -508,13 +512,13 @@ function CredentialList({
 
         return (
           <CredentialRow
-            key={key}
+            key={credentialId}
             workspaceId={workspaceId}
             credential={credential}
             limits={limits}
             limitSettings={limitSettings}
             isKey={env !== undefined}
-            onEdit={credentialId && limitsSettled ? () => setEditingId(credentialId) : undefined}
+            onEdit={limitsSettled ? () => setEditingId(credentialId) : undefined}
           />
         );
       })}
@@ -541,16 +545,22 @@ function CredentialRow({
   isKey: boolean;
   onEdit?: () => void;
 }) {
-  const updateCredential = useMutation(api.providers.updateCredential);
-  const deleteCredential = useMutation(api.providers.deleteCredential);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: updateCredential } = useMutation(
+    trpc.providers.updateCredential.mutationOptions(),
+  );
+  const { mutateAsync: deleteCredential } = useMutation(
+    trpc.providers.deleteCredential.mutationOptions(),
+  );
   const [pending, setPending] = useState(false);
-  const credentialId = credential._id;
+  const credentialId = credential.id;
 
   async function setEnabled(enabled: boolean) {
-    if (!credentialId) return;
     setPending(true);
     try {
       await updateCredential({ workspace: workspaceId, credential: credentialId, enabled });
+      await invalidate();
     } catch (error) {
       toast.error(errorMessage(error, "Failed to update the credential."));
     } finally {
@@ -561,12 +571,12 @@ function CredentialRow({
   async function remove() {
     setPending(true);
     try {
-      // A legacy credential has no row yet; omitting `credential` removes it by provider.
       await deleteCredential({
         workspace: workspaceId,
         provider: credential.provider,
         credential: credentialId,
       });
+      await invalidate();
       toast.success(`Removed ${credential.name}.`);
     } catch (error) {
       toast.error(errorMessage(error, "Failed to remove the credential."));
@@ -615,17 +625,15 @@ function CredentialRow({
       data-disabled={!credential.enabled}
       className="data-[disabled=true]:opacity-60"
       title={<span title={credential.name}>{credential.name}</span>}
-      tag={credentialId ? limits?.plan && formatPlan(limits.plan) : "Legacy"}
+      tag={limits?.plan && formatPlan(limits.plan)}
       description={description}
     >
-      {credentialId ? (
-        <Switch
-          checked={credential.enabled}
-          disabled={pending}
-          onCheckedChange={(checked) => void setEnabled(checked)}
-          aria-label={`Use ${credential.name} for requests`}
-        />
-      ) : null}
+      <Switch
+        checked={credential.enabled}
+        disabled={pending}
+        onCheckedChange={(checked) => void setEnabled(checked)}
+        aria-label={`Use ${credential.name} for requests`}
+      />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
@@ -667,7 +675,7 @@ const budgetPeriods: Array<{ value: BudgetPeriod; label: string }> = [
  * the backend replaces all values at once. Priority and weight rank the credential inside its
  * provider; the backend rejects out-of-range values.
  *
- * `limits` is the credential's `api.limits.list` entry (`null` when it has none, `undefined` when
+ * `limits` is the credential's `limits.list` entry (`null` when it has none, `undefined` when
  * the query failed, which leaves the limit fields out). The budget (USD per UTC day, week, or
  * month, metered from Radium usage) saves with the form; an empty amount clears it. A provider
  * whose limit adapter declares an extra key (`limitKey`) gets a write-only field for it.
@@ -681,21 +689,25 @@ function CredentialEditForm({
   onDone,
 }: {
   workspaceId: Id<"workspaces">;
-  credentialId: Id<"workspace_credentials">;
+  credentialId: string;
   credential: ProviderCredential;
   limits: CredentialLimits | null | undefined;
   env: string[];
   onDone: () => void;
 }) {
-  const updateCredential = useMutation(api.providers.updateCredential);
-  const setBudget = useMutation(api.limits.setBudget);
-  const setLimitKey = useMutation(api.limits.setLimitKey);
+  const trpc = useTrpc();
+  const invalidate = useInvalidateGateway();
+  const { mutateAsync: updateCredential } = useMutation(
+    trpc.providers.updateCredential.mutationOptions(),
+  );
+  const { mutateAsync: setBudget } = useMutation(trpc.limits.setBudget.mutationOptions());
+  const { mutateAsync: setLimitKey } = useMutation(trpc.limits.setLimitKey.mutationOptions());
   const fieldId = useId();
   const [label, setLabel] = useState(credential.label ?? "");
   const [priority, setPriority] = useState(String(credential.priority));
   const [weight, setWeight] = useState(String(credential.weight));
   const [values, setValues] = useState<Record<string, string>>({});
-  const currentBudget = limits?.budget;
+  const currentBudget = limits?.budget ?? null;
   const [budgetAmount, setBudgetAmount] = useState(
     currentBudget ? String(currentBudget.amount) : "",
   );
@@ -727,7 +739,7 @@ function CredentialEditForm({
   const budgetChanged =
     limits !== undefined &&
     (parsedBudget === null
-      ? currentBudget !== undefined
+      ? currentBudget !== null
       : parsedBudget !== undefined &&
         (parsedBudget !== currentBudget?.amount || budgetPeriod !== currentBudget?.period));
   const limitKeyChanged = limitKeyValue.trim() !== "";
@@ -770,6 +782,7 @@ function CredentialEditForm({
           key: limitKeyValue.trim(),
         });
       }
+      await invalidate();
       toast.success("Saved changes.");
       onDone();
     } catch (error) {
@@ -783,6 +796,7 @@ function CredentialEditForm({
     setRemovingLimitKey(true);
     try {
       await setLimitKey({ workspace: workspaceId, credential: credentialId, key: null });
+      await invalidate();
       toast.success(`Removed the ${limits.limitKey.label.toLowerCase()}.`);
     } catch (error) {
       toast.error(errorMessage(error, "Failed to remove the key."));
