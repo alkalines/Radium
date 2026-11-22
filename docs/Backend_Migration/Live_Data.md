@@ -125,7 +125,7 @@ sequenceDiagram
 - **Everyone is a viewer.** `/api/chat` returns the stream location instead of the stream body, the shape `@durable-streams/aisdk-transport` uses. The sender reads the same stream as every other Tab, so there's one code path, and reload resumes from offset `-1` (`resumeStreamIsReplay`).
 - **Stop from any Tab**: `chats.stop` sets `stop:<run>` in Valkey; the generator checks it at every batch flush (about 300 ms). No database write. This is the largest Valkey cost of a run (about 140 `EXISTS` per 45 s reply in Phase 0) and still trivial; an in-process flag fed by the chat's signal stream can replace it if it ever matters.
 - **Detached runs** work on long-lived presets: generation is driven by the server, not the sender's connection. On serverless presets the run stays bound to the request ([presets](Runtime.md#long-lived-vs-serverless-presets)).
-- **Lost runs**: `chat_runs.lease_at` renewed every 15 s; the retention job fails runs with a stale lease and clears `activeStream`.
+- **Lost runs**: `chat_runs.lease_at` renewed every 15 s; the retention job fails active runs with a stale lease. A chat is replying exactly while it has an `active` run; there is no `activeStream` flag.
 - Approvals, questions and Code Mode prompts end or pause the stream exactly as today; answers are tRPC mutations.
 
 ## ACP Sessions

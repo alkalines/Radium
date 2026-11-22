@@ -1,6 +1,6 @@
 # 14 Backend Migration (Convex → Bun, Hono, Postgres)
 
-Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 not started.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
+Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 schema done (2026-11-22); Phase 3 not started.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
 
 This is several sessions of work, not one. Each phase ends with the docs updated and its verification recorded here. The Convex backend on `dev` stays the product until the cutover release. The new backend is built beside it and exercised against imported copies of a local deployment, never production data.
 
@@ -182,6 +182,7 @@ What was built:
   - it records into Drizzle's own table.
 
   `SCHEMA_VERSION` is generated after `drizzle-kit generate`, and startup refuses a database that is behind it. Drizzle's own `migrate()` was rejected: it runs everything in one transaction and has nowhere to put backfills.
+
 - **Outbox and tasks:**
   - The `jobs` table supports `enqueueJob` in the caller's transaction, after-commit `dispatchJobs`, and a one-minute `jobs:sweep` Nitro task.
   - Claims use `skip locked` with a lapsing claim, retries back off, and a job is parked after 8 attempts.
@@ -240,6 +241,50 @@ Not done or not covered:
 Drizzle schema for every retained table, per domain, following the [conventions](../Backend_Migration/Runtime.md#database-conventions): text ids, `created_at`, real foreign keys with explicit delete policy, constraints for every [invariant](../Backend_Migration/Runtime.md#transactions-and-invariants), `secrets` with the Secret Store envelope. Until the cutover release, migrations on the branch may be regenerated freely.
 
 Verification: schema review against the [data placement table](../Backend_Migration/Live_Data.md#where-data-lives); every invariant has a failing-then-passing concurrency test once its service exists.
+
+### Phase 2 Results (2026-11-22)
+
+Decisions taken with the user before starting:
+
+- **Nested objects with bytes**: small fixed structs become prefixed columns with real `bytea`; unions, arrays of objects and open shapes are `jsonb` with base64url bytes inside ([conventions](../Backend_Migration/Runtime.md#database-conventions)).
+- **Operational log events go to a structured stdout sink.** There is no `log_events` table; the Convex `logging` component is not imported.
+- **Three tables are renamed**: `aisdk_chats` → `chats`, `workspace_configurations` → `workspace_providers`, `subscription_state` → `subscription_sessions` (session namespace only). Every other table keeps its Convex name.
+
+What was built (`packages/server/src/<domain>/schema.ts`, migration `drizzle/20261122153248_domains`):
+
+- **59 new tables** over nine domain files, plus the Phase 1 tables widened (`workspaces.key_epoch`, `legacy_content`; a `(id, workspace)` unique on `workers`):
+  - `workspaces`: `workspace_settings`, `workspace_mcp_servers`, `projects`, `project_folders`, `user_preferences`;
+  - `gateway`: `workspace_providers`, `workspace_credentials`, `api_keys`, `credential_limits`, `limit_events`, `subscription_sessions`, `secrets`, `secret_events`, `models`, `providers`, `authors`, `ai_apps`;
+  - `chatroom`: `chats`, `chat_messages`, `chat_members`, `chat_files`, `chat_runs` (new), `mcp_servers`, `chat_mcp_servers`;
+  - `acp`: `acp_agents`, `acp_agent_sessions`, `acp_sessions`, `acp_commands`, `acp_interactions`;
+  - `worker`: `worker_enrollments` (the component's enrollments merged into the app receipt, keeping the app id that setup codes and Worker state carry), `worker_agents`, `worker_tasks`, `worker_chat_calls`, `worker_gateway`;
+  - `e2ee`: trust stores, workspace epochs, grants, rosters, Worker keys and pairings, invites, phrases, join requests, chat keys, wraps, capsules;
+  - `usage`: `chat_completions`, `local_usage`, `local_usage_syncs`, `acp_usage`, `acp_model_prices`;
+  - `telemetry`: blobs, toolset tools, nodes, sessions, requests, destinations;
+  - `notifications`: `notifications`, `push_subscriptions`.
+- **Not modeled**, per the [placement table](../Backend_Migration/Live_Data.md#where-data-lives): `chat_frames`, `acp_streams`, `chat_viewers`, `acp_deferred_cleanups`, `worker_presence`, `worker_auth_challenges`, `codemode_interactions`, `e2ee_device_recovery`, `routing_*`, `storage_sweeps`, the E2EE migration and custody tables, and the legacy bridge. `telemetry_gc` becomes `telemetry.gc` outbox jobs.
+- **Shape changes worth knowing in Phase 3:**
+  - The ACP agent binding (Worker, agent, version, profile, folder, session id) lives only on `acp_sessions`; `chats` has no `agent` column. A chat is an ACP chat when it has a session row.
+  - `chats` has no `activeStream`: a chat is replying while it has an `active` `chat_runs` row.
+  - The `mcpServers` lists of workspace settings and chat tool overrides are child tables that cascade from the server; Project folders are `project_folders` rows with an `is_default` flag (at most one per Project).
+  - `notifications` drops `title`/`body` (always the generic text of `kind`) and `sealingPending` (sealing is an outbox job; a row without a box shows the generic text).
+  - Worker-owned tables drop their copied `workspace` where it is the Worker's; tables that keep one (`acp_*`, `chat_members`, `chat_files`, `local_usage`, `acp_usage`, `e2ee_chat_key_wraps`, `workspace_mcp_servers`, `chat_mcp_servers`) reference the chat, Worker or MCP server through `(id, workspace)`, so a row cannot cross workspaces.
+- **Invariants** from the [table](../Backend_Migration/Runtime.md#transactions-and-invariants) backed by the schema: `acp_sessions` unique `chat` plus the status admission update; `chat_runs` partial unique active run; `acp_commands` unique `(worker, client_id)` (Convex dedupes per Worker and refuses another issuer, so `issuer` is not in the key) and a check that a pending command holds exactly one payload form and any other status holds none; `acp_sessions` `cooled_epoch <= epoch`; `acp_interactions` checks that pending rows hold no answer and answered rows exactly one; `worker_tasks` unique `(worker, request_id)` with `status`/`claim_id`/`revision` for the fenced updates; `worker_enrollments` unique token hash and completion columns set exactly when `completed`; `notifications` `seen_at` and `delivery_at` exclusive. Every Convex `.unique()` read and "one per X" rule became a unique index.
+- `src/db/columns.ts` gained `json<T>()` (`jsonb` typed as the stored form of a contracts shape), `literals()` (enum values from a contracts zod union) and `checkIn()`.
+
+Checks (this workstation, the test compose services):
+
+- `typecheck` clean; `drizzle-kit check` passes; regenerating reports no changes; the Nitro build passes (2.44 MB).
+- `bun run --cwd packages/server test`: 5 files, 29 tests pass; the global setup applies both migrations to the template database with the real runner.
+- A throwaway probe (not kept) inserted one row into nearly every table as one connected graph, then deleted a Project, an MCP server, a credential and a chat, then a whole workspace. It found one bug, fixed before this record: `acp_sessions` → `workers` was `no action`, which blocked a workspace delete because the cascade to `workers` ran before the one through `chats`; it is `cascade` now (Workers are revoked, never deleted). After the fix, every chat child was gone, telemetry and completion rows kept with `chat` and `credential` set null, and the limit notification survived the credential.
+
+Not done or open:
+
+- Concurrency tests for each invariant come with the service that relies on it (Phase 3), as planned.
+- `Meter`, `AlertState` and `LimitSettings` are typed in `gateway/schema.ts` because `backend/src/limits/meters.ts` has only Convex validators; the gateway slice moves them to `contracts`.
+- Import risks to check on the Stage 1 data before Phase 6: Worker ids in ACP and chat rows that name a missing Worker (Convex never checked them), duplicate `chats.e2ee_id`, more than one unrevoked API key per Worker, more than one credential per `(workspace, provider, account)`, credentials for a provider without a `workspace_providers` row (so `workspace_credentials.provider` is not a foreign key).
+- `telemetry_requests` has 14 indexes; seven exist only so garbage collection and the blob `no action` check can find referrers. Reference counting would remove them at the cost of another invariant; revisit if capture write cost shows up.
+- `e2ee_capsules.chat_epoch` and `chat_messages.sealed_capsule_id` have no foreign key to the chat key or capsule; the services keep checking them as today.
 
 ## Phase 3: Domains
 
