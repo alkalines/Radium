@@ -1,6 +1,6 @@
 # 14 Backend Migration (Convex → Bun, Hono, Postgres)
 
-Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 schema done (2026-11-22); Phase 3 slice 1 (workspaces) done (2026-11-22), slices 2–6 not started.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
+Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 schema done (2026-11-22); Phase 3 slice 1 (workspaces) done and slice 2 (gateway) server side done (2026-11-22); slices 3–6 in progress.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
 
 This is several sessions of work, not one. Each phase ends with the docs updated and its verification recorded here. The Convex backend on `dev` stays the product until the cutover release. The new backend is built beside it and exercised against imported copies of a local deployment, never production data.
 
@@ -344,6 +344,157 @@ Not done or not covered:
 - A replaced sealed name whose old box lived in Convex storage (`storageId`) leaves that object unreferenced; names are under 16 KiB, so none is expected. The `files.orphans` job (chatroom slice) covers it.
 - `nitro dev` cannot load the `bun` drivers (it runs Node workers), so browser checks use the built server (`bun .output/server/index.mjs`).
 - The web screens were not checked on an imported copy; that needs the importer (Phase 6).
+
+### Slice 2 Results: Gateway (2026-11-22)
+
+Server side, commit `55fd62e` (`packages/server/src/gateway/`, routers `providers`, `models`, `keys`, `routing`, `limits`):
+
+- **Secrets** (`gateway/secrets.ts`): the `convex-secret-store` envelope byte for byte. A test decrypts a row encrypted by the original component code (null namespace included), and the reverse. `SECRET_STORE_KEYS` is now required at start.
+- **Providers, credentials, models**: credentials are always pooled rows. The legacy fallbacks are not ported: the no-row provider credential, the `provider:` secret namespace and the catalogue fallback. `keys.deleteLegacyKey` is gone with the legacy `keys` table.
+- **API keys**: `rad-sk-` SHA-512 lookup. The resolution is cached in Valkey for 60 s; a rename, revoke, telemetry change or workspace archive writes a tombstone, so the change applies at once.
+- **Routing**: cursors, cooldowns and affinity are Valkey hashes with TTLs, changed by a compare-and-set script. A cooldown is kept one day after it ends, the old prune window.
+- **Limits**: meters and adapters (OpenRouter, ChatGPT), `limits.poll` as a Nitro task claiming with `for update skip locked`, budget recompute as a deduped outbox job, and `retention` as a Nitro task. `Meter`/`AlertState`/`LimitSettings` moved to `contracts/limits/meters`. Changes from Convex:
+  - a new limit key is polled on the next 5-minute run, not immediately;
+  - a manual refresh within one minute of the last is `CONFLICT`;
+  - the budget is a SQL sum.
+- **HTTP**: `/api/openai/v1/chat/completions` and `/models` keep their paths, statuses and error bodies, with the idle timeout turned off per request. Only routing configuration errors expose their message on a 500; Convex exposed every error message. `/api/subscription/chatgpt-subscription/*` needs a session and an owned workspace, has no CORS (same origin through the forwarder), and answers 503 without `LWC_SECRET`.
+- **Write paths in their own domains**: completion recording (`usage/completions.ts`), telemetry capture and ingest (`telemetry/`, on only with `TELEMETRY_HASH_SECRET`), and notification rows (`notifications/notify.ts`). Notification rows carry no text.
+- **Migration** `20261122203235_gateway_routing`: a nullable `workspace_settings.routing` (Phase 2 had no column for the workspace routing settings).
+- **Checks**: 22 files and 235 tests pass, with a stubbed upstream `fetch`; typecheck, build and `db:check` pass. These concurrency tests were each seen failing with their guard removed:
+  - the routing cursor compare-and-set (round-robin and weighted);
+  - the provider row lock (pool cap, OAuth bind);
+  - the key-cache tombstone;
+  - the poll `skip locked`, the refresh conditional update and the budget dedupe key;
+  - the meter snapshot lock;
+  - the telemetry blob and node guards.
+
+  The Secret Store single-writer test and the pool-cap test were not seen failing.
+- **Build size**: the Nitro build grew from 2.44 MB to 4.7 MB (AI SDK providers, Login with ChatGPT).
+- **Left for later slices**:
+  - telemetry export to destinations and object-store envelopes;
+  - notification sealing and the Web Push fallback;
+  - limit event delivery channels;
+  - the Chatroom access check before a chat completion is recorded (until then only "chat in workspace");
+  - issuing Worker keys (Worker-issued keys already resolve);
+  - other domains' retention entries.
+
+Web side, commit `7cf8ed3`:
+
+- **Moved to tRPC**:
+  - every Gateway screen (providers, credentials, models, keys, routing, limits);
+  - the read-only `models.availableModels` consumers (model pickers, preferences panels).
+- **ChatGPT device flow**: calls `/api/subscription/chatgpt-subscription` on the same origin with `?workspace=` and the session cookie.
+- **Removed with their backend paths**: the legacy key UI and the legacy/no-row credential branches.
+- **The `rad-sk-` key** returned by `keys.create` lives only in the dialog state; the mutation has `gcTime: 0`.
+- **Checks**: web `tsc` still has the 103 baseline errors and `vite:build` passes. Browser check is pending, together with slice 3.
+- **Known gap until slice 5**: `telemetry-destinations.tsx` still saves destinations through Convex, but its key checklist now lists Postgres key ids. Those ids are cast to Convex ids, so a destination saved on this branch names keys the Convex side does not know.
+
+### Slice 3 Results: Chatroom (2026-11-22)
+
+Server side, commit `8cc7564` (`packages/server/src/chatroom/`, routers `chats`, `chatroom`, `tools`, `chatFiles`; `POST /api/chat`; `/api/files/*`):
+
+- **One access function** (`chatroom/access.ts`, `chatAccess`), one query:
+  - `personal`: the creator only (not the workspace owner);
+  - `shared`: the creator plus `chat_members`;
+  - `workspace`: every workspace user;
+  - management: the creator, or the owner for workspace chats.
+
+  tRPC, `/api/chat`, files, Code Mode answers, chat-key checks and completion/telemetry attribution all use it. Slice 2's interim "chat in workspace" check is gone.
+- **Sealed writes** keep every Convex check:
+  - capsules, boxes and envelopes (`chatroom/sealing.ts`);
+  - epoch signatures and bindings, wrap coverage, current sealing key, who may rotate (`e2ee/chat-keys.ts`);
+  - scope changes bound to the next audience: widening rewraps history, narrowing deletes workspace wraps (`e2ee/chat-scope.ts`).
+
+  There is no plaintext chat creation, title, queue or upload.
+- **Object store**: `Bun.S3Client` or a local-disk adapter (exactly one of `S3_BUCKET`/`FILES_DIR` is required), presigned PUT/GET, `/api/files/{upload/:id, :id, resolve}`, and an hourly `files:orphans` task. The S3 adapter is typechecked but has not been run against a real S3 server.
+- **`/api/chat`** streams the reply straight to the requester.
+  - Admission goes through the `chat_runs` partial unique index; a second sender gets 409, where Convex let the last save win.
+  - Messages are saved sealed, and the run ends `finished`/`failed`.
+  - Retention fails active runs whose lease is older than 60 s and deletes ended runs after 10 min.
+  - Titles are generated inside the turn and by `chats.regenerateTitle`, with no outbox job, so the first prompt is never stored in plaintext.
+- **Code Mode prompts** live in Valkey with a TTL; the first answer wins (`SET NX`).
+- **MCP servers** are capped at 200 per workspace at creation (Convex listed 200 but created without bound).
+- **Checks**: 27 files and 320 tests pass; typecheck, build and `db:check` pass; no migration. Personal-chat privacy is tested on every read path, `/api/chat` included (404 before any model call). The success test decrypts the stored reply with the chat key under the Convex AAD.
+- **Concurrency tests**: these were each seen failing with their guard removed:
+  - one active run per chat;
+  - the first Code Mode answer;
+  - concurrent message saves.
+
+  Concurrent rotation to one epoch is tested but not seen failing, because the unique `(chat, epoch)` index also catches it.
+- **Build**: 6.74 MB (`@ai-sdk/mcp`, `@exalabs/ai-sdk` added).
+- **Left for later**:
+  - Phase 4: `Watch`/`LiveFrames`, detached and resumable runs, `chats.stop`, stream waits in place of the 1 s Code Mode poll;
+  - slice 6: Worker chat tools in `/api/chat`, the Worker temp-directory fallback, deleting ACP chats and changing their scope;
+  - slice 4: the remaining chat-key routers;
+  - slice 5: notification sealing and Web Push. Run-end notification rows are already written.
+- **Untested**: refusing a completion for a chat the actor cannot see. `tools.listMcpServers` decrypts each bearer secret to report `hasSecret`, which is a cost worth revisiting.
+
+Web side, commit `cda8cff`:
+
+- **Moved to tRPC or `POST /api/chat`**: Home (`useInfiniteQuery` over the keyset pages, `chats.listPinned`), Session screens, settings and tools panels, MCP dialog, uploads (`chatFiles.createUpload` → PUT → `register`) and Code Mode answers. `/api/chat` is same-origin with the cookie; the Convex site URL and bearer helper are gone. A custom fetch surfaces the server's message for 409s.
+- **Wire format**: sealed boxes, envelopes and capsules cross the wire as base64url. The sealed content and the AAD are unchanged. `chat-keys.ts` has one conversion point to the tRPC shapes, because the chat-key reads and writes stay on Convex until slice 4.
+- **Refresh**: `lib/trpc-error.ts` separates refusals from transient errors, so a network blip no longer closes a Session Tab. Lists refresh after own mutations, after a stream ends and on focus, with no polling. A run started in another tab appears on the next refetch until Phase 4.
+- **Behavior changes**:
+  - create, fork, rename, regenerate and attachments need chat keys;
+  - the Exa key field is owner-only;
+  - a queued first prompt that exists only in a legacy sidecar is not restored, because the server cannot tell "consumed" from "unset".
+- **Still on Convex**:
+  - chat-key reads and writes (slice 4);
+  - `Watch`/`LiveFrames` (Phase 4);
+  - `acp.*`, `workers.list`, `agent_usage.GetChatCost` (slices 5–6);
+  - `e2ee_legacy.storageUrl`.
+- **ACP gaps for slice 6**: the visibility menu of a keyed ACP Session throws, because `chats.setScope` takes no re-signed binding. Deleting an ACP chat is refused, and the "also delete in the agent" step and its signed command were removed from the menu.
+- **Checks**: web `tsc` has 101 errors (two baseline ones fixed, none new) and `vite:build` passes. The changed crypto and session tests pass: 71 tests. When the whole `lib/crypto` folder runs in one process, 2 `workspace-keys.test.ts` cases fail (6 at the previous commit) because Convex module mocks leak between files. The file passes alone (7/7).
+
+### Slice 4 Results: E2EE (2026-11-22)
+
+Server side, commit `5bff229` (`packages/server/src/e2ee/`, router `e2ee`):
+
+- **Coverage**: every `api.e2ee.*` procedure the web calls. That is account status and the recovery wrapper, device recovery, trust store, identity directory, workspace key state and archived epochs, bootstrap/rotate/grants/roster, invites, phrases, join requests, chat keys (`chatKeys`, `setupChatKeys`, `rotateChatKey`, `addChatKeyWraps`, `signChatKey`, `staleWorkspaceWraps`, `replaceWorkspaceWraps`) and Worker pairing from the browser. No schema change.
+- **Locking**:
+  - every workspace key write takes the workspace row lock and re-checks access under it;
+  - an access link is claimed by one conditional `delete … where expires_at > now() returning`;
+  - the trust store is compare-and-swap (insert `on conflict do nothing`, then `update … where version = expected`);
+  - the recovery wrapper changes only while the stored wrapper is still the one the signature covers;
+  - device recovery offers are Valkey keys with a 15-minute TTL, written by a script that will not overwrite another user's slot, and taken with `GETDEL`.
+- **Behavior changes**:
+  - `revokeInvite`, `dismissJoinRequest` and `removePhrase` take `workspace`;
+  - `myKeyStatus` needs a session;
+  - `staleWorkspaceWraps` pages by a keyset;
+  - `getInvite` is `null` once access is lost;
+  - a replacement wrap with the stale wrap's recipient key is refused;
+  - setup-code pairing requires the enrollment to be completed by that Worker with its current proof key;
+  - certification also requires an active Worker;
+  - rate limits hash the client address, which the web forwarder passes with the proxy secret for every `/api/*` request.
+- **Not ported**: custody, legacy, migration and freeze gates, and `pruneDeviceRecovery` (Valkey TTL replaces it). Retention now covers expired invites and pairings past 7 days.
+- **Checks**: 30 files and 353 tests pass, with 38 E2EE tests ported from the Convex suites and boundary cases for every procedure. Typecheck, build and `db:check` pass. Concurrency tests were each seen failing with their guard removed: the roster version race, invite accept race, trust store compare-and-swap and recovery take race.
+- **For slice 6**:
+  - Worker machine procedures over the exported services (`publishWorkerKeys`, `workerTrustState`, `workerIdentities`);
+  - dispatch gating (`requireDispatchableWorker`);
+  - `deleteWorkerKeys` in the revoke transaction.
+
+Web side, commit `a7ecc86`:
+
+- **Moved to `trpc.e2ee`**: every `api.e2ee.*` caller (key manager, trust store, chat keys, workspace keys, invites, phrases, device recovery, Worker pairing UI), with base64url bytes. The slice 3 dual-format conversion in `chat-keys.ts` is gone. `useServerKeyStatus` skips signed-out users.
+- **Deleted**: the custody cutover gate (`encryption-cutover-gate.tsx`).
+- **Still on `cryptoClient()` (Convex)**: only `acp.*` (`acp-crypto.ts`, with `chatKeysToConvex` for the three ACP calls that still take `ArrayBuffer`), `workers.createEnrollment/list`, `e2ee_legacy.storageUrl` and `e2ee_legacy_relay.*`.
+- **Freshness**: key state refetches after mutations, on focus and after the sync writes (which now report whether they wrote).
+- **Checks**:
+  - web `tsc` 101 (none new); `vite:build` passes;
+  - `bun test src/lib/crypto` passes in one process (70 tests); the mock leak was `legacy-relay.test.ts`'s `mock.module`.
+- **Known gaps**:
+  - ACP chats exist only in Convex until slice 6, so their chat-key paths fail on this branch.
+  - The device-recovery poll treats the new rate-limit refusal as transient.
+
+Browser check of slices 1–4 (built server through the forwarder, existing dev accounts):
+
+- **Sign-in and keys**: OPAQUE sign-in unlocked the keys through tRPC. Both owned workspaces were bootstrapped to key epoch 1 by the workspace sync.
+- **Sealed rename**: renaming a workspace to "Ann Labs" stored only a `workspace_member` box (epoch 1); the row keeps the placeholder name, and the UI shows the decrypted name.
+- **Gateway**:
+  - the API keys page created a key and showed it once;
+  - with a key from `keys.create`, `GET /api/openai/v1/models` answered 200 (`[]`, no providers configured) and a chat completion answered 500 `Unknown model`;
+  - an invalid key answered 401.
+- **Not exercised in the browser**: a chat turn. It needs a configured upstream provider; the server suite covers it with a stubbed upstream.
 
 ## Phase 4: Live Layer
 
