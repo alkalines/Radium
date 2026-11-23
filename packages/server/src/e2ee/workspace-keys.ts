@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, lte, max } from "drizzle-orm";
 import { decodeExactBytes } from "contracts/e2ee/contract";
 import { base64urlBytes } from "contracts/wire";
 import {
@@ -7,13 +7,16 @@ import {
   grantStatement,
   ROSTER_EPOCH_WINDOW,
   rosterStatement,
+  toBase64Url,
   verify,
 } from "radium-crypto";
 import { z } from "zod";
 import type { Database } from "../drivers/types";
 import { AppError } from "../errors";
 import { activeWorkspaceWorkers } from "../worker/workers";
+import { workspaceAccess, type WorkspaceAccess } from "../workspaces/access";
 import {
+  lockWorkspace,
   MAX_MEMBERS,
   setWorkspaceKeyEpoch,
   workspaceUserIds,
@@ -24,12 +27,14 @@ import {
   e2eeIdentities,
   e2eeInvites,
   e2eeJoinRequests,
+  e2eePhrases,
   e2eeRosters,
   e2eeWorkerKeys,
   e2eeWorkerPairings,
   e2eeWorkspaceEpochs,
   e2eeWorkspaceGrants,
 } from "./schema";
+import { epochWire, grantWire, joinRequestWire, rosterWire } from "./wire";
 
 /**
  * Workspace key records (`docs/E2EE/Keys.md`): epochs, grants and owner-signed rosters. The
@@ -44,7 +49,7 @@ const SIGNATURE_BYTES = 64;
 /** Roster bodies and other boxes are bounded. */
 const MAX_BOX_BYTES = 65536;
 /** Owner and member grants for every member of a full workspace, plus the owner's two. */
-const MAX_GRANTS = 2 * MAX_MEMBERS + 2;
+export const MAX_GRANTS = 2 * MAX_MEMBERS + 2;
 /** Workers one roster may certify. */
 const MAX_ROSTER_WORKERS = 200;
 
@@ -157,7 +162,8 @@ type RosterBody = {
   workers?: unknown;
 };
 
-function parseRosterBody(body: Uint8Array): RosterBody {
+/** A roster body parsed as a JSON object; anything else is invalid. Not a trust decision. */
+export function parseRosterBody(body: Uint8Array): RosterBody {
   try {
     const parsed: unknown = JSON.parse(new TextDecoder().decode(body));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -170,7 +176,7 @@ function parseRosterBody(body: Uint8Array): RosterBody {
 }
 
 /** The signed roster's members as userId → pinned keyId, for checking member re-grants. */
-function rosterMembers(roster: { body: Uint8Array } | undefined): Map<string, string> {
+export function rosterMembers(roster: { body: Uint8Array } | undefined): Map<string, string> {
   const members = new Map<string, string>();
   if (!roster) {
     return members;
@@ -653,4 +659,296 @@ export async function workspaceOwnerSealingKey(
     )
     .where(eq(workspaces.id, workspaceId));
   return row ?? null;
+}
+
+/** Most epochs {@link workspaceArchivedEpochs} returns per call. */
+export const ARCHIVED_EPOCH_PAGE = 64;
+/** Join requests and invites one workspace may hold; more is invalid state. */
+const MAX_JOIN_REQUESTS = 400;
+const MAX_INVITES = MAX_MEMBERS;
+
+/**
+ * Locks the workspace row for a key write (`lockWorkspace`) and re-checks the caller's access
+ * under that lock, so membership cannot change until the transaction ends. Members of an
+ * owner-only write, outsiders and archived workspaces all get the same `NOT_FOUND`.
+ */
+export async function lockWorkspaceKeys(
+  tx: Database,
+  workspaceId: string,
+  userId: string,
+  ownerOnly: boolean,
+): Promise<Workspace> {
+  const workspace = await lockWorkspace(tx, workspaceId);
+  const access = await workspaceAccess(tx, userId, workspaceId);
+  if (!access || (ownerOnly && access.role !== "owner")) {
+    throw new AppError("NOT_FOUND", "Workspace not found.");
+  }
+  return workspace;
+}
+
+/**
+ * Bounded key state of a workspace for one of its users. `epochs` is the roster window (the
+ * newest `ROSTER_EPOCH_WINDOW` epochs, ascending) and `myGrants`/`grantedEpoch` cover only those
+ * epochs; older ones come from {@link workspaceArchivedEpochs}. Only the caller's own grants are
+ * returned. Admission proofs go to eligible granters only: the owner sees every join request and
+ * the pending invites; members see key requests of roster-listed members, which they may re-grant.
+ * `grantedEpoch` counts owner-signed member grants to the user's active identity only, since a
+ * member's re-grant may be junk the owner must replace.
+ */
+export async function workspaceKeyState(db: Database, access: WorkspaceAccess, userId: string) {
+  const { workspace } = access;
+  const owner = access.role === "owner";
+  const epochs = (
+    await db
+      .select()
+      .from(e2eeWorkspaceEpochs)
+      .where(eq(e2eeWorkspaceEpochs.workspace, workspace.id))
+      .orderBy(desc(e2eeWorkspaceEpochs.epoch))
+      .limit(ROSTER_EPOCH_WINDOW)
+  ).reverse();
+  const windowStart = epochs[0]?.epoch ?? 1;
+  const roster = await latestRoster(db, workspace.id);
+  const listed = rosterMembers(roster);
+  const users = await rosterAudience(db, workspace);
+
+  const identities = new Map(
+    (
+      await db
+        .select({ userId: e2eeIdentities.userId, keyId: e2eeIdentities.keyId })
+        .from(e2eeIdentities)
+        .where(and(inArray(e2eeIdentities.userId, users), eq(e2eeIdentities.status, "active")))
+    ).map((row) => [row.userId, row.keyId]),
+  );
+  const granted = new Map(
+    (
+      await db
+        .select({ userId: e2eeWorkspaceGrants.userId, epoch: max(e2eeWorkspaceGrants.epoch) })
+        .from(e2eeWorkspaceGrants)
+        .innerJoin(
+          e2eeIdentities,
+          and(
+            eq(e2eeIdentities.userId, e2eeWorkspaceGrants.userId),
+            eq(e2eeIdentities.status, "active"),
+            eq(e2eeIdentities.keyId, e2eeWorkspaceGrants.recipientKeyId),
+          ),
+        )
+        .where(
+          and(
+            eq(e2eeWorkspaceGrants.workspace, workspace.id),
+            gte(e2eeWorkspaceGrants.epoch, windowStart),
+            eq(e2eeWorkspaceGrants.purpose, "member"),
+            eq(e2eeWorkspaceGrants.granterUserId, workspace.ownerId),
+            inArray(e2eeWorkspaceGrants.userId, users),
+          ),
+        )
+        .groupBy(e2eeWorkspaceGrants.userId)
+    ).map((row) => [row.userId, row.epoch]),
+  );
+  const myGrants = await db
+    .select()
+    .from(e2eeWorkspaceGrants)
+    .where(
+      and(
+        eq(e2eeWorkspaceGrants.workspace, workspace.id),
+        eq(e2eeWorkspaceGrants.userId, userId),
+        gte(e2eeWorkspaceGrants.epoch, windowStart),
+      ),
+    )
+    .orderBy(asc(e2eeWorkspaceGrants.epoch), asc(e2eeWorkspaceGrants.purpose));
+
+  const requests = await db
+    .select()
+    .from(e2eeJoinRequests)
+    .where(eq(e2eeJoinRequests.workspace, workspace.id))
+    .orderBy(asc(e2eeJoinRequests.createdAt), asc(e2eeJoinRequests.id))
+    .limit(MAX_JOIN_REQUESTS + 1);
+  const invites = owner
+    ? await db
+        .select({
+          inviteId: e2eeInvites.inviteId,
+          invitedUserId: e2eeInvites.invitedUserId,
+          expiresAt: e2eeInvites.expiresAt,
+        })
+        .from(e2eeInvites)
+        .where(and(eq(e2eeInvites.workspace, workspace.id), gt(e2eeInvites.expiresAt, new Date())))
+        .orderBy(asc(e2eeInvites.expiresAt), asc(e2eeInvites.inviteId))
+        .limit(MAX_INVITES + 1)
+    : [];
+  if (requests.length > MAX_JOIN_REQUESTS || invites.length > MAX_INVITES) {
+    invalidKeys();
+  }
+  const [phrase] = workspace.keyEpoch
+    ? await db
+        .select()
+        .from(e2eePhrases)
+        .where(
+          and(eq(e2eePhrases.workspace, workspace.id), eq(e2eePhrases.epoch, workspace.keyEpoch)),
+        )
+    : [];
+
+  return {
+    role: access.role,
+    ownerId: workspace.ownerId,
+    keyEpoch: workspace.keyEpoch,
+    epochs: epochs.map(epochWire),
+    roster: roster ? rosterWire(roster) : null,
+    myGrants: myGrants.map(grantWire),
+    members: users.map((id) => ({
+      userId: id,
+      role: id === workspace.ownerId ? ("owner" as const) : ("member" as const),
+      keyId: identities.get(id) ?? null,
+      grantedEpoch: granted.get(id) ?? null,
+    })),
+    joinRequests: requests
+      .filter((request) => owner || (request.source === "request" && listed.has(request.userId)))
+      .map(joinRequestWire),
+    phrase: phrase
+      ? { epoch: phrase.epoch, phraseId: phrase.phraseId, wrapper: toBase64Url(phrase.wrapper) }
+      : null,
+    invites: invites.map((invite) => ({
+      inviteId: invite.inviteId,
+      invitedUserId: invite.invitedUserId,
+      expiresAt: invite.expiresAt.getTime(),
+    })),
+  };
+}
+
+/**
+ * Public rows of workspace epochs `fromEpoch..toEpoch` (at most {@link ARCHIVED_EPOCH_PAGE}),
+ * for epochs older than the {@link workspaceKeyState} window, with the caller's own grants of
+ * those epochs. `prefixHash` is the server's claim for the roster archive chain value before
+ * `fromEpoch` (`roster_archive_hash` of the previous epoch; null for epoch 1, whose prefix is
+ * fixed, or when unknown). Nothing here is trusted: clients verify the rows against the signed
+ * roster archive and grants by signature.
+ */
+export async function workspaceArchivedEpochs(
+  db: Database,
+  workspace: Workspace,
+  userId: string,
+  input: { fromEpoch: number; toEpoch: number },
+) {
+  const { fromEpoch, toEpoch } = input;
+  requirePositive(fromEpoch);
+  requirePositive(toEpoch);
+  if (
+    toEpoch < fromEpoch ||
+    toEpoch - fromEpoch >= ARCHIVED_EPOCH_PAGE ||
+    toEpoch > (workspace.keyEpoch ?? 0)
+  ) {
+    invalidKeys();
+  }
+  const epochs = await db
+    .select()
+    .from(e2eeWorkspaceEpochs)
+    .where(
+      and(
+        eq(e2eeWorkspaceEpochs.workspace, workspace.id),
+        gte(e2eeWorkspaceEpochs.epoch, fromEpoch),
+        lte(e2eeWorkspaceEpochs.epoch, toEpoch),
+      ),
+    )
+    .orderBy(asc(e2eeWorkspaceEpochs.epoch));
+  const myGrants = await db
+    .select()
+    .from(e2eeWorkspaceGrants)
+    .where(
+      and(
+        eq(e2eeWorkspaceGrants.workspace, workspace.id),
+        eq(e2eeWorkspaceGrants.userId, userId),
+        gte(e2eeWorkspaceGrants.epoch, fromEpoch),
+        lte(e2eeWorkspaceGrants.epoch, toEpoch),
+      ),
+    )
+    .orderBy(asc(e2eeWorkspaceGrants.epoch), asc(e2eeWorkspaceGrants.purpose));
+  const [previous] =
+    fromEpoch > 1
+      ? await db
+          .select({ hash: e2eeWorkspaceEpochs.rosterArchiveHash })
+          .from(e2eeWorkspaceEpochs)
+          .where(
+            and(
+              eq(e2eeWorkspaceEpochs.workspace, workspace.id),
+              eq(e2eeWorkspaceEpochs.epoch, fromEpoch - 1),
+            ),
+          )
+      : [];
+  return {
+    prefixHash: previous?.hash ?? null,
+    epochs: epochs.map(epochWire),
+    myGrants: myGrants.map(grantWire),
+  };
+}
+
+/** Gives the owner's keyless workspace its first key epoch, grants and roster. */
+export async function bootstrapWorkspaceKeys(
+  db: Database,
+  workspaceId: string,
+  userId: string,
+  input: WorkspaceKeysInput,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const workspace = await lockWorkspaceKeys(tx, workspaceId, userId, true);
+    if (workspace.keyEpoch) {
+      invalidKeys();
+    }
+    await insertWorkspaceEpoch(tx, workspace, input);
+  });
+}
+
+/**
+ * Rotates both workspace keys (owner recovery or compromise): the next epoch, its owner coverage
+ * and roster. Pending access links and join requests were made for the old keys and are deleted.
+ */
+export async function rotateWorkspaceEpoch(
+  db: Database,
+  workspaceId: string,
+  userId: string,
+  input: WorkspaceKeysInput,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const workspace = await lockWorkspaceKeys(tx, workspaceId, userId, true);
+    if (!workspace.keyEpoch) {
+      invalidKeys();
+    }
+    await clearWorkspaceJoins(tx, workspace.id);
+    await insertWorkspaceEpoch(tx, workspace, input);
+  });
+}
+
+/**
+ * Stores signed grants by the caller ({@link storeGrant}: the owner grants freely, a member only
+ * re-grants epochs they hold to roster-pinned identities) and resolves fulfilled key requests.
+ */
+export async function addGrants(
+  db: Database,
+  workspaceId: string,
+  userId: string,
+  grants: GrantInput[],
+): Promise<void> {
+  if (grants.length > MAX_GRANTS) {
+    invalidKeys();
+  }
+  await db.transaction(async (tx) => {
+    const workspace = await lockWorkspaceKeys(tx, workspaceId, userId, false);
+    for (const grant of grants) {
+      await storeGrant(tx, workspace, grant, userId);
+    }
+  });
+}
+
+/**
+ * Publishes a strictly newer owner-signed roster ({@link storeRoster}). Publishes of one
+ * workspace serialize on its row lock, so of two racing publishes of one version exactly one
+ * lands and the other is refused like any stale version.
+ */
+export async function publishRoster(
+  db: Database,
+  workspaceId: string,
+  userId: string,
+  roster: RosterInput,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const workspace = await lockWorkspaceKeys(tx, workspaceId, userId, true);
+    await storeRoster(tx, workspace, roster);
+  });
 }

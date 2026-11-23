@@ -2,6 +2,7 @@ import { chatFilesRouter } from "../chatroom/files-router";
 import { chatsRouter } from "../chatroom/router";
 import { chatroomSettingsRouter, toolsRouter } from "../chatroom/tools-router";
 import { authRouter } from "../auth/router";
+import { e2eeRouter } from "../e2ee/router";
 import { limitsRouter } from "../gateway/limits/router";
 import { keysRouter, modelsRouter, providersRouter, routingRouter } from "../gateway/router";
 import { preferencesRouter, projectsRouter, workspacesRouter } from "../workspaces/router";
@@ -22,6 +23,7 @@ export const appRouter = router({
   chatroom: chatroomSettingsRouter,
   chatFiles: chatFilesRouter,
   chats: chatsRouter,
+  e2ee: e2eeRouter,
 });
 
 export type AppRouter = typeof appRouter;

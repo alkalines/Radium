@@ -5,8 +5,15 @@ import type { Runtime } from "../runtime";
 import { resolveWorker } from "../worker/auth";
 import { workspaceAccess } from "../workspaces/access";
 
-/** Per-request tRPC context: the runtime and the request's headers (cookies, bearer token). */
-export type Context = { runtime: Runtime; headers: Headers };
+/**
+ * Per-request tRPC context: the runtime, the request's headers (cookies, bearer token) and, over
+ * HTTP, the client address rate limits key on (`../auth/ingress.ts`), resolved only when asked.
+ */
+export type Context = {
+  runtime: Runtime;
+  headers: Headers;
+  clientAddress?: () => Promise<string | null>;
+};
 
 const t = initTRPC.context<Context>().create({
   // Only domain refusals (`AppError`) carry their message to the client. An internal error's

@@ -1,5 +1,7 @@
 import { defineTask } from "nitro/task";
 import type { Database } from "../../drivers/types";
+import { pruneExpiredInvites } from "../../e2ee/invites";
+import { pruneWorkerPairings } from "../../e2ee/worker-keys";
 import { pruneLimitEvents } from "../../gateway/limits/events";
 import { pruneChatRuns } from "../../chatroom/run";
 import { useProcessRuntime } from "../../runtime";
@@ -21,6 +23,8 @@ type RetentionPolicy = {
 const policies: RetentionPolicy[] = [
   { table: "limit_events", prune: pruneLimitEvents },
   { table: "chat_runs", prune: pruneChatRuns },
+  { table: "e2ee_invites", prune: pruneExpiredInvites },
+  { table: "e2ee_worker_pairings", prune: pruneWorkerPairings },
 ];
 
 /**

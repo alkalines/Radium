@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import {
   CAPSULE_BYTES,
   chatKeyBindingStatement,
@@ -14,9 +14,11 @@ import { chats } from "../chatroom/schema";
 import type { Database } from "../drivers/types";
 import { workspaceMembers } from "../workspaces/schema";
 import { e2eeChatKeys, e2eeChatKeyWraps, e2eeIdentities, e2eeWorkspaceEpochs } from "./schema";
+import { chatKeyWire, chatWrapWire } from "./wire";
 import {
   activeIdentity,
   invalidKeys,
+  lockWorkspaceKeys,
   requireBox,
   requireKeyId,
   requirePositive,
@@ -34,7 +36,7 @@ import {
 const CHAT_PUBLIC_KEY_BYTES = 1216;
 const SIGNATURE_BYTES = 64;
 /** Wraps one write may carry. */
-const MAX_WRAPS = 1000;
+export const MAX_WRAPS = 1000;
 /** Members a binding may name. */
 const MAX_BINDING_MEMBERS = 1000;
 /** Workspace wraps of one epoch that scope narrowing deletes. */
@@ -859,4 +861,243 @@ export async function callerTitleWrap(
     if (own?.recipient === "identity" && own.userId === userId) return own;
   }
   return chat.scope === "workspace" ? await newestWorkspaceWrap(db, chat.id, chatEpoch) : undefined;
+}
+
+/** Newest chat key epochs {@link chatKeys} returns without an explicit `epoch`. */
+export const CHAT_KEY_EPOCH_WINDOW = 32;
+/** Stale workspace wraps per {@link staleWorkspaceWraps} page, and replacements per call. */
+export const MAX_REWRAP_PAGE = 100;
+
+/**
+ * Public epochs of a chat the caller can read and only the wraps usable by the caller (workspace
+ * wraps, and identity wraps addressed to the caller): exactly `epoch` when given (empty when it
+ * does not exist), otherwise the newest {@link CHAT_KEY_EPOCH_WINDOW} epochs ascending. Clients
+ * read older epochs one at a time by `epoch`.
+ */
+export async function chatKeys(
+  db: Database,
+  userId: string,
+  input: { chatId: string; epoch?: number },
+) {
+  const { chat, workspace } = await requireChatAccess(db, userId, input.chatId);
+  const epochs =
+    input.epoch === undefined
+      ? (
+          await db
+            .select()
+            .from(e2eeChatKeys)
+            .where(eq(e2eeChatKeys.chat, chat.id))
+            .orderBy(desc(e2eeChatKeys.epoch))
+            .limit(CHAT_KEY_EPOCH_WINDOW)
+        ).reverse()
+      : await db
+          .select()
+          .from(e2eeChatKeys)
+          .where(and(eq(e2eeChatKeys.chat, chat.id), eq(e2eeChatKeys.epoch, input.epoch)));
+  const wraps =
+    epochs.length === 0
+      ? []
+      : await db
+          .select()
+          .from(e2eeChatKeyWraps)
+          .where(
+            and(
+              eq(e2eeChatKeyWraps.chat, chat.id),
+              inArray(
+                e2eeChatKeyWraps.chatEpoch,
+                epochs.map((row) => row.epoch),
+              ),
+              or(eq(e2eeChatKeyWraps.recipient, "workspace"), eq(e2eeChatKeyWraps.userId, userId)),
+            ),
+          )
+          .orderBy(asc(e2eeChatKeyWraps.chatEpoch), asc(e2eeChatKeyWraps.id));
+  return {
+    chat: chat.id,
+    workspace: workspace.id,
+    e2eeId: chat.e2eeId,
+    keyEpoch: chat.keyEpoch,
+    scope: chat.scope,
+    creatorId: chat.userId,
+    rekey: chat.rekey,
+    workspaceKeyEpoch: workspace.keyEpoch,
+    /** The chat's current key epoch predates the workspace's current key; rotate before writing. */
+    staleForWorkspace: await chatPredatesWorkspaceKey(db, chat, workspace),
+    members: await chatMemberIds(db, chat.id),
+    epochs: epochs.map(chatKeyWire),
+    wraps: wraps.map(chatWrapWire),
+  };
+}
+
+/**
+ * Adds wraps of existing epochs for current recipients (Convex `addChatKeyWraps`); coverage is
+ * not required. A wrap for a recipient key that already has one is replaced only by the chat
+ * creator or workspace owner ({@link insertChatWraps}). Holds the chat row in share mode, so a
+ * concurrent scope change or rotation cannot change the audience being checked.
+ */
+export async function addChatKeyWraps(
+  db: Database,
+  userId: string,
+  input: { chatId: string; wraps: WrapInput[] },
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const { chat, workspace } = await requireChatAccess(tx, userId, input.chatId, "share");
+    if (!chat.e2eeId) invalidKeys();
+    await validateChatWraps(
+      tx,
+      chat,
+      workspace,
+      await chatMemberIds(tx, chat.id),
+      input.wraps,
+      chatEpochNumbers(chat),
+      false,
+    );
+    await insertChatWraps(tx, chat, workspace, input.wraps, userId);
+  });
+}
+
+export const signChatKeyInput = z.object({
+  epoch: z.number().int(),
+  signerKeyId: keyIdInput,
+  signature: base64urlBytes(SIGNATURE_BYTES),
+  bindingSignature: base64urlBytes(SIGNATURE_BYTES).optional(),
+  bindingMembers: z.array(userIdInput).max(MAX_BINDING_MEMBERS).optional(),
+});
+
+/**
+ * Lets the creator certify an epoch created on a locked device; an existing signature is never
+ * replaced. The optional binding proof (over the chat's current scope, creator and picked members)
+ * is accepted for the current epoch only, so an old or already-disclosed key is never newly
+ * certified for new content.
+ */
+export async function signChatKey(
+  db: Database,
+  userId: string,
+  input: z.output<typeof signChatKeyInput> & { chatId: string },
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const { chat, workspace } = await requireChatAccess(tx, userId, input.chatId, "update");
+    const key = await chatKeyAt(tx, chat.id, input.epoch);
+    if (
+      chat.userId !== userId ||
+      !chat.e2eeId ||
+      !key ||
+      key.signature ||
+      (input.bindingSignature && input.epoch !== chat.keyEpoch)
+    ) {
+      invalidKeys();
+    }
+    await validateChatEpoch(
+      tx,
+      workspace,
+      chat.e2eeId,
+      {
+        epoch: key.epoch,
+        keyId: key.keyId,
+        suite: key.suite,
+        publicKey: key.publicKey,
+        signerKeyId: input.signerKeyId,
+        signature: input.signature,
+        bindingSignature: input.bindingSignature,
+        bindingMembers: input.bindingMembers,
+      },
+      userId,
+      { policy: await currentBindingPolicy(tx, chat), required: false },
+    );
+    await tx
+      .update(e2eeChatKeys)
+      .set({
+        signerUserId: userId,
+        signerKeyId: input.signerKeyId,
+        signature: input.signature,
+        bindingSignature: input.bindingSignature ?? null,
+        bindingMembers: input.bindingMembers ?? null,
+      })
+      .where(and(eq(e2eeChatKeys.id, key.id), isNull(e2eeChatKeys.signature)));
+  });
+}
+
+/** Keyset position in {@link staleWorkspaceWraps}: the last wrap of the previous page. */
+export const staleWrapCursorInput = z.object({
+  workspaceEpoch: z.number().int(),
+  id: z.string().min(1).max(64),
+});
+
+/**
+ * Owner-only: one page of workspace wraps sealed to a member key older than the current epoch,
+ * for the owner's background rewrap, ordered by `(workspace_epoch, id)`. `cursor` is `null` on the
+ * last page.
+ */
+export async function staleWorkspaceWraps(
+  db: Database,
+  workspace: ChatWorkspace,
+  input: { cursor?: z.output<typeof staleWrapCursorInput> | null; limit: number },
+) {
+  const { cursor } = input;
+  const limit = Math.min(input.limit, MAX_REWRAP_PAGE);
+  const rows = await db
+    .select()
+    .from(e2eeChatKeyWraps)
+    .where(
+      and(
+        eq(e2eeChatKeyWraps.workspace, workspace.id),
+        gt(e2eeChatKeyWraps.workspaceEpoch, 0),
+        lt(e2eeChatKeyWraps.workspaceEpoch, workspace.keyEpoch ?? 0),
+        cursor
+          ? sql`(${e2eeChatKeyWraps.workspaceEpoch}, ${e2eeChatKeyWraps.id}) > (${cursor.workspaceEpoch}, ${cursor.id})`
+          : undefined,
+      ),
+    )
+    .orderBy(asc(e2eeChatKeyWraps.workspaceEpoch), asc(e2eeChatKeyWraps.id))
+    .limit(limit + 1);
+  const page = rows.slice(0, limit);
+  const last = page.at(-1);
+  return {
+    page: page.map(chatWrapWire),
+    cursor:
+      rows.length > limit && last ? { workspaceEpoch: last.workspaceEpoch!, id: last.id } : null,
+  };
+}
+
+/**
+ * Owner-only: replaces stale workspace wraps with wraps of the same chat epoch sealed to the
+ * current member key. The owner's wrap replaces any junk stored for the same recipient; a stale
+ * wrap of a chat that left workspace scope is dropped instead. Holds the workspace row lock, so
+ * the current epoch cannot move during the replacement.
+ */
+export async function replaceWorkspaceWraps(
+  db: Database,
+  workspaceId: string,
+  userId: string,
+  replacements: { oldWrap: string; wrap: WrapInput }[],
+): Promise<void> {
+  if (replacements.length > MAX_REWRAP_PAGE) invalidKeys();
+  await db.transaction(async (tx) => {
+    const workspace = await lockWorkspaceKeys(tx, workspaceId, userId, true);
+    for (const { oldWrap, wrap } of replacements) {
+      const [old] = await tx
+        .select()
+        .from(e2eeChatKeyWraps)
+        .where(and(eq(e2eeChatKeyWraps.id, oldWrap), eq(e2eeChatKeyWraps.workspace, workspace.id)));
+      if (
+        !old ||
+        old.recipient !== "workspace" ||
+        !old.workspaceEpoch ||
+        old.workspaceEpoch >= (workspace.keyEpoch ?? 0) ||
+        wrap.recipient !== "workspace" ||
+        wrap.chatEpoch !== old.chatEpoch ||
+        wrap.recipientKeyId === old.recipientKeyId
+      ) {
+        invalidKeys();
+      }
+      const access = await chatAccess(tx, workspace.ownerId, old.chat, "share");
+      if (access?.chat.scope === "workspace") {
+        await validateChatWraps(tx, access.chat, workspace, [], [wrap], [old.chatEpoch]);
+        if ((await insertChatWraps(tx, access.chat, workspace, [wrap], workspace.ownerId)) === 0) {
+          continue;
+        }
+      }
+      // Replaced, or the chat no longer needs workspace wraps.
+      await tx.delete(e2eeChatKeyWraps).where(eq(e2eeChatKeyWraps.id, old.id));
+    }
+  });
 }

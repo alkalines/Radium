@@ -31,7 +31,7 @@ async function digest(text: string) {
  * names, otherwise the connection's peer. Forwarding headers a client can set
  * (`x-forwarded-for`, `x-real-ip`, `cf-connecting-ip`, …) are never read.
  */
-async function clientAddress(
+export async function clientAddress(
   request: Request,
   peerAddress: string | null,
   proxySecret: string | undefined,

@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Database } from "../drivers/types";
-import { workerGateway, workers } from "./schema";
+import { workerEnrollments, workerGateway, workers } from "./schema";
 
 /**
  * Which of `workerIds` are active (not revoked) Workers of `workspace`. Unknown ids and other
@@ -27,6 +27,16 @@ export async function activeWorkspaceWorkers(
   return new Set(rows.map((row) => row.id));
 }
 
+/** Ids of the active Workers of `workspace`, at most `limit`. */
+export async function activeWorkerIds(db: Database, workspace: string, limit: number) {
+  const rows = await db
+    .select({ id: workers.id })
+    .from(workers)
+    .where(and(eq(workers.workspace, workspace), eq(workers.status, "active")))
+    .limit(limit);
+  return rows.map((row) => row.id);
+}
+
 /** Names of the given Workers of `workspace`, by id (revoked Workers included). */
 export async function workerNames(
   db: Database,
@@ -39,6 +49,23 @@ export async function workerNames(
     .from(workers)
     .where(and(eq(workers.workspace, workspace), inArray(workers.id, [...workerIds])));
   return new Map(rows.map((row) => [row.id, row.name]));
+}
+
+/**
+ * A setup enrollment of `workspace` with the identity it produced once completed (`null` while
+ * pending or revoked); `undefined` for unknown ids and other workspaces' enrollments.
+ */
+export async function workspaceEnrollment(db: Database, workspace: string, enrollmentId: string) {
+  const [row] = await db
+    .select({
+      id: workerEnrollments.id,
+      state: workerEnrollments.state,
+      completionWorker: workerEnrollments.completionWorker,
+      completionKey: workerEnrollments.completionKey,
+    })
+    .from(workerEnrollments)
+    .where(and(eq(workerEnrollments.id, enrollmentId), eq(workerEnrollments.workspace, workspace)));
+  return row;
 }
 
 /**

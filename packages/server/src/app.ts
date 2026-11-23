@@ -2,7 +2,7 @@ import { trpcServer } from "@hono/trpc-server";
 import { Hono } from "hono";
 import { mountFileRoutes } from "./chatroom/files-http";
 import { handleChat } from "./chatroom/run";
-import { prepareAuthRequest } from "./auth/ingress";
+import { clientAddress, prepareAuthRequest } from "./auth/ingress";
 import { disableIdleTimeout, mountGatewayRoutes } from "./gateway/http";
 import type { Runtime } from "./runtime";
 import { appRouter } from "./trpc/router";
@@ -35,8 +35,7 @@ export function createApp(resolveRuntime: () => Promise<Runtime>): App {
     const prepared = await prepareAuthRequest(c.req.raw, {
       siteUrl: runtime.config.SITE_URL,
       proxySecret: runtime.config.AUTH_PROXY_SECRET,
-      // srvx (Nitro's server layer) exposes the connection's peer address on the request.
-      peerAddress: (c.req.raw as Request & { ip?: string }).ip ?? null,
+      peerAddress: peerAddress(c.req.raw),
     });
     if (prepared instanceof Response) {
       return prepared;
@@ -56,10 +55,15 @@ export function createApp(resolveRuntime: () => Promise<Runtime>): App {
     trpcServer({
       endpoint: "/api/trpc",
       router: appRouter,
-      createContext: (_options, c) => ({
-        runtime: c.get("runtime") as Runtime,
-        headers: c.req.raw.headers,
-      }),
+      createContext: (_options, c) => {
+        const runtime = c.get("runtime") as Runtime;
+        return {
+          runtime,
+          headers: c.req.raw.headers,
+          clientAddress: () =>
+            clientAddress(c.req.raw, peerAddress(c.req.raw), runtime.config.AUTH_PROXY_SECRET),
+        };
+      },
       onError: ({ error, path }) => {
         if (error.code === "INTERNAL_SERVER_ERROR") {
           console.error(`tRPC ${path ?? "?"} failed:`, internalErrorSummary(error.cause));
@@ -69,6 +73,11 @@ export function createApp(resolveRuntime: () => Promise<Runtime>): App {
   );
 
   return app;
+}
+
+/** The connection's peer address: srvx (Nitro's server layer) exposes it on the request. */
+function peerAddress(request: Request): string | null {
+  return (request as Request & { ip?: string }).ip ?? null;
 }
 
 /**
