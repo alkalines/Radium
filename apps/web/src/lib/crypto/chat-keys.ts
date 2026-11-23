@@ -1,7 +1,7 @@
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { AcpSignedBinding } from "contracts/acp/contract";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "backend/convex/_generated/api";
+import { trpcClient } from "@/lib/trpc-client";
 import {
   chatKeyBindingStatement,
   chatKeyStatement,
@@ -98,6 +98,27 @@ export type WrapRowWire = {
   recipientKeyId: string;
   sealed: ArrayBuffer;
 };
+
+const text = (value: ArrayBuffer | Uint8Array) => toBase64Url(bytes(value));
+/**
+ * The one conversion point from this module's Convex wire (`ArrayBuffer`) to the backend's tRPC
+ * wire (unpadded base64url text) for `chats.create`, `chats.fork` and `chats.setScope`.
+ */
+export function epochToTrpc(epoch: ChatKeysSetupWire["epoch"]) {
+  const { publicKey, signature, bindingSignature, ...rest } = epoch;
+  return {
+    ...rest,
+    publicKey: text(publicKey),
+    ...(signature ? { signature: text(signature) } : {}),
+    ...(bindingSignature ? { bindingSignature: text(bindingSignature) } : {}),
+  };
+}
+export function wrapsToTrpc(wraps: WrapWire[]) {
+  return wraps.map((wrap) => ({ ...wrap, sealed: text(wrap.sealed) }));
+}
+export function chatKeysToTrpc(keys: ChatKeysSetupWire) {
+  return { e2eeId: keys.e2eeId, epoch: epochToTrpc(keys.epoch), wraps: wrapsToTrpc(keys.wraps) };
+}
 type ChatKeysState = FunctionReturnType<typeof api.e2ee.chatKeys>;
 type EpochRow = ChatKeysState["epochs"][number];
 /**
@@ -625,7 +646,7 @@ export async function openRowSeed(input: {
   chatId: Id<"aisdk_chats">;
   workspaceId: Id<"workspaces">;
   e2eeId: string;
-  wrap: WrapRowWire;
+  wrap: Pick<WrapRowWire, "chatEpoch">;
 }): Promise<Uint8Array> {
   return openChatSeed(input.chatId, input.wrap.chatEpoch);
 }
@@ -1060,15 +1081,14 @@ export async function prepareCustodyRelease(chatId: Id<"aisdk_chats">): Promise<
 /**
  * Changes audience. Every actual change of scope or picked members starts a fresh epoch bound to
  * the next policy, so no earlier binding ever certifies a new audience; every historical epoch is
- * also wrapped for the new audience, so added readers get the complete history. An ACP chat with
- * keys passes `acpBinding`: the creator's re-signed binding (version + 1) for the new scope and
- * members, stored in the same mutation so the Worker never sees keys without it.
+ * also wrapped for the new audience, so added readers get the complete history. The backend's
+ * `chats.setScope` carries no ACP binding yet, so a keyed ACP Session's re-signed binding cannot
+ * travel with the key change (the ACP Session screen refuses that change).
  */
 export async function changeChatScope(input: {
   chatId: Id<"aisdk_chats">;
   scope: ChatScope;
   members?: string[];
-  acpBinding?: AcpSignedBinding;
 }): Promise<void> {
   const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId: input.chatId });
   if (state.creatorId !== currentUserId())
@@ -1080,7 +1100,7 @@ export async function changeChatScope(input: {
       : [];
   const next = chatPolicy(input.scope, state.creatorId, members);
   if (!state.e2eeId || !state.keyEpoch || samePolicy(next, servedPolicy(state))) {
-    await cryptoClient().mutation(api.aisdk.SetChatScope, input);
+    await trpcClient().chats.setScope.mutate(input);
     return;
   }
   const audience = await chatAudience({
@@ -1117,9 +1137,9 @@ export async function changeChatScope(input: {
           audience,
         })),
       );
-    await cryptoClient().mutation(api.aisdk.SetChatScope, {
+    await trpcClient().chats.setScope.mutate({
       ...input,
-      keys: { rotate: fresh.wire, wraps },
+      keys: { rotate: epochToTrpc(fresh.wire), wraps: wrapsToTrpc(wraps) },
     });
   } catch (error) {
     forgetDeviceEpoch(state.e2eeId, epoch);

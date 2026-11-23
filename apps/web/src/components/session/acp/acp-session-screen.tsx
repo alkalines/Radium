@@ -9,9 +9,8 @@ import {
 } from "react";
 import type { UIMessage } from "ai";
 import { convexQuery } from "@convex-dev/react-query";
-import { skipToken, useQuery } from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useMutation } from "convex/react";
 import { AnimatePresence } from "motion/react";
 import { ArchiveXIcon, KeyRoundIcon, ServerOffIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -53,7 +52,7 @@ import { AcpElicitationPrompt } from "./elicitation-prompt";
 import { AcpPermissionPrompt } from "./permission-prompt";
 import { useAcpSession } from "./use-acp-session";
 import { AcpSessionFolder } from "./session-folder";
-import { repairAcpBinding, signAcpBinding } from "./acp-crypto";
+import { repairAcpBinding } from "./acp-crypto";
 import { openTitle } from "@/lib/crypto/chat-content";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 import { openHistoricalChat } from "@/lib/crypto/legacy-chat";
@@ -61,6 +60,7 @@ import { changeChatScope, ensureChatKeys } from "@/lib/crypto/chat-keys";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { authClient } from "@/lib/auth-client";
 import { useTrpc } from "@/lib/trpc";
+import { isTrpcRefusal, retryTransient } from "@/lib/trpc-error";
 
 function subscribeVisibility(onChange: () => void) {
   document.addEventListener("visibilitychange", onChange);
@@ -97,10 +97,14 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   const navigate = useNavigate();
   const { workspaces } = useWorkspace();
   const trpc = useTrpc();
-  const { data: chatResult, error: chatError } = useQuery(
-    convexQuery(api.aisdk.GetChat, { chatId }),
+  const queryClient = useQueryClient();
+  const { data: chatData, error: chatError } = useQuery(
+    trpc.chats.get.queryOptions({ chatId }, { retry: retryTransient }),
   );
-  const chat = typeof chatResult === "string" ? undefined : chatResult;
+  const chat = useMemo(
+    () => chatData && { ...chatData, workspace: chatData.workspace as Id<"workspaces"> },
+    [chatData],
+  );
   const keyStatus = useKeyStatus();
   useEffect(() => {
     if (!isVisible || keyStatus.state !== "unlocked") return;
@@ -121,7 +125,10 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
       toast.error("Could not bind this Session to its Worker.");
     });
   }, [chatId, isVisible, keyStatus, needsBinding, legacyNeedsImport]);
-  const unavailable = Boolean(chatError || acp.sessionError) || typeof chatResult === "string";
+  // A refusal is final; a network failure only counts while nothing has loaded yet.
+  const unavailable =
+    (chatError !== null && (isTrpcRefusal(chatError) || chat === undefined)) ||
+    Boolean(acp.sessionError);
   const { data: projectsData } = useQuery(
     trpc.projects.list.queryOptions(chat ? { workspace: chat.workspace } : skipToken),
   );
@@ -135,12 +142,11 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   );
   // Same workspace preference as built-in Sessions, so both threads render steps alike.
   const { data: chainOfThoughtEnabled = true } = useQuery(
-    convexQuery(
-      api.chatroom.getChainOfThoughtEnabled,
-      chat ? { workspace: chat.workspace } : "skip",
+    trpc.chatroom.getChainOfThoughtEnabled.queryOptions(
+      chat ? { workspace: chat.workspace } : skipToken,
     ),
   );
-  const setChatScope = useMutation(api.aisdk.SetChatScope);
+  const { mutateAsync: setChatScope } = useMutation(trpc.chats.setScope.mutationOptions());
   const { data: keyState } = useQuery(convexQuery(api.e2ee.chatKeys, { chatId }));
   const { data: workspaceKeyState } = useQuery(
     convexQuery(api.e2ee.workspaceKeyState, chat ? { workspace: chat.workspace } : "skip"),
@@ -176,7 +182,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     };
   }, [projectKnown, selectedProject]);
   // Keyed Sessions carry a sealed title (like built-in chats); legacy ones a plaintext title.
-  const [openedTitle, setOpenedTitle] = useState<{ box: ArrayBuffer; title: string }>();
+  const [openedTitle, setOpenedTitle] = useState<{ box: string; title: string }>();
   useEffect(() => {
     const sealed = chat?.sealedTitle;
     if (!chat?.e2eeId || !sealed) return;
@@ -332,32 +338,20 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     setScopeSaving(true);
     try {
       if (chat.e2eeId && session) {
-        const audience = scope === "shared" ? members : [];
-        // A keyed Session's binding names its audience, so every change re-signs it (version + 1)
-        // and travels with the key change in one mutation.
-        const acpBinding = acp.signed
-          ? await signAcpBinding({
-              workspaceId: chat.workspace,
-              chatId,
-              e2eeId: chat.e2eeId,
-              workerId: session.agent.worker,
-              agentId: session.agent.agentId,
-              profile: session.agent.profile,
-              cwd: session.agent.cwd,
-              scope,
-              members: audience,
-              version: (session.binding?.version ?? 0) + 1,
-            })
-          : undefined;
+        // A signed keyed Session's binding names its audience and would have to be re-signed with
+        // the key change; `chats.setScope` carries no ACP binding yet (ACP slice).
+        if (acp.signed) {
+          throw new Error("Visibility of this encrypted agent Session cannot be changed yet.");
+        }
         await changeChatScope({
           chatId,
           scope,
-          members: scope === "shared" ? audience : undefined,
-          acpBinding,
+          members: scope === "shared" ? members : undefined,
         });
       } else {
         await setChatScope({ chatId, scope });
       }
+      await queryClient.invalidateQueries({ queryKey: trpc.chats.pathKey() });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to update Session visibility.");
     } finally {

@@ -5,6 +5,7 @@ import type { FunctionReturnType } from "convex/server";
 import { FolderIcon, MessageSquareDashedIcon, RefreshCwIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { fromBase64Url } from "radium-crypto";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { isWorkerOnline } from "contracts/worker/presence";
@@ -36,7 +37,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { sealTitle } from "@/lib/crypto/chat-content";
 import { createChatKeys, rememberChatSeed } from "@/lib/crypto/chat-keys";
 import { KeysLockedError } from "@/lib/crypto/key-manager";
-import { cryptoClient } from "@/lib/crypto/runtime";
+import { buffer, cryptoClient } from "@/lib/crypto/runtime";
 import { openHistoricalAgentTitle } from "@/lib/crypto/legacy-relay";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { formatRelativeTime, groupByRecency } from "./recency";
@@ -185,7 +186,13 @@ export function useOpenAgentSession() {
       worker: row.worker,
       agentId: row.agentId,
       sessionId: row.sessionId,
-      e2ee: { keys: keys.keys, ...(sealedTitle ? { sealedTitle } : {}) },
+      // `acp.OpenAgentSession` still runs on Convex, whose bytes are `ArrayBuffer`s.
+      e2ee: {
+        keys: keys.keys,
+        ...(sealedTitle
+          ? { sealedTitle: { epoch: sealedTitle.epoch, box: buffer(fromBase64Url(sealedTitle.box)) } }
+          : {}),
+      },
     });
     // Another client may have opened the session first; then the chat has its own keys and
     // binding, and ours are discarded.

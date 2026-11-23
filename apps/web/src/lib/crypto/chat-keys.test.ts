@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { ConvexReactClient } from "convex/react";
 import { getFunctionName, type FunctionReference } from "convex/server";
 import type { Id } from "backend/convex/_generated/dataModel";
+import * as trpcClientModule from "@/lib/trpc-client";
 import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import {
   chatKeyBindingStatement,
@@ -17,6 +18,7 @@ import {
   randomBytes,
   sealBox,
   sign,
+  fromBase64Url,
   toBase64Url,
   verify,
   type IdentityKeys,
@@ -134,6 +136,35 @@ function backend(input: {
       return null;
     },
   } as unknown as ConvexReactClient);
+  // `chats.setScope` takes base64url bytes; the assertions below read the module's own wire shape.
+  const buf = (value: unknown) => fromBase64Url(value as string).slice().buffer as ArrayBuffer;
+  const fromTrpcEpoch = (epoch: Record<string, unknown>) => ({
+    ...epoch,
+    publicKey: buf(epoch.publicKey),
+    ...(epoch.signature ? { signature: buf(epoch.signature) } : {}),
+    ...(epoch.bindingSignature ? { bindingSignature: buf(epoch.bindingSignature) } : {}),
+  });
+  spyOn(trpcClientModule, "trpcClient").mockReturnValue({
+    chats: {
+      setScope: {
+        mutate: async (args: Record<string, unknown>) => {
+          const keys = args.keys as { rotate: Record<string, unknown>; wraps: Array<Record<string, unknown>> } | undefined;
+          const wireArgs = keys
+            ? {
+                ...args,
+                keys: {
+                  rotate: fromTrpcEpoch(keys.rotate),
+                  wraps: keys.wraps.map((wrap) => ({ ...wrap, sealed: buf(wrap.sealed) })),
+                },
+              }
+            : args;
+          mutations.push({ name: "aisdk:SetChatScope", args: wireArgs });
+          input.onMutation?.("aisdk:SetChatScope", wireArgs);
+          return { scope: args.scope };
+        },
+      },
+    },
+  } as never);
   return mutations;
 }
 

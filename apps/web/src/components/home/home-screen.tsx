@@ -1,11 +1,12 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { convexQuery } from "@convex-dev/react-query";
-import { skipToken, useQuery } from "@tanstack/react-query";
+import { skipToken, useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useMutation } from "convex/react";
+import type { inferRouterOutputs } from "@trpc/server";
 import type { FunctionReturnType } from "convex/server";
 import { ConvexError } from "convex/values";
 import { usePaginatedQuery } from "convex-helpers/react/cache";
+import type { AppRouter } from "server/router";
 import {
   FolderMinusIcon,
   FolderPlusIcon,
@@ -61,15 +62,15 @@ import {
   useOpenAgentSession,
   useSyncAgentSessions,
 } from "./agent-sessions";
-import { HOME_PAGE_SIZE, useMergedPages, type PagedSource } from "./merged-pages";
+import { HOME_PAGE_SIZE, useMergedPages, type PageStatus, type PagedSource } from "./merged-pages";
 import { formatRelativeTime, groupByRecency } from "./recency";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
-import { openRowSeed, type WrapWire } from "@/lib/crypto/chat-keys";
+import { openRowSeed } from "@/lib/crypto/chat-keys";
 import { openTitle } from "@/lib/crypto/chat-content";
 import { KeysLockedError } from "@/lib/crypto/key-manager";
 import { CustodialContentError, openLegacyContent } from "@/lib/crypto/legacy-content";
 
-type HomeSession = FunctionReturnType<typeof api.aisdk.ListPinnedChats>[number];
+type HomeSession = inferRouterOutputs<AppRouter>["chats"]["listPinned"][number];
 type UnopenedAgentSession = FunctionReturnType<
   typeof api.acp.ListUnopenedAgentSessions
 >["page"][number];
@@ -569,15 +570,32 @@ function SessionList({
   workers: SessionWorker[] | undefined;
   empty: ReactNode;
 }) {
+  const trpc = useTrpc();
   const filter = { workspace: workspaceId, project: projectFilter };
+  // Home reads refetch on focus and after this tab's chat mutations and finished runs; a chat
+  // changed by another client appears on the next refetch.
   const { data: pinned, error: pinnedError } = useQuery({
-    ...convexQuery(api.aisdk.ListPinnedChats, filter),
+    ...trpc.chats.listPinned.queryOptions(filter),
     gcTime: 5 * minute,
   });
-  const chats = usePaginatedQuery(api.aisdk.ListChats, filter, {
-    initialNumItems: HOME_PAGE_SIZE,
-    customPagination: true,
-  });
+  const chatPages = useInfiniteQuery(
+    trpc.chats.list.infiniteQueryOptions(
+      { ...filter, limit: HOME_PAGE_SIZE },
+      {
+        initialCursor: null,
+        getNextPageParam: (last) => last.nextCursor,
+        gcTime: 5 * minute,
+      },
+    ),
+  );
+  const chatItems = useMemo(
+    () => chatPages.data?.pages.flatMap((page) => page.page) ?? [],
+    [chatPages.data],
+  );
+  let chatStatus: PageStatus = "Exhausted";
+  if (chatPages.isPending) chatStatus = "LoadingFirstPage";
+  else if (chatPages.isFetchingNextPage) chatStatus = "LoadingMore";
+  else if (chatPages.hasNextPage) chatStatus = "CanLoadMore";
   const agentSessions = usePaginatedQuery(
     api.acp.ListUnopenedAgentSessions,
     isOwner ? filter : "skip",
@@ -587,9 +605,9 @@ function SessionList({
   const agentSessionTitle = useAgentSessionTitles(workspaceId, agentSessions.results);
   const keyStatus = useKeyStatus();
   const [openedTitles, setOpenedTitles] = useState<
-    Record<string, { box: ArrayBuffer; title: string; emoji?: string }>
+    Record<string, { box: string; title: string; emoji?: string }>
   >({});
-  const titleRows = useMemo(() => [...(pinned ?? []), ...chats.results], [pinned, chats.results]);
+  const titleRows = useMemo(() => [...(pinned ?? []), ...chatItems], [pinned, chatItems]);
   useEffect(() => {
     if (keyStatus.state !== "unlocked") {
       setOpenedTitles((current) => (Object.keys(current).length ? {} : current));
@@ -604,7 +622,7 @@ function SessionList({
           try {
             const value = await openLegacyContent<{ title?: string; emoji?: string }>(
               session.legacyContent,
-              { table: "aisdk_chats", record: session.id, workspace: workspaceId, chatId: session.id },
+              { table: "aisdk_chats", record: session.id, workspace: workspaceId, chatId: session.id as Id<"aisdk_chats"> },
             );
             return [session.id, { title: value.title ?? "Untitled session", emoji: value.emoji, box }] as const;
           } catch (error) {
@@ -622,20 +640,12 @@ function SessionList({
           return undefined;
         }
         try {
-          const row = encrypted.wrap;
-          let wrap: WrapWire;
-          if (row.recipient === "identity" && row.userId) {
-            wrap = { ...row, recipient: "identity", userId: row.userId };
-          } else if (row.recipient === "workspace" && row.workspaceEpoch !== undefined) {
-            wrap = { ...row, recipient: "workspace", workspaceEpoch: row.workspaceEpoch };
-          } else {
-            throw new Error("Invalid title key wrap.");
-          }
+          // Only the epoch of the title's wrap selects the seed; `openRowSeed` verifies the epoch.
           const seed = await openRowSeed({
-            chatId: session.id,
+            chatId: session.id as Id<"aisdk_chats">,
             workspaceId,
             e2eeId: encrypted.e2eeId,
-            wrap,
+            wrap: { chatEpoch: encrypted.wrap.chatEpoch },
           });
           const title = await openTitle(encrypted.title, {
             workspaceId,
@@ -668,16 +678,17 @@ function SessionList({
     const opened = unlocked ? openedTitles[session.id] : undefined;
     // Mixed legacy rows retain plaintext titles until the content migration seals them.
     const title = unlocked ? (opened?.title ?? session.title ?? "Encrypted session") : "Locked";
-    return { ...session, title, emoji: unlocked ? (opened?.emoji ?? session.emoji) : undefined };
+    return { ...session, title, emoji: unlocked ? (opened?.emoji ?? session.emoji) : null };
   };
   if (pinnedError) throw pinnedError;
+  if (chatPages.error && !chatPages.data) throw chatPages.error;
 
   const definitionsById = new Map((definitions ?? []).map((agent) => [agent.agentId, agent]));
   const sources: PagedSource<HomeRow>[] = [
     {
-      items: chats.results.map((session) => chatRow(displaySession(session))),
-      status: chats.status,
-      loadMore: chats.loadMore,
+      items: chatItems.map((session) => chatRow(displaySession(session))),
+      status: chatStatus,
+      loadMore: () => void chatPages.fetchNextPage(),
     },
     isOwner
       ? {
@@ -731,7 +742,7 @@ function SessionList({
                   key={row.id}
                   session={row.session}
                   workspaceId={workspaceId}
-                  project={row.session.project ? projectsById.get(row.session.project) : undefined}
+                  project={row.session.project ? projectsById.get(row.session.project as Id<"projects">) : undefined}
                   projects={projects}
                   now={now}
                   offline={
@@ -829,7 +840,10 @@ function SessionRow({
       ) : null}
       {offline ? <span className="shrink-0 text-xs text-muted-foreground">Offline</span> : null}
       {session.canAct ? (
-        <SessionActionsMenu session={{ ...session, workspace: workspaceId }} projects={projects} />
+        <SessionActionsMenu
+          session={{ ...session, id: session.id as Id<"aisdk_chats">, workspace: workspaceId }}
+          projects={projects}
+        />
       ) : (
         // Keeps the time aligned with Rows that have a menu.
         <span aria-hidden="true" className="size-6 shrink-0" />

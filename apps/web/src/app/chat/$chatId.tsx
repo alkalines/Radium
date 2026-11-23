@@ -1,8 +1,5 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 
-import { api } from "backend/convex/_generated/api";
-import type { Id } from "backend/convex/_generated/dataModel";
 import { requireSession } from "@/lib/require-session";
 
 /**
@@ -24,11 +21,8 @@ export const Route = createFileRoute("/chat/$chatId")({
     return { session };
   },
   loader: async ({ context: { queryClient, trpc }, params: { chatId } }) => {
-    const id = chatId as Id<"aisdk_chats">;
-    const chat = queryClient.prefetchQuery(convexQuery(api.aisdk.GetChat, { chatId: id }));
-    const messages = queryClient.prefetchQuery(
-      convexQuery(api.aisdk.GetChatMessages, { chatId: id }),
-    );
+    const chat = queryClient.prefetchQuery(trpc.chats.get.queryOptions({ chatId }));
+    const messages = queryClient.prefetchQuery(trpc.chats.messages.queryOptions({ chatId }));
     void queryClient.prefetchQuery(trpc.auth.me.queryOptions());
 
     // The Session screen renders a spinner until the chat and its messages load. Streamed results

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { MCP_AUTH_TYPES, MCP_BEARER_SECRET_KEY, type McpAuthType } from "contracts/chatroom/tools";
@@ -23,16 +23,16 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import { useTrpc } from "@/lib/trpc";
 
 /** An MCP server being edited, or `null` when creating a new one. */
 export type McpServerEditTarget = {
-  _id: Id<"mcp_servers">;
+  id: string;
   name: string;
   url: string;
   auth: { type: McpAuthType };
-  preview?: Record<string, string>;
+  preview?: Record<string, string> | null;
   hasSecret: boolean;
   codeMode: boolean;
 } | null;
@@ -53,8 +53,10 @@ export function McpServerDialog({
   workspaceId: Id<"workspaces"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
-  const createServer = useMutation(api.aisdk_tools.createMcpServer);
-  const updateServer = useMutation(api.aisdk_tools.updateMcpServer);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const createServer = useMutation(trpc.tools.createMcpServer.mutationOptions());
+  const updateServer = useMutation(trpc.tools.updateMcpServer.mutationOptions());
 
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -86,9 +88,9 @@ export function McpServerDialog({
     setSubmitting(true);
     try {
       if (isEditing) {
-        await updateServer({
+        await updateServer.mutateAsync({
           workspace: workspaceId,
-          server: target._id,
+          server: target.id,
           name: name.trim(),
           url: url.trim(),
           auth: { type: authType },
@@ -97,7 +99,7 @@ export function McpServerDialog({
         });
         toast.success(`Updated ${name.trim()}.`);
       } else {
-        await createServer({
+        await createServer.mutateAsync({
           workspace: workspaceId,
           name: name.trim(),
           url: url.trim(),
@@ -107,6 +109,7 @@ export function McpServerDialog({
         });
         toast.success(`Added ${name.trim()}.`);
       }
+      await queryClient.invalidateQueries({ queryKey: trpc.tools.pathKey() });
       onOpenChange(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to save MCP server.");

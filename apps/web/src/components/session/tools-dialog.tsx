@@ -1,12 +1,9 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ServerIcon, SettingsIcon, WrenchIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { BUILTIN_TOOL_SETS, type ToolSelection } from "contracts/chatroom/tools";
 import type { ChatWorkerSelection } from "contracts/worker/chat-config";
@@ -34,6 +31,7 @@ import { InputGroupButton } from "@/components/ui/input-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useTrpc } from "@/lib/trpc";
 
 /**
  * The Composer's Tools control: a toolbar wrench button that opens a Dialog. Built-in and Worker
@@ -41,7 +39,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
  * follow as their own group.
  *
  * - Saved chat (`chatId`): built-in/MCP toggles write the chat's own override through
- *   `api.chatroom.setChatTools` (reading `getChatTools`, which falls back to the workspace
+ *   `chatroom.setChatTools` (reading `getChatTools`, which falls back to the workspace
  *   defaults until the first change).
  * - Draft: toggles only call `onDraftToolsChange`; `draftTools` is `null` until the user changes
  *   something and the Dialog then shows the workspace defaults. Drafts never write defaults.
@@ -96,16 +94,34 @@ function EnabledToolsDialog({
   onWorkerSelectionChange,
 }: ToolsDialogProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
   const { data: servers } = useQuery(
-    convexQuery(api.aisdk_tools.listMcpServers, workspace ? { workspace } : "skip"),
+    trpc.tools.listMcpServers.queryOptions(workspace ? { workspace } : skipToken),
   );
   const { data: chatTools } = useQuery(
-    convexQuery(api.chatroom.getChatTools, chatId ? { chatId } : "skip"),
+    trpc.chatroom.getChatTools.queryOptions(chatId ? { chatId } : skipToken),
   );
   const { data: defaults } = useQuery(
-    convexQuery(api.chatroom.getToolDefaults, !chatId && workspace ? { workspace } : "skip"),
+    trpc.chatroom.getToolDefaults.queryOptions(!chatId && workspace ? { workspace } : skipToken),
   );
-  const setChatTools = useMutation(api.chatroom.setChatTools);
+  // Optimistic so a quick second toggle builds on the first instead of the stale server list.
+  const setChatTools = useMutation(
+    trpc.chatroom.setChatTools.mutationOptions({
+      onMutate: (args) => {
+        queryClient.setQueryData(
+          trpc.chatroom.getChatTools.queryKey({ chatId: args.chatId }),
+          (current) => current && { ...current, ...args.selection },
+        );
+      },
+      onSettled: () => {
+        if (queryClient.isMutating({ mutationKey: trpc.chatroom.setChatTools.mutationKey() }) > 1) {
+          return;
+        }
+        return queryClient.invalidateQueries({ queryKey: trpc.chatroom.pathKey() });
+      },
+    }),
+  );
 
   let selection: ToolSelection | undefined = defaults;
   if (chatId) {
@@ -124,12 +140,11 @@ function EnabledToolsDialog({
     }
 
     try {
-      await setChatTools({
+      await setChatTools.mutateAsync({
         chatId,
-        // MCP server ids round-trip as strings and are narrowed back to ids by Convex.
         selection: {
           builtinToolSets: next.builtinToolSets,
-          mcpServers: next.mcpServers as Id<"mcp_servers">[],
+          mcpServers: next.mcpServers,
         },
       });
     } catch (error) {
@@ -243,18 +258,18 @@ function EnabledToolsDialog({
             ) : null}
             {servers?.map((server) => (
               <Row
-                key={server._id}
+                key={server.id}
                 icon={ServerIcon}
                 title={server.name}
                 description={<span className="font-mono text-[13px]">{server.url}</span>}
               >
                 <Tag>{server.codeMode ? "Code Mode" : "Direct"}</Tag>
                 <Switch
-                  checked={selection?.mcpServers.includes(server._id) ?? false}
+                  checked={selection?.mcpServers.includes(server.id) ?? false}
                   disabled={!selection}
                   aria-label={`Use ${server.name}`}
                   onCheckedChange={(checked) => {
-                    if (selection) toggleServer(selection, server._id, checked);
+                    if (selection) toggleServer(selection, server.id, checked);
                   }}
                 />
               </Row>

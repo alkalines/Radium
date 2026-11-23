@@ -26,7 +26,7 @@ import { signAsUser } from "@/lib/crypto/workers";
  * device is locked.
  */
 
-/** The chat's Worker target as the browser read it from `aisdk.GetChat`. */
+/** The chat's Worker target as the browser read it from `chats.get`. */
 export type WorkerAuthorizationTarget = {
   workspaceId: Id<"workspaces">;
   chatId: Id<"aisdk_chats">;
@@ -85,7 +85,7 @@ export async function signToolApproval(
  * Sign the standing grant (`toolGrantStatement`, `issuedAt` = now) for the selection's tools that
  * need no per-call approval, bound to the chat's receipt audience (not its epoch, so rotation keeps
  * it valid). Only for a selection the user approved (`workerGrantAction`). Store it with
- * `aisdk.SetChatWorkerGrant`.
+ * `chats.setWorkerGrant` (signature as base64url).
  */
 export async function signToolGrant(
   target: WorkerAuthorizationTarget,

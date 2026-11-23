@@ -52,26 +52,26 @@ export type ChatQueue = {
 };
 
 /** Self-contained title or queue box, with the epoch needed to open it. */
-export type ContentBox = { epoch: number; box: ArrayBuffer };
+export type ContentBox = { epoch: number; box: string };
 
 /** Mixed plaintext/encrypted message entry during the migration. */
 export type MessageEntry = {
   position: number;
-  messageId?: string;
-  revision?: number;
+  messageId?: string | null;
+  revision?: number | null;
   message?: unknown;
-  sealed?: { capsuleId: string; envelope: ArrayBuffer };
+  sealed?: { capsuleId: string; envelope: string } | null;
 };
 
 /** One write batch's capsule, shared by all messages in that batch. */
 export type MessageCapsule = {
   capsuleId: string;
   chatEpoch: number;
-  capsule: ArrayBuffer;
+  capsule: string;
 };
 
-type OpenedMessage = { envelope: ArrayBuffer; message: Promise<UIMessage> };
-type OpenedCapsule = { capsule: ArrayBuffer; key: Promise<Uint8Array> };
+type OpenedMessage = { envelope: Uint8Array; message: Promise<UIMessage> };
+type OpenedCapsule = { capsule: Uint8Array; key: Promise<Uint8Array> };
 const decoder = new TextDecoder("utf-8", { fatal: true });
 let generation = 0;
 const openedMessages = new Map<string, OpenedMessage>();
@@ -165,19 +165,17 @@ export async function openMessages(
         throw new CryptoError("BAD_ENVELOPE", "Missing message capsule");
       }
       const capsuleCacheId = `${chat.workspaceId}:${chat.e2eeId}:${row.chatEpoch}:${row.capsuleId}`;
+      const capsuleBytes = fromBase64Url(row.capsule);
       let openedCapsule = capsuleKeys.get(capsuleCacheId);
-      if (
-        openedCapsule &&
-        !equalBytes(new Uint8Array(openedCapsule.capsule), new Uint8Array(row.capsule))
-      ) {
+      if (openedCapsule && !equalBytes(openedCapsule.capsule, capsuleBytes)) {
         // A capsule id is immutable; accepting a replacement would hide tampering behind the cache.
         throw new CryptoError("BAD_ENVELOPE", "Message capsule changed");
       }
-      const capsule = decodeCapsule(new Uint8Array(row.capsule));
+      const capsule = decodeCapsule(capsuleBytes);
       if (toBase64Url(capsule.capsuleId) !== row.capsuleId) {
         throw new CryptoError("BAD_ENVELOPE", "Capsule id mismatch");
       }
-      const envelope = new Uint8Array(entry.sealed.envelope);
+      const envelope = fromBase64Url(entry.sealed.envelope);
       if (!equalBytes(decodeEnvelope(envelope).keyRef, capsule.capsuleId)) {
         // openSym authenticates the header but does not check that it names the selected capsule.
         throw new CryptoError("BAD_ENVELOPE", "Message capsule mismatch");
@@ -190,13 +188,13 @@ export async function openMessages(
             aad: aad(chat, "e2ee_capsules", String(row.chatEpoch), "capsule"),
           }),
         );
-        openedCapsule = { capsule: row.capsule, key };
+        openedCapsule = { capsule: capsuleBytes, key };
         capsuleKeys.set(capsuleCacheId, openedCapsule);
         void key.catch(() => capsuleKeys.delete(capsuleCacheId));
       }
       const cacheId = `${chat.workspaceId}:${chat.e2eeId}:${entry.messageId}:${entry.revision}`;
       const cached = openedMessages.get(cacheId);
-      if (cached && equalBytes(new Uint8Array(cached.envelope), envelope)) {
+      if (cached && equalBytes(cached.envelope, envelope)) {
         return cached.message;
       }
       const messageId = entry.messageId;
@@ -221,7 +219,7 @@ export async function openMessages(
           plaintext.fill(0);
         }
       })();
-      openedMessages.set(cacheId, { envelope: entry.sealed.envelope, message: opened });
+      openedMessages.set(cacheId, { envelope, message: opened });
       void opened.catch(() => openedMessages.delete(cacheId));
       return opened;
     }),
@@ -247,7 +245,7 @@ export async function sealMessagesForFork(messages: UIMessage[], chat: ChatConte
       messages.map(async (message) => ({
         messageId: message.id,
         capsuleId,
-        envelope: wire(
+        envelope: toBase64Url(
           await sealWithCapsule({
             capsuleKey,
             capsuleId: capsule.capsuleId,
@@ -259,7 +257,7 @@ export async function sealMessagesForFork(messages: UIMessage[], chat: ChatConte
       })),
     );
     return {
-      capsules: [{ capsuleId, chatEpoch: chat.epoch, capsule: wire(encodeCapsule(capsule)) }],
+      capsules: [{ capsuleId, chatEpoch: chat.epoch, capsule: toBase64Url(encodeCapsule(capsule)) }],
       messages: sealed,
     };
   } finally {
@@ -278,7 +276,7 @@ async function sealContent(
     aad: aad(chat, "aisdk_chats", String(chat.epoch), field),
     pad: field === "title" ? "short" : "content",
   });
-  return { epoch: chat.epoch, box: wire(box) };
+  return { epoch: chat.epoch, box: toBase64Url(box) };
 }
 
 async function openContent(
@@ -289,7 +287,7 @@ async function openContent(
   const startGeneration = generation;
   const plaintext = await openBox({
     seed: await seedFor(chat, box.epoch),
-    box: new Uint8Array(box.box),
+    box: fromBase64Url(box.box),
     aad: aad(chat, "aisdk_chats", String(box.epoch), field),
     pad: field === "title" ? "short" : "content",
   });
@@ -375,7 +373,7 @@ export async function encryptFile(file: Blob, chat: ChatContentKey) {
       body: new Blob([wire(encrypted)], { type: "application/octet-stream" }),
       register: {
         fileId,
-        capsule: wire(encodeCapsule(capsule)),
+        capsule: toBase64Url(encodeCapsule(capsule)),
         chatEpoch: chat.epoch,
         e2eeParent: chat.e2eeId,
       },
@@ -454,16 +452,16 @@ export async function decryptFileUrl(url: string, workspaceId: Id<"workspaces">)
 /** Registration metadata of one encrypted upload; contains no file name or object key. */
 export type EncryptedFileRegistration = {
   fileId: string;
-  capsule: ArrayBuffer;
+  capsule: string;
   chatEpoch: number;
   e2eeParent: string;
 };
 
-/** Convex calls an encrypted upload needs; callers bind them to their own client or hooks. */
+/** The calls an encrypted upload needs; callers bind them to their own tRPC client. */
 export type AttachmentTransport = {
-  generateUploadUrl: () => Promise<string>;
+  createUpload: () => Promise<{ id: string; uploadUrl: string; method: "PUT" }>;
   register: (args: {
-    storageId: Id<"_storage">;
+    id: string;
     mediaType?: string;
     e2ee: EncryptedFileRegistration;
   }) => Promise<{ url: string } | null>;
@@ -481,17 +479,17 @@ export async function uploadEncryptedFile(
 ): Promise<FileUIPart> {
   const encrypted = await encryptFile(file, chat);
   try {
-    const response = await fetch(await transport.generateUploadUrl(), {
-      method: "POST",
+    const upload = await transport.createUpload();
+    const response = await fetch(upload.uploadUrl, {
+      method: upload.method,
       headers: { "Content-Type": "application/octet-stream" },
       body: encrypted.body,
     });
     if (!response.ok) {
       throw new Error(`Unable to upload ${file.name} (${response.status}).`);
     }
-    const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
     const registered = await transport.register({
-      storageId,
+      id: upload.id,
       e2ee: encrypted.register,
       // The stored bytes are ciphertext; the declared type is what the model needs.
       ...(file.type ? { mediaType: file.type } : {}),

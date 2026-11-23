@@ -1,7 +1,5 @@
 import { useCallback, useState } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { skipToken, useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDownIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -13,7 +11,6 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { api } from "backend/convex/_generated/api";
 import { useTrpc } from "@/lib/trpc";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { useAccount } from "@/lib/use-account";
@@ -27,37 +24,34 @@ export function PreferencesPanel() {
   const { workspaceId } = useWorkspace();
   const { signedIn, signInRequired, isPending: isAccountPending } = useAccount();
   const trpc = useTrpc();
+  const queryClient = useQueryClient();
   const { data: models } = useQuery(
     trpc.models.availableModels.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
   );
-  const { data: defaultModel } = useQuery(
-    convexQuery(
-      api.chatroom.getModelDefault,
-      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
-    ),
-  );
+  const settingsInput = signedIn && workspaceId ? { workspace: workspaceId } : skipToken;
+  const { data: defaultModel } = useQuery(trpc.chatroom.getModelDefault.queryOptions(settingsInput));
   const { data: titleModel } = useQuery(
-    convexQuery(
-      api.chatroom.getTitleModelDefault,
-      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
-    ),
+    trpc.chatroom.getTitleModelDefault.queryOptions(settingsInput),
   );
   const { data: chainOfThoughtEnabled } = useQuery(
-    convexQuery(
-      api.chatroom.getChainOfThoughtEnabled,
-      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
-    ),
+    trpc.chatroom.getChainOfThoughtEnabled.queryOptions(settingsInput),
   );
   const { data: systemPrompt } = useQuery(
-    convexQuery(
-      api.chatroom.getSystemPromptSettings,
-      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
-    ),
+    trpc.chatroom.getSystemPromptSettings.queryOptions(settingsInput),
   );
-  const setModelDefault = useMutation(api.chatroom.setModelDefault);
-  const setTitleModelDefault = useMutation(api.chatroom.setTitleModelDefault);
-  const setChainOfThoughtEnabled = useMutation(api.chatroom.setChainOfThoughtEnabled);
-  const setSystemPromptSettings = useMutation(api.chatroom.setSystemPromptSettings);
+  const saved = { onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.chatroom.pathKey() }) };
+  const { mutateAsync: setModelDefault } = useMutation(
+    trpc.chatroom.setModelDefault.mutationOptions(saved),
+  );
+  const { mutateAsync: setTitleModelDefault } = useMutation(
+    trpc.chatroom.setTitleModelDefault.mutationOptions(saved),
+  );
+  const { mutateAsync: setChainOfThoughtEnabled } = useMutation(
+    trpc.chatroom.setChainOfThoughtEnabled.mutationOptions(saved),
+  );
+  const { mutateAsync: setSystemPromptSettings } = useMutation(
+    trpc.chatroom.setSystemPromptSettings.mutationOptions(saved),
+  );
 
   const [open, setOpen] = useState(false);
   const [titleOpen, setTitleOpen] = useState(false);

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
 import type { Id } from "backend/convex/_generated/dataModel";
-import { generateEncryptionKeyPair, randomBytes, toBase64Url } from "radium-crypto";
+import { fromBase64Url, generateEncryptionKeyPair, randomBytes, toBase64Url } from "radium-crypto";
 import {
   decryptFileUrl,
   encryptFile,
@@ -57,9 +57,9 @@ describe("sealed chat content", () => {
     );
     expect(legacyWithoutId.messages[0]?.id).toBe(`${chat.e2eeId}:legacy:4`);
     const tampered = sealed.capsules.map((row) => {
-      const capsule = row.capsule.slice(0);
-      new Uint8Array(capsule)[40] ^= 1;
-      return { ...row, capsule };
+      const capsule = fromBase64Url(row.capsule);
+      capsule[40] ^= 1;
+      return { ...row, capsule: toBase64Url(capsule) };
     });
     await expect(openMessages(entries, tampered, chat)).rejects.toThrow();
     await expect(

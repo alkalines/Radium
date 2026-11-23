@@ -5,6 +5,7 @@ import { useAction, useMutation, useQueries } from "convex/react";
 import { ConvexError } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
 import { toast } from "sonner";
+import { fromBase64Url } from "radium-crypto";
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import {
@@ -26,7 +27,7 @@ import {
   type ChatScope,
 } from "@/lib/crypto/chat-keys";
 import { sealTitle } from "@/lib/crypto/chat-content";
-import { cryptoClient, currentUserId } from "@/lib/crypto/runtime";
+import { buffer, cryptoClient, currentUserId } from "@/lib/crypto/runtime";
 import { KeysLockedError } from "@/lib/crypto/key-manager";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { KeylessDowngradeError, workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
@@ -528,7 +529,11 @@ export function useAcpSession({
             void (async () => {
               const key = await writableChatKey(chatId);
               const sealedTitle = await sealTitle({ title: acpFallbackTitle(text) }, key);
-              await fallbackTitleMutation({ chat: chatId, sealedTitle });
+              // The ACP mutations still run on Convex, whose bytes are `ArrayBuffer`s.
+              await fallbackTitleMutation({
+                chat: chatId,
+                sealedTitle: { epoch: sealedTitle.epoch, box: buffer(fromBase64Url(sealedTitle.box)) },
+              });
             })().catch(() => {});
           }
           return;

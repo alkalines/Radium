@@ -1,7 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { useAction, useConvex, useMutation } from "convex/react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   FolderInputIcon,
   FolderMinusIcon,
@@ -14,7 +12,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { ProjectGlyph, type ProjectSummary } from "@/components/projects/project-glyph";
 import {
@@ -56,11 +53,10 @@ import { Input } from "@/components/ui/input";
 import { openMessages, sealTitle } from "@/lib/crypto/chat-content";
 import { ensureChatKeys, writableChatKey } from "@/lib/crypto/chat-keys";
 import { ChatKeysRequiredError, openHistoricalChat } from "@/lib/crypto/legacy-chat";
-import type { LegacyBox } from "contracts/e2ee/legacy-contract";
-import { signAcpCommand } from "@/components/session/acp/acp-crypto";
+import type { SealedLegacyBox } from "@/lib/crypto/legacy-content";
 import { getMessageText } from "@/components/session/message-parts";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
-import { workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
+import { useTrpc } from "@/lib/trpc";
 /** Matches the backend's title length limit for user-chosen titles. */
 const maxTitleLength = 32;
 
@@ -73,10 +69,10 @@ export type SessionActionsTarget = {
   workspace: Id<"workspaces">;
   e2ee?: { e2eeId: string } | null;
   /** Historical content moved into a sidecar; rename/regenerate must create chat keys first. */
-  legacyContent?: LegacyBox;
-  title?: string;
-  pinnedAt?: number;
-  project?: Id<"projects">;
+  legacyContent?: SealedLegacyBox | null;
+  title?: string | null;
+  pinnedAt?: number | null;
+  project?: string | null;
   agent: { agentId: string; name: string } | null;
   /** Manager-only actions: Regenerate title and Move to project. */
   canManage: boolean;
@@ -100,28 +96,29 @@ export function SessionActionsMenu({
   session: SessionActionsTarget;
   projects: ProjectSummary[];
 }) {
-  const client = useConvex();
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
   const keyStatus = useKeyStatus();
-  const regenerateEncryptedTitle = useAction(api.aisdk.regenerateTitle);
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
-  const [deleteInAgentStep, setDeleteInAgentStep] = useState(false);
-  const { data: acpSession, error: acpSessionError } = useQuery(
-    convexQuery(api.acp.GetSession, isDeleteOpen && session.agent ? { chat: session.id } : "skip"),
-  );
   // The target outlives the open state so the dialog keeps its text while it animates closed.
-  const [moveTarget, setMoveTarget] = useState<{ id: Id<"projects"> | null; name: string } | null>(
-    null,
-  );
+  const [moveTarget, setMoveTarget] = useState<{ id: string | null; name: string } | null>(null);
   const [isMoveOpen, setIsMoveOpen] = useState(false);
   const [title, setTitle] = useState(session.title?.trim() ?? "");
   const [pendingAction, setPendingAction] = useState<string | null>(null);
 
-  const setPinned = useMutation(api.aisdk.SetChatPinned);
-  const renameChat = useMutation(api.aisdk.RenameChat);
-  const regenerateTitle = useMutation(api.aisdk.RegenerateChatTitle);
-  const deleteChat = useMutation(api.aisdk.DeleteChat);
-  const setChatProject = useMutation(api.aisdk.SetChatProject);
+  const changed = {
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.chats.pathKey() }),
+  };
+  const { mutateAsync: setPinned } = useMutation(trpc.chats.setPinned.mutationOptions(changed));
+  const { mutateAsync: renameChat } = useMutation(trpc.chats.rename.mutationOptions(changed));
+  const { mutateAsync: regenerateTitle } = useMutation(
+    trpc.chats.regenerateTitle.mutationOptions(changed),
+  );
+  const { mutateAsync: deleteChat } = useMutation(trpc.chats.delete.mutationOptions(changed));
+  const { mutateAsync: setChatProject } = useMutation(
+    trpc.chats.setProject.mutationOptions(changed),
+  );
 
   // Reopening Rename starts from the current title, including one regenerated meanwhile.
   useEffect(() => {
@@ -138,15 +135,11 @@ export function SessionActionsMenu({
   const displayTitle = session.title?.trim() || "Untitled session";
   const currentProject = projects.find((project) => project.id === session.project);
 
-  /** Runs one mutation; a string result is a backend refusal, a throw is a failure. */
+  /** Runs one mutation; a refusal or failure surfaces as a toast. */
   async function run(action: string, mutate: () => Promise<unknown>) {
     setPendingAction(action);
     try {
-      const result = await mutate();
-      if (typeof result === "string") {
-        toast.error(result);
-        return false;
-      }
+      await mutate();
       return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Session action failed.");
@@ -165,11 +158,11 @@ export function SessionActionsMenu({
   async function regenerate() {
     const succeeded = await run("regenerate", async () => {
       const keyed = session.e2ee || (await ensureChatKeys(session.id));
-      if (!keyed) {
-        if (session.legacyContent) throw new ChatKeysRequiredError();
-        return regenerateTitle({ chatId: session.id });
-      }
-      const content = await client.query(api.aisdk.GetChatMessages, { chatId: session.id });
+      if (!keyed) throw new ChatKeysRequiredError();
+      const content = await queryClient.fetchQuery({
+        ...trpc.chats.messages.queryOptions({ chatId: session.id }),
+        staleTime: 0,
+      });
       const chatKey = await writableChatKey(session.id);
       // History may be sealed natively or sit in sidecars; either way it is opened locally.
       const historical = await openHistoricalChat(
@@ -191,9 +184,9 @@ export function SessionActionsMenu({
       if (!prompt?.trim()) {
         throw new Error("No user message to generate a title from.");
       }
-      return regenerateEncryptedTitle({ chatId: session.id, prompt: prompt.slice(0, 8000) });
+      return regenerateTitle({ chatId: session.id, prompt: prompt.slice(0, 8000) });
     });
-    if (succeeded) toast.success("Regenerating the session title.");
+    if (succeeded) toast.success("Session title regenerated.");
   }
 
   /** Picking a Project only stages the move; `confirmMove` applies it. */
@@ -224,13 +217,9 @@ export function SessionActionsMenu({
     if (!trimmed) return;
 
     const succeeded = await run("rename", async () => {
-      // A keyless chat gets keys so the new title is sealed; only a chat without history to
-      // protect may still fall back to plaintext (which the backend refuses after cutover).
+      // A keyless chat gets keys so the new title is sealed; the backend stores only sealed titles.
       const keyed = session.e2ee || (await ensureChatKeys(session.id));
-      if (!keyed) {
-        if (session.legacyContent) throw new ChatKeysRequiredError();
-        return renameChat({ chatId: session.id, title: trimmed });
-      }
+      if (!keyed) throw new ChatKeysRequiredError();
       const chatKey = await writableChatKey(session.id);
       return renameChat({
         chatId: session.id,
@@ -243,39 +232,9 @@ export function SessionActionsMenu({
     }
   }
 
-  async function confirmDelete(deleteInAgent = false) {
-    if (session.agent && acpSession?.capabilities?.delete && !deleteInAgentStep) {
-      setDeleteInAgentStep(true);
-      return;
-    }
-    // An open Tab for this session drops itself once the chat is gone (spec §4). In a keyed
-    // workspace the agent-side close/delete is a sealed command signed here: the chat row is gone
-    // when the Worker sees it, so the command carries the session it targets.
-    const succeeded = await run("delete", async () => {
-      const agentSession = acpSession?.agent;
-      // A workspace this device verified as keyed gets a signed command whatever the server says.
-      const signed = acpSession && (acpSession.signed || workspaceKnownKeyed(acpSession.workspace));
-      const acpCommand =
-        signed && agentSession?.sessionId
-          ? await signAcpCommand({
-              workspaceId: acpSession.workspace,
-              workerId: agentSession.worker,
-              chatId: session.id,
-              command: {
-                kind: deleteInAgent && acpSession.capabilities?.delete ? "delete" : "close",
-                agentId: agentSession.agentId,
-                profile: agentSession.profile,
-                sessionId: agentSession.sessionId,
-                cwd: agentSession.cwd,
-              },
-            })
-          : undefined;
-      return deleteChat({
-        chatId: session.id,
-        deleteInAgent,
-        ...(acpCommand ? { acpCommand } : {}),
-      });
-    });
+  async function confirmDelete() {
+    // An open Tab for this session drops itself once the chat is gone (spec §4).
+    const succeeded = await run("delete", () => deleteChat({ chatId: session.id }));
     if (succeeded) {
       toast.success("Session deleted.");
       setIsDeleteOpen(false);
@@ -395,51 +354,28 @@ export function SessionActionsMenu({
       <AlertDialog
         open={isDeleteOpen}
         onOpenChange={(open) => {
-          if (!isBusy) {
-            setIsDeleteOpen(open);
-            if (!open) setDeleteInAgentStep(false);
-          }
+          if (!isBusy) setIsDeleteOpen(open);
         }}
       >
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              {deleteInAgentStep
-                ? `Also delete this session in ${acpSession?.agentName ?? "the agent"}?`
-                : "Delete session?"}
-            </AlertDialogTitle>
+            <AlertDialogTitle>Delete session?</AlertDialogTitle>
             <AlertDialogDescription>
-              {deleteInAgentStep
-                ? "This conversation will disappear from the agent and other clients such as Zed. You can instead remove it from Radium only."
-                : `This removes “${displayTitle}” and its messages. This cannot be undone.`}
-              {acpSessionError ? (
-                <span className="mt-2 block text-destructive">
-                  Could not load the agent's deletion capabilities. Close this dialog and try again.
-                </span>
-              ) : null}
+              This removes “{displayTitle}” and its messages. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
-            {deleteInAgentStep ? (
-              <Button variant="outline" disabled={isBusy} onClick={() => void confirmDelete(false)}>
-                Radium only
-              </Button>
-            ) : null}
             <AlertDialogAction
               variant="destructive"
-              disabled={
-                isBusy ||
-                Boolean(acpSessionError) ||
-                Boolean(session.agent && acpSession === undefined)
-              }
+              disabled={isBusy}
               onClick={(event) => {
                 // Stay open until the mutation settles so a refusal is visible in context.
                 event.preventDefault();
-                void confirmDelete(deleteInAgentStep);
+                void confirmDelete();
               }}
             >
-              {deleteInAgentStep ? "Delete in both" : "Delete"}
+              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

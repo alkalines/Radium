@@ -1,7 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontalIcon, PencilIcon, PlusIcon, ServerIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -33,7 +31,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { McpServerDialog, type McpServerEditTarget } from "./mcp-server-dialog";
 import {
@@ -46,6 +43,7 @@ import {
 } from "./tool-catalog";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { useAccount } from "@/lib/use-account";
+import { useTrpc } from "@/lib/trpc";
 
 /**
  * Chatroom → Tools settings: the workspace *defaults* a new Session starts with (built-in tool
@@ -57,52 +55,62 @@ export function ToolsPanel() {
   const { workspace, workspaceId } = useWorkspace();
   const isOwner = workspace?.role === "owner";
   const { signedIn, signInRequired } = useAccount();
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
   const { data: servers } = useQuery(
-    convexQuery(
-      api.aisdk_tools.listMcpServers,
-      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    trpc.tools.listMcpServers.queryOptions(
+      signedIn && workspaceId ? { workspace: workspaceId } : skipToken,
     ),
   );
   const { data: defaults } = useQuery(
-    convexQuery(
-      api.chatroom.getToolDefaults,
-      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    trpc.chatroom.getToolDefaults.queryOptions(
+      signedIn && workspaceId ? { workspace: workspaceId } : skipToken,
     ),
   );
-  const setToolDefaults = useMutation(api.chatroom.setToolDefaults);
+  const setToolDefaults = useMutation(
+    trpc.chatroom.setToolDefaults.mutationOptions({
+      onSettled: () => queryClient.invalidateQueries({ queryKey: trpc.chatroom.pathKey() }),
+    }),
+  );
   const { data: workerToolDefaults } = useQuery(
-    convexQuery(
-      api.chatroom.getWorkerToolDefaults,
-      signedIn && workspaceId ? { workspace: workspaceId } : "skip",
+    trpc.chatroom.getWorkerToolDefaults.queryOptions(
+      signedIn && workspaceId ? { workspace: workspaceId } : skipToken,
     ),
   );
-  // Optimistic so a quick second toggle builds on the first instead of the stale server list.
+  // Optimistic so a quick second toggle builds on the first instead of the stale server list; the
+  // list is refetched once the last pending write settles.
   const setWorkerToolDefaults = useMutation(
-    api.chatroom.setWorkerToolDefaults,
-  ).withOptimisticUpdate((localStore, args) => {
-    localStore.setQuery(
-      api.chatroom.getWorkerToolDefaults,
-      { workspace: args.workspace },
-      args.tools,
-    );
-  });
+    trpc.chatroom.setWorkerToolDefaults.mutationOptions({
+      onMutate: (args) => {
+        queryClient.setQueryData(
+          trpc.chatroom.getWorkerToolDefaults.queryKey({ workspace: args.workspace }),
+          args.tools,
+        );
+      },
+      onSettled: () => {
+        if (queryClient.isMutating({ mutationKey: trpc.chatroom.setWorkerToolDefaults.mutationKey() }) > 1) {
+          return;
+        }
+        return queryClient.invalidateQueries({ queryKey: trpc.chatroom.pathKey() });
+      },
+    }),
+  );
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<McpServerEditTarget>(null);
-  const [deleting, setDeleting] = useState<{ _id: Id<"mcp_servers">; name: string } | null>(null);
+  const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
 
   const selection = defaults ?? EMPTY_TOOL_SELECTION;
 
-  // Persist a new default selection. MCP server ids round-trip as strings and
-  // are narrowed back to ids by Convex.
+  // Persist a new default selection.
   async function persist(next: ToolSelection) {
     if (!signedIn || !workspaceId) return;
     try {
-      await setToolDefaults({
+      await setToolDefaults.mutateAsync({
         workspace: workspaceId,
         selection: {
           builtinToolSets: next.builtinToolSets,
-          mcpServers: next.mcpServers as Id<"mcp_servers">[],
+          mcpServers: next.mcpServers,
         },
       });
     } catch (error) {
@@ -129,7 +137,7 @@ export function ToolsPanel() {
 
     const tools = withWorkerToolOption(workerToolDefaults, option, enabled);
     try {
-      await setWorkerToolDefaults({ workspace: workspaceId, tools });
+      await setWorkerToolDefaults.mutateAsync({ workspace: workspaceId, tools });
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to update default Worker tools.",
@@ -182,7 +190,7 @@ export function ToolsPanel() {
                   aria-label={`Enable ${toolSet.name} by default`}
                 />
               </ToolRow>
-              {toolSet.id === WEB_SEARCH_TOOL_ID && enabled && workspaceId && (
+              {toolSet.id === WEB_SEARCH_TOOL_ID && enabled && workspaceId && isOwner && (
                 <ExaApiKeyField workspaceId={workspaceId} />
               )}
             </Fragment>
@@ -230,7 +238,7 @@ export function ToolsPanel() {
         {signedIn &&
           servers?.map((server) => (
             <Row
-              key={server._id}
+              key={server.id}
               icon={ServerIcon}
               title={server.name}
               tag={server.auth.type === "none" ? "No auth" : server.auth.type}
@@ -238,8 +246,8 @@ export function ToolsPanel() {
             >
               <Tag>{server.codeMode ? "Code Mode" : "Direct"}</Tag>
               <Switch
-                checked={selection.mcpServers.includes(server._id)}
-                onCheckedChange={(checked) => toggleServer(server._id, checked)}
+                checked={selection.mcpServers.includes(server.id)}
+                onCheckedChange={(checked) => toggleServer(server.id, checked)}
                 disabled={defaults === undefined}
                 aria-label={`Enable ${server.name} by default`}
               />
@@ -258,7 +266,7 @@ export function ToolsPanel() {
                   <DropdownMenuItem
                     onSelect={() => {
                       setEditTarget({
-                        _id: server._id,
+                        id: server.id,
                         name: server.name,
                         url: server.url,
                         auth: server.auth,
@@ -274,7 +282,7 @@ export function ToolsPanel() {
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     variant="destructive"
-                    onSelect={() => setDeleting({ _id: server._id, name: server.name })}
+                    onSelect={() => setDeleting({ id: server.id, name: server.name })}
                   >
                     <Trash2Icon />
                     Delete
@@ -309,11 +317,13 @@ export function ToolsPanel() {
  * only its masked preview is ever returned.
  */
 function ExaApiKeyField({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
   const { data: stored } = useQuery(
-    convexQuery(api.aisdk_tools.getExaApiKey, { workspace: workspaceId }),
+    trpc.tools.getExaApiKey.queryOptions({ workspace: workspaceId }),
   );
-  const setApiKey = useMutation(api.aisdk_tools.setExaApiKey);
-  const deleteApiKey = useMutation(api.aisdk_tools.deleteExaApiKey);
+  const setApiKey = useMutation(trpc.tools.setExaApiKey.mutationOptions());
+  const deleteApiKey = useMutation(trpc.tools.deleteExaApiKey.mutationOptions());
 
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -328,7 +338,8 @@ function ExaApiKeyField({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
     if (!apiKey) return;
     setSubmitting(true);
     try {
-      await setApiKey({ workspace: workspaceId, apiKey });
+      await setApiKey.mutateAsync({ workspace: workspaceId, apiKey });
+      await queryClient.invalidateQueries({ queryKey: trpc.tools.pathKey() });
       toast.success("Exa API key saved.");
       setValue("");
     } catch (error) {
@@ -341,7 +352,8 @@ function ExaApiKeyField({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
   async function remove() {
     setSubmitting(true);
     try {
-      await deleteApiKey({ workspace: workspaceId });
+      await deleteApiKey.mutateAsync({ workspace: workspaceId });
+      await queryClient.invalidateQueries({ queryKey: trpc.tools.pathKey() });
       toast.success("Exa API key removed.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to remove Exa API key.");
@@ -403,11 +415,13 @@ function DeleteServerDialog({
   workspaceId,
   onOpenChange,
 }: {
-  target: { _id: Id<"mcp_servers">; name: string } | null;
+  target: { id: string; name: string } | null;
   workspaceId: Id<"workspaces"> | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
-  const deleteServer = useMutation(api.aisdk_tools.deleteMcpServer);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const deleteServer = useMutation(trpc.tools.deleteMcpServer.mutationOptions());
   const [submitting, setSubmitting] = useState(false);
 
   async function confirm() {
@@ -415,7 +429,11 @@ function DeleteServerDialog({
     setSubmitting(true);
     try {
       if (!workspaceId) return;
-      await deleteServer({ workspace: workspaceId, server: target._id });
+      await deleteServer.mutateAsync({ workspace: workspaceId, server: target.id });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: trpc.tools.pathKey() }),
+        queryClient.invalidateQueries({ queryKey: trpc.chatroom.pathKey() }),
+      ]);
       toast.success(`Deleted ${target.name}.`);
       onOpenChange(false);
     } catch (error) {

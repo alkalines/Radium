@@ -1,13 +1,13 @@
 import { afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { FileUIPart, UIMessage } from "ai";
-import type { ConvexReactClient } from "convex/react";
+import * as trpcClientModule from "@/lib/trpc-client";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import { toBase64Url } from "radium-crypto";
 import * as chatContent from "./chat-content";
 import * as chatKeys from "./chat-keys";
 import * as legacyContent from "./legacy-content";
-import { configureCryptoClient } from "./runtime";
+
 import {
   ChatKeysRequiredError,
   openHistoricalChat,
@@ -25,13 +25,16 @@ const key = { workspaceId, e2eeId: "e2ee", epoch: 1, publicKey: new Uint8Array(3
 const historicalRows = new Map<string, { recordId: string; legacyContent: LegacyBox } | null>();
 const queries: unknown[] = [];
 beforeAll(() => {
-  configureCryptoClient({
-    query: async (_fn: unknown, args: { url: string }) => {
-      queries.push(args.url);
-      return historicalRows.get(args.url) ?? null;
+  spyOn(trpcClientModule, "trpcClient").mockReturnValue({
+    chatFiles: {
+      historicalFile: {
+        query: async ({ url }: { url: string }) => {
+          queries.push(url);
+          return historicalRows.get(url) ?? null;
+        },
+      },
     },
-    mutation: async () => null,
-  } as unknown as ConvexReactClient);
+  } as never);
 });
 afterEach(() => {
   historicalRows.clear();
@@ -66,7 +69,7 @@ describe("historical chat content", () => {
       stale: new Error("superseded sidecar not needed"),
       row: { message: { id: "old", role: "user", parts: [] } },
     });
-    const sealed = { capsuleId: "c", envelope: new ArrayBuffer(1) };
+    const sealed = { capsuleId: "c", envelope: "AA" };
     const result = await openHistoricalChat(
       { chatId, workspaceId, legacyContent: box("chat"), wants: { title: false, queue: false } },
       [
@@ -80,7 +83,7 @@ describe("historical chat content", () => {
 
   test("a failed request's error text is restored from the chat sidecar only when wanted", async () => {
     opened({ chat: { interruptionMessage: "Quota exceeded" } });
-    const entries = [{ position: 0, messageId: "n", revision: 1, sealed: { capsuleId: "c", envelope: new ArrayBuffer(1) } }];
+    const entries = [{ position: 0, messageId: "n", revision: 1, sealed: { capsuleId: "c", envelope: "AA" } }];
     const wanted = await openHistoricalChat(
       { chatId, workspaceId, legacyContent: box("chat"), wants: { title: false, queue: false, interruption: true } },
       entries,

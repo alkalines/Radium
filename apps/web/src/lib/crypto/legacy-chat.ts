@@ -1,7 +1,5 @@
 import type { FileUIPart, UIMessage } from "ai";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import { fromBase64Url } from "radium-crypto";
 import {
   parseFileFragment,
@@ -12,7 +10,9 @@ import {
 } from "./chat-content";
 import { ensureChatKeys, prepareCustodyRelease } from "./chat-keys";
 import { CustodialContentError, openLegacyContent } from "./legacy-content";
-import { cryptoClient, onSecretsCleared } from "./runtime";
+import type { SealedLegacyBox } from "./legacy-content";
+import { onSecretsCleared } from "./runtime";
+import { trpcClient } from "@/lib/trpc-client";
 
 /** Historical content must be read through the sidecars; nothing here ever shows it as live data. */
 
@@ -54,7 +54,7 @@ async function readReleasingCustody<T>(chatId: Id<"aisdk_chats">, read: () => Pr
 }
 
 /** A message row as `GetChatMessages` returns it; `recordId` exists only with a sidecar. */
-export type HistoricalEntry = MessageEntry & { recordId?: string; legacyContent?: LegacyBox };
+export type HistoricalEntry = MessageEntry & { recordId?: string; legacyContent?: SealedLegacyBox };
 
 export type OpenedHistoricalChat = {
   /** Entries ready for `openMessages`: sealed rows untouched, historical rows opened in place. */
@@ -90,7 +90,7 @@ function isQueue(value: unknown): value is ChatQueue {
 export type HistoricalChatInput = {
   chatId: Id<"aisdk_chats">;
   workspaceId: Id<"workspaces">;
-  legacyContent?: LegacyBox;
+  legacyContent?: SealedLegacyBox | null;
   /** `interruption`: restore a failed request's error text that moved into the sidecar. */
   wants: { title: boolean; queue: boolean; interruption?: boolean };
 };
@@ -190,7 +190,7 @@ export async function openHistoricalFile(
   workspaceId: Id<"workspaces">,
   url: string,
 ): Promise<HistoricalFile | null> {
-  const row = await cryptoClient().query(api.chat_files.historicalFile, { chatId, url });
+  const row = await trpcClient().chatFiles.historicalFile.query({ chatId, url });
   if (!row) return null;
   const file = await readReleasingCustody(chatId, () =>
     openLegacyContent<{
@@ -244,12 +244,11 @@ async function reencryptHistorical(
   const file = new File([historical.blob], historical.filename ?? part.filename ?? "attachment", {
     type: historical.mediaType,
   });
-  const client = cryptoClient();
+  const client = trpcClient();
   return uploadEncryptedFile(file, target.key, {
-    generateUploadUrl: () =>
-      client.mutation(api.chat_files.generateUploadUrl, { workspace: target.workspaceId }),
+    createUpload: () => client.chatFiles.createUpload.mutate({ workspace: target.workspaceId }),
     register: (args) =>
-      client.mutation(api.chat_files.register, { workspace: target.workspaceId, ...args }),
+      client.chatFiles.register.mutate({ workspace: target.workspaceId, ...args }),
   });
 }
 

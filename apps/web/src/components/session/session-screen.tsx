@@ -10,14 +10,21 @@ import {
 } from "ai";
 import { useChat } from "@ai-sdk/react";
 import { convexQuery } from "@convex-dev/react-query";
-import { skipToken, useQuery } from "@tanstack/react-query";
+import {
+  skipToken,
+  useMutation as useQueryMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useAction, useMutation } from "convex/react";
 import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
 import { RotateCcwIcon, Undo2Icon } from "lucide-react";
 import { toast } from "sonner";
-import { toBase64Url } from "radium-crypto";
+import type { inferRouterOutputs } from "@trpc/server";
+import { fromBase64Url, toBase64Url } from "radium-crypto";
+import type { AppRouter } from "server/router";
 
 import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
@@ -58,6 +65,7 @@ import { authClient } from "@/lib/auth-client";
 import { variants } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { useTrpc } from "@/lib/trpc";
+import { isTrpcRefusal, retryTransient } from "@/lib/trpc-error";
 import { useAccount } from "@/lib/use-account";
 import {
   agentAvailability,
@@ -104,6 +112,7 @@ import {
   requireChatKeys,
 } from "@/lib/crypto/legacy-chat";
 import {
+  chatKeysToTrpc,
   createChatKeys,
   rememberChatSeed,
   ensureChatKeys,
@@ -134,6 +143,7 @@ import {
   type WorkerAuthorizationTarget,
 } from "./worker-authorization";
 import { keyedWorkspaceClaim, workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
+import { buffer } from "@/lib/crypto/runtime";
 
 // A stable identity while the Projects list loads, so the name decryption effect does not restart.
 const NO_PROJECTS: never[] = [];
@@ -162,14 +172,15 @@ export type SessionTabHint = {
  * `layoutId` when the first message is sent (`docs/Interface_Design.md` §5.3).
  *
  * - Draft (`chatId` undefined): wordmark, ambient glow, Composer, and Project line, centered.
- *   Submitting persists the chat with `api.aisdk.CreateChat` (prompt in `messages_queue`) and calls
+ *   Submitting persists the chat with `chats.create` (prompt sealed in `sealedQueue`) and calls
  *   `onCreated`; the prompt stays visible as a pending turn until the chat's messages arrive, and
  *   the draft's own choices stay on screen until the created chat loads.
- * - Saved: subscribes to `api.aisdk.GetChat` metadata for every mounted Tab. Content from
- *   `api.aisdk.GetChatMessages` is subscribed only after the Tab is first active, then stays live
- *   until unmount. It seeds `useChat` before sending a queued prompt once, then streams turns from
- *   `POST /api/aisdk/chat` on the Convex site. Either query failing or losing access shows an inline
- *   notice and calls `onUnavailable` once.
+ * - Saved: reads `chats.get` metadata for every mounted Tab. Content from `chats.messages` is
+ *   read only after the Tab is first active, then kept until unmount. It seeds `useChat` before
+ *   sending a queued prompt once, then streams turns from `POST /api/chat` (same origin). Chat
+ *   queries refetch on focus and after this Tab's own mutations and finished streams. Either
+ *   query refused (or failing before it ever loaded) shows an inline notice and calls
+ *   `onUnavailable` once.
  * - A pending tool approval, then a pending `question` call, takes the Composer's place
  *   (`ApprovalPrompt`, `QuestionPrompt`) until it is answered. Code Mode approvals and questions
  *   each run a server deadline, so every live one shows at once instead of in turn. The latest
@@ -214,8 +225,11 @@ type SessionScreenProps = {
 
 /** Route metadata before mounting either content transport; both readers share the query cache. */
 export const SessionScreen = memo(function SessionScreen(props: SessionScreenProps) {
+  const trpc = useTrpc();
   const { data: chat } = useQuery(
-    convexQuery(api.aisdk.GetChat, props.chatId ? { chatId: props.chatId } : "skip"),
+    trpc.chats.get.queryOptions(props.chatId ? { chatId: props.chatId } : skipToken, {
+      retry: retryTransient,
+    }),
   );
   const [handoff, setHandoff] = useState<{ chatId: Id<"aisdk_chats">; prompt?: string }>();
   const startedAsDraft = useRef(props.chatId === undefined);
@@ -268,10 +282,19 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const trpc = useTrpc();
   const { signedIn, isPending: isAccountPending } = useAccount();
   const { data: authSession } = authClient.useSession();
-  const { data: chatResult, error: chatError } = useQuery(
-    convexQuery(api.aisdk.GetChat, chatId ? { chatId } : "skip"),
+  const { data: chatData, error: chatError } = useQuery(
+    trpc.chats.get.queryOptions(chatId ? { chatId } : skipToken, { retry: retryTransient }),
   );
-  const chat = typeof chatResult === "string" ? undefined : chatResult;
+  const chat = useMemo(
+    () =>
+      chatData && {
+        ...chatData,
+        workspace: chatData.workspace as Id<"workspaces">,
+        worker: chatData.worker && servedWorkerSelection(chatData.worker),
+      },
+    [chatData],
+  );
+  const queryClient = useQueryClient();
   const keyStatus = useKeyStatus();
   const hasAccountKeys = keyStatus.state === "unlocked" || keyStatus.state === "locked";
   const [contentFailure, setContentFailure] = useState<string>();
@@ -293,20 +316,30 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     data: chatContent,
     error: chatContentError,
     isPending: isChatContentPending,
-  } = useQuery(convexQuery(api.aisdk.GetChatMessages, isContentEnabled ? { chatId } : "skip"));
+  } = useQuery(
+    trpc.chats.messages.queryOptions(isContentEnabled ? { chatId } : skipToken, {
+      retry: retryTransient,
+    }),
+  );
   // The Session's estimated total; subscribed only while its Tab is active.
   const { data: sessionCost } = useQuery(
     convexQuery(api.agent_usage.GetChatCost, chatId && isActive ? { chat: chatId } : "skip"),
   );
+  // A refusal is final; a network failure only counts while nothing has loaded yet.
   const isChatUnavailable =
-    Boolean(chatError) || Boolean(chatContentError) || typeof chatResult === "string";
+    (chatError !== null && (isTrpcRefusal(chatError) || chat === undefined)) ||
+    (chatContentError !== null && (isTrpcRefusal(chatContentError) || chatContent === undefined));
 
-  const createChat = useMutation(api.aisdk.CreateChat);
-  const forkChat = useMutation(api.aisdk.ForkChat);
+  const { mutateAsync: createChat } = useQueryMutation(trpc.chats.create.mutationOptions());
+  const { mutateAsync: forkChat } = useQueryMutation(trpc.chats.fork.mutationOptions());
   const { data: keyState } = useQuery(convexQuery(api.e2ee.chatKeys, chatId ? { chatId } : "skip"));
-  const setChatWorker = useMutation(api.aisdk.SetChatWorker);
-  const setChatWorkerGrant = useMutation(api.aisdk.SetChatWorkerGrant);
-  const answerCodeModeInteraction = useMutation(api.code_mode.answerInteraction);
+  const { mutateAsync: setChatWorker } = useQueryMutation(trpc.chats.setWorker.mutationOptions());
+  const { mutateAsync: setChatWorkerGrant } = useQueryMutation(
+    trpc.chats.setWorkerGrant.mutationOptions(),
+  );
+  const { mutateAsync: answerCodeModeInteraction } = useQueryMutation(
+    trpc.chats.answerInteraction.mutationOptions(),
+  );
   // Approval signatures by tool call ID; the continuation request carries those it answers.
   const approvalSignatures = useRef(new Map<string, WorkerApprovalSignature>());
   const createAcpSession = useMutation(api.acp.CreateSession);
@@ -371,8 +404,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           legacyContent: chat.legacyContent,
           wants: {
             title: !(context && chat.sealedTitle),
-            // `null` records a consumed queue; a sealed or plaintext queue replaces the historical one.
-            queue: chat.messages_queue === undefined && !(context && chat.sealedQueue),
+            // The backend keeps no marker for a consumed historical queue, so a queue that sits
+            // in the sidecar is never restored (it could resend an old prompt).
+            queue: false,
             interruption: chat.interruption?.message === "",
           },
         },
@@ -386,7 +420,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       const openedQueue =
         context && chat.sealedQueue
           ? await openQueue(chat.sealedQueue, context)
-          : (chat.messages_queue ?? historical.queue);
+          : (chat.messagesQueue ?? undefined);
       const title =
         context && chat.sealedTitle
           ? (await openTitle(chat.sealedTitle, context)).title
@@ -460,17 +494,11 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       settingsWorkspaceId ? { workspace: settingsWorkspaceId } : skipToken,
     ),
   );
-  const defaultModelQuery = useQuery(
-    convexQuery(
-      api.chatroom.getModelDefault,
-      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
-    ),
-  );
+  const settingsInput =
+    signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : skipToken;
+  const defaultModelQuery = useQuery(trpc.chatroom.getModelDefault.queryOptions(settingsInput));
   const { data: chainOfThoughtEnabled = true } = useQuery(
-    convexQuery(
-      api.chatroom.getChainOfThoughtEnabled,
-      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
-    ),
+    trpc.chatroom.getChainOfThoughtEnabled.queryOptions(settingsInput),
   );
   const { data: projectsData } = useQuery(
     trpc.projects.list.queryOptions(
@@ -485,10 +513,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   );
   const projects = projectsData ? decryptedProjects : undefined;
   const { data: workerToolDefaults } = useQuery(
-    convexQuery(
-      api.chatroom.getWorkerToolDefaults,
-      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
-    ),
+    trpc.chatroom.getWorkerToolDefaults.queryOptions(settingsInput),
   );
   // Owner-only; the same query the Session context uses, so it is fetched once.
   const { data: workers, error: workersError } = useQuery(
@@ -761,7 +786,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     chatId !== undefined &&
     !isChatUnavailable &&
     !isLoadingCreatedChat &&
-    (chatResult === undefined ||
+    (chat === undefined ||
       (isContentEnabled && (isChatContentPending || persistedMessages === undefined)));
   const isWaitingForDefault =
     !(chatModel || queuedModel) &&
@@ -804,7 +829,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
-        api: getAiSdkChatApi(),
+        api: "/api/chat",
+        fetch: chatFetch as typeof fetch,
         body: {
           chatId,
           model: selectedModel,
@@ -814,7 +840,6 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           reasoningEffort: selectedEffort,
           reasoningBudget: selectedBudget,
         },
-        headers: getConvexAuthHeaders,
         // Approval continuations and retries carry no per-call body: fall back to the model and
         // provider recorded on the latest assistant turn.
         async prepareSendMessagesRequest({
@@ -920,6 +945,17 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       return true;
     },
   });
+
+  // The backend saves a turn (and its revisions) when its stream ends: refetch so the next send,
+  // Home and the Tab title see it. The messages on screen are not replaced.
+  const previousStatus = useRef(status);
+  useEffect(() => {
+    const wasRunning = previousStatus.current === "submitted" || previousStatus.current === "streaming";
+    previousStatus.current = status;
+    if (wasRunning && (status === "ready" || status === "error")) {
+      void queryClient.invalidateQueries({ queryKey: trpc.chats.pathKey() });
+    }
+  }, [status, queryClient, trpc]);
 
   const pendingApprovals = getPendingApprovals(messages);
   const pendingQuestions = getPendingQuestions(messages);
@@ -1072,8 +1108,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           chatId,
           workerId: target.workerId,
           directory: target.directory,
-          grant,
+          grant: { ...grant, signature: toBase64Url(new Uint8Array(grant.signature)) },
         });
+        await queryClient.invalidateQueries({ queryKey: trpc.chats.pathKey() });
       } catch {
         if (grantedSelection.current === attempt) {
           grantedSelection.current = undefined;
@@ -1105,10 +1142,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     submittedInteractions.current.add(id);
     setHiddenInteractions(new Set(submittedInteractions.current));
     try {
-      await answerCodeModeInteraction({
-        interaction: id as Id<"codemode_interactions">,
-        response,
-      });
+      await answerCodeModeInteraction({ interaction: id, response });
     } catch (error) {
       submittedInteractions.current.delete(id);
       setHiddenInteractions(new Set(submittedInteractions.current));
@@ -1401,7 +1435,16 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           });
           // Keyed Sessions never send the prompt to a title action: the fallback title is sealed here.
           void sealTitle({ title: acpFallbackTitle(text) }, boundKey)
-            .then((sealedTitle) => setAcpFallbackTitle({ chat: createdChat, sealedTitle }))
+            .then((sealedTitle) =>
+              // The ACP mutations still run on Convex, whose bytes are `ArrayBuffer`s.
+              setAcpFallbackTitle({
+                chat: createdChat,
+                sealedTitle: {
+                  epoch: sealedTitle.epoch,
+                  box: buffer(fromBase64Url(sealedTitle.box)),
+                },
+              }),
+            )
             .catch(() => {});
         } else {
           await promptAcp({ chat: created, prompt, clientId });
@@ -1439,6 +1482,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     setPendingPrompt(text);
     try {
       const keys = await getDraftKeys();
+      if (!keys) throw new Error("Unlock or set up your encryption keys to start a chat.");
       const queued: ChatQueue = {
         text,
         files,
@@ -1450,35 +1494,23 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         reasoningBudget: selectedBudget,
         webSearch: false,
       };
-      const createdChatId = await createChat({
+      const createdChatId = (await createChat({
         workspace: settingsWorkspaceId,
         scope: draftScope,
         members: draftScope === "shared" ? sharedMembers : undefined,
         ...(workerSelection ? { worker: workerSelection } : {}),
         ...(selectedProject ? { project: selectedProject.id } : {}),
         // Only a draft whose tools were changed carries an override; otherwise the chat follows
-        // the workspace defaults. MCP server ids round-trip as strings and Convex narrows them.
-        ...(toolOverride
-          ? {
-              tools: {
-                builtinToolSets: toolOverride.builtinToolSets,
-                mcpServers: toolOverride.mcpServers as Id<"mcp_servers">[],
-              },
-            }
-          : {}),
-        ...(keys
-          ? {
-              e2ee: {
-                keys: keys.keys,
-                sealedQueue: await sealQueue(queued, { ...keys, workspaceId: settingsWorkspaceId }),
-                fileUrls: files.map((file) => file.url),
-              },
-            }
-          : { messages_queue: queued }),
-      });
-      if (keys) {
-        rememberChatSeed(createdChatId, keys.e2eeId, 1, keys.seed);
-      }
+        // the workspace defaults.
+        ...(toolOverride ? { tools: toolOverride } : {}),
+        e2ee: {
+          keys: chatKeysToTrpc(keys.keys),
+          sealedQueue: await sealQueue(queued, { ...keys, workspaceId: settingsWorkspaceId }),
+          fileUrls: files.map((file) => file.url),
+        },
+      })) as Id<"aisdk_chats">;
+      rememberChatSeed(createdChatId, keys.e2eeId, 1, keys.seed);
+      void queryClient.invalidateQueries({ queryKey: trpc.chats.pathKey() });
       setCreatedChatId(createdChatId);
       onCreated(tabId, createdChatId);
     } catch (caughtError) {
@@ -1640,10 +1672,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     const encrypted =
       Boolean(chat?.e2eeId) ||
       (hasAccountKeys && !(scope === "workspace" && workspaceKeyState?.keyEpoch === null));
-    const keys = encrypted
-      ? await createChatKeys({ workspaceId: settingsWorkspaceId, scope, members })
-      : undefined;
-    const forkKey = keys ? { ...keys, workspaceId: settingsWorkspaceId } : undefined;
+    if (!encrypted) throw new Error("Unlock or set up your encryption keys to fork this chat.");
+    const keys = await createChatKeys({ workspaceId: settingsWorkspaceId, scope, members });
+    const forkKey = { ...keys, workspaceId: settingsWorkspaceId };
     // A fork cannot reuse a historical attachment's sidecar: each becomes a fresh upload under the
     // fork's own key first. Without a key this rejects rather than forking a broken attachment.
     const reencryptTarget = { chatId, workspaceId: settingsWorkspaceId, key: forkKey };
@@ -1656,28 +1687,22 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           ),
         }
       : undefined;
-    const newChatId = await forkChat({
+    const newChatId = (await forkChat({
       workspace: settingsWorkspaceId,
       scope,
       members,
       project: chat?.project ?? undefined,
-      ...(keys && forkKey
-        ? {
-            e2ee: {
-              keys: keys.keys,
-              ...(await sealMessagesForFork(forkHistory, forkKey)),
-              sealedQueue: queuedFork ? await sealQueue(queuedFork, forkKey) : undefined,
-              fileUrls: [
-                ...forkHistory.flatMap(getMessageFiles),
-                ...(queuedFork?.files ?? []),
-              ].map((file) => file.url),
-            },
-          }
-        : { messages: forkHistory, messages_queue: queuedFork }),
-    });
-    if (keys) {
-      rememberChatSeed(newChatId, keys.e2eeId, 1, keys.seed);
-    }
+      e2ee: {
+        keys: chatKeysToTrpc(keys.keys),
+        ...(await sealMessagesForFork(forkHistory, forkKey)),
+        sealedQueue: queuedFork ? await sealQueue(queuedFork, forkKey) : undefined,
+        fileUrls: [...forkHistory.flatMap(getMessageFiles), ...(queuedFork?.files ?? [])].map(
+          (file) => file.url,
+        ),
+      },
+    })) as Id<"aisdk_chats">;
+    rememberChatSeed(newChatId, keys.e2eeId, 1, keys.seed);
+    void queryClient.invalidateQueries({ queryKey: trpc.chats.pathKey() });
     patchTabState(`chat-${newChatId}`, {
       serviceTier: validServiceTier(
         models?.find((candidate) => candidate.slug === forkModel),
@@ -1708,6 +1733,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     setIsScopeSaving(true);
     try {
       await changeChatScope({ chatId, scope, members: scope === "shared" ? members : undefined });
+      await queryClient.invalidateQueries({ queryKey: trpc.chats.pathKey() });
     } catch (caughtError) {
       toast.error(
         caughtError instanceof Error ? caughtError.message : "Failed to update chat visibility.",
@@ -1729,6 +1755,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       // A new pick drops the old approval; its server-derived directory needs a fresh confirmation.
       if ("userId" in keyStatus) forgetWorkerApproval(keyStatus.userId, chat.workspace, chatId);
       await setChatWorker({ chatId, selection: next });
+      await queryClient.invalidateQueries({ queryKey: trpc.chats.pathKey() });
     } catch (caughtError) {
       toast.error(caughtError instanceof Error ? caughtError.message : "Failed to update Worker.");
     } finally {
@@ -2315,14 +2342,26 @@ async function toComposerFile(
   });
 }
 
-/** Chatroom's AI SDK endpoint lives on the Convex site origin, not the web origin. */
-function getAiSdkChatApi() {
-  const siteUrl = import.meta.env.VITE_CONVEX_SITE_URL;
-  return siteUrl ? `${siteUrl.replace(/\/$/, "")}/api/aisdk/chat` : "/api/aisdk/chat";
+/** The served Worker selection with its grant's signature decoded to the contract's bytes. */
+function servedWorkerSelection(
+  selection: NonNullable<inferRouterOutputs<AppRouter>["chats"]["get"]["worker"]>,
+): ChatWorkerSelection {
+  const { grant, ...rest } = selection;
+  return grant
+    ? { ...rest, grant: { ...grant, signature: buffer(fromBase64Url(grant.signature)) } }
+    : rest;
 }
 
-/** Bearer header for the Convex HTTP action; resolved per request so tokens stay fresh. */
-async function getConvexAuthHeaders(): Promise<Record<string, string>> {
-  const { data } = await authClient.convex.token({ fetchOptions: { throw: false } });
-  return data?.token ? { Authorization: `Bearer ${data.token}` } : {};
+/**
+ * `POST /api/chat` on the web origin (cookie session). A refusal carries the server's message
+ * (`409`: another run is active, or the chat's key must be rotated first); surface it as the error.
+ */
+async function chatFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, init);
+  if (response.ok) return response;
+  const body = (await response.json().catch(() => null)) as { error?: { message?: unknown } } | null;
+  const message = body?.error?.message;
+  throw new Error(
+    typeof message === "string" ? message : `The chat request failed (${response.status}).`,
+  );
 }

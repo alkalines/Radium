@@ -11,7 +11,7 @@ import {
   useState,
 } from "react";
 import type { FileUIPart } from "ai";
-import { useMutation } from "convex/react";
+import { useMutation } from "@tanstack/react-query";
 import * as m from "motion/react-m";
 import {
   ArrowUpIcon,
@@ -25,7 +25,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import {
   Attachment,
@@ -57,10 +56,11 @@ import {
 } from "@/components/ui/input-group";
 import { transitions } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { useTrpc } from "@/lib/trpc";
 import { VoiceInputButton } from "./voice-input-button";
 import { uploadEncryptedFile, type ChatContentKey } from "@/lib/crypto/chat-content";
 
-/** What the Composer submits: trimmed text plus AI SDK file parts backed by Convex File Storage. */
+/** What the Composer submits: trimmed text plus AI SDK file parts backed by the object store. */
 export type ComposerMessage = { text: string; files: FileUIPart[] };
 
 /** A picked file held as a local blob URL for preview until submit uploads it. */
@@ -578,8 +578,9 @@ export const MAX_ATTACHMENT_SIZE_BYTES = 20 * 1024 * 1024;
  * back to a local URL. The Composer retains the original files for a retry.
  */
 function useAttachmentUpload(workspace: Id<"workspaces"> | undefined) {
-  const generateUploadUrl = useMutation(api.chat_files.generateUploadUrl);
-  const registerFile = useMutation(api.chat_files.register);
+  const trpc = useTrpc();
+  const { mutateAsync: createUpload } = useMutation(trpc.chatFiles.createUpload.mutationOptions());
+  const { mutateAsync: registerFile } = useMutation(trpc.chatFiles.register.mutationOptions());
 
   return async ({ file }: PendingAttachment, chatKey?: ChatContentKey): Promise<FileUIPart> => {
     if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
@@ -588,27 +589,14 @@ function useAttachmentUpload(workspace: Id<"workspaces"> | undefined) {
     if (!workspace) {
       throw new Error("Choose a workspace before uploading files.");
     }
-    if (chatKey) {
-      return uploadEncryptedFile(file, chatKey, {
-        generateUploadUrl: () => generateUploadUrl({ workspace }),
-        register: (args) => registerFile({ workspace, ...args }),
-      });
+    if (!chatKey) {
+      // The backend stores only encrypted attachments.
+      throw new Error("Unlock your encryption keys to attach files.");
     }
-    const uploadUrl = await generateUploadUrl({ workspace });
-    const response = await fetch(uploadUrl, {
-      method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream" },
-      body: file,
+    return uploadEncryptedFile(file, chatKey, {
+      createUpload: () => createUpload({ workspace }),
+      register: (args) => registerFile({ workspace, ...args }),
     });
-    if (!response.ok) {
-      throw new Error(`Unable to upload ${file.name} (${response.status}).`);
-    }
-    const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
-    const part = await registerFile({ workspace, storageId, filename: file.name });
-    if (!part) {
-      throw new Error("File could not be attached.");
-    }
-    return part;
   };
 }
 
