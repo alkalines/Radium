@@ -147,16 +147,15 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     ),
   );
   const { mutateAsync: setChatScope } = useMutation(trpc.chats.setScope.mutationOptions());
-  const { data: keyState } = useQuery(convexQuery(api.e2ee.chatKeys, { chatId }));
+  const { data: keyState } = useQuery(trpc.e2ee.chatKeys.queryOptions({ chatId }));
   const { data: workspaceKeyState } = useQuery(
-    convexQuery(api.e2ee.workspaceKeyState, chat ? { workspace: chat.workspace } : "skip"),
+    trpc.e2ee.workspaceKeyState.queryOptions(chat ? { workspace: chat.workspace } : skipToken),
   );
   const { data: memberNames } = useQuery(
-    convexQuery(
-      api.e2ee.identityNames,
+    trpc.e2ee.identityNames.queryOptions(
       workspaceKeyState
         ? { userIds: workspaceKeyState.members.map((member) => member.userId) }
-        : "skip",
+        : skipToken,
     ),
   );
   const { data: authSession } = authClient.useSession();

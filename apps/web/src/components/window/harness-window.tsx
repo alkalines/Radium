@@ -1,4 +1,3 @@
-import { EncryptionCutoverGate } from "@/components/auth/encryption-cutover-gate";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useRouterState, useSearch } from "@tanstack/react-router";
 import { AnimatePresence, Reorder } from "motion/react";
@@ -393,7 +392,6 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
           screen === "home" && "rounded-tl-none",
         )}
       >
-        <EncryptionCutoverGate>
         {screen === "settings" ? (
           <SettingsLayout wide={isWideSettings} backHref={lastAppHref}>
             {children}
@@ -421,7 +419,6 @@ export function HarnessWindow({ children }: { children: ReactNode }) {
             </div>
           );
         })}
-        </EncryptionCutoverGate>
       </main>
 
       <NotificationCenter activeChatId={activeTabId ? activeTab?.chatId : undefined} />

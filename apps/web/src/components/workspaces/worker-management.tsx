@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQuery as useConvexQuery } from "convex/react";
+import { useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import {
   CheckIcon,
@@ -59,6 +59,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { acpActionError } from "@/components/session/acp/use-acp-session";
 import { EncryptionNotice } from "@/components/auth/encryption-notice";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
+import { useTrpc } from "@/lib/trpc";
 import {
   createWorkerPairingCode,
   createWorkerSetupCode,
@@ -90,21 +91,24 @@ const pairingRunStates: Record<WorkerPairingState, "succeeded" | "idle" | "faile
 };
 
 export function WorkerManagement() {
+  const trpc = useTrpc();
   const { workspace, workspaceId } = useWorkspace();
   const isOwner = workspace?.role === "owner";
   const { data, error } = useQuery(
     convexQuery(api.workers.list, isOwner && workspaceId ? { workspace: workspaceId } : "skip"),
   );
-  const keyState = useConvexQuery(
-    api.e2ee.workspaceKeyState,
-    isOwner && workspaceId ? { workspace: workspaceId } : "skip",
+  const { data: keyState } = useQuery(
+    trpc.e2ee.workspaceKeyState.queryOptions(
+      isOwner && workspaceId ? { workspace: workspaceId } : skipToken,
+    ),
   );
   const keyed = Boolean(keyState?.keyEpoch);
   const keyStatus = useKeyStatus();
   const unlocked = keyStatus.state === "unlocked";
-  const workerKeys = useConvexQuery(
-    api.e2ee.workerKeys,
-    isOwner && keyed && workspaceId ? { workspace: workspaceId } : "skip",
+  const { data: workerKeys } = useQuery(
+    trpc.e2ee.workerKeys.queryOptions(
+      isOwner && keyed && workspaceId ? { workspace: workspaceId } : skipToken,
+    ),
   );
   const [pairing, setPairing] = useState<Map<string, WorkerPairingState> | null>(null);
   const revokeWorker = useMutation(api.workers.revoke);

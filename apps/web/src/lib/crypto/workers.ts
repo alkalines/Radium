@@ -18,7 +18,8 @@ import {
   type RosterWorker,
 } from "radium-crypto";
 import { keyManager } from "./key-manager";
-import { buffer, bytes, cryptoClient, currentUserId, newKeyId } from "./runtime";
+import { cryptoClient, currentUserId, newKeyId } from "./runtime";
+import { trpcClient } from "@/lib/trpc-client";
 import { trust, workerPinKey } from "./trust-store";
 import { keyedWorkspaceClaim, publishRosterWorkers, verifyWorkspaceState } from "./workspace-keys";
 
@@ -34,10 +35,10 @@ export type WorkerKeyRow = {
   workerId: string;
   keyId: string;
   suite: number;
-  encryptionPublicKey: ArrayBuffer;
-  signingPublicKey: ArrayBuffer;
-  selfSignature: ArrayBuffer;
-  pairingMac: ArrayBuffer;
+  encryptionPublicKey: string;
+  signingPublicKey: string;
+  selfSignature: string;
+  pairingMac: string;
   pairingId: string;
 };
 
@@ -57,13 +58,13 @@ export class WorkerNotPairedError extends Error {
  * row of the same keyId and fingerprint and a valid self-signature. Throws `WorkerNotPairedError`.
  */
 export async function trustedWorker(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   workerId: string,
 ): Promise<TrustedWorkerKeys> {
   const state = await verifyWorkspaceState(workspaceId);
   const listed = state.verifiedRoster.workers.find((worker) => worker.workerId === workerId);
   if (!listed) throw new WorkerNotPairedError(workerId);
-  const rows = await cryptoClient().query(api.e2ee.workerKeys, { workspace: workspaceId });
+  const rows = await trpcClient().e2ee.workerKeys.query({ workspace: workspaceId });
   const row = rows.find((entry) => entry.workerId === workerId && entry.keyId === listed.keyId);
   const keys = row ? await verifiedWorkerKeys({ workspaceId, row }).catch(() => null) : null;
   if (!keys || keys.fingerprint !== listed.fingerprint) throw new WorkerNotPairedError(workerId);
@@ -95,8 +96,8 @@ export async function verifiedWorkerKeys(input: {
   pairingSecret?: Uint8Array;
 }): Promise<TrustedWorkerKeys & { fingerprint: string }> {
   const { row } = input;
-  const encryptionPublicKey = bytes(row.encryptionPublicKey);
-  const signingPublicKey = bytes(row.signingPublicKey);
+  const encryptionPublicKey = fromBase64Url(row.encryptionPublicKey);
+  const signingPublicKey = fromBase64Url(row.signingPublicKey);
   if (row.suite !== 1 || fromBase64Url(row.keyId).length !== 16) {
     throw new CryptoError("BAD_ENVELOPE", "Invalid Worker keys");
   }
@@ -108,12 +109,12 @@ export async function verifiedWorkerKeys(input: {
     encryptionPublicKey,
     signingPublicKey,
   });
-  if (!(await verify(signingPublicKey, statement, bytes(row.selfSignature)))) {
+  if (!(await verify(signingPublicKey, statement, fromBase64Url(row.selfSignature)))) {
     throw new CryptoError("DECRYPT_FAILED", "Worker self-signature failed");
   }
   if (
     input.pairingSecret &&
-    !equalBytes(await workerPairingMac(input.pairingSecret, statement), bytes(row.pairingMac))
+    !equalBytes(await workerPairingMac(input.pairingSecret, statement), fromBase64Url(row.pairingMac))
   ) {
     throw new CryptoError("DECRYPT_FAILED", "Worker pairing proof failed");
   }
@@ -139,7 +140,7 @@ const pairingAad = (workspaceId: string, ownerUserId: string, pairingId: string)
  * the key that actually signs rosters.
  */
 async function newPairing(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   target: { kind: "enrollment"; enrollmentId: string } | { kind: "worker"; workerId: string },
 ) {
   const state = await verifyWorkspaceState(workspaceId);
@@ -164,10 +165,10 @@ async function newPairing(
         signingPublicKey: identity.signing.publicKey,
       };
     });
-    const { expiresAt } = await cryptoClient().mutation(api.e2ee.createWorkerPairing, {
+    const { expiresAt } = await trpcClient().e2ee.createWorkerPairing.mutate({
       workspace: workspaceId,
       pairingId,
-      sealedSecret: buffer(sealedSecret),
+      sealedSecret: toBase64Url(sealedSecret),
       target,
     });
     return {
@@ -193,13 +194,15 @@ const encodeCode = (prefix: string, value: unknown) =>
  * (`KeylessDowngradeError`). The returned code is secret: keep it out of logs.
  */
 export async function createWorkerSetupCode(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   name: string,
 ): Promise<{ code: string; enrollmentId: string; expiresAt: number }> {
-  const state = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+  const state = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
   const keyed = keyedWorkspaceClaim(workspaceId, state.keyEpoch != null);
+  // `workers.createEnrollment` is still Convex, whose branded id is a plain string at runtime.
+  const convexWorkspace = workspaceId as Id<"workspaces">;
   const enrollment = await cryptoClient().action(api.workers.createEnrollment, {
-    workspace: workspaceId,
+    workspace: convexWorkspace,
     name,
   });
   if (!keyed) {
@@ -226,7 +229,7 @@ export async function createWorkerSetupCode(
  * (`radium-worker pair`). The returned code is secret: keep it out of logs.
  */
 export async function createWorkerPairingCode(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   workerId: string,
 ): Promise<{ code: string; expiresAt: number }> {
   const pairing = await newPairing(workspaceId, { kind: "worker", workerId });
@@ -251,13 +254,13 @@ type WorkerAssessment = {
 };
 
 /** Read-only: classifies each active Worker and verifies newly published keys with their MAC. */
-async function assessWorkers(workspaceId: Id<"workspaces">): Promise<WorkerAssessment | null> {
+async function assessWorkers(workspaceId: string): Promise<WorkerAssessment | null> {
   const state = await verifyWorkspaceState(workspaceId);
   if (state.role !== "owner" || !state.keyEpoch) return null;
   const [rows, pairings, workers] = await Promise.all([
-    cryptoClient().query(api.e2ee.workerKeys, { workspace: workspaceId }),
-    cryptoClient().query(api.e2ee.workerPairings, { workspace: workspaceId }),
-    cryptoClient().query(api.workers.list, { workspace: workspaceId }),
+    trpcClient().e2ee.workerKeys.query({ workspace: workspaceId }),
+    trpcClient().e2ee.workerPairings.query({ workspace: workspaceId }),
+    cryptoClient().query(api.workers.list, { workspace: workspaceId as Id<"workspaces"> }),
   ]);
   const assessment: WorkerAssessment = { states: new Map(), certified: [], verified: [] };
   const active = new Set(
@@ -282,13 +285,13 @@ async function assessWorkers(workspaceId: Id<"workspaces">): Promise<WorkerAsses
     }
     const pairing = pairings.find((entry) => entry.pairingId === row.pairingId);
     // Without the owner's copy of the secret (expired, or created elsewhere) there is nothing to check.
-    if (!pairing || (pairing.workerId !== undefined && pairing.workerId !== row.workerId)) continue;
+    if (!pairing || (pairing.workerId !== null && pairing.workerId !== row.workerId)) continue;
 
     const keys = await keyManager
       .useAmk(async (_, identity) => {
         const secret = await openBox({
           seed: identity.encryption.seed,
-          box: bytes(pairing.sealedSecret),
+          box: fromBase64Url(pairing.sealedSecret),
           aad: pairingAad(workspaceId, state.ownerId, pairing.pairingId),
           pad: "none",
         });
@@ -323,7 +326,7 @@ async function assessWorkers(workspaceId: Id<"workspaces">): Promise<WorkerAsses
  * certifiable now, `failed` when its published keys fail the pairing MAC). Empty for non-owners.
  */
 export async function workerPairingStates(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
 ): Promise<Map<string, WorkerPairingState>> {
   return (await assessWorkers(workspaceId))?.states ?? new Map();
 }
@@ -331,11 +334,12 @@ export async function workerPairingStates(
 /**
  * Owner-only, unlocked: certifies Workers whose published keys carry a valid pairing MAC (pinning
  * each as `verified`), keeps already certified ones, drops revoked or re-keyed ones, and publishes
- * the roster when its Worker list changed. Runs in the regular key sync.
+ * the roster when its Worker list changed. Runs in the regular key sync. Resolves whether a roster
+ * was published.
  */
-export async function syncWorkerCertificates(workspaceId: Id<"workspaces">): Promise<void> {
+export async function syncWorkerCertificates(workspaceId: string): Promise<boolean> {
   const assessment = await assessWorkers(workspaceId);
-  if (!assessment) return;
+  if (!assessment) return false;
   for (const keys of assessment.verified) {
     const pinKey = workerPinKey(keys.workerId);
     const identity = { ...keys, userId: pinKey };
@@ -343,5 +347,5 @@ export async function syncWorkerCertificates(workspaceId: Id<"workspaces">): Pro
       await trust.pin(pinKey, identity, "verified");
     }
   }
-  await publishRosterWorkers(workspaceId, assessment.certified);
+  return publishRosterWorkers(workspaceId, assessment.certified);
 }

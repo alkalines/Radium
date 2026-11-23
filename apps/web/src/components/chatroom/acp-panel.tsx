@@ -74,7 +74,8 @@ import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence"
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { formatAgentCommandLine, parseAgentCommandLine } from "./agent-command-line";
 import { acpAgentDefinitionStatement } from "radium-crypto";
-import { buffer, cryptoClient } from "@/lib/crypto/runtime";
+import { buffer } from "@/lib/crypto/runtime";
+import { trpcClient } from "@/lib/trpc-client";
 import { signAsUser } from "@/lib/crypto/workers";
 import { keyedWorkspaceClaim } from "@/lib/crypto/workspace-keys";
 
@@ -98,7 +99,7 @@ async function authorizeDefinition(
   definition: AcpAgentDefinition,
   previousIssuedAt = 0,
 ): Promise<AcpAgentDefinition> {
-  const state = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+  const state = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
   if (!keyedWorkspaceClaim(workspaceId, state.keyEpoch !== null)) return definition;
   const issuedAt = Math.max(Date.now(), previousIssuedAt + 1);
   const signed = await signAsUser(acpAgentDefinitionStatement({ workspaceId, issuedAt, definition }));

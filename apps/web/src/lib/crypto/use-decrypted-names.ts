@@ -7,7 +7,7 @@ import { secretGeneration } from "./runtime";
 type NamedRow = { id: string; name: string; icon?: string | null; legacyContent?: SealedLegacyBox | null };
 
 /** Decrypted display names stay in component memory and disappear synchronously on lock/input changes. */
-export function useDecryptedNames<T extends NamedRow>(rows: readonly T[], table: "workspaces" | "projects", workspace?: Id<"workspaces">): T[] {
+export function useDecryptedNames<T extends NamedRow>(rows: readonly T[], table: "workspaces" | "projects", workspace?: string): T[] {
   const status = useKeyStatus();
   const generation = secretGeneration();
   const [opened, setOpened] = useState<{ source: readonly T[]; generation: number; rows: T[] }>();

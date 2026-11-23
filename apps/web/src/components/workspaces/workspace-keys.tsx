@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useConvex, useQuery } from "convex/react";
-import { api } from "backend/convex/_generated/api";
-import type { Id } from "backend/convex/_generated/dataModel";
+import { skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GroupList, Row, RowBlock } from "@/components/harness/group-list";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,21 +16,25 @@ import {
 import { fetchIdentities } from "@/lib/crypto/public-keys";
 import { trust } from "@/lib/crypto/trust-store";
 import { currentUserId } from "@/lib/crypto/runtime";
+import { useTrpc } from "@/lib/trpc";
+import { trpcClient } from "@/lib/trpc-client";
 import { TrustPrompt } from "@/components/trust/trust-prompt";
 
 /** Dense workspace key status and owner controls; secrets live only in DOM refs until dismissed. */
-export function WorkspaceKeys({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
-  const client = useConvex();
-  const state = useQuery(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+export function WorkspaceKeys({ workspaceId }: { workspaceId: string }) {
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { data: state } = useQuery(trpc.e2ee.workspaceKeyState.queryOptions({ workspace: workspaceId }));
   const nameUserIds = state
     ? [
         ...state.members.map((member) => member.userId),
         ...state.joinRequests.map((request) => request.userId),
       ]
     : [];
-  const names = useQuery(
-    api.e2ee.identityNames,
-    state ? { userIds: [...new Set(nameUserIds)] } : "skip",
+  const { data: names } = useQuery(
+    trpc.e2ee.identityNames.queryOptions(
+      state ? { userIds: [...new Set(nameUserIds)] } : skipToken,
+    ),
   );
   const nameOf = (userId: string) =>
     names?.find((entry) => entry.userId === userId)?.name ?? "Unknown member";
@@ -64,6 +66,8 @@ export function WorkspaceKeys({ workspaceId }: { workspaceId: Id<"workspaces"> }
     setFailed(false);
     try {
       await action();
+      // Key state changed on the server; refetch what is mounted instead of waiting for a push.
+      await queryClient.invalidateQueries({ queryKey: trpc.e2ee.pathKey() });
     } catch (error) {
       if (error instanceof TrustRequiredError) {
         retry.current = action;
@@ -79,7 +83,7 @@ export function WorkspaceKeys({ workspaceId }: { workspaceId: Id<"workspaces"> }
     setSecretVisible(true);
     if (secretOutput.current) secretOutput.current.textContent = value;
   }
-  async function approve(requestId: Id<"e2ee_join_requests">, userId: string) {
+  async function approve(requestId: string, userId: string) {
     const identity = (await fetchIdentities([userId])).get(userId);
     if (!identity) throw new Error("Identity unavailable");
     const pinState = await trust.check(userId, identity);
@@ -146,7 +150,7 @@ export function WorkspaceKeys({ workspaceId }: { workspaceId: Id<"workspaces"> }
                   void run(async () => {
                     const own = (await fetchIdentities([currentUserId()])).get(currentUserId());
                     if (!own) throw new Error("Identity unavailable");
-                    await client.mutation(api.e2ee.requestKeys, {
+                    await trpcClient().e2ee.requestKeys.mutate({
                       workspace: workspaceId,
                       keyId: own.keyId,
                     });
@@ -197,7 +201,7 @@ export function WorkspaceKeys({ workspaceId }: { workspaceId: Id<"workspaces"> }
               onClick={() =>
                 void run(async () => {
                   if (state.phrase)
-                    await client.mutation(api.e2ee.removePhrase, { workspace: workspaceId });
+                    await trpcClient().e2ee.removePhrase.mutate({ workspace: workspaceId });
                   else showSecret((await enableWorkspacePhrase(workspaceId)).join(" "));
                 })
               }
@@ -270,7 +274,10 @@ export function WorkspaceKeys({ workspaceId }: { workspaceId: Id<"workspaces"> }
                 disabled={busy}
                 onClick={() =>
                   void run(async () => {
-                    await client.mutation(api.e2ee.revokeInvite, { inviteId: invite.inviteId });
+                    await trpcClient().e2ee.revokeInvite.mutate({
+                      workspace: workspaceId,
+                      inviteId: invite.inviteId,
+                    });
                   })
                 }
               >
@@ -286,7 +293,7 @@ export function WorkspaceKeys({ workspaceId }: { workspaceId: Id<"workspaces"> }
             .filter((request) => request.source === "request")
             .map((request) => (
               <Row
-                key={request._id}
+                key={request.id}
                 title={nameOf(request.userId)}
                 description={`Key ${request.keyId}`}
                 tag="Needs approval"
@@ -295,7 +302,7 @@ export function WorkspaceKeys({ workspaceId }: { workspaceId: Id<"workspaces"> }
                   size="sm"
                   variant="outline"
                   disabled={busy || !unlocked}
-                  onClick={() => void run(() => approve(request._id, request.userId))}
+                  onClick={() => void run(() => approve(request.id, request.userId))}
                 >
                   Approve
                 </Button>
@@ -306,8 +313,9 @@ export function WorkspaceKeys({ workspaceId }: { workspaceId: Id<"workspaces"> }
                     disabled={busy}
                     onClick={() =>
                       void run(async () => {
-                        await client.mutation(api.e2ee.dismissJoinRequest, {
-                          requestId: request._id,
+                        await trpcClient().e2ee.dismissJoinRequest.mutate({
+                          workspace: workspaceId,
+                          requestId: request.id,
                         });
                       })
                     }

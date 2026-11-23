@@ -13,6 +13,7 @@ import { ProjectGlyph, type ProjectSummary } from "@/components/projects/project
 import { AcpAgentIcon } from "@/components/session/acp/agent-icon";
 import { acpActionError } from "@/components/session/acp/use-acp-session";
 import {
+  chatKeysToConvex,
   isKeyedWorkspace,
   openAgentIndexTitle,
   publishAcpBinding,
@@ -37,7 +38,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { sealTitle } from "@/lib/crypto/chat-content";
 import { createChatKeys, rememberChatSeed } from "@/lib/crypto/chat-keys";
 import { KeysLockedError } from "@/lib/crypto/key-manager";
-import { buffer, cryptoClient } from "@/lib/crypto/runtime";
+import { buffer } from "@/lib/crypto/runtime";
+import { trpcClient } from "@/lib/trpc-client";
 import { openHistoricalAgentTitle } from "@/lib/crypto/legacy-relay";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { formatRelativeTime, groupByRecency } from "./recency";
@@ -188,7 +190,7 @@ export function useOpenAgentSession() {
       sessionId: row.sessionId,
       // `acp.OpenAgentSession` still runs on Convex, whose bytes are `ArrayBuffer`s.
       e2ee: {
-        keys: keys.keys,
+        keys: chatKeysToConvex(keys.keys),
         ...(sealedTitle
           ? { sealedTitle: { epoch: sealedTitle.epoch, box: buffer(fromBase64Url(sealedTitle.box)) } }
           : {}),
@@ -196,7 +198,7 @@ export function useOpenAgentSession() {
     });
     // Another client may have opened the session first; then the chat has its own keys and
     // binding, and ours are discarded.
-    const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+    const state = await trpcClient().e2ee.chatKeys.query({ chatId });
     if (state.e2eeId !== keys.e2eeId) {
       keys.seed.fill(0);
       return chatId;

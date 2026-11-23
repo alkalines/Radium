@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import type { ConvexReactClient } from "convex/react";
-import { getFunctionName, type FunctionReference } from "convex/server";
 import type { Id } from "backend/convex/_generated/dataModel";
-import * as trpcClientModule from "@/lib/trpc-client";
 import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import {
   chatKeyBindingStatement,
@@ -25,7 +22,7 @@ import {
 } from "radium-crypto";
 import { keyManager, KeysLockedError } from "./key-manager";
 import * as workspaceKeys from "./workspace-keys";
-import { configureCryptoClient } from "./runtime";
+import { installFakeTrpc } from "./test-trpc";
 import { trust, type PublicIdentity } from "./trust-store";
 import {
   changeChatScope,
@@ -43,7 +40,7 @@ import {
 import { CustodialContentError } from "./legacy-content";
 import { openHistoricalChat } from "./legacy-chat";
 
-const workspaceId = "workspace" as Id<"workspaces">;
+const workspaceId = "workspace";
 const custody = { kind: "custody", keyId: "custody", epoch: 1, box: new ArrayBuffer(1) } as LegacyBox;
 
 /** A test account's private keys and the public identity the server would publish for it. */
@@ -78,7 +75,8 @@ function backend(input: {
   reader: Account;
   roster: Account[];
   workspaceUsers: Array<{ userId: string; keyId: string | null }>;
-  chat: Record<string, unknown>;
+  /** The chat `e2ee.chatKeys` serves; a function answers per requested chat. */
+  chat: Record<string, unknown> | ((chatId: string) => Record<string, unknown> | undefined);
   identities?: Account[];
   /** Users whose identity the server reports as retired. */
   retired?: string[];
@@ -109,62 +107,35 @@ function backend(input: {
     if (!endorsed) throw new CryptoError("DECRYPT_FAILED", "Identity unavailable");
     return endorsed.public;
   });
-  configureCryptoClient({
-    query: async (fn: FunctionReference<"query">, args: Record<string, unknown>) => {
-      const name = getFunctionName(fn);
-      if (name === "e2ee:chatKeys") return input.chat;
-      if (name === "e2ee:workspaceKeyState") return { members: input.workspaceUsers };
-      if (name === "e2ee:identityKeysByKeyId") {
-        return (input.identities ?? [])
-          .filter((identity) => (args.keyIds as string[]).includes(identity.public.keyId))
-          .map((identity) => ({
-            userId: identity.public.userId,
-            keyId: identity.public.keyId,
-            suite: identity.public.suite,
-            encryptionPublicKey: identity.public.encryptionPublicKey.slice().buffer,
-            signingPublicKey: identity.public.signingPublicKey.slice().buffer,
-            selfSignature: identity.selfSignature.slice().buffer,
-            status: input.retired?.includes(identity.public.userId) ? "retired" : "active",
-          }));
-      }
-      throw new Error(`Unexpected query ${name}`);
+  const record = (name: string) => (args: Record<string, unknown>) => {
+    mutations.push({ name, args });
+    input.onMutation?.(name, args);
+    return null;
+  };
+  installFakeTrpc({
+    "e2ee.chatKeys": ({ chatId }: { chatId: string }) =>
+      typeof input.chat === "function" ? input.chat(chatId) : input.chat,
+    "e2ee.workspaceKeyState": () => ({ members: input.workspaceUsers }),
+    "e2ee.identityKeysByKeyId": ({ keyIds }: { keyIds: string[] }) =>
+      (input.identities ?? [])
+        .filter((identity) => keyIds.includes(identity.public.keyId))
+        .map((identity) => ({
+          userId: identity.public.userId,
+          keyId: identity.public.keyId,
+          suite: identity.public.suite,
+          encryptionPublicKey: toBase64Url(identity.public.encryptionPublicKey),
+          signingPublicKey: toBase64Url(identity.public.signingPublicKey),
+          selfSignature: toBase64Url(identity.selfSignature),
+          status: input.retired?.includes(identity.public.userId) ? "retired" : "active",
+        })),
+    "e2ee.setupChatKeys": record("e2ee.setupChatKeys"),
+    "e2ee.rotateChatKey": record("e2ee.rotateChatKey"),
+    "e2ee.signChatKey": record("e2ee.signChatKey"),
+    "chats.setScope": (args: Record<string, unknown>) => {
+      record("chats.setScope")(args);
+      return { scope: args.scope };
     },
-    mutation: async (fn: FunctionReference<"mutation">, args: Record<string, unknown>) => {
-      const name = getFunctionName(fn);
-      mutations.push({ name, args });
-      input.onMutation?.(name, args);
-      return null;
-    },
-  } as unknown as ConvexReactClient);
-  // `chats.setScope` takes base64url bytes; the assertions below read the module's own wire shape.
-  const buf = (value: unknown) => fromBase64Url(value as string).slice().buffer as ArrayBuffer;
-  const fromTrpcEpoch = (epoch: Record<string, unknown>) => ({
-    ...epoch,
-    publicKey: buf(epoch.publicKey),
-    ...(epoch.signature ? { signature: buf(epoch.signature) } : {}),
-    ...(epoch.bindingSignature ? { bindingSignature: buf(epoch.bindingSignature) } : {}),
   });
-  spyOn(trpcClientModule, "trpcClient").mockReturnValue({
-    chats: {
-      setScope: {
-        mutate: async (args: Record<string, unknown>) => {
-          const keys = args.keys as { rotate: Record<string, unknown>; wraps: Array<Record<string, unknown>> } | undefined;
-          const wireArgs = keys
-            ? {
-                ...args,
-                keys: {
-                  rotate: fromTrpcEpoch(keys.rotate),
-                  wraps: keys.wraps.map((wrap) => ({ ...wrap, sealed: buf(wrap.sealed) })),
-                },
-              }
-            : args;
-          mutations.push({ name: "aisdk:SetChatScope", args: wireArgs });
-          input.onMutation?.("aisdk:SetChatScope", wireArgs);
-          return { scope: args.scope };
-        },
-      },
-    },
-  } as never);
   return mutations;
 }
 
@@ -194,9 +165,9 @@ async function expectSignedBy(signer: Account, e2eeId: string, epoch: ChatKeysSe
     epoch: epoch.epoch,
     keyId: epoch.keyId,
     suite: epoch.suite,
-    publicKey: new Uint8Array(epoch.publicKey),
+    publicKey: fromBase64Url(epoch.publicKey),
   });
-  expect(await verify(signer.public.signingPublicKey, statement, new Uint8Array(epoch.signature!))).toBe(true);
+  expect(await verify(signer.public.signingPublicKey, statement, fromBase64Url(epoch.signature!))).toBe(true);
 }
 
 type Policy = { scope: ChatScope; creatorId: string; members: string[] };
@@ -220,10 +191,10 @@ async function expectBound(
     epoch: epoch.epoch,
     keyId: epoch.keyId,
     suite: epoch.suite,
-    publicKey: new Uint8Array(epoch.publicKey),
+    publicKey: fromBase64Url(epoch.publicKey),
     ...policy,
   });
-  expect(await verify(signer.public.signingPublicKey, statement, new Uint8Array(epoch.bindingSignature!))).toBe(true);
+  expect(await verify(signer.public.signingPublicKey, statement, fromBase64Url(epoch.bindingSignature!))).toBe(true);
 }
 
 /**
@@ -253,7 +224,7 @@ async function epochRow(input: {
     epoch: input.epoch,
     keyId,
     suite: pair.suite,
-    publicKey: pair.publicKey.slice().buffer,
+    publicKey: toBase64Url(pair.publicKey),
     createdAt: 1,
   };
   if (input.signer) {
@@ -261,12 +232,12 @@ async function epochRow(input: {
     Object.assign(row, {
       signerUserId: input.signer.public.userId,
       signerKeyId: input.signer.public.keyId,
-      signature: (await sign(seed, chatKeyStatement(statement))).slice().buffer,
+      signature: toBase64Url(await sign(seed, chatKeyStatement(statement))),
     });
     if (input.bound) {
       const { chatId, ...policy } = input.bound;
       Object.assign(row, {
-        bindingSignature: (await sign(seed, chatKeyBindingStatement({ ...statement, chatId, ...policy }))).slice().buffer,
+        bindingSignature: toBase64Url(await sign(seed, chatKeyBindingStatement({ ...statement, chatId, ...policy }))),
         ...(policy.scope === "shared" ? { bindingMembers: [...new Set(policy.members)].sort() } : {}),
       });
     }
@@ -281,14 +252,14 @@ async function identityWrap(recipient: Account, e2eeId: string, epoch: number, s
     recipient: "identity",
     userId: recipient.public.userId,
     recipientKeyId: recipient.public.keyId,
-    sealed: (
+    sealed: toBase64Url(
       await sealBox({
         recipientPublicKey: recipient.public.encryptionPublicKey,
         plaintext: seed,
         aad: { table: "e2ee_chat_key_wraps", workspace: workspaceId, parent: e2eeId, record: String(epoch), field: recipient.public.keyId },
         pad: "none",
-      })
-    ).slice().buffer,
+      }),
+    ),
   };
 }
 
@@ -314,11 +285,11 @@ async function expectWrapsOpen(
     expect(wrap.recipientKeyId).toBe(recipient.public.keyId);
     const seed = await openBox({
       seed: recipient.identity.encryption.seed,
-      box: new Uint8Array(wrap.sealed),
+      box: fromBase64Url(wrap.sealed),
       aad: { table: "e2ee_chat_key_wraps", workspace: workspaceId, parent: e2eeId, record: String(epoch.epoch), field: wrap.recipientKeyId },
       pad: "none",
     });
-    expect(equalBytes(await encryptionPublicKeyFromSeed(seed), new Uint8Array(epoch.publicKey))).toBe(true);
+    expect(equalBytes(await encryptionPublicKeyFromSeed(seed), fromBase64Url(epoch.publicKey))).toBe(true);
   }
 }
 
@@ -343,7 +314,7 @@ describe("initial keys of a keyless chat", () => {
       openHistoricalChat({ chatId, workspaceId, legacyContent: custody, wants: { title: true, queue: false } }, []),
     ).rejects.toBeInstanceOf(CustodialContentError);
 
-    expect(mutations.map((call) => call.name)).toEqual(["e2ee:setupChatKeys"]);
+    expect(mutations.map((call) => call.name)).toEqual(["e2ee.setupChatKeys"]);
     const keys = mutations[0]!.args.keys as ChatKeysSetupWire;
     expect(keys.epoch.epoch).toBe(1);
     await expectSignedBy(member, keys.e2eeId, keys.epoch);
@@ -436,7 +407,7 @@ describe("initial keys of a keyless chat", () => {
     mock.restore();
     backend({ reader: other, roster: [owner, member], workspaceUsers: users, chat: keyed("peer-read"), identities: [member] });
     const seed = await openChatSeed("peer-read" as Id<"aisdk_chats">, 1);
-    expect(equalBytes(await encryptionPublicKeyFromSeed(seed), new Uint8Array(keys.epoch.publicKey))).toBe(true);
+    expect(equalBytes(await encryptionPublicKeyFromSeed(seed), fromBase64Url(keys.epoch.publicKey))).toBe(true);
 
     mock.restore();
     backend({ reader: other, roster: [owner], workspaceUsers: users, chat: keyed("unendorsed"), identities: [member] });
@@ -468,7 +439,7 @@ describe("stale chat keys", () => {
       openHistoricalChat({ chatId, workspaceId, legacyContent: custody, wants: { title: true, queue: false } }, []),
     ).rejects.toBeInstanceOf(CustodialContentError);
 
-    expect(mutations.map((call) => call.name)).toEqual(["e2ee:rotateChatKey"]);
+    expect(mutations.map((call) => call.name)).toEqual(["e2ee.rotateChatKey"]);
     const epoch = mutations[0]!.args.epoch as ChatKeysSetupWire["epoch"];
     expect(epoch.epoch).toBe(2);
     await expectSignedBy(member, "stale-e2ee", epoch);
@@ -488,18 +459,18 @@ test("a locally created bound epoch cannot be redirected to a substituted server
     workspaceUsers: [{ userId: reader.public.userId, keyId: reader.public.keyId }],
     chat,
     onMutation(name, args) {
-      if (name !== "e2ee:setupChatKeys") return;
+      if (name !== "e2ee.setupChatKeys") return;
       const keys = args.keys as ChatKeysSetupWire;
       Object.assign(chat, { e2eeId: keys.e2eeId, keyEpoch: 1, epochs: [keys.epoch], wraps: keys.wraps });
     },
   });
   expect(await ensureChatKeys(chatId)).toBe(true);
   const epochs = chat.epochs as ChatKeysSetupWire["epoch"][];
-  epochs[0]!.publicKey = attacker.public.encryptionPublicKey.slice().buffer;
+  epochs[0]!.publicKey = toBase64Url(attacker.public.encryptionPublicKey);
   // The verified binding no longer covers the row, and the substituted key is never rotated away
   // from or written to.
   await expect(writableChatKey(chatId)).rejects.toThrow("Chat key signature failed");
-  expect(mutations.map((call) => call.name)).toEqual(["e2ee:setupChatKeys"]);
+  expect(mutations.map((call) => call.name)).toEqual(["e2ee.setupChatKeys"]);
 });
 
 describe("recipient binding", () => {
@@ -552,7 +523,7 @@ describe("recipient binding", () => {
         e2eeId,
         keyEpoch: 1,
         epochs: [root.row],
-        wraps: [{ chatEpoch: 1, recipient: "workspace", workspaceEpoch: 1, recipientKeyId: "workspace-key", sealed: new ArrayBuffer(8) }],
+        wraps: [{ chatEpoch: 1, recipient: "workspace", workspaceEpoch: 1, recipientKeyId: "workspace-key", sealed: toBase64Url(new Uint8Array(8)) }],
       }),
     });
     const memberKey = spyOn(workspaceKeys, "getMemberKey");
@@ -655,7 +626,7 @@ describe("recipient binding", () => {
     // Alice left the workspace: the pruned list only narrows, so the old epoch is replaced.
     mutations = served([], ["bob", "mallory"], true);
     expect((await writableChatKey(chatId)).epoch).toBe(2);
-    expect(mutations.map((call) => call.name)).toEqual(["e2ee:rotateChatKey"]);
+    expect(mutations.map((call) => call.name)).toEqual(["e2ee.rotateChatKey"]);
     const epoch = mutations[0]!.args.epoch as ChatKeysSetupWire["epoch"];
     await expectBound(bob, chatId, e2eeId, epoch, { scope: "shared", creatorId: "bob", members: [] });
     await expectWrapsOpen(e2eeId, epoch, mutations[0]!.args.wraps as WrapWire[], [bob]);
@@ -693,7 +664,7 @@ describe("recipient binding", () => {
         chat: keylessChat(chatId, { e2eeId, keyEpoch: 1, epochs: [row] }),
       });
       expect(await prepareCustodyRelease(chatId)).toBe(true);
-      expect(mutations.map((call) => call.name)).toEqual(["e2ee:rotateChatKey"]);
+      expect(mutations.map((call) => call.name)).toEqual(["e2ee.rotateChatKey"]);
       const epoch = mutations[0]!.args.epoch as ChatKeysSetupWire["epoch"];
       expect(epoch.epoch).toBe(2);
       await expectBound(member, chatId, e2eeId, epoch, policy);
@@ -727,22 +698,10 @@ describe("recipient binding", () => {
         roster: [alice, mallory],
         identities: [bob],
         workspaceUsers: [],
-        chat: {},
+        // One backend for several chats: `chatKeys` answers for the requested chat.
+        chat: (requested) => chats.get(requested),
         lock,
       });
-      // One backend for several chats: `chatKeys` answers for the requested chat.
-      configureCryptoClient({
-        query: async (fn: FunctionReference<"query">, args: Record<string, unknown>) => {
-          const name = getFunctionName(fn);
-          if (name === "e2ee:chatKeys") return chats.get(args.chatId as string);
-          if (name === "e2ee:identityKeysByKeyId") return [];
-          throw new Error(`Unexpected query ${name}`);
-        },
-        mutation: async (fn: FunctionReference<"mutation">, args: Record<string, unknown>) => {
-          mutations.push({ name: getFunctionName(fn), args });
-          return null;
-        },
-      } as unknown as ConvexReactClient);
       /** Locked creation, then the server stores the unsigned epoch under the assigned chat ID. */
       const createLocked = async (chatId: string, scope: ChatScope, members: string[]) => {
         const created = await createChatKeys({ workspaceId, scope, members });
@@ -780,7 +739,7 @@ describe("recipient binding", () => {
       // Unlocked: writing to the pending chat binds the cached original policy, then uses it.
       lock.locked = false;
       expect((await writableChatKey("locked-pending" as Id<"aisdk_chats">)).epoch).toBe(1);
-      expect(mutations.map((call) => call.name)).toEqual(["e2ee:signChatKey"]);
+      expect(mutations.map((call) => call.name)).toEqual(["e2ee.signChatKey"]);
       const bound = mutations[0]!.args as ChatKeysSetupWire["epoch"] & { chatId: string };
       await expectSignedBy(bob, pending.e2eeId, { ...pending.keys.epoch, ...bound, epoch: 1 });
       await expectBound(bob, "locked-pending", pending.e2eeId, { ...pending.keys.epoch, ...bound, epoch: 1 }, {
@@ -825,11 +784,11 @@ describe("recipient binding", () => {
       ],
       chat,
       onMutation(name, args) {
-        if (name === "e2ee:setupChatKeys") {
+        if (name === "e2ee.setupChatKeys") {
           const keys = args.keys as ChatKeysSetupWire;
           Object.assign(chat, { e2eeId: keys.e2eeId, keyEpoch: 1, epochs: [keys.epoch], wraps: keys.wraps });
         }
-        if (name === "aisdk:SetChatScope" && args.keys) {
+        if (name === "chats.setScope" && args.keys) {
           const keys = args.keys as ScopeKeys;
           Object.assign(chat, {
             scope: args.scope,
@@ -870,10 +829,10 @@ describe("recipient binding", () => {
     await changeChatScope({ chatId, scope: "personal" });
     expect(mutations.at(-1)!.args.keys).toBeUndefined();
     expect(mutations.map((call) => call.name)).toEqual([
-      "e2ee:setupChatKeys",
-      "aisdk:SetChatScope",
-      "aisdk:SetChatScope",
-      "aisdk:SetChatScope",
+      "e2ee.setupChatKeys",
+      "chats.setScope",
+      "chats.setScope",
+      "chats.setScope",
     ]);
   });
 });

@@ -1,8 +1,8 @@
+import type { Id } from "backend/convex/_generated/dataModel";
 import { trpcClient } from "@/lib/trpc-client";
 import { setEncryptedName } from "./names";
-import { api } from "backend/convex/_generated/api";
-import type { Doc, Id } from "backend/convex/_generated/dataModel";
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
+import type { AppRouter } from "server/router";
 import {
   CryptoError,
   EMPTY_ROSTER_ARCHIVE,
@@ -37,9 +37,6 @@ import {
 } from "./public-keys";
 import {
   advanceHighWater,
-  buffer,
-  bytes,
-  cryptoClient,
   currentUserId,
   highWater,
   newKeyId,
@@ -56,7 +53,9 @@ import {
   type InvitePayload,
 } from "./workspace-proofs";
 
-type KeyState = FunctionReturnType<typeof api.e2ee.workspaceKeyState>;
+type E2eeOutputs = inferRouterOutputs<AppRouter>["e2ee"];
+type KeyState = E2eeOutputs["workspaceKeyState"];
+type StaleWrapsPage = E2eeOutputs["staleWorkspaceWraps"];
 type EpochRow = KeyState["epochs"][number];
 type GrantRow = KeyState["myGrants"][number];
 type VerifiedState = KeyState & {
@@ -143,18 +142,14 @@ export function keyedWorkspaceClaim(workspaceId: string, serverKeyed: boolean): 
   return serverKeyed;
 }
 /** Loads the current roster, requiring an explicitly pinned owner and checking every epoch hash. */
-export function verifyWorkspaceState(workspaceId: Id<"workspaces">): Promise<VerifiedState> {
+export function verifyWorkspaceState(workspaceId: string): Promise<VerifiedState> {
   const pending = stateLoads.get(workspaceId);
   if (pending) return pending;
   const load = (async () => {
-    const state = await cryptoClient().query(api.e2ee.workspaceKeyState, {
-      workspace: workspaceId,
-    });
+    const state = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
     // Include ciphertext and public byte fields: equal version numbers alone cannot authenticate
     // a substituted roster/epoch. Repeated callers share verification, never bypass freshness.
-    const key = JSON.stringify(state, (_, value) =>
-      value instanceof ArrayBuffer ? toBase64Url(bytes(value)) : value,
-    );
+    const key = JSON.stringify(state);
     const cached = verifiedStates.get(workspaceId);
     if (cached?.key === key) return cached.promise;
     const promise = verifyState(workspaceId, state);
@@ -170,7 +165,7 @@ export function verifyWorkspaceState(workspaceId: Id<"workspaces">): Promise<Ver
   return load;
 }
 
-async function verifyState(workspaceId: Id<"workspaces">, state: KeyState): Promise<VerifiedState> {
+async function verifyState(workspaceId: string, state: KeyState): Promise<VerifiedState> {
   const generation = secretGeneration();
   const identities = await fetchIdentities([
     state.ownerId,
@@ -196,8 +191,8 @@ async function verifyState(workspaceId: Id<"workspaces">, state: KeyState): Prom
     const previous = await verifyRoster({
       workspaceId,
       ...roster,
-      body: bytes(roster.body),
-      signature: bytes(roster.signature),
+      body: fromBase64Url(roster.body),
+      signature: fromBase64Url(roster.signature),
       owner: historical,
       highWater: highWater(marker),
     });
@@ -206,7 +201,7 @@ async function verifyState(workspaceId: Id<"workspaces">, state: KeyState): Prom
       version: previous.version + 1,
       owner: memberBinding(owner),
     });
-    await cryptoClient().mutation(api.e2ee.publishRoster, {
+    await trpcClient().e2ee.publishRoster.mutate({
       workspace: workspaceId,
       roster: resigned,
     });
@@ -216,8 +211,8 @@ async function verifyState(workspaceId: Id<"workspaces">, state: KeyState): Prom
     workspaceId,
     version: roster.version,
     signerKeyId: roster.signerKeyId,
-    body: bytes(roster.body),
-    signature: bytes(roster.signature),
+    body: fromBase64Url(roster.body),
+    signature: fromBase64Url(roster.signature),
     owner,
     highWater: highWater(marker),
   });
@@ -242,7 +237,7 @@ async function verifyState(workspaceId: Id<"workspaces">, state: KeyState): Prom
   cacheWorkspacePublicKey(workspaceId, {
     epoch: latest.epoch,
     keyId: latest.memberKeyId,
-    publicKey: bytes(latest.memberPublicKey),
+    publicKey: fromBase64Url(latest.memberPublicKey),
   });
   return { ...state, identities, verifiedRoster };
 }
@@ -251,9 +246,9 @@ async function rosterEpochOf(row: EpochRow): Promise<RosterEpoch> {
   return {
     epoch: row.epoch,
     memberKeyId: row.memberKeyId,
-    memberKeyHash: toBase64Url(await sha256(bytes(row.memberPublicKey))),
+    memberKeyHash: toBase64Url(await sha256(fromBase64Url(row.memberPublicKey))),
     ownerKeyId: row.ownerKeyId,
-    ownerKeyHash: toBase64Url(await sha256(bytes(row.ownerPublicKey))),
+    ownerKeyHash: toBase64Url(await sha256(fromBase64Url(row.ownerPublicKey))),
   };
 }
 function sameRosterEpoch(a: RosterEpoch, b: RosterEpoch): boolean {
@@ -272,7 +267,7 @@ function sameRosterEpoch(a: RosterEpoch, b: RosterEpoch): boolean {
  * epoch itself. Results are cached per workspace and roster, and extended to older epochs on demand.
  */
 async function archivedEpochs(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   state: VerifiedState,
   from: number,
 ): Promise<ArchivedEpochs> {
@@ -287,7 +282,7 @@ async function archivedEpochs(
   const end = known ? known.from - 1 : windowStart - 1;
 
   const fetchPage = (start: number) =>
-    cryptoClient().query(api.e2ee.workspaceArchivedEpochs, {
+    trpcClient().e2ee.workspaceArchivedEpochs.query({
       workspace: workspaceId,
       fromEpoch: start,
       toEpoch: Math.min(start + ARCHIVED_EPOCH_PAGE - 1, end),
@@ -341,7 +336,7 @@ async function archivedEpochs(
 }
 /** The verified public row, roster commitment and this account's grants of one epoch. */
 async function epochRecord(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   state: VerifiedState,
   epoch: number,
 ): Promise<{ row: EpochRow; rosterEpoch: RosterEpoch; grants: GrantRow[] }> {
@@ -358,7 +353,7 @@ async function epochRecord(
 }
 /** Checks an identity pin, plus owner endorsement when the identity is not the chat creator. */
 export async function trustedIdentity(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   userId: string,
   allowPinnedCreator = false,
 ): Promise<PublicIdentity> {
@@ -392,7 +387,7 @@ export async function trustedIdentity(
   return identity;
 }
 async function getWorkspaceKey(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   epoch: number,
   purpose: "member" | "owner",
 ): Promise<WorkspaceKey> {
@@ -454,12 +449,12 @@ async function getWorkspaceKey(
         }
       }
     }
-    const publicKey = bytes(purpose === "member" ? row.memberPublicKey : row.ownerPublicKey);
+    const publicKey = fromBase64Url(purpose === "member" ? row.memberPublicKey : row.ownerPublicKey);
     const seed = await openWorkspaceGrant({
       workspaceId,
       ...grant,
-      sealed: bytes(grant.sealed),
-      signature: bytes(grant.signature),
+      sealed: fromBase64Url(grant.sealed),
+      signature: fromBase64Url(grant.signature),
       granter,
       recipientSeed: own.encryption.seed,
       epochPublicKey: publicKey,
@@ -480,7 +475,7 @@ async function getWorkspaceKey(
   });
 }
 /** Opens a member grant with signature, signed-roster and derived-public-key checks. Memory only. */
-export function getMemberKey(workspaceId: Id<"workspaces">, epoch: number): Promise<WorkspaceKey> {
+export function getMemberKey(workspaceId: string, epoch: number): Promise<WorkspaceKey> {
   return getWorkspaceKey(workspaceId, epoch, "member");
 }
 /**
@@ -488,7 +483,7 @@ export function getMemberKey(workspaceId: Id<"workspaces">, epoch: number): Prom
  * owner grant. Same checks and memory-only cache as `getMemberKey`.
  */
 export async function getOwnerKey(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   epoch?: number,
 ): Promise<WorkspaceKey> {
   const state = await verifyWorkspaceState(workspaceId);
@@ -500,12 +495,12 @@ export async function getOwnerKey(
 /**
  * Owner-only: publishes the next roster version with `workers` as the certified Workers, keeping
  * epochs and members. The caller must have verified every listed Worker's pairing. No-op when the
- * verified roster already lists exactly these Workers.
+ * verified roster already lists exactly these Workers. Resolves whether a roster was published.
  */
 export async function publishRosterWorkers(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   workers: RosterWorker[],
-): Promise<void> {
+): Promise<boolean> {
   const state = await verifyWorkspaceState(workspaceId);
   if (state.role !== "owner") throw new CryptoError("DECRYPT_FAILED", "Only owners sign rosters");
   const key = (list: RosterWorker[]) =>
@@ -514,8 +509,8 @@ export async function publishRosterWorkers(
         .map((worker) => [worker.workerId, worker.keyId, worker.fingerprint])
         .sort((a, b) => a[0]!.localeCompare(b[0]!)),
     );
-  if (key(state.verifiedRoster.workers) === key(workers)) return;
-  await cryptoClient().mutation(api.e2ee.publishRoster, {
+  if (key(state.verifiedRoster.workers) === key(workers)) return false;
+  await trpcClient().e2ee.publishRoster.mutate({
     workspace: workspaceId,
     roster: await wireRoster({
       ...state.verifiedRoster,
@@ -523,17 +518,18 @@ export async function publishRosterWorkers(
       workers,
     }),
   });
+  return true;
 }
 /** Returns the verified current member public key; locked mode reads only the verified device cache. */
 export async function getCurrentMemberPublicKey(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
 ): Promise<{ epoch: number; keyId: string; publicKey: Uint8Array } | null> {
   if (keyManager.getSnapshot().state !== "unlocked") return cachedWorkspacePublicKey(workspaceId);
-  const raw = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+  const raw = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
   if (!raw.keyEpoch) return null;
   const state = await verifyWorkspaceState(workspaceId);
   const row = state.epochs.find((epoch) => epoch.epoch === state.keyEpoch)!;
-  return { epoch: row.epoch, keyId: row.memberKeyId, publicKey: bytes(row.memberPublicKey) };
+  return { epoch: row.epoch, keyId: row.memberKeyId, publicKey: fromBase64Url(row.memberPublicKey) };
 }
 async function ownIdentity(): Promise<PublicIdentity> {
   const own = (await fetchIdentities([currentUserId()])).get(currentUserId());
@@ -542,7 +538,7 @@ async function ownIdentity(): Promise<PublicIdentity> {
   return own;
 }
 async function makeGrant(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   epoch: number,
   purpose: "member" | "owner",
   seed: Uint8Array,
@@ -567,8 +563,8 @@ async function makeGrant(
       userId: recipient.userId,
       recipientKeyId: recipient.keyId,
       granterKeyId: toBase64Url(identity.keyId),
-      sealed: buffer(sealed),
-      signature: buffer(
+      sealed: toBase64Url(sealed),
+      signature: toBase64Url(
         await sign(
           identity.signing.seed,
           grantStatement({
@@ -592,8 +588,8 @@ async function wireRoster(roster: Omit<WorkspaceRoster, "v">) {
   if (workers.length) {
     // Never re-list a Worker whose key set is gone (revoked) or replaced; the backend refuses it.
     // Server rows can only shrink this list, never add to it.
-    const rows = await cryptoClient().query(api.e2ee.workerKeys, {
-      workspace: roster.workspace as Id<"workspaces">,
+    const rows = await trpcClient().e2ee.workerKeys.query({
+      workspace: roster.workspace,
     });
     workers = workers.filter((worker) =>
       rows.some((row) => row.workerId === worker.workerId && row.keyId === worker.keyId),
@@ -601,11 +597,11 @@ async function wireRoster(roster: Omit<WorkspaceRoster, "v">) {
   }
   return keyManager.useAmk(async (_, identity) => {
     const signed = await signRoster({ ...roster, workers }, identity.signing.seed);
-    return { ...signed, body: buffer(signed.body), signature: buffer(signed.signature) };
+    return { ...signed, body: toBase64Url(signed.body), signature: toBase64Url(signed.signature) };
   });
 }
 async function createEpoch(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   epoch: number,
   previous?: VerifiedState,
   excludedUserId?: string,
@@ -619,9 +615,9 @@ async function createEpoch(
       epoch,
       suite: member.suite,
       memberKeyId: newKeyId(),
-      memberPublicKey: buffer(member.publicKey),
+      memberPublicKey: toBase64Url(member.publicKey),
       ownerKeyId: newKeyId(),
-      ownerPublicKey: buffer(owner.publicKey),
+      ownerPublicKey: toBase64Url(owner.publicKey),
     };
     const grants = [
       await makeGrant(workspaceId, epoch, "member", member.seed, own),
@@ -674,11 +670,11 @@ async function createEpoch(
   }
 }
 /** Atomically bootstraps a keyless owned workspace; a closed browser is repaired on next unlock. */
-export async function bootstrapWorkspace(workspaceId: Id<"workspaces">): Promise<void> {
-  const state = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+export async function bootstrapWorkspace(workspaceId: string): Promise<void> {
+  const state = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
   if (state.keyEpoch || state.role !== "owner") return;
   const keys = await createEpoch(workspaceId, 1);
-  await cryptoClient().mutation(api.e2ee.bootstrapWorkspaceKeys, {
+  await trpcClient().e2ee.bootstrapWorkspaceKeys.mutate({
     workspace: workspaceId,
     ...keys,
   });
@@ -693,14 +689,14 @@ export async function createKeyedWorkspace(name: string): Promise<Id<"workspaces
 }
 /**
  * Removes a member and rotates both workspace keys, grants and roster in one backend mutation.
- * The rotation travels in tRPC's wire form: every binary field is unpadded base64url text.
+ * The rotation is already in tRPC's wire form: every binary field is unpadded base64url text.
  */
 export async function removeMemberWithRotation(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   email: string,
   userId: string,
 ): Promise<void> {
-  const raw = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+  const raw = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
   const keys = raw.keyEpoch
     ? await createEpoch(
         workspaceId,
@@ -713,35 +709,27 @@ export async function removeMemberWithRotation(
     workspace: workspaceId,
     email,
     rotation: keys && {
-      epoch: {
-        ...keys.epoch,
-        memberPublicKey: toBase64Url(bytes(keys.epoch.memberPublicKey)),
-        ownerPublicKey: toBase64Url(bytes(keys.epoch.ownerPublicKey)),
-      },
-      grants: keys.grants.map((grant) => ({
-        ...grant,
-        sealed: toBase64Url(bytes(grant.sealed)),
-        signature: toBase64Url(bytes(grant.signature)),
-      })),
+      epoch: keys.epoch,
+      grants: keys.grants,
       roster: {
         version: keys.roster.version,
         signerKeyId: keys.roster.signerKeyId,
-        body: toBase64Url(bytes(keys.roster.body)),
-        signature: toBase64Url(bytes(keys.roster.signature)),
+        body: keys.roster.body,
+        signature: keys.roster.signature,
       },
     },
   });
 }
 /** Starts a new workspace epoch after loss of the sole owner's historical owner key. */
-export async function rotateWorkspace(workspaceId: Id<"workspaces">): Promise<void> {
+export async function rotateWorkspace(workspaceId: string): Promise<void> {
   const state = await verifyWorkspaceState(workspaceId);
-  await cryptoClient().mutation(api.e2ee.rotateWorkspaceEpoch, {
+  await trpcClient().e2ee.rotateWorkspaceEpoch.mutate({
     workspace: workspaceId,
     ...(await createEpoch(workspaceId, state.keyEpoch! + 1, state)),
   });
 }
 async function accessPayload(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
 ): Promise<{ payload: InvitePayload; owner: WorkspaceKey }> {
   const state = await verifyWorkspaceState(workspaceId);
   const member = await getMemberKey(workspaceId, state.keyEpoch!);
@@ -758,7 +746,7 @@ async function accessPayload(
 }
 /** Creates a one-use seven-day access link. The returned secret URL must stay outside React state. */
 export async function createAccessLink(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   invitedUserId: string,
 ): Promise<string> {
   const { payload, owner } = await accessPayload(workspaceId);
@@ -778,13 +766,13 @@ export async function createAccessLink(
       },
       pad: "none",
     });
-    await cryptoClient().mutation(api.e2ee.createInvite, {
+    await trpcClient().e2ee.createInvite.mutate({
       workspace: workspaceId,
       inviteId,
       invitedUserId,
       epoch: payload.epoch,
-      sealed: buffer(sealed),
-      ownerSecret: buffer(ownerSecret),
+      sealed: toBase64Url(sealed),
+      ownerSecret: toBase64Url(ownerSecret),
     });
     return `${window.location.origin}/join/${inviteId}#${toBase64Url(secret)}`;
   } finally {
@@ -792,7 +780,7 @@ export async function createAccessLink(
   }
 }
 /** Enables a generated 12-word phrase. Caller displays the words once, outside React state. */
-export async function enableWorkspacePhrase(workspaceId: Id<"workspaces">): Promise<string[]> {
+export async function enableWorkspacePhrase(workspaceId: string): Promise<string[]> {
   const { payload, owner } = await accessPayload(workspaceId);
   const phraseId = newKeyId();
   const phrase = generateShortSecret();
@@ -816,12 +804,12 @@ export async function enableWorkspacePhrase(workspaceId: Id<"workspaces">): Prom
       },
       pad: "none",
     });
-    await cryptoClient().mutation(api.e2ee.setPhrase, {
+    await trpcClient().e2ee.setPhrase.mutate({
       workspace: workspaceId,
       epoch: payload.epoch,
       phraseId,
-      wrapper: buffer(wrapper),
-      ownerSecret: buffer(ownerSecret),
+      wrapper: toBase64Url(wrapper),
+      ownerSecret: toBase64Url(ownerSecret),
     });
     return phrase.words;
   } finally {
@@ -829,7 +817,7 @@ export async function enableWorkspacePhrase(workspaceId: Id<"workspaces">): Prom
   }
 }
 async function acceptPayload(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   payload: InvitePayload,
   secret: Uint8Array,
   phrase: boolean,
@@ -857,21 +845,21 @@ async function acceptPayload(
     const epoch = state.epochs.find((row) => row.epoch === payload.epoch);
     if (
       !epoch ||
-      !equalBytes(await encryptionPublicKeyFromSeed(seed), bytes(epoch.memberPublicKey))
+      !equalBytes(await encryptionPublicKeyFromSeed(seed), fromBase64Url(epoch.memberPublicKey))
     )
       throw new CryptoError("DECRYPT_FAILED", "Access seed differs from roster");
     const own = await ownIdentity();
     const selfGrant = await makeGrant(workspaceId, payload.epoch, "member", seed, own);
-    const mac = buffer(await joinMac({ secret, workspaceId, identity: own, phrase }));
+    const mac = toBase64Url(await joinMac({ secret, workspaceId, identity: own, phrase }));
     if (phrase)
-      await cryptoClient().mutation(api.e2ee.acceptPhrase, {
+      await trpcClient().e2ee.acceptPhrase.mutate({
         workspace: workspaceId,
         keyId: own.keyId,
         mac,
         selfGrant,
       });
     else
-      await cryptoClient().mutation(api.e2ee.acceptInvite, {
+      await trpcClient().e2ee.acceptInvite.mutate({
         inviteId: inviteId!,
         keyId: own.keyId,
         mac,
@@ -885,7 +873,7 @@ async function acceptPayload(
 export async function acceptAccessLink(inviteId: string, secret: Uint8Array): Promise<void> {
   if (secret.length !== 32 || fromBase64Url(inviteId).length !== 16)
     throw new CryptoError("BAD_INPUT", "Invalid access link");
-  const row = await cryptoClient().query(api.e2ee.getInvite, { inviteId });
+  const row = await trpcClient().e2ee.getInvite.query({ inviteId });
   if (!row) throw new CryptoError("BAD_INPUT", "Access link expired or unavailable");
   const payload = await openInvitePayload({
     secret,
@@ -893,20 +881,18 @@ export async function acceptAccessLink(inviteId: string, secret: Uint8Array): Pr
     workspaceId: row.workspace,
     epoch: row.epoch,
     invitedUserId: currentUserId(),
-    sealed: bytes(row.sealed),
+    sealed: fromBase64Url(row.sealed),
   });
   await acceptPayload(row.workspace, payload, secret, false, inviteId);
 }
 /** Opens a phrase locally and self-grants the authenticated current member seed. */
 export async function acceptWorkspacePhrase(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   words: string,
 ): Promise<void> {
   const secret = phraseToEntropy(words, 12);
   try {
-    const state = await cryptoClient().query(api.e2ee.workspaceKeyState, {
-      workspace: workspaceId,
-    });
+    const state = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
     if (!state.phrase) throw new CryptoError("BAD_INPUT", "No current workspace phrase");
     const payload = await openInvitePayload({
       secret,
@@ -914,7 +900,7 @@ export async function acceptWorkspacePhrase(
       workspaceId,
       epoch: state.phrase.epoch,
       invitedUserId: "",
-      sealed: bytes(state.phrase.wrapper),
+      sealed: fromBase64Url(state.phrase.wrapper),
       phrase: true,
     });
     await acceptPayload(workspaceId, payload, secret, true);
@@ -924,11 +910,11 @@ export async function acceptWorkspacePhrase(
 }
 /** Approves a request after the UI records an explicit trust pin; grants all held member epochs. */
 export async function approveKeyRequest(
-  workspaceId: Id<"workspaces">,
-  requestId: Id<"e2ee_join_requests">,
+  workspaceId: string,
+  requestId: string,
 ): Promise<void> {
   const state = await verifyWorkspaceState(workspaceId);
-  const request = state.joinRequests.find((row) => row._id === requestId);
+  const request = state.joinRequests.find((row) => row.id === requestId);
   if (!request) return;
   const recipient = state.identities.get(request.userId);
   if (!recipient || recipient.keyId !== request.keyId)
@@ -960,7 +946,7 @@ export async function approveKeyRequest(
       (entry) => entry.userId !== recipient.userId,
     );
     members.push(memberBinding(recipient));
-    await cryptoClient().mutation(api.e2ee.publishRoster, {
+    await trpcClient().e2ee.publishRoster.mutate({
       workspace: workspaceId,
       roster: await wireRoster({
         ...state.verifiedRoster,
@@ -972,19 +958,24 @@ export async function approveKeyRequest(
     throw new CryptoError("DECRYPT_FAILED", "Recipient absent from roster");
   // Bounded batches: every stored grant re-checks workspace membership (`storeGrant`).
   for (let start = 0; start < grants.length; start += ROSTER_EPOCH_WINDOW) {
-    await cryptoClient().mutation(api.e2ee.addGrants, {
+    await trpcClient().e2ee.addGrants.mutate({
       workspace: workspaceId,
       grants: grants.slice(start, start + ROSTER_EPOCH_WINDOW),
     });
   }
 }
-/** Processes MAC-proven joins, requests missing keys and rewraps stale historical workspace wraps. */
-export async function syncWorkspaceKeys(workspaceId: Id<"workspaces">): Promise<void> {
-  const raw = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+/**
+ * Processes MAC-proven joins, requests missing keys and rewraps stale historical workspace wraps.
+ * Resolves whether it wrote anything, so the caller refetches the key state it read.
+ */
+export async function syncWorkspaceKeys(workspaceId: string): Promise<boolean> {
+  const raw = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
   if (!raw.keyEpoch) {
-    if (raw.role === "owner") await bootstrapWorkspace(workspaceId);
-    return;
+    if (raw.role !== "owner") return false;
+    await bootstrapWorkspace(workspaceId);
+    return true;
   }
+  let changed = false;
   const state = await verifyWorkspaceState(workspaceId);
   const own = await ownIdentity();
   const pending = state.joinRequests.some(
@@ -1005,11 +996,13 @@ export async function syncWorkspaceKeys(workspaceId: Id<"workspaces">): Promise<
       !state.myGrants.some(
         (grant) => grant.epoch === state.keyEpoch && grant.recipientKeyId === own.keyId,
       )
-    )
-      await cryptoClient().mutation(api.e2ee.requestKeys, {
+    ) {
+      await trpcClient().e2ee.requestKeys.mutate({
         workspace: workspaceId,
         keyId: own.keyId,
       });
+      changed = true;
+    }
   }
   for (const request of state.joinRequests) {
     if (request.source === "request") {
@@ -1019,8 +1012,10 @@ export async function syncWorkspaceKeys(workspaceId: Id<"workspaces">): Promise<
         identity &&
         request.keyId === identity.keyId &&
         ["tofu", "verified"].includes(await trust.check(identity.userId, identity))
-      )
-        await approveKeyRequest(workspaceId, request._id);
+      ) {
+        await approveKeyRequest(workspaceId, request.id);
+        changed = true;
+      }
       continue;
     }
     if (
@@ -1037,7 +1032,7 @@ export async function syncWorkspaceKeys(workspaceId: Id<"workspaces">): Promise<
     const ownerKey = await getWorkspaceKey(workspaceId, request.epoch, "owner");
     const secret = await openBox({
       seed: ownerKey.seed,
-      box: bytes(request.ownerSecret),
+      box: fromBase64Url(request.ownerSecret),
       aad: {
         table: request.source === "phrase" ? "e2ee_phrases" : "e2ee_invites",
         workspace: workspaceId,
@@ -1051,35 +1046,38 @@ export async function syncWorkspaceKeys(workspaceId: Id<"workspaces">): Promise<
       if (
         !equalBytes(
           await joinMac({ secret, workspaceId, identity, phrase: request.source === "phrase" }),
-          bytes(request.mac),
+          fromBase64Url(request.mac),
         )
       )
         throw new CryptoError("DECRYPT_FAILED", "Join proof failed");
       // A proven external secret may explicitly replace a changed pin, but never bypass rollback.
       await trust.pin(identity.userId, identity, "verified");
-      await approveKeyRequest(workspaceId, request._id);
+      await approveKeyRequest(workspaceId, request.id);
+      changed = true;
     } finally {
       secret.fill(0);
     }
   }
-  if (state.role === "owner") await rewrapWorkspaceChats(workspaceId);
+  if (state.role === "owner" && (await rewrapWorkspaceChats(workspaceId))) changed = true;
+  return changed;
 }
-async function rewrapWorkspaceChats(workspaceId: Id<"workspaces">) {
+/** Resolves whether any stale wrap was replaced. */
+async function rewrapWorkspaceChats(workspaceId: string): Promise<boolean> {
   const current = await getCurrentMemberPublicKey(workspaceId);
-  if (!current) return;
-  let cursor: string | null = null;
-  let done = false;
-  while (!done) {
-    const page: { page: Doc<"e2ee_chat_key_wraps">[]; isDone: boolean; continueCursor: string } =
-      await cryptoClient().query(api.e2ee.staleWorkspaceWraps, {
-        workspace: workspaceId,
-        paginationOpts: { cursor, numItems: 50 },
-      });
+  if (!current) return false;
+  let replaced = false;
+  let cursor: { workspaceEpoch: number; id: string } | null = null;
+  do {
+    const result: StaleWrapsPage = await trpcClient().e2ee.staleWorkspaceWraps.query({
+      workspace: workspaceId,
+      cursor,
+      limit: 50,
+    });
     const replacements = [];
-    for (const wrap of page.page) {
-      if (wrap.recipient !== "workspace" || wrap.workspaceEpoch === undefined)
+    for (const wrap of result.page) {
+      if (wrap.recipient !== "workspace" || wrap.workspaceEpoch === null)
         throw new CryptoError("BAD_ENVELOPE", "Invalid workspace wrap");
-      const chat = await cryptoClient().query(api.e2ee.chatKeys, {
+      const chat = await trpcClient().e2ee.chatKeys.query({
         chatId: wrap.chat,
         epoch: wrap.chatEpoch,
       });
@@ -1092,10 +1090,18 @@ async function rewrapWorkspaceChats(workspaceId: Id<"workspaces">) {
         record: String(wrap.chatEpoch),
         field: wrap.recipientKeyId,
       };
-      const seed = await openBox({ seed: old.seed, box: bytes(wrap.sealed), aad, pad: "none" });
+      const seed = await openBox({
+        seed: old.seed,
+        box: fromBase64Url(wrap.sealed),
+        aad,
+        pad: "none",
+      });
       try {
         const row = chat.epochs.find((epoch) => epoch.epoch === wrap.chatEpoch);
-        if (!row || !equalBytes(await encryptionPublicKeyFromSeed(seed), bytes(row.publicKey)))
+        if (
+          !row ||
+          !equalBytes(await encryptionPublicKeyFromSeed(seed), fromBase64Url(row.publicKey))
+        )
           throw new CryptoError("DECRYPT_FAILED", "Stale chat wrap mismatch");
         const sealed = await sealBox({
           recipientPublicKey: current.publicKey,
@@ -1104,25 +1110,27 @@ async function rewrapWorkspaceChats(workspaceId: Id<"workspaces">) {
           pad: "none",
         });
         replacements.push({
-          oldWrap: wrap._id,
+          oldWrap: wrap.id,
           wrap: {
             chatEpoch: wrap.chatEpoch,
             recipient: "workspace" as const,
             workspaceEpoch: current.epoch,
             recipientKeyId: current.keyId,
-            sealed: buffer(sealed),
+            sealed: toBase64Url(sealed),
           },
         });
       } finally {
         seed.fill(0);
       }
     }
-    if (replacements.length)
-      await cryptoClient().mutation(api.e2ee.replaceWorkspaceWraps, {
+    if (replacements.length) {
+      await trpcClient().e2ee.replaceWorkspaceWraps.mutate({
         workspace: workspaceId,
         replacements,
       });
-    cursor = page.continueCursor;
-    done = page.isDone;
-  }
+      replaced = true;
+    }
+    cursor = result.cursor;
+  } while (cursor);
+  return replaced;
 }

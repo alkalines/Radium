@@ -1,4 +1,3 @@
-import { api } from "backend/convex/_generated/api";
 import {
   CryptoError,
   decodeEnvelope,
@@ -12,16 +11,14 @@ import {
   toBase64Url,
   utf8,
 } from "radium-crypto";
+import { trpcClient } from "@/lib/trpc-client";
 import { keyManager } from "./key-manager";
-import {
-  advanceHighWater,
-  buffer,
-  bytes,
-  cryptoClient,
-  currentUserId,
-  highWater,
-  onSecretsCleared,
-} from "./runtime";
+import { advanceHighWater, currentUserId, highWater, onSecretsCleared, trpcFailure } from "./runtime";
+/** A stale writer: the server refuses a compare-and-swap with CONFLICT "TRUST_STORE_CONFLICT". */
+function isTrustStoreConflict(error: unknown): boolean {
+  const failure = trpcFailure(error);
+  return failure?.code === "CONFLICT" && failure.message === "TRUST_STORE_CONFLICT";
+}
 /** Public identity used by pin decisions, never private material. */
 export type PublicIdentity = {
   userId: string;
@@ -149,7 +146,7 @@ async function load(force = false): Promise<void> {
   if (loading) return loading;
   loading = keyManager
     .useAmk(async (amk, identity) => {
-      const row = await cryptoClient().query(api.e2ee.getTrustStore, {});
+      const row = await trpcClient().e2ee.getTrustStore.query();
       const marker = `radium.e2ee.trust.v1:${userId}`;
       if ((row?.version ?? 0) < highWater(marker)) {
         status = "rollback";
@@ -163,7 +160,7 @@ async function load(force = false): Promise<void> {
             keyId: toBase64Url(identity.keyId),
             userId,
             version: row.version,
-            envelope: bytes(row.envelope),
+            envelope: fromBase64Url(row.envelope),
             highWater: highWater(marker),
           })
         : { v: 1 as const, version: 0, pins: {} };
@@ -241,10 +238,10 @@ export const trust = {
             userId: currentUserId(),
             store: next,
           });
-          await cryptoClient().mutation(api.e2ee.saveTrustStore, {
+          await trpcClient().e2ee.saveTrustStore.mutate({
             expectedVersion,
             version: next.version,
-            envelope: buffer(envelope),
+            envelope: toBase64Url(envelope),
           });
         });
         if (keyManager.getSnapshot().state !== "unlocked")
@@ -254,14 +251,7 @@ export const trust = {
         emit();
         return;
       } catch (error) {
-        const data = error && typeof error === "object" && "data" in error ? error.data : null;
-        if (
-          !data ||
-          typeof data !== "object" ||
-          !("code" in data) ||
-          data.code !== "TRUST_STORE_CONFLICT"
-        )
-          throw error;
+        if (!isTrustStoreConflict(error)) throw error;
       }
     }
     throw new CryptoError("BAD_INPUT", "Trust store changed concurrently; try again");

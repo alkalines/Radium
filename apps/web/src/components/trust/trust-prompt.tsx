@@ -1,6 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { useQuery } from "convex/react";
-import { api } from "backend/convex/_generated/api";
+import { useQuery } from "@tanstack/react-query";
 import { safetyNumber } from "radium-crypto";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,6 +13,7 @@ import {
 import { GroupList, RowBlock } from "@/components/harness/group-list";
 import { keyManager } from "@/lib/crypto/key-manager";
 import { trust } from "@/lib/crypto/trust-store";
+import { useTrpc } from "@/lib/trpc";
 import { trustRequests, type IdentityTrustRequest } from "@/lib/crypto/trust-requests";
 
 /** Explicit first-contact/changed approval; the compared safety number is derived on this device. */
@@ -27,7 +27,10 @@ export function TrustPrompt({
   onDenied: () => void;
 }) {
   const [number, setNumber] = useState("");
-  const names = useQuery(api.e2ee.identityNames, { userIds: [error.identity.userId] });
+  const trpc = useTrpc();
+  const { data: names } = useQuery(
+    trpc.e2ee.identityNames.queryOptions({ userIds: [error.identity.userId] }),
+  );
   const person = names?.[0]?.name ?? "this person";
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState(false);

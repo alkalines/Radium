@@ -1,11 +1,11 @@
-import { api } from "backend/convex/_generated/api";
-import { useMutation, useQuery } from "convex/react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   CryptoError,
   fromBase64Url,
   generateRecoveryKey,
   recoveryWrapperStatement,
   sign,
+  toBase64Url,
 } from "radium-crypto";
 import { type SyntheticEvent, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -17,6 +17,9 @@ import { FieldGroup } from "@/components/ui/field";
 import { Spinner } from "@/components/ui/spinner";
 import { buildRecoveryWrapper, sealDeviceRecovery } from "@/lib/crypto/account-keys";
 import { keyManager, KeysLockedError } from "@/lib/crypto/key-manager";
+import { useServerKeyStatus } from "@/lib/crypto/use-server-key-status";
+import { useTrpc } from "@/lib/trpc";
+import { trpcClient } from "@/lib/trpc-client";
 
 type RecoveryDraft = { entropy: Uint8Array; words: string[] };
 
@@ -49,9 +52,10 @@ function RecoveryKeyCard({
   account: { userId: string; keyId: string } | null;
   reason: string;
 }) {
-  const setRecoveryWrapper = useMutation(api.e2ee.setRecoveryWrapper);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
   // The replacement is signed over the hash of the wrapper it replaces (`setRecoveryWrapper`).
-  const serverKeys = useQuery(api.e2ee.myKeyStatus, account ? {} : "skip");
+  const { data: serverKeys } = useServerKeyStatus(account?.userId);
   const keyId = account?.keyId ?? null;
   const draft = useRef<RecoveryDraft | null>(null);
   const submitting = useRef(false);
@@ -108,12 +112,13 @@ function RecoveryKeyCard({
       });
       // Do not publish a completed wrap after this form was discarded by a lock/account change.
       if (draft.current !== recovery) return;
-      // `v.bytes()` arguments are standalone ArrayBuffers.
-      await setRecoveryWrapper({
+      await trpcClient().e2ee.setRecoveryWrapper.mutate({
         keyId: account.keyId,
-        recoveryWrapper: signed.wrapper.slice().buffer,
-        signature: signed.signature.slice().buffer,
+        recoveryWrapper: toBase64Url(signed.wrapper),
+        signature: toBase64Url(signed.signature),
       });
+      // The next replacement is signed over this wrapper's hash, so the cached status is stale now.
+      await queryClient.invalidateQueries({ queryKey: trpc.e2ee.pathKey() });
       cancel();
       toast.success(
         "Recovery key saved. The old recovery key no longer works for password resets.",
@@ -181,7 +186,6 @@ function RecoveryKeyCard({
 }
 
 function DeviceRecoveryCard({ unlocked, reason }: { unlocked: boolean; reason: string }) {
-  const offerDeviceRecovery = useMutation(api.e2ee.offerDeviceRecovery);
   const submitting = useRef(false);
   const active = useRef(false);
   const [pending, setPending] = useState(false);
@@ -209,9 +213,9 @@ function DeviceRecoveryCard({ unlocked, reason }: { unlocked: boolean; reason: s
         sealDeviceRecovery({ words, account: { amk, identity } }),
       );
       if (!active.current) return;
-      await offerDeviceRecovery({
+      await trpcClient().e2ee.offerDeviceRecovery.mutate({
         slotId: sealed.slotId,
-        sealedAmk: sealed.sealedAmk.slice().buffer,
+        sealedAmk: toBase64Url(sealed.sealedAmk),
       });
       setSent(true);
     } catch (failure) {

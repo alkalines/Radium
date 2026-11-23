@@ -2,7 +2,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useSession } from "@better-auth-ui/react";
 import { ConvexBetterAuthProvider } from "@convex-dev/better-auth/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useConvexAuth, useQuery as useConvexQuery, type ConvexReactClient } from "convex/react";
+import { useConvexAuth, type ConvexReactClient } from "convex/react";
 import { ConvexQueryCacheProvider } from "convex-helpers/react/cache";
 import { ConvexQueryCacheContext } from "convex-helpers/react/cache/provider";
 import { ThemeProvider, useTheme } from "next-themes";
@@ -10,7 +10,7 @@ import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { authClient } from "@/lib/auth-client";
 import { useFrontendLogger } from "@/lib/logging";
-import { api } from "backend/convex/_generated/api";
+import { useServerKeyStatus } from "@/lib/crypto/use-server-key-status";
 import { keyManager } from "@/lib/crypto/key-manager";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { MotionProvider } from "@/lib/motion";
@@ -131,10 +131,11 @@ function ConvexAuthQueryCache({ children }: { children: ReactNode }) {
 
 /**
  * Binds the key manager to the signed-in user. Whether the account has keys comes from
- * `e2ee:myKeyStatus`; a `null` answer means Convex auth has not caught up with the Better Auth
- * session yet, so nothing is decided then (treating it as "no keys" would delete freshly
- * unlocked keys right after sign-in). A server-side identity that differs from the unlocked one
- * (reset with new keys on another device) locks this tab.
+ * `e2ee.myKeyStatus`, which needs the session, so it is asked only for a signed-in user and
+ * its cache entry is keyed by that user; until it answers nothing is decided (treating a missing
+ * answer as "no keys" would delete freshly unlocked keys right after sign-in). A server-side
+ * identity that differs from the unlocked one (reset with new keys on another device) locks this
+ * tab; the status is refetched when the window regains focus.
  */
 function EncryptionKeysLifecycle({
   userId,
@@ -143,8 +144,7 @@ function EncryptionKeysLifecycle({
   userId: string | undefined;
   isSessionPending: boolean;
 }) {
-  const { isAuthenticated } = useConvexAuth();
-  const serverKeys = useConvexQuery(api.e2ee.myKeyStatus, isAuthenticated && userId ? {} : "skip");
+  const { data: serverKeys } = useServerKeyStatus(userId);
   const keyStatus = useKeyStatus();
 
   useEffect(() => {

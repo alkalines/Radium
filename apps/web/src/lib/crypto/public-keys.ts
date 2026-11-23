@@ -1,5 +1,3 @@
-import { api } from "backend/convex/_generated/api";
-import type { Id } from "backend/convex/_generated/dataModel";
 import {
   CryptoError,
   fingerprint,
@@ -8,7 +6,8 @@ import {
   verifyIdentitySelfSignature,
 } from "radium-crypto";
 import { keyManager, KeysLockedError } from "./key-manager";
-import { bytes, cryptoClient, currentUserId } from "./runtime";
+import { currentUserId } from "./runtime";
+import { trpcClient } from "@/lib/trpc-client";
 import type { PublicIdentity } from "./trust-store";
 type PublicCache = {
   identity?: { keyId: string; encryptionPublicKey: string };
@@ -37,7 +36,7 @@ export async function fetchIdentities(userIds: string[]): Promise<Map<string, Pu
   const result = new Map<string, PublicIdentity>();
   const unique = [...new Set(userIds)];
   for (let start = 0; start < unique.length; start += 200) {
-    const rows = await cryptoClient().query(api.e2ee.identityKeys, {
+    const rows = await trpcClient().e2ee.identityKeys.query({
       userIds: unique.slice(start, start + 200),
     });
     for (const row of rows) {
@@ -53,9 +52,9 @@ type PublicIdentityRow = {
   userId: string;
   keyId: string;
   suite: number;
-  encryptionPublicKey: ArrayBuffer;
-  signingPublicKey: ArrayBuffer;
-  selfSignature: ArrayBuffer;
+  encryptionPublicKey: string;
+  signingPublicKey: string;
+  selfSignature: string;
   status?: string;
 };
 
@@ -64,9 +63,9 @@ async function verifyPublicIdentity(row: PublicIdentityRow): Promise<PublicIdent
     userId: row.userId,
     keyId: row.keyId,
     suite: row.suite,
-    encryptionPublicKey: bytes(row.encryptionPublicKey),
-    signingPublicKey: bytes(row.signingPublicKey),
-    selfSignature: bytes(row.selfSignature),
+    encryptionPublicKey: fromBase64Url(row.encryptionPublicKey),
+    signingPublicKey: fromBase64Url(row.signingPublicKey),
+    selfSignature: fromBase64Url(row.selfSignature),
   };
   const valid = await verifyIdentitySelfSignature({
     keyId: fromBase64Url(row.keyId),
@@ -88,12 +87,12 @@ async function verifyPublicIdentity(row: PublicIdentityRow): Promise<PublicIdent
  */
 export async function fetchHistoricalIdentities(
   keyIds: string[],
-  chatEpoch?: { chatId: Id<"aisdk_chats">; epoch: number },
+  chatEpoch?: { chatId: string; epoch: number },
 ): Promise<Map<string, PublicIdentity>> {
   const result = new Map<string, PublicIdentity>();
   const unique = [...new Set(keyIds)];
   for (let start = 0; start < unique.length; start += 200) {
-    const rows = await cryptoClient().query(api.e2ee.identityKeysByKeyId, {
+    const rows = await trpcClient().e2ee.identityKeysByKeyId.query({
       keyIds: unique.slice(start, start + 200),
       chatEpoch,
     });

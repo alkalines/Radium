@@ -2,8 +2,7 @@
 
 import { createQrCodeSvgData, type QrCodeSvgData } from "@better-auth-ui/core";
 import { useAuth } from "@better-auth-ui/react";
-import { useConvex } from "convex/react";
-import { CryptoError, createAccountKeys, generateShortSecret } from "radium-crypto";
+import { CryptoError, createAccountKeys, fromBase64Url, generateShortSecret } from "radium-crypto";
 import { type SyntheticEvent, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -29,7 +28,7 @@ import {
   type ParsedResetPayload,
   type UnlockedAccount,
 } from "@/lib/crypto/account-keys";
-import { api } from "backend/convex/_generated/api";
+import { trpcClient } from "@/lib/trpc-client";
 import { cn } from "@/lib/utils";
 import { NewPasswordFields, readNewPassword } from "./encryption/new-password-fields";
 import { PhraseField, PhraseWords, RecoveryKeySetup } from "./encryption/recovery-key";
@@ -66,7 +65,6 @@ const NEW_LINK_MESSAGE = "Ask the operator of this Radium deployment for a new r
 export function ResetPassword({ className }: ResetPasswordProps) {
   const { basePaths, viewPaths, navigate } = useAuth();
   const refreshAuthSession = useRefreshAuthSession();
-  const convex = useConvex();
   const [step, setStep] = useState<Step>("verify");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -171,7 +169,7 @@ export function ResetPassword({ className }: ResetPasswordProps) {
         return;
       }
       try {
-        const result = await convex.mutation(api.e2ee.takeDeviceRecovery, { slotId: code.slotId });
+        const result = await trpcClient().e2ee.takeDeviceRecovery.mutate({ slotId: code.slotId });
         if (!active()) return;
         if (Date.now() >= code.expiresAt) {
           expire();
@@ -182,7 +180,7 @@ export function ResetPassword({ className }: ResetPasswordProps) {
           try {
             account = await openDeviceRecovery({
               secret: code.entropy,
-              sealedAmk: new Uint8Array(result.sealedAmk),
+              sealedAmk: fromBase64Url(result.sealedAmk),
               reset,
             });
           } catch {
@@ -219,7 +217,7 @@ export function ResetPassword({ className }: ResetPasswordProps) {
       clearTimeout(pollTimer);
       clearTimeout(expiryTimer);
     };
-  }, [clearDevice, convex, step]);
+  }, [clearDevice, step]);
 
   async function recoverWithWords(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();

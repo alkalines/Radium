@@ -1,5 +1,4 @@
 import { api } from "backend/convex/_generated/api";
-import type { Id } from "backend/convex/_generated/dataModel";
 import { legacyAad, type LegacyBox } from "contracts/e2ee/legacy-contract";
 import { fromBase64Url, openBox, toBase64Url } from "radium-crypto";
 import { keyManager, KeysLockedError } from "./key-manager";
@@ -15,8 +14,8 @@ export class CustodialContentError extends Error {
 export type LegacyContentContext = {
   table: string;
   record: string;
-  workspace?: Id<"workspaces">;
-  chatId?: Id<"aisdk_chats">;
+  workspace?: string;
+  chatId?: string;
 };
 
 /**

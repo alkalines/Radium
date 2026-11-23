@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import type { ConvexReactClient } from "convex/react";
-import { getFunctionName, type FunctionReference } from "convex/server";
-import type { Id } from "backend/convex/_generated/dataModel";
+import { installFakeTrpc } from "./test-trpc";
 import {
   chatKeyStatement,
   createAccountKeys,
@@ -35,7 +33,7 @@ import {
   sealInvitePayload,
 } from "./workspace-proofs";
 import { verifyChatEpoch } from "./chat-keys";
-import { advanceHighWater, configureCryptoClient } from "./runtime";
+import { advanceHighWater } from "./runtime";
 import {
   getMemberKey,
   KeylessDowngradeError,
@@ -238,28 +236,27 @@ describe("archived workspace epochs", () => {
     prefix: "stored" | "none" | "wrong";
     tamper?: number;
   }) {
-    const workspace = input.workspace as Id<"workspaces">;
+    const workspace = input.workspace;
     const owner = await account("owner");
     const total = ROSTER_EPOCH_WINDOW + 4;
     const archivedEpoch = 2;
     const member = await generateEncryptionKeyPair();
-    const rows: Array<{ epoch: number; memberPublicKey: ArrayBuffer; [field: string]: unknown }> =
-      [];
+    const rows: Array<{ epoch: number; memberPublicKey: string; [field: string]: unknown }> = [];
     const entries: RosterEpoch[] = [];
     for (let epoch = 1; epoch <= total; epoch++) {
       const memberPublicKey = epoch === archivedEpoch ? member.publicKey : randomBytes(1216);
       const ownerPublicKey = randomBytes(1216);
       const row = {
-        _id: `epoch-${epoch}`,
-        _creationTime: 1,
+        id: `epoch-${epoch}`,
         workspace,
         epoch,
         suite: 1,
         memberKeyId: id(),
-        memberPublicKey: memberPublicKey.slice().buffer,
+        memberPublicKey: toBase64Url(memberPublicKey),
         ownerKeyId: id(),
-        ownerPublicKey: ownerPublicKey.slice().buffer,
+        ownerPublicKey: toBase64Url(ownerPublicKey),
         createdBy: "owner",
+        rosterArchiveHash: null,
         createdAt: 1,
       };
       rows.push(row);
@@ -306,8 +303,7 @@ describe("archived workspace epochs", () => {
       sealed,
     });
     const grant = {
-      _id: "grant",
-      _creationTime: 1,
+      id: "grant",
       workspace,
       epoch: archivedEpoch,
       purpose: "member",
@@ -315,8 +311,8 @@ describe("archived workspace epochs", () => {
       recipientKeyId,
       granterUserId: "owner",
       granterKeyId: owner.public.keyId,
-      sealed: sealed.slice().buffer,
-      signature: (await sign(owner.identity.signing.seed, statement)).slice().buffer,
+      sealed: toBase64Url(sealed),
+      signature: toBase64Url(await sign(owner.identity.signing.seed, statement)),
       createdAt: 1,
     };
     const selfSignature = await identitySelfSignature(owner.identity);
@@ -330,68 +326,64 @@ describe("archived workspace epochs", () => {
     }));
     spyOn(keyManager, "useAmk").mockImplementation(async (fn) => fn(owner.amk, owner.identity));
     spyOn(trust, "check").mockImplementation(async () => "self");
-    configureCryptoClient({
-      query: async (fn: FunctionReference<"query">, args: Record<string, number>) => {
-        const name = getFunctionName(fn);
-        if (name === "e2ee:identityKeys") {
-          return [
-            {
-              userId: "owner",
-              keyId: owner.public.keyId,
-              suite: owner.public.suite,
-              encryptionPublicKey: owner.public.encryptionPublicKey.slice().buffer,
-              signingPublicKey: owner.public.signingPublicKey.slice().buffer,
-              selfSignature: selfSignature.slice().buffer,
-            },
-          ];
+    installFakeTrpc({
+      "e2ee.identityKeys": () => [
+        {
+          userId: "owner",
+          keyId: owner.public.keyId,
+          suite: owner.public.suite,
+          encryptionPublicKey: toBase64Url(owner.public.encryptionPublicKey),
+          signingPublicKey: toBase64Url(owner.public.signingPublicKey),
+          selfSignature: toBase64Url(selfSignature),
+        },
+      ],
+      "e2ee.workspaceKeyState": () => ({
+        role: "owner",
+        ownerId: "owner",
+        keyEpoch: total,
+        epochs: rows.slice(-ROSTER_EPOCH_WINDOW),
+        roster: {
+          id: "roster",
+          workspace,
+          version: roster.version,
+          body: toBase64Url(roster.body),
+          signature: toBase64Url(roster.signature),
+          signerKeyId: roster.signerKeyId,
+          createdAt: 1,
+        },
+        myGrants: [],
+        members: [{ userId: "owner", role: "owner", keyId: recipientKeyId, grantedEpoch: null }],
+        joinRequests: [],
+        phrase: null,
+        invites: [],
+      }),
+      "e2ee.workspaceArchivedEpochs": async ({
+        fromEpoch,
+        toEpoch,
+      }: {
+        fromEpoch: number;
+        toEpoch: number;
+      }) => {
+        archivedFrom.push(fromEpoch);
+        let prefixHash: string | null = null;
+        if (fromEpoch > 1 && input.prefix === "stored") {
+          prefixHash = (await extendRosterArchive(EMPTY_ROSTER_ARCHIVE, entries.slice(0, fromEpoch - 1)))
+            .hash;
         }
-        if (name === "e2ee:workspaceKeyState") {
-          return {
-            role: "owner",
-            ownerId: "owner",
-            keyEpoch: total,
-            epochs: rows.slice(-ROSTER_EPOCH_WINDOW),
-            roster: {
-              _id: "roster",
-              _creationTime: 1,
-              workspace,
-              version: roster.version,
-              body: roster.body.slice().buffer,
-              signature: roster.signature.slice().buffer,
-              signerKeyId: roster.signerKeyId,
-              createdAt: 1,
-            },
-            myGrants: [],
-            members: [{ userId: "owner", role: "owner", keyId: recipientKeyId, grantedEpoch: null }],
-            joinRequests: [],
-            phrase: null,
-            invites: [],
-          };
-        }
-        if (name === "e2ee:workspaceArchivedEpochs") {
-          const { fromEpoch, toEpoch } = args as { fromEpoch: number; toEpoch: number };
-          archivedFrom.push(fromEpoch);
-          let prefixHash: string | null = null;
-          if (fromEpoch > 1 && input.prefix === "stored") {
-            prefixHash = (await extendRosterArchive(EMPTY_ROSTER_ARCHIVE, entries.slice(0, fromEpoch - 1)))
-              .hash;
-          }
-          if (fromEpoch > 1 && input.prefix === "wrong") prefixHash = toBase64Url(randomBytes(32));
-          return {
-            prefixHash,
-            epochs: rows
-              .filter((row) => row.epoch >= fromEpoch && row.epoch <= toEpoch)
-              .map((row) =>
-                row.epoch === input.tamper
-                  ? { ...row, memberPublicKey: randomBytes(1216).slice().buffer }
-                  : row,
-              ),
-            myGrants: grant.epoch >= fromEpoch && grant.epoch <= toEpoch ? [grant] : [],
-          };
-        }
-        throw new Error(`Unexpected query ${name}`);
+        if (fromEpoch > 1 && input.prefix === "wrong") prefixHash = toBase64Url(randomBytes(32));
+        return {
+          prefixHash,
+          epochs: rows
+            .filter((row) => row.epoch >= fromEpoch && row.epoch <= toEpoch)
+            .map((row) =>
+              row.epoch === input.tamper
+                ? { ...row, memberPublicKey: toBase64Url(randomBytes(1216)) }
+                : row,
+            ),
+          myGrants: grant.epoch >= fromEpoch && grant.epoch <= toEpoch ? [grant] : [],
+        };
       },
-    } as unknown as ConvexReactClient);
+    });
     return { workspace, member, archivedFrom };
   }
 

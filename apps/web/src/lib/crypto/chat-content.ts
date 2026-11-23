@@ -26,7 +26,7 @@ import { keyManager } from "./key-manager";
 
 /** Public context binding every content object to its workspace, chat and key epoch. */
 export type ChatContentKey = {
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   e2eeId: string;
   epoch: number;
   publicKey: Uint8Array;
@@ -34,7 +34,7 @@ export type ChatContentKey = {
 
 /** Reader context; fresh chats may supply their memory-only seed before obtaining a database id. */
 export type ChatContentReader = Pick<ChatContentKey, "workspaceId" | "e2eeId"> & {
-  chatId?: Id<"aisdk_chats">;
+  chatId?: string;
   seed?: Uint8Array;
 };
 
@@ -421,7 +421,7 @@ export function parseFileFragment(url: string) {
 }
 
 /** Downloads without a fragment and decrypts locally; the caller supplies the workspace AAD boundary. */
-export async function decryptFileUrl(url: string, workspaceId: Id<"workspaces">): Promise<Blob> {
+export async function decryptFileUrl(url: string, workspaceId: string): Promise<Blob> {
   const fragment = parseFileFragment(url);
   try {
     const response = await fetch(fragment?.storageUrl ?? url);

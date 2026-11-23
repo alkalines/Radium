@@ -34,7 +34,7 @@ export class ChatKeysRequiredError extends Error {
  * (locked, a chat member without encryption keys, or the workspace has no keys yet) instead of
  * falling back.
  */
-export async function requireChatKeys(chatId: Id<"aisdk_chats">): Promise<void> {
+export async function requireChatKeys(chatId: string): Promise<void> {
   if (!(await ensureChatKeys(chatId))) throw new ChatKeysRequiredError();
 }
 
@@ -44,7 +44,7 @@ export async function requireChatKeys(chatId: Id<"aisdk_chats">): Promise<void> 
  * rejects with `CustodialContentError`: the release runs on the server and the content appears
  * once it is resealed.
  */
-async function readReleasingCustody<T>(chatId: Id<"aisdk_chats">, read: () => Promise<T>): Promise<T> {
+async function readReleasingCustody<T>(chatId: string, read: () => Promise<T>): Promise<T> {
   try {
     return await read();
   } catch (error) {
@@ -88,8 +88,8 @@ function isQueue(value: unknown): value is ChatQueue {
 
 /** The chat whose history is read and which sidecar fields the caller needs. */
 export type HistoricalChatInput = {
-  chatId: Id<"aisdk_chats">;
-  workspaceId: Id<"workspaces">;
+  chatId: string;
+  workspaceId: string;
   legacyContent?: SealedLegacyBox | null;
   /** `interruption`: restore a failed request's error text that moved into the sidecar. */
   wants: { title: boolean; queue: boolean; interruption?: boolean };
@@ -186,8 +186,8 @@ export type HistoricalFile = { blob: Blob; filename?: string; mediaType: string 
  * and is never fetched.
  */
 export async function openHistoricalFile(
-  chatId: Id<"aisdk_chats">,
-  workspaceId: Id<"workspaces">,
+  chatId: string,
+  workspaceId: string,
   url: string,
 ): Promise<HistoricalFile | null> {
   const row = await trpcClient().chatFiles.historicalFile.query({ chatId, url });
@@ -220,8 +220,8 @@ export async function openHistoricalFile(
 /** Destination of a re-encrypted attachment: the chat (or fork) that will reference it. */
 export type ReencryptTarget = {
   /** Chat whose historical files are read. */
-  chatId: Id<"aisdk_chats">;
-  workspaceId: Id<"workspaces">;
+  chatId: string;
+  workspaceId: string;
   /** Key of the chat that will reference the new upload; absent when it cannot be encrypted. */
   key?: ChatContentKey;
 };

@@ -1,6 +1,5 @@
-import type { Id } from "backend/convex/_generated/dataModel";
-import type { FunctionReturnType } from "convex/server";
-import { api } from "backend/convex/_generated/api";
+import type { inferRouterOutputs } from "@trpc/server";
+import type { AppRouter } from "server/router";
 import { trpcClient } from "@/lib/trpc-client";
 import {
   chatKeyBindingStatement,
@@ -8,6 +7,7 @@ import {
   CryptoError,
   encryptionPublicKeyFromSeed,
   equalBytes,
+  fromBase64Url,
   generateEncryptionKeyPair,
   openBox,
   sealBox,
@@ -16,15 +16,7 @@ import {
   verify,
 } from "radium-crypto";
 import { keyManager, KeysLockedError } from "./key-manager";
-import {
-  bytes,
-  buffer,
-  cryptoClient,
-  currentUserId,
-  newKeyId,
-  onSecretsCleared,
-  secretGeneration,
-} from "./runtime";
+import { currentUserId, newKeyId, onSecretsCleared, secretGeneration } from "./runtime";
 import { fetchHistoricalIdentities, getOwnPublicKey } from "./public-keys";
 import {
   getCurrentMemberPublicKey,
@@ -42,7 +34,7 @@ import { requestIdentityTrust } from "./trust-requests";
  * throws, so nothing is sealed to an unapproved key.
  */
 async function approvedIdentity(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   userId: string,
 ): Promise<PublicIdentity> {
   try {
@@ -56,18 +48,18 @@ async function approvedIdentity(
 
 /** Audience of a chat's key epochs. */
 export type ChatScope = "personal" | "shared" | "workspace";
-/** Wire shape of ChatKeysSetup (bytes as ArrayBuffer for Convex). */
+/** Wire shape of ChatKeysSetup: bytes are unpadded base64url text, as tRPC carries them. */
 export type ChatKeysSetupWire = {
   e2eeId: string;
   epoch: {
     epoch: number;
     keyId: string;
     suite: number;
-    publicKey: ArrayBuffer;
+    publicKey: string;
     signerKeyId?: string;
-    signature?: ArrayBuffer;
+    signature?: string;
     /** V2 binding to the server-assigned chat ID and its policy; absent only at chat creation. */
-    bindingSignature?: ArrayBuffer;
+    bindingSignature?: string;
     /** Canonical raw picked members the binding covers; shared chats only. */
     bindingMembers?: string[];
   };
@@ -80,46 +72,25 @@ export type WrapWire =
       recipient: "workspace";
       workspaceEpoch: number;
       recipientKeyId: string;
-      sealed: ArrayBuffer;
+      sealed: string;
     }
   | {
       chatEpoch: number;
       recipient: "identity";
       userId: string;
       recipientKeyId: string;
-      sealed: ArrayBuffer;
+      sealed: string;
     };
-/** A Home row wrap; the server may include additional row metadata. */
+/** A served wrap row; the server includes additional row metadata. */
 export type WrapRowWire = {
   chatEpoch: number;
   recipient: "workspace" | "identity";
-  workspaceEpoch?: number;
-  userId?: string;
+  workspaceEpoch?: number | null;
+  userId?: string | null;
   recipientKeyId: string;
-  sealed: ArrayBuffer;
+  sealed: string;
 };
-
-const text = (value: ArrayBuffer | Uint8Array) => toBase64Url(bytes(value));
-/**
- * The one conversion point from this module's Convex wire (`ArrayBuffer`) to the backend's tRPC
- * wire (unpadded base64url text) for `chats.create`, `chats.fork` and `chats.setScope`.
- */
-export function epochToTrpc(epoch: ChatKeysSetupWire["epoch"]) {
-  const { publicKey, signature, bindingSignature, ...rest } = epoch;
-  return {
-    ...rest,
-    publicKey: text(publicKey),
-    ...(signature ? { signature: text(signature) } : {}),
-    ...(bindingSignature ? { bindingSignature: text(bindingSignature) } : {}),
-  };
-}
-export function wrapsToTrpc(wraps: WrapWire[]) {
-  return wraps.map((wrap) => ({ ...wrap, sealed: text(wrap.sealed) }));
-}
-export function chatKeysToTrpc(keys: ChatKeysSetupWire) {
-  return { e2eeId: keys.e2eeId, epoch: epochToTrpc(keys.epoch), wraps: wrapsToTrpc(keys.wraps) };
-}
-type ChatKeysState = FunctionReturnType<typeof api.e2ee.chatKeys>;
+type ChatKeysState = inferRouterOutputs<AppRouter>["e2ee"]["chatKeys"];
 type EpochRow = ChatKeysState["epochs"][number];
 /**
  * The declared audience a binding signature covers (`chatKeyBindingStatement`): scope, creator and,
@@ -176,18 +147,18 @@ function bindingStatement(input: {
 /** Exactly what a verified binding covered: the signed row and the policy it was checked against. */
 function bindingFingerprint(
   row: {
-    signerKeyId?: string;
+    signerKeyId?: string | null;
     keyId: string;
-    publicKey: ArrayBuffer | Uint8Array;
-    bindingSignature?: ArrayBuffer | Uint8Array;
+    publicKey: string;
+    bindingSignature?: string | null;
   },
   policy: ChatPolicy,
 ): string {
   return JSON.stringify([
     row.signerKeyId ?? null,
     row.keyId,
-    toBase64Url(bytes(row.publicKey)),
-    row.bindingSignature ? toBase64Url(bytes(row.bindingSignature)) : null,
+    row.publicKey,
+    row.bindingSignature ?? null,
     policyKey(policy),
   ]);
 }
@@ -195,8 +166,8 @@ const seeds = new Map<string, Uint8Array>();
 /** Original policy of each epoch this device generated, keyed by e2eeId and, once known, chat ID. */
 const devicePolicies = new Map<string, ChatPolicy>();
 type UnsignedEpoch = {
-  chatId: Id<"aisdk_chats">;
-  workspaceId: Id<"workspaces">;
+  chatId: string;
+  workspaceId: string;
   e2eeId: string;
   epoch: number;
   keyId: string;
@@ -237,11 +208,11 @@ function forgetDeviceEpoch(e2eeId: string, epoch: number): void {
  * requires unlocked keys. Only a new chat's first epoch is ever created unsigned (locked device).
  */
 async function makeEpoch(input: {
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   e2eeId: string;
   epoch: number;
   policy: ChatPolicy;
-  chatId?: Id<"aisdk_chats">;
+  chatId?: string;
 }) {
   const { workspaceId, e2eeId, epoch, policy, chatId } = input;
   if (trust.getSnapshot() === "rollback") {
@@ -254,19 +225,19 @@ async function makeEpoch(input: {
     epoch,
     keyId: newKeyId(),
     suite: pair.suite,
-    publicKey: buffer(pair.publicKey),
+    publicKey: toBase64Url(pair.publicKey),
   };
   if (keyManager.getSnapshot().state === "unlocked") {
     await keyManager.useAmk(async (_, identity) => {
       wire.signerKeyId = toBase64Url(identity.keyId);
-      wire.signature = buffer(
+      wire.signature = toBase64Url(
         await sign(
           identity.signing.seed,
           chatKeyStatement({ workspaceId, chatE2eeId: e2eeId, ...wire, publicKey: pair.publicKey }),
         ),
       );
       if (!chatId) return;
-      wire.bindingSignature = buffer(
+      wire.bindingSignature = toBase64Url(
         await sign(
           identity.signing.seed,
           bindingStatement({ chatId, workspaceId, e2eeId, ...wire, publicKey: pair.publicKey, policy }),
@@ -307,7 +278,7 @@ type ChatAudience =
   | { scope: "personal" | "shared"; recipients: string[]; withoutKeys: string[] };
 
 async function chatAudience(input: {
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   scope: ChatScope;
   members?: string[];
   creatorId: string;
@@ -320,7 +291,7 @@ async function chatAudience(input: {
   if (candidates.every((userId) => userId === ownId)) {
     return { scope: input.scope, recipients: candidates, withoutKeys: [] };
   }
-  const workspace = await cryptoClient().query(api.e2ee.workspaceKeyState, {
+  const workspace = await trpcClient().e2ee.workspaceKeyState.query({
     workspace: input.workspaceId,
   });
   // Workspace users are the owner and explicit members; `keyId` is their active identity, if any.
@@ -335,7 +306,7 @@ async function chatAudience(input: {
 }
 
 async function wrapSeed(input: {
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   e2eeId: string;
   epoch: number;
   seed: Uint8Array;
@@ -357,7 +328,7 @@ async function wrapSeed(input: {
         recipient: "workspace",
         workspaceEpoch: key.epoch,
         recipientKeyId: key.keyId,
-        sealed: buffer(
+        sealed: toBase64Url(
           await sealBox({
             recipientPublicKey: key.publicKey,
             plaintext: input.seed,
@@ -380,7 +351,7 @@ async function wrapSeed(input: {
         recipient: "identity" as const,
         userId,
         recipientKeyId: identity.keyId,
-        sealed: buffer(
+        sealed: toBase64Url(
           await sealBox({
             recipientPublicKey: identity.encryptionPublicKey,
             plaintext: input.seed,
@@ -394,10 +365,10 @@ async function wrapSeed(input: {
 }
 
 async function newChatKeys(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   audience: ChatAudience,
   policy: ChatPolicy,
-  chatId?: Id<"aisdk_chats">,
+  chatId?: string,
 ) {
   const e2eeId = newKeyId();
   const pair = await makeEpoch({ workspaceId, e2eeId, epoch: 1, policy, chatId });
@@ -418,7 +389,7 @@ async function newChatKeys(
  * it after unlock, only while the server still serves that exact policy.
  */
 export async function createChatKeys(input: {
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   scope: ChatScope;
   members?: string[];
 }): Promise<{
@@ -451,7 +422,7 @@ export async function createChatKeys(input: {
 
 /** Binds a just-created in-memory seed to the server-assigned chat ID. */
 export function rememberChatSeed(
-  chatId: Id<"aisdk_chats">,
+  chatId: string,
   e2eeId: string,
   epoch: number,
   seed: Uint8Array,
@@ -509,7 +480,7 @@ export async function verifyChatEpoch(input: {
 }
 
 /** Seed of one chat epoch. Refuses unsigned foreign epochs and unverifiable signers. */
-export async function openChatSeed(chatId: Id<"aisdk_chats">, epoch: number): Promise<Uint8Array> {
+export async function openChatSeed(chatId: string, epoch: number): Promise<Uint8Array> {
   const key = cacheKey(chatId, epoch);
   const pending = opening.get(key);
   if (pending) return pending;
@@ -518,7 +489,7 @@ export async function openChatSeed(chatId: Id<"aisdk_chats">, epoch: number): Pr
   return promise;
 }
 
-async function openCheckedChatSeed(chatId: Id<"aisdk_chats">, epoch: number): Promise<Uint8Array> {
+async function openCheckedChatSeed(chatId: string, epoch: number): Promise<Uint8Array> {
   const cached = seeds.get(cacheKey(chatId, epoch));
   if (trust.getSnapshot() === "rollback") {
     throw new CryptoError("DECRYPT_FAILED", "Trust store rollback blocks key access");
@@ -527,7 +498,7 @@ async function openCheckedChatSeed(chatId: Id<"aisdk_chats">, epoch: number): Pr
   if (keyManager.getSnapshot().state !== "unlocked") throw new KeysLockedError();
   const generation = secretGeneration();
   // Exactly this epoch: the default `chatKeys` answer lists only the newest epochs.
-  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId, epoch });
+  const state = await trpcClient().e2ee.chatKeys.query({ chatId, epoch });
   if (!state.e2eeId) throw new CryptoError("BAD_INPUT", "Chat has no keys");
   const row = state.epochs.find((entry) => entry.epoch === epoch);
   if (!row || !row.signature || !row.signerKeyId)
@@ -559,14 +530,14 @@ async function openCheckedChatSeed(chatId: Id<"aisdk_chats">, epoch: number): Pr
     workspaceId: state.workspace,
     e2eeId: state.e2eeId,
     ...row,
-    publicKey: bytes(row.publicKey),
-    signature: bytes(row.signature),
+    publicKey: fromBase64Url(row.publicKey),
+    signature: fromBase64Url(row.signature),
     signingPublicKey: signer.signingPublicKey,
   });
   const wrap = usableWrap(state, epoch);
   if (!wrap) throw new CryptoError("DECRYPT_FAILED", "Missing chat key wrap");
   const seed = await openWrap(state.workspace, state.e2eeId, wrap);
-  if (!equalBytes(await encryptionPublicKeyFromSeed(seed), bytes(row.publicKey))) {
+  if (!equalBytes(await encryptionPublicKeyFromSeed(seed), fromBase64Url(row.publicKey))) {
     seed.fill(0);
     throw new CryptoError("DECRYPT_FAILED", "Chat key does not match epoch");
   }
@@ -583,7 +554,7 @@ async function openCheckedChatSeed(chatId: Id<"aisdk_chats">, epoch: number): Pr
  * pin, anyone else through the roster or an explicit approval of exactly that key.
  */
 async function activeSigner(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   creatorId: string,
   identity: PublicIdentity,
 ): Promise<PublicIdentity | undefined> {
@@ -617,7 +588,7 @@ function usableWrap(state: ChatKeysState, epoch: number) {
   );
 }
 
-async function openWrap(workspaceId: Id<"workspaces">, e2eeId: string, wrap: WrapRowWire) {
+async function openWrap(workspaceId: string, e2eeId: string, wrap: WrapRowWire) {
   const aad = {
     table: "e2ee_chat_key_wraps",
     workspace: workspaceId,
@@ -632,19 +603,24 @@ async function openWrap(workspaceId: Id<"workspaces">, e2eeId: string, wrap: Wra
     const key = await getMemberKey(workspaceId, wrap.workspaceEpoch);
     if (key.keyId !== wrap.recipientKeyId)
       throw new CryptoError("DECRYPT_FAILED", "Workspace wrap key mismatch");
-    return openBox({ seed: key.seed, box: bytes(wrap.sealed), aad, pad: "none" });
+    return openBox({ seed: key.seed, box: fromBase64Url(wrap.sealed), aad, pad: "none" });
   }
   return keyManager.useAmk(async (_, identity) => {
     if (wrap.userId !== currentUserId() || toBase64Url(identity.keyId) !== wrap.recipientKeyId)
       throw new CryptoError("DECRYPT_FAILED", "Identity wrap mismatch");
-    return openBox({ seed: identity.encryption.seed, box: bytes(wrap.sealed), aad, pad: "none" });
+    return openBox({
+      seed: identity.encryption.seed,
+      box: fromBase64Url(wrap.sealed),
+      aad,
+      pad: "none",
+    });
   });
 }
 
 /** Opens a Home row through the complete signed-epoch verification path. */
 export async function openRowSeed(input: {
-  chatId: Id<"aisdk_chats">;
-  workspaceId: Id<"workspaces">;
+  chatId: string;
+  workspaceId: string;
   e2eeId: string;
   wrap: Pick<WrapRowWire, "chatEpoch">;
 }): Promise<Uint8Array> {
@@ -656,8 +632,8 @@ export async function openRowSeed(input: {
  * and keeps its seed for this device.
  */
 async function rotateChatEpoch(input: {
-  chatId: Id<"aisdk_chats">;
-  workspaceId: Id<"workspaces">;
+  chatId: string;
+  workspaceId: string;
   e2eeId: string;
   epoch: number;
   audience: ChatAudience;
@@ -678,7 +654,7 @@ async function rotateChatEpoch(input: {
       seed: next.seed,
       audience: input.audience,
     });
-    await cryptoClient().mutation(api.e2ee.rotateChatKey, {
+    await trpcClient().e2ee.rotateChatKey.mutate({
       chatId: input.chatId,
       epoch: next.wire,
       wraps,
@@ -708,7 +684,7 @@ async function rotateChatEpoch(input: {
  * its creator or a currently picked member; for a workspace chat the owner or a roster member.
  */
 async function signerAuthorized(
-  workspaceId: Id<"workspaces">,
+  workspaceId: string,
   userId: string,
   policy: ChatPolicy,
 ): Promise<boolean> {
@@ -731,7 +707,7 @@ async function signerAuthorized(
  * does not prove the served policy never authorizes encryption, re-certification or widening.
  */
 async function currentBinding(
-  chatId: Id<"aisdk_chats">,
+  chatId: string,
   state: ChatKeysState,
   row: EpochRow,
   policy: ChatPolicy,
@@ -749,13 +725,13 @@ async function currentBinding(
   const fingerprint = bindingFingerprint(row, policy);
   if (verifiedBindings.get(key) === fingerprint) return "valid";
   const generation = secretGeneration();
-  const publicKey = bytes(row.publicKey);
+  const publicKey = fromBase64Url(row.publicKey);
   await verifyChatEpoch({
     workspaceId: state.workspace,
     e2eeId: state.e2eeId,
     ...row,
     publicKey,
-    signature: bytes(row.signature),
+    signature: fromBase64Url(row.signature),
     signingPublicKey: identity.signingPublicKey,
   });
   // The signature covers the authenticated original members; the served ones are compared after.
@@ -771,7 +747,7 @@ async function currentBinding(
         publicKey,
         policy: bound,
       }),
-      bytes(row.bindingSignature),
+      fromBase64Url(row.bindingSignature),
     ))
   )
     throw failed;
@@ -811,7 +787,7 @@ type KeyPlan = { kind: "use" } | { kind: "sign"; expected: UnsignedEpoch } | { k
  * after unlock, signed and bound. Everything else needs a fresh bound epoch.
  */
 async function planCurrentKey(
-  chatId: Id<"aisdk_chats">,
+  chatId: string,
   state: ChatKeysState,
   row: EpochRow,
 ): Promise<KeyPlan> {
@@ -852,7 +828,7 @@ async function signOwnEpoch(
   expected: UnsignedEpoch,
 ): Promise<"bound" | "signed" | "unavailable"> {
   requireOwnUnsignedChat(state, expected);
-  const publicKey = bytes(row.publicKey);
+  const publicKey = fromBase64Url(row.publicKey);
   // Public encryption keys let the backend seal arbitrary seeds. Remembering the exact
   // locally-created statement prevents signing an attacker-known substituted epoch.
   if (
@@ -894,16 +870,15 @@ async function signOwnEpoch(
           )
         : undefined;
       const signerKeyId = toBase64Url(identity.keyId);
-      await cryptoClient().mutation(api.e2ee.signChatKey, {
+      const bindingText = bindingSignature ? toBase64Url(bindingSignature) : undefined;
+      await trpcClient().e2ee.signChatKey.mutate({
         chatId: expected.chatId,
         epoch: row.epoch,
         signerKeyId,
-        signature: buffer(signature),
-        ...(policy && bindingSignature
-          ? { bindingSignature: buffer(bindingSignature), ...bindingMembers(policy) }
-          : {}),
+        signature: toBase64Url(signature),
+        ...(policy && bindingText ? { bindingSignature: bindingText, ...bindingMembers(policy) } : {}),
       });
-      return { signerKeyId, bindingSignature };
+      return { signerKeyId, bindingSignature: bindingText };
     });
     unsigned.delete(cacheKey(expected.e2eeId, row.epoch));
     if (!policy || !signed.bindingSignature) return "signed";
@@ -923,16 +898,16 @@ async function signOwnEpoch(
  * unauthorized identity, or bound to members proven to have left. A binding that fails throws.
  * `scope` and `creatorId` are the audience that epoch's binding proves.
  */
-export async function writableChatKey(chatId: Id<"aisdk_chats">): Promise<{
+export async function writableChatKey(chatId: string): Promise<{
   e2eeId: string;
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   epoch: number;
   keyId: string;
   publicKey: Uint8Array;
   scope: ChatScope;
   creatorId: string;
 }> {
-  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+  const state = await trpcClient().e2ee.chatKeys.query({ chatId });
   if (!state.e2eeId || !state.keyEpoch) throw new CryptoError("BAD_INPUT", "Chat has no keys");
   const row = state.epochs.find((entry) => entry.epoch === state.keyEpoch);
   if (!row) throw new CryptoError("DECRYPT_FAILED", "Chat key epoch missing");
@@ -959,7 +934,7 @@ export async function writableChatKey(chatId: Id<"aisdk_chats">): Promise<{
   // Authenticate the exact queried public key even for a locally created/cached epoch. A second
   // query inside openChatSeed may return different metadata; a cache hit alone authenticates no row.
   const seed = await openChatSeed(chatId, state.keyEpoch);
-  if (!equalBytes(await encryptionPublicKeyFromSeed(seed), bytes(row.publicKey))) {
+  if (!equalBytes(await encryptionPublicKeyFromSeed(seed), fromBase64Url(row.publicKey))) {
     throw new CryptoError("DECRYPT_FAILED", "Chat key does not match epoch");
   }
   return {
@@ -967,7 +942,7 @@ export async function writableChatKey(chatId: Id<"aisdk_chats">): Promise<{
     workspaceId: state.workspace,
     epoch: state.keyEpoch,
     keyId: row.keyId,
-    publicKey: bytes(row.publicKey),
+    publicKey: fromBase64Url(row.publicKey),
     scope: state.scope,
     creatorId: state.creatorId,
   };
@@ -982,7 +957,7 @@ export async function writableChatKey(chatId: Id<"aisdk_chats">): Promise<{
  * Concurrent calls for one chat share one attempt, and losing a race against another reader's
  * setup converges on the winner's epoch.
  */
-export function ensureChatKeys(chatId: Id<"aisdk_chats">): Promise<boolean> {
+export function ensureChatKeys(chatId: string): Promise<boolean> {
   const pending = settingUp.get(chatId);
   if (pending) return pending;
   const attempt = setupInitialChatKeys(chatId).finally(() => settingUp.delete(chatId));
@@ -990,8 +965,8 @@ export function ensureChatKeys(chatId: Id<"aisdk_chats">): Promise<boolean> {
   return attempt;
 }
 
-async function setupInitialChatKeys(chatId: Id<"aisdk_chats">): Promise<boolean> {
-  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+async function setupInitialChatKeys(chatId: string): Promise<boolean> {
+  const state = await trpcClient().e2ee.chatKeys.query({ chatId });
   if (state.e2eeId) return true;
   if (keyManager.getSnapshot().state !== "unlocked") return false;
   if (state.scope === "workspace" && !state.workspaceKeyEpoch) return false;
@@ -1017,11 +992,11 @@ async function setupInitialChatKeys(chatId: Id<"aisdk_chats">): Promise<boolean>
   );
   if (!created) return false;
   try {
-    await cryptoClient().mutation(api.e2ee.setupChatKeys, { chatId, keys: created.keys });
+    await trpcClient().e2ee.setupChatKeys.mutate({ chatId, keys: created.keys });
   } catch (error) {
     forgetDeviceEpoch(created.e2eeId, 1);
     // Another reader's setup committed first; its epoch is opened through the normal signer checks.
-    const current = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+    const current = await trpcClient().e2ee.chatKeys.query({ chatId });
     if (current.e2eeId) return true;
     throw error;
   }
@@ -1039,10 +1014,10 @@ async function setupInitialChatKeys(chatId: Id<"aisdk_chats">): Promise<boolean>
  * current key is bound and fresh. Resolves false while blocked by locked keys or missing recipient
  * or workspace keys; a binding that fails throws rather than releasing to it.
  */
-export async function prepareCustodyRelease(chatId: Id<"aisdk_chats">): Promise<boolean> {
+export async function prepareCustodyRelease(chatId: string): Promise<boolean> {
   if (!(await ensureChatKeys(chatId))) return false;
   if (keyManager.getSnapshot().state !== "unlocked") return false;
-  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+  const state = await trpcClient().e2ee.chatKeys.query({ chatId });
   if (!state.e2eeId || !state.keyEpoch) return false;
   const row = state.epochs.find((entry) => entry.epoch === state.keyEpoch);
   if (!row) throw new CryptoError("DECRYPT_FAILED", "Chat key epoch missing");
@@ -1069,7 +1044,7 @@ export async function prepareCustodyRelease(chatId: Id<"aisdk_chats">): Promise<
     });
   } catch (error) {
     // Another reader rotated first; the release follows their fresh epoch.
-    const current = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+    const current = await trpcClient().e2ee.chatKeys.query({ chatId });
     if (current.keyEpoch !== state.keyEpoch && !current.rekey && !current.staleForWorkspace) {
       return true;
     }
@@ -1086,11 +1061,11 @@ export async function prepareCustodyRelease(chatId: Id<"aisdk_chats">): Promise<
  * travel with the key change (the ACP Session screen refuses that change).
  */
 export async function changeChatScope(input: {
-  chatId: Id<"aisdk_chats">;
+  chatId: string;
   scope: ChatScope;
   members?: string[];
 }): Promise<void> {
-  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId: input.chatId });
+  const state = await trpcClient().e2ee.chatKeys.query({ chatId: input.chatId });
   if (state.creatorId !== currentUserId())
     throw new CryptoError("BAD_INPUT", "Only the creator changes scope");
   // The server keeps a shared chat's picked members when none are supplied.
@@ -1139,7 +1114,7 @@ export async function changeChatScope(input: {
       );
     await trpcClient().chats.setScope.mutate({
       ...input,
-      keys: { rotate: epochToTrpc(fresh.wire), wraps: wrapsToTrpc(wraps) },
+      keys: { rotate: fresh.wire, wraps },
     });
   } catch (error) {
     forgetDeviceEpoch(state.e2eeId, epoch);
@@ -1166,7 +1141,7 @@ export async function signUnsignedChatKeys(): Promise<void> {
   const remaining: UnsignedEpoch[] = [];
   for (const entry of entries) {
     const expected = { ...entry, policy: storedPolicy(entry.policy) };
-    const state = await cryptoClient().query(api.e2ee.chatKeys, {
+    const state = await trpcClient().e2ee.chatKeys.query({
       chatId: expected.chatId,
       epoch: expected.epoch,
     });

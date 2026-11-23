@@ -27,12 +27,14 @@ import {
   type ChatScope,
 } from "@/lib/crypto/chat-keys";
 import { sealTitle } from "@/lib/crypto/chat-content";
-import { buffer, cryptoClient, currentUserId } from "@/lib/crypto/runtime";
+import { buffer, currentUserId } from "@/lib/crypto/runtime";
+import { trpcClient } from "@/lib/trpc-client";
 import { KeysLockedError } from "@/lib/crypto/key-manager";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { KeylessDowngradeError, workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
 import {
   acpFallbackTitle,
+  chatKeysToConvex,
   openAcpError,
   openAcpFrames,
   openAcpInteraction,
@@ -631,7 +633,7 @@ export function useAcpSession({
       if (!signed) return await forkMutation({ chat: chatId, clientId });
       if (!session) throw new Error("This agent Session is still loading.");
       // The fork keeps the source's audience but belongs to the caller, who is not a member.
-      const source = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+      const source = await trpcClient().e2ee.chatKeys.query({ chatId });
       const scope: ChatScope = source.scope;
       const me = currentUserId();
       const members =
@@ -642,7 +644,7 @@ export function useAcpSession({
       const target = await forkMutation({
         chat: chatId,
         clientId,
-        e2ee: { keys: keys.keys, ...(scope === "shared" ? { members } : {}) },
+        e2ee: { keys: chatKeysToConvex(keys.keys), ...(scope === "shared" ? { members } : {}) },
       });
       rememberChatSeed(target, keys.e2eeId, 1, keys.seed);
       // The Worker seals the fork's frames only to a key epoch bound to the target chat.

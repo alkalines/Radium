@@ -23,9 +23,11 @@ import {
   verify,
   workerObjectStatement,
   type ChatScopeName,
+  fromBase64Url,
 } from "radium-crypto";
-import { openChatSeed } from "@/lib/crypto/chat-keys";
+import { openChatSeed, type ChatKeysSetupWire } from "@/lib/crypto/chat-keys";
 import { buffer, bytes, cryptoClient, currentUserId, onSecretsCleared } from "@/lib/crypto/runtime";
+import { trpcClient } from "@/lib/trpc-client";
 import { signAsUser, trustedWorker, WorkerNotPairedError } from "@/lib/crypto/workers";
 import { getOwnerKey, keyedWorkspaceClaim } from "@/lib/crypto/workspace-keys";
 
@@ -134,8 +136,27 @@ export async function signAgentCommands(input: {
  * server calls a workspace keyless that this device verified as keyed.
  */
 export async function isKeyedWorkspace(workspaceId: Id<"workspaces">): Promise<boolean> {
-  const state = await cryptoClient().query(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+  const state = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
   return keyedWorkspaceClaim(workspaceId, state.keyEpoch !== null);
+}
+
+/**
+ * Chat keys as `acp.OpenAgentSession` and `acp.ForkSession` (still Convex) take them: bytes are
+ * `ArrayBuffer`s, where the tRPC wire of `lib/crypto/chat-keys` carries unpadded base64url text.
+ * The one place that converts, until those two actions move to tRPC.
+ */
+export function chatKeysToConvex(keys: ChatKeysSetupWire) {
+  const { publicKey, signature, bindingSignature, ...epoch } = keys.epoch;
+  return {
+    e2eeId: keys.e2eeId,
+    epoch: {
+      ...epoch,
+      publicKey: buffer(fromBase64Url(publicKey)),
+      ...(signature ? { signature: buffer(fromBase64Url(signature)) } : {}),
+      ...(bindingSignature ? { bindingSignature: buffer(fromBase64Url(bindingSignature)) } : {}),
+    },
+    wraps: keys.wraps.map((wrap) => ({ ...wrap, sealed: buffer(fromBase64Url(wrap.sealed)) })),
+  };
 }
 
 /** Everything `acpBindingStatement` covers, except the signature. */
@@ -246,7 +267,7 @@ export async function repairAcpBinding(
   chatId: Id<"aisdk_chats">,
   options: { authorizeSession?: boolean } = {},
 ): Promise<void> {
-  const state = await cryptoClient().query(api.e2ee.chatKeys, { chatId });
+  const state = await trpcClient().e2ee.chatKeys.query({ chatId });
   if (!state.e2eeId || state.creatorId !== currentUserId()) return;
   let importProof: { signerKeyId: string; signature: ArrayBuffer } | undefined;
   if (options.authorizeSession) {

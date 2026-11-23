@@ -98,7 +98,12 @@ import { ToolsDialog } from "./tools-dialog";
 import { AcpSessionScreen } from "./acp/acp-session-screen";
 import { AcpConfigControls, applyAcpDraft } from "./acp/config-controls";
 import { acpActionError } from "./acp/use-acp-session";
-import { acpFallbackTitle, publishAcpBinding, signAcpCommand } from "./acp/acp-crypto";
+import {
+  acpFallbackTitle,
+  chatKeysToConvex,
+  publishAcpBinding,
+  signAcpCommand,
+} from "./acp/acp-crypto";
 import { EncryptionNotice } from "@/components/auth/encryption-notice";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { keyManager, KeysLockedError } from "@/lib/crypto/key-manager";
@@ -112,7 +117,6 @@ import {
   requireChatKeys,
 } from "@/lib/crypto/legacy-chat";
 import {
-  chatKeysToTrpc,
   createChatKeys,
   rememberChatSeed,
   ensureChatKeys,
@@ -332,7 +336,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
 
   const { mutateAsync: createChat } = useQueryMutation(trpc.chats.create.mutationOptions());
   const { mutateAsync: forkChat } = useQueryMutation(trpc.chats.fork.mutationOptions());
-  const { data: keyState } = useQuery(convexQuery(api.e2ee.chatKeys, chatId ? { chatId } : "skip"));
+  const { data: keyState } = useQuery(trpc.e2ee.chatKeys.queryOptions(chatId ? { chatId } : skipToken));
   const { mutateAsync: setChatWorker } = useQueryMutation(trpc.chats.setWorker.mutationOptions());
   const { mutateAsync: setChatWorkerGrant } = useQueryMutation(
     trpc.chats.setWorkerGrant.mutationOptions(),
@@ -355,17 +359,15 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     (candidate) => candidate.id === settingsWorkspaceId && candidate.role === "owner",
   );
   const { data: workspaceKeyState } = useQuery(
-    convexQuery(
-      api.e2ee.workspaceKeyState,
-      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    trpc.e2ee.workspaceKeyState.queryOptions(
+      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : skipToken,
     ),
   );
   const { data: memberNames } = useQuery(
-    convexQuery(
-      api.e2ee.identityNames,
+    trpc.e2ee.identityNames.queryOptions(
       workspaceKeyState
         ? { userIds: workspaceKeyState.members.map((member) => member.userId) }
-        : "skip",
+        : skipToken,
     ),
   );
   const needsNewChatKeys =
@@ -1376,7 +1378,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           worker: draftWorker.workerId,
           agentId: agent.agentId,
           profile: agent.profile,
-          ...(keys ? { e2ee: { keys: keys.keys } } : {}),
+          ...(keys ? { e2ee: { keys: chatKeysToConvex(keys.keys) } } : {}),
         });
         const createdChat = created;
         const workerId = draftWorker.workerId;
@@ -1504,7 +1506,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         // the workspace defaults.
         ...(toolOverride ? { tools: toolOverride } : {}),
         e2ee: {
-          keys: chatKeysToTrpc(keys.keys),
+          keys: keys.keys,
           sealedQueue: await sealQueue(queued, { ...keys, workspaceId: settingsWorkspaceId }),
           fileUrls: files.map((file) => file.url),
         },
@@ -1693,7 +1695,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       members,
       project: chat?.project ?? undefined,
       e2ee: {
-        keys: chatKeysToTrpc(keys.keys),
+        keys: keys.keys,
         ...(await sealMessagesForFork(forkHistory, forkKey)),
         sealedQueue: queuedFork ? await sealQueue(queuedFork, forkKey) : undefined,
         fileUrls: [...forkHistory.flatMap(getMessageFiles), ...(queuedFork?.files ?? [])].map(

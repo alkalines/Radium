@@ -1,6 +1,13 @@
-import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 import { generateEncryptionKeyPair, openBox, sealBox, utf8 } from "radium-crypto";
 import { legacyAad } from "contracts/e2ee/legacy-contract";
+import * as legacyContent from "./legacy-content";
+import {
+  isHistoricalFrame,
+  openHistoricalAcpFrames,
+  openHistoricalAcpSession,
+  openHistoricalAgentTitle,
+} from "./legacy-relay";
 
 type Request = { table: string; record: string; workspace?: string; chatId?: string };
 
@@ -8,9 +15,13 @@ let seed: Uint8Array;
 let publicKey: Uint8Array;
 
 // Opens real ciphertext under the same AAD the backend seals with, so a reader that names the wrong
-// table, record or workspace fails here exactly as it would against a migrated deployment.
-mock.module("./legacy-content", () => ({
-  openLegacyContent: async (sealed: { box: ArrayBuffer }, request: Request) => {
+// table, record or workspace fails here exactly as it would against a migrated deployment. A spy,
+// not a module mock: `mock.module` would stay in place for the other test files of this process.
+function openWithTestSeed() {
+  spyOn(legacyContent, "openLegacyContent").mockImplementation((async (
+    sealed: { box: ArrayBuffer },
+    request: Request,
+  ) => {
     const plaintext = await openBox({
       seed,
       box: new Uint8Array(sealed.box),
@@ -18,13 +29,8 @@ mock.module("./legacy-content", () => ({
       pad: "content",
     });
     return JSON.parse(new TextDecoder().decode(plaintext));
-  },
-}));
-mock.module("./runtime", () => ({ cryptoClient: () => ({ query: async () => null }) }));
-
-// Static imports are hoisted above `mock.module`, so the module under test loads after the mocks.
-const { isHistoricalFrame, openHistoricalAcpFrames, openHistoricalAgentTitle, openHistoricalAcpSession } =
-  await import("./legacy-relay");
+  }) as never);
+}
 
 const context = { workspace: "ws" as never, chatId: "chat" as never };
 
@@ -42,7 +48,9 @@ beforeAll(async () => {
   const pair = await generateEncryptionKeyPair();
   seed = pair.seed;
   publicKey = pair.publicKey;
+  openWithTestSeed();
 });
+afterAll(() => mock.restore());
 
 describe("historical relay readers (real ciphertext)", () => {
   test("sealed frames decrypt into the original ops and keep their sequence range", async () => {

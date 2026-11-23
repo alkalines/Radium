@@ -26,10 +26,10 @@ async function publishedRow(secret: Uint8Array): Promise<WorkerKeyRow> {
     workerId: "worker",
     keyId,
     suite: 1,
-    encryptionPublicKey: encryption.publicKey.slice().buffer,
-    signingPublicKey: signing.publicKey.slice().buffer,
-    selfSignature: (await sign(signing.seed, statement)).slice().buffer,
-    pairingMac: (await workerPairingMac(secret, statement)).slice().buffer,
+    encryptionPublicKey: toBase64Url(encryption.publicKey),
+    signingPublicKey: toBase64Url(signing.publicKey),
+    selfSignature: toBase64Url(await sign(signing.seed, statement)),
+    pairingMac: toBase64Url(await workerPairingMac(secret, statement)),
     pairingId: toBase64Url(randomBytes(16)),
   };
 }

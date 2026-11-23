@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useConvex, useQuery } from "convex/react";
-import { api } from "backend/convex/_generated/api";
-import type { Id } from "backend/convex/_generated/dataModel";
+import { skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useConvex } from "convex/react";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
+import { useTrpc } from "@/lib/trpc";
 import { configureCryptoClient } from "@/lib/crypto/runtime";
 import { refreshOwnPublicKey } from "@/lib/crypto/public-keys";
 import { signUnsignedChatKeys } from "@/lib/crypto/chat-keys";
@@ -16,10 +16,12 @@ import {
 } from "@/components/trust/trust-prompt";
 import { useWorkspace } from "./workspace-provider";
 
-/** Mounted once under WorkspaceProvider; shares the existing authenticated client with crypto. */
+/**
+ * Mounted once under WorkspaceProvider. Keys go through tRPC; the one Convex client it shares with
+ * crypto serves what has no tRPC route yet (ACP, Worker enrollment, historical reads).
+ */
 export function WorkspaceKeySync() {
-  const client = useConvex();
-  configureCryptoClient(client);
+  configureCryptoClient(useConvex());
   const status = useKeyStatus();
   const { workspaces } = useWorkspace();
   useEffect(() => {
@@ -49,12 +51,15 @@ export function WorkspaceKeySync() {
     </>
   );
 }
-function WorkspaceSync({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
-  const state = useQuery(api.e2ee.workspaceKeyState, { workspace: workspaceId });
+function WorkspaceSync({ workspaceId }: { workspaceId: string }) {
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { data: state } = useQuery(trpc.e2ee.workspaceKeyState.queryOptions({ workspace: workspaceId }));
   // Owners certify newly published Worker keys and drop revoked Workers from the roster.
-  const workerKeys = useQuery(
-    api.e2ee.workerKeys,
-    state?.role === "owner" && state.keyEpoch ? { workspace: workspaceId } : "skip",
+  const { data: workerKeys } = useQuery(
+    trpc.e2ee.workerKeys.queryOptions(
+      state?.role === "owner" && state.keyEpoch ? { workspace: workspaceId } : skipToken,
+    ),
   );
   const [prompt, setPrompt] = useState<TrustRequiredError | null>(null);
   const [revision, setRevision] = useState(0);
@@ -63,8 +68,15 @@ function WorkspaceSync({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
     if (!state || denied.current) return;
     let active = true;
     syncWorkspaceKeys(workspaceId)
-      .then(async () => {
-        if (state.role === "owner" && state.keyEpoch) await syncWorkerCertificates(workspaceId);
+      .then(async (keysChanged) => {
+        const rosterChanged =
+          state.role === "owner" && state.keyEpoch
+            ? await syncWorkerCertificates(workspaceId)
+            : false;
+        // The sync wrote keys, grants or a roster; refetch instead of waiting for a push.
+        if ((keysChanged || rosterChanged) && active) {
+          await queryClient.invalidateQueries({ queryKey: trpc.e2ee.pathKey() });
+        }
       })
       .then(
         () => {
@@ -78,7 +90,7 @@ function WorkspaceSync({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
     return () => {
       active = false;
     };
-  }, [workspaceId, state, workerKeys, revision]);
+  }, [workspaceId, state, workerKeys, revision, queryClient, trpc]);
   if (!prompt) return null;
   return (
     <div className="fixed bottom-4 right-4 z-40 max-h-[80svh] w-[min(420px,calc(100vw-2rem))] overflow-auto">
