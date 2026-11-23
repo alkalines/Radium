@@ -9,7 +9,7 @@ import type {
   TelemetrySource,
   TelemetryUsage,
 } from "contracts/telemetry/validators";
-import { chatInWorkspace } from "../chatroom/chats";
+import { chatVisibleInWorkspace } from "../chatroom/access";
 import { newId } from "../db/ids";
 import type { Database } from "../drivers/types";
 import { apiKeys } from "../gateway/schema";
@@ -504,7 +504,7 @@ async function checkClaims(db: Database, input: FinishRequestInput) {
     if (!key) throw new Error("Telemetry key mismatch.");
   }
   if (input.chatId) {
-    if (!(await chatInWorkspace(db, input.chatId, input.workspace))) {
+    if (!(await chatVisibleInWorkspace(db, input.userId, input.chatId, input.workspace))) {
       throw new Error("Telemetry chat mismatch.");
     }
   } else if (input.source === "chatroom") {

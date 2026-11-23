@@ -96,6 +96,30 @@ export async function requireWorkspaceProject(
   return project;
 }
 
+/**
+ * The owner-set folder of `workerId` in Project `projectId` of `workspace` (a chat's Worker
+ * directory), or undefined. A Project of another workspace never contributes a folder.
+ */
+export async function projectWorkerDirectory(
+  db: Database,
+  workspace: string,
+  projectId: string,
+  workerId: string,
+): Promise<string | undefined> {
+  const [row] = await db
+    .select({ directory: projectFolders.directory })
+    .from(projectFolders)
+    .innerJoin(projects, eq(projects.id, projectFolders.project))
+    .where(
+      and(
+        eq(projectFolders.project, projectId),
+        eq(projectFolders.worker, workerId),
+        eq(projects.workspace, workspace),
+      ),
+    );
+  return row?.directory;
+}
+
 /** A workspace's Projects for any owner or member, by name then age. */
 export async function listProjects(
   db: Database,

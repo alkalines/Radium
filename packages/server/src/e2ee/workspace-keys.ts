@@ -96,19 +96,21 @@ export function invalidKeys(): never {
 }
 
 /** A canonical random 16-byte identifier. */
-function requireKeyId(id: string) {
+export function requireKeyId(id: string) {
   if (!decodeExactBytes(id, 16)) {
     invalidKeys();
   }
 }
 
-function requirePositive(value: number) {
+/** A positive safe epoch or version. */
+export function requirePositive(value: number) {
   if (!Number.isSafeInteger(value) || value < 1) {
     invalidKeys();
   }
 }
 
-function requireBox(value: Uint8Array, max = MAX_BOX_BYTES) {
+/** A bounded nonempty encrypted box. */
+export function requireBox(value: Uint8Array, max = MAX_BOX_BYTES) {
   if (value.byteLength < 1 || value.byteLength > max) {
     invalidKeys();
   }

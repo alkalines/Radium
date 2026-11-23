@@ -3,7 +3,7 @@ import { createAuth, type Auth } from "./auth/auth";
 import { loadConfig, type Config } from "./config";
 import { hasSchemaVersion } from "./db/migrate";
 import { SCHEMA_VERSION } from "./db/schema-version";
-import type { Drivers } from "./drivers/types";
+import type { DriverOptions, Drivers } from "./drivers/types";
 import { SecretKeyring } from "./gateway/secrets";
 import { jobHandlers } from "./jobs/handlers";
 import type { JobHandlers } from "./jobs/outbox";
@@ -65,6 +65,25 @@ export function createRuntime(
   };
 }
 
+/** What the drivers connect to, from the validated configuration. */
+export function driverOptions(config: Config): DriverOptions {
+  return {
+    databaseUrl: config.DATABASE_URL,
+    valkeyUrl: config.VALKEY_URL,
+    objects: config.S3_BUCKET
+      ? {
+          kind: "s3",
+          bucket: config.S3_BUCKET,
+          accessKeyId: config.S3_ACCESS_KEY_ID,
+          secretAccessKey: config.S3_SECRET_ACCESS_KEY,
+          region: config.S3_REGION,
+          endpoint: config.S3_ENDPOINT,
+          sessionToken: config.S3_SESSION_TOKEN,
+        }
+      : { kind: "disk", dir: config.FILES_DIR! },
+  };
+}
+
 /**
  * Startup checks of a runtime: the database has every migration this build expects (the server
  * never migrates on its own; operators run `db:migrate`), and the OPAQUE server setup is valid.
@@ -89,10 +108,7 @@ let processRuntime: Promise<Runtime> | undefined;
 export function useProcessRuntime(): Promise<Runtime> {
   processRuntime ??= (async () => {
     const config = loadConfig(process.env);
-    const drivers = createDrivers({
-      databaseUrl: config.DATABASE_URL,
-      valkeyUrl: config.VALKEY_URL,
-    });
+    const drivers = createDrivers(driverOptions(config));
     const runtime = createRuntime(config, drivers);
     try {
       await checkRuntime(runtime);

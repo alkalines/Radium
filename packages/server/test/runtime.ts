@@ -1,10 +1,13 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ready as opaqueReady, server as opaqueServer } from "@serenity-kit/opaque";
 import { sql } from "drizzle-orm";
 import { createDatabase, createDrivers } from "#drivers";
 import { createApp, type App } from "../src/app";
 import { loadConfig } from "../src/config";
 import type { JobHandlers } from "../src/jobs/outbox";
-import { checkRuntime, createRuntime, type Runtime } from "../src/runtime";
+import { checkRuntime, createRuntime, driverOptions, type Runtime } from "../src/runtime";
 import { databaseUrl, TEMPLATE_DATABASE, TEST_POSTGRES_URL, TEST_VALKEY_URL } from "./services";
 
 /** Web origin the test runtimes trust; auth requests must send it as `Origin`. */
@@ -39,6 +42,8 @@ export async function createTestRuntime(
   }
 
   await opaqueReady;
+  // Each runtime gets its own object directory (local-disk adapter), removed on close.
+  const filesDir = await mkdtemp(join(tmpdir(), "radium-files-"));
   const config = loadConfig({
     SITE_URL: TEST_SITE_URL,
     API_URL: "http://localhost:3100",
@@ -49,14 +54,12 @@ export async function createTestRuntime(
     OPAQUE_SERVER_SETUP: opaqueServer.createSetup(),
     SECRET_STORE_KEYS: `1:${TEST_SECRET_STORE_KEY}`,
     TELEMETRY_HASH_SECRET: "ZWZnaGlqa2xtbm9wcXJzdHV2d3h5ent8fX5_gIGCg4Q",
+    ...(options.env?.S3_BUCKET ? {} : { FILES_DIR: filesDir }),
     ...options.env,
   });
 
   const start = async () => {
-    const drivers = createDrivers({
-      databaseUrl: config.DATABASE_URL,
-      valkeyUrl: config.VALKEY_URL,
-    });
+    const drivers = createDrivers(driverOptions(config));
     const runtime = createRuntime(config, drivers, options.jobs);
     await checkRuntime(runtime);
     return runtime;
@@ -75,6 +78,7 @@ export async function createTestRuntime(
     },
     async close() {
       await runtime.drivers.close();
+      await rm(filesDir, { recursive: true, force: true });
       const cleanup = createDatabase(TEST_POSTGRES_URL);
       try {
         await cleanup.db.execute(sql.raw(`drop database if exists ${name} with (force)`));

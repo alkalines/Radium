@@ -1,7 +1,7 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Id } from "contracts/wire";
 import { findUserByEmail, findUsers } from "../auth/users";
-import { detachWorkspaceMember } from "../chatroom/chats";
+import { detachWorkspaceMember } from "../chatroom/workspace-chats";
 import type { Database } from "../drivers/types";
 import {
   clearWorkspaceJoins,

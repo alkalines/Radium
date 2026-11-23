@@ -71,6 +71,23 @@ const configSchema = z.object({
   ),
   /** Signs the Login with ChatGPT session cookie; without it the ChatGPT subscription is off. */
   LWC_SECRET: optional,
+  /** Object store: an S3-compatible bucket (Bun's S3 variable names)… */
+  S3_BUCKET: optional,
+  S3_ACCESS_KEY_ID: optional,
+  S3_SECRET_ACCESS_KEY: optional,
+  S3_SESSION_TOKEN: optional,
+  S3_REGION: optional,
+  S3_ENDPOINT: optional,
+  /** …or a local directory for single-node installs. Exactly one of the two. */
+  FILES_DIR: optional,
+}).superRefine((value, context) => {
+  if ((value.S3_BUCKET === undefined) === (value.FILES_DIR === undefined)) {
+    context.addIssue({
+      code: "custom",
+      path: ["S3_BUCKET"],
+      message: "set exactly one of S3_BUCKET and FILES_DIR",
+    });
+  }
 });
 
 /** Validated runtime configuration. Read once at startup from the environment. */

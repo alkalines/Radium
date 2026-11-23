@@ -1,0 +1,54 @@
+import { AppError } from "../errors";
+
+/**
+ * Runtime-neutral Chatroom tool configuration shared by the settings services and the chat run.
+ * This provider identity is separate from the built-in tool-set id.
+ */
+export const EXA_TOOL_CREDENTIAL_PROVIDER = "exa" as const;
+
+/**
+ * Trim and normalize an absolute MCP URL. Refuses invalid URLs and protocols other than HTTP(S).
+ */
+export function normalizeMcpUrl(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    throw new AppError("BAD_REQUEST", "MCP server URL must be a valid absolute URL.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new AppError("BAD_REQUEST", "MCP server URL must use http or https.");
+  }
+  return parsed.toString();
+}
+
+/** Trim an MCP server name and reject it if empty. */
+export function requireMcpName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) throw new AppError("BAD_REQUEST", "Server name is required.");
+  return trimmed;
+}
+
+/** Trim an Exa API key and reject it if empty. */
+export function requireExaApiKey(key: string): string {
+  const trimmed = key.trim();
+  if (!trimmed) throw new AppError("BAD_REQUEST", "An Exa API key is required.");
+  return trimmed;
+}
+
+/** Sanitise an MCP server name into a safe tool-name prefix (`[a-z0-9_]`). */
+export function toolNamePrefix(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug || "mcp";
+}
+
+/** Append a counter when a tool name already exists, including built-in tools. */
+export function uniqueToolName(tools: Record<string, unknown>, name: string): string {
+  if (!(name in tools)) return name;
+  let counter = 2;
+  while (`${name}_${counter}` in tools) counter++;
+  return `${name}_${counter}`;
+}

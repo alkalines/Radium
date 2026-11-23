@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FILES_RELEASE_JOB, runReleaseJob } from "../chatroom/files";
 import { BUDGET_JOB, runBudgetJob } from "../gateway/limits/store";
 import type { JobHandlers } from "./outbox";
 
@@ -13,4 +14,6 @@ export const jobHandlers: JobHandlers = {
   // Recomputes a credential's budget meter 5 s after its last completion (`scheduleBudgetRefresh`).
   [BUDGET_JOB]: (payload, runtime) =>
     runBudgetJob(runtime, budgetPayload.parse(payload).credential),
+  // Deletes a deleted chat's objects once no row references them (`queueChatFileRelease`).
+  [FILES_RELEASE_JOB]: (payload, runtime) => runReleaseJob(runtime, payload),
 };

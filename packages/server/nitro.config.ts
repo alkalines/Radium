@@ -23,9 +23,11 @@ export default defineConfig({
     "jobs:sweep": { handler: path("./src/jobs/tasks/sweep.ts") },
     "limits:poll": { handler: path("./src/jobs/tasks/limits-poll.ts") },
     retention: { handler: path("./src/jobs/tasks/retention.ts") },
+    "files:orphans": { handler: path("./src/jobs/tasks/files-orphans.ts") },
   },
   scheduledTasks: {
     "* * * * *": ["jobs:sweep"],
     "*/5 * * * *": ["limits:poll", "retention"],
+    "0 * * * *": ["files:orphans"],
   },
 });

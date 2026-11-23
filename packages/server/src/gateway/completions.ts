@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Id } from "contracts/wire";
 import type { Runtime } from "../runtime";
-import { chatInWorkspace } from "../chatroom/chats";
+import { chatVisibleInWorkspace } from "../chatroom/access";
 import { dispatchJobs } from "../jobs/outbox";
 import {
   startCapture,
@@ -416,9 +416,12 @@ async function recordCompletion(
         ),
       )
       .for("key share");
-    // A chat completion must stay inside its workspace even if a caller passed a foreign chat.
-    if (info.chat && !(await chatInWorkspace(tx, info.chat.chatId, info.workspace))) {
-      throw new Error("The completion's chat is not in its workspace.");
+    // A chat completion must be for a chat its actor can see inside this workspace.
+    if (
+      info.chat &&
+      !(await chatVisibleInWorkspace(tx, info.chat.actor, info.chat.chatId, info.workspace))
+    ) {
+      throw new Error("The completion's chat is not visible to its actor in its workspace.");
     }
     const id = await recordChatCompletion(tx, {
       workspace: info.workspace,

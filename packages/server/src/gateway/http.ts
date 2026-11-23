@@ -25,7 +25,7 @@ type GatewayApp = Hono<{ Variables: { runtime: Runtime } }>;
  * for longer than that before their first byte or between chunks (task 14, Phase 0). srvx
  * exposes the Bun server on the request under Nitro; other runtimes have no such timeout.
  */
-function disableIdleTimeout(request: Request) {
+export function disableIdleTimeout(request: Request) {
   const bun = (
     request as Request & {
       runtime?: { bun?: { server?: { timeout?(request: Request, seconds: number): void } } };

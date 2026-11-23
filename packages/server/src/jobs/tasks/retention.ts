@@ -1,6 +1,7 @@
 import { defineTask } from "nitro/task";
 import type { Database } from "../../drivers/types";
 import { pruneLimitEvents } from "../../gateway/limits/events";
+import { pruneChatRuns } from "../../chatroom/run";
 import { useProcessRuntime } from "../../runtime";
 import { claimLease } from "../lease";
 
@@ -17,7 +18,10 @@ type RetentionPolicy = {
  * One bounded delete per table that expires rows by age. A domain adds its policy here when it
  * is ported, keeping its own cutoff and delete next to its table.
  */
-const policies: RetentionPolicy[] = [{ table: "limit_events", prune: pruneLimitEvents }];
+const policies: RetentionPolicy[] = [
+  { table: "limit_events", prune: pruneLimitEvents },
+  { table: "chat_runs", prune: pruneChatRuns },
+];
 
 /**
  * Runs every five minutes (`nitro.config.ts`): applies each retention policy once. The lease

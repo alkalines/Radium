@@ -2,7 +2,7 @@ import { and, asc, count, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import type { Id } from "contracts/wire";
 import { isTileColorName } from "contracts/workspaces/colors";
-import { workspaceHasChats } from "../chatroom/chats";
+import { workspaceHasChats } from "../chatroom/workspace-chats";
 import type { StoredJson } from "../db/columns";
 import type { Database, Kv } from "../drivers/types";
 import { AppError } from "../errors";

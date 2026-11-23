@@ -1,3 +1,6 @@
+import { chatFilesRouter } from "../chatroom/files-router";
+import { chatsRouter } from "../chatroom/router";
+import { chatroomSettingsRouter, toolsRouter } from "../chatroom/tools-router";
 import { authRouter } from "../auth/router";
 import { limitsRouter } from "../gateway/limits/router";
 import { keysRouter, modelsRouter, providersRouter, routingRouter } from "../gateway/router";
@@ -15,6 +18,10 @@ export const appRouter = router({
   keys: keysRouter,
   routing: routingRouter,
   limits: limitsRouter,
+  tools: toolsRouter,
+  chatroom: chatroomSettingsRouter,
+  chatFiles: chatFilesRouter,
+  chats: chatsRouter,
 });
 
 export type AppRouter = typeof appRouter;
