@@ -1,6 +1,6 @@
 # 14 Backend Migration (Convex → Bun, Hono, Postgres)
 
-Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 schema done (2026-11-22); Phase 3 slice 1 (workspaces) done and slice 2 (gateway) server side done (2026-11-22); slices 3–6 in progress.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
+Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 schema done (2026-11-22); Phase 3 domains done (2026-11-25): all six slices on the server and in the web app, the Worker client not yet (Phase 5); Phase 4 not started.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
 
 This is several sessions of work, not one. Each phase ends with the docs updated and its verification recorded here. The Convex backend on `dev` stays the product until the cutover release. The new backend is built beside it and exercised against imported copies of a local deployment, never production data.
 
@@ -495,6 +495,130 @@ Browser check of slices 1–4 (built server through the forwarder, existing dev 
   - with a key from `keys.create`, `GET /api/openai/v1/models` answered 200 (`[]`, no providers configured) and a chat completion answered 500 `Unknown model`;
   - an invalid key answered 401.
 - **Not exercised in the browser**: a chat turn. It needs a configured upstream provider; the server suite covers it with a stubbed upstream.
+
+### Slice 5 Results: Notifications, Usage, Telemetry, Logging (2026-11-25)
+
+Server side, commit `589f9c7` (routers `notifications`, `logging`, `usage`, `telemetry`, `telemetryExport`):
+
+- **Notifications**:
+  - `recent`/`claim`/preferences/devices go through tRPC;
+  - sealing to the recipient's active identity is the `notifications.seal` outbox job;
+  - the Web Push fallback is `notifications.fallback`, due 10 s after creation;
+  - pushes carry the sealed box plus generic text, never title or body text;
+  - VAPID push uses `@block65/webcrypto-web-push`;
+  - a 404/410 response deletes a subscription unless its keys were re-registered since;
+  - jobs are queued only when they can act (an identity to seal to, a push device), so a device registered inside the 10 s grace misses that one push;
+  - outbox jobs due within 30 s now run from an in-process timer, with the sweep as the backstop.
+- **Usage**:
+  - activity, generations, usage and chat cost reads; privacy uses the one chat access rule, so a shared chat the owner is not a member of is hidden from the owner too;
+  - `usage:prices` runs every minute, so a model's first models.dev lookup waits for it;
+  - services for slice 6: `recordAcpTurn` (idempotent per chat and command), `localUsageCursor`, `reportLocalUsage`, `finishLocalUsageSync`.
+- **Telemetry**:
+  - owner-only reads filtered by chat privacy, with keyset paging;
+  - export destinations: secret headers in the Secret Store, a cap of 20, the key filters checked against Postgres `api_keys` (closes the slice 2 gap);
+  - export delivery as an outbox job, at most once per request and destination;
+  - retention as the hourly `telemetry:retention` task, and GC as `telemetry.gc` jobs;
+  - large envelopes are stored in the object store and returned as a presigned `storageUrl`.
+- **Logging**: `logging.ingest` (60 events per user per minute) writes to the structured stdout sink; there is no table.
+- **Limits**: `exportLimitEvent` is ported but nothing calls it yet.
+- **Not ported**: the freeze/resume sealing machinery, legacy sidecar cleanup, and the `telemetry_gc` table (the job payload replaces it).
+- **New env**: `WEB_PUSH_VAPID_PUBLIC_KEY`/`WEB_PUSH_VAPID_PRIVATE_KEY` (both or neither) and `WEB_PUSH_SUBJECT` (defaults to `SITE_URL`), with the same values as Convex. Notifications older than 7 days are deleted by `retention`.
+- **Checks**:
+  - 39 files and 464 tests pass; typecheck, build (6.99 MB) and `db:check` pass; no migration;
+  - push was tested against a local HTTPS push endpoint that decrypts the payload as a browser would and checks the VAPID signature;
+  - these concurrency tests were each seen failing with their guard removed: claim and fallback `seen_at is null`, the device cap lock, the endpoint upsert, the preference merge, `recordAcpTurn` dedupe, the local-usage lock, the export claim, the destination cap, and the GC lock and capture retry.
+- **Not tested**: the S3 presign path for envelopes, retention paging past 200 workspaces, the 1 s content export cap, and a real push service.
+
+Web side, commit `556472d`:
+
+- **Moved to tRPC**: the notification center, toasts and push subscription; the service worker decode (same payload shape, `id` and a base64url box); logging; activity, logs, Project usage and chat cost; every telemetry screen (keyset paging through `useInfiniteQuery`) and destinations (Postgres key ids, no Convex cast).
+- **Telemetry decrypt**: fetches `storageUrl` when the envelope is not inline. Sealed and legacy detection checks `!= null`, since the server sends `null` where Convex omitted a field.
+- **Freshness until Phase 4**:
+  - `notifications.recent` refetches on focus and every 30 s while a tab is visible. A tab can therefore see a notification up to 30 s late, and the 10 s push may arrive first.
+  - Chat cost refetches when a turn ends; telemetry and activity refetch on focus and mount.
+- **Checks**: web `tsc` 101 (none new); `vite:build` passes and the service worker bundle contains no server runtime; `bun test src/lib/crypto` 70/70.
+- **Gap closed by `ea4a786`**: historical `legacy_content` boxes stored outside the row (`storageId`, imported to `files/<storageId>`) are served by `e2ee.legacyStorageUrl({ table, record })`, a presigned GET or the same-origin `/api/files/legacy` route on the local-disk store.
+  - It uses the Convex authorization per source table, including personal-chat privacy, and the table name is an allowlist.
+  - The `storageId` is read from the row itself. Authorization runs before the "no envelope" answer, so existence cannot be probed.
+  - Object release now spares any `files/` key a `legacy_content` box still names; the tables are listed once in `e2ee/legacy-tables.ts`.
+  - 44 files and 563 tests pass.
+
+### Slice 6 Results: Worker and ACP (2026-11-25)
+
+Server side, commit `07b5c07` (`packages/server/src/{worker,acp}/`, routers `workers`, `acp`, and the machine router `worker.*` on `workerProcedure`):
+
+- **Machine auth**:
+  - `POST /api/worker/auth/{challenge,complete}` keeps the Convex contract;
+  - challenges are 60 s Valkey keys taken with `GETDEL` before the proof is checked;
+  - enrollment completion is one conditional update;
+  - tokens are ES256 signed with `WORKER_AUTH_PRIVATE_JWK` (new, optional; same value as Convex, and it must match a key in `WORKER_AUTH_JWKS`);
+  - rate limits are 10 setup codes and 120 challenges per minute per workspace.
+- **Revocation** is one transaction under the Worker row lock: the identity epoch is bumped, the Worker's E2EE keys are deleted, its Gateway key is revoked, and its open tasks, ACP commands, interactions and busy sessions are failed (`ACP_ABANDONED`). Presence and warm sessions are cleared after commit.
+- **Worker state**:
+  - presence is a Valkey hash (7-day TTL);
+  - sealed tasks have dispatch dedupe, claim-once and fenced completion;
+  - Gateway state, models and key minting;
+  - local usage sync over the slice 5 services;
+  - the temp-directory fallback for chats without a Project folder.
+- **ACP**: only the signed and sealed path is ported. Every chat-scoped call goes through `requireChatAccess`.
+  - Workers report error codes, never free text; `setConfig`/`setMode` keep no draft.
+  - `createSession` refuses uncertified Workers (`WORKER_NOT_PAIRED`) and keyless workspaces (`ACP_E2EE_REQUIRED`).
+  - A session's index paging is a keyset; when Project folders overlap, the oldest Project owns the session.
+- **Slice 3 gaps closed**:
+  - `chats.setScope` takes the re-signed `acpBinding` for the new audience;
+  - `chats.delete` queues the signed `close`/`delete` command for the Worker before the chat is deleted.
+- **Retention**:
+  - finished commands after 5 min and resolved interactions after 10 min;
+  - unclaimed commands after 7 days, which also fails a session stuck in `starting`;
+  - terminal Worker tasks after 5 min;
+  - pending or revoked enrollments 7 days past expiry.
+- **Checks**: 43 files and 538 tests pass; typecheck, build (7.17 MB) and `db:check` pass; no migration. Every invariant's concurrency test was seen failing with its guard removed: command dedupe, claim once, one turn per chat, epoch fencing, the warm cap, first answer wins, task dispatch dedupe, task claim, fenced completion, enrollment single use.
+- **Phase 4 blocker found here**: nothing cools ACP sessions yet. A prompt warms a session in `acp:warm:<worker>` (24 h TTL), and only revocation or chat deletion takes it out, so a Worker prompted in 64 chats refuses further prompts with `ACP_WORKER_BUSY`. Cooling needs the viewer signal (`acp.cool`, Phase 4). This branch is not released before Phase 4, so no stopgap was added.
+- **Phase 4**:
+  - `appendFrames`, `LiveFrames`, `StreamCapsule` and the epoch capsule stored with its stream (`chat_frames`/`acp_streams` are not ported);
+  - viewer heartbeats, `acp.cool`, Worker inbox doorbells and stream waits;
+  - the Worker chat tools in `/api/chat`; the dispatch services are exported from `src/worker/tasks.ts`.
+- **Not ported**: the plaintext ACP and edit writers closed by the cutover, unused `worker_tasks.create`/`updateStatus`, and the `worker_presence`/challenge/chat-call cleanups (Valkey TTLs and foreign keys replace them).
+
+Web side, commit `848e209`:
+
+- **Moved to tRPC**: every `api.acp.*` and `api.workers.*` caller, with base64url signed commands, bindings and sealed answers and titles. `workers.list` goes through one hook (`use-workers.ts`). The Convex crypto transport (`cryptoClient`, `chatKeysToConvex`) is gone.
+- **Restored** with the slice 3 gaps closed:
+  - the keyed ACP Session visibility menu (re-signed binding at stored version + 1);
+  - "also delete in the agent", with its signed `close`/`delete` command. If the Worker is no longer certified, the chat is deleted without the command.
+- **Legacy envelopes**: `legacy-content.ts` reads them through `e2ee.legacyStorageUrl`. The unused historical relay and frame readers are deleted.
+- **Polling until Phase 4**:
+  - `getSession`/`openInteractions` every 5 s while the session is busy, or for 60 s after the user's own command;
+  - `workers.list` every 30 s while visible, so presence does not go stale;
+  - agent sign-in waits on `acp.getCommand` every 5 s for at most 10 min;
+  - everything else refetches on focus and after own mutations.
+- **Missing until Phase 4**: the ACP transcript and live turns (no frames are persisted or streamed; the screen says "Live agent output is not connected yet"), history paging, the viewer heartbeat, and push of another client's prompt.
+- **Checks**:
+  - web `tsc` dropped from 101 to 28 errors, because the web app no longer type-imports `backend/convex/_generated/api`. All 28 are the pre-existing Better Auth UI `components/auth/*` ones.
+  - `vite:build` passes; `bun test src/lib/crypto` 66 (4 tests of deleted readers removed); `bun test src/components/session` 47.
+- **Convex left in the web app**: only shell and auth scaffolding (`ConvexQueryClient` in `router.tsx`/`__root.tsx`, `ConvexBetterAuthProvider`/`useConvexAuth`/`ConvexQueryCacheProvider` in `providers.tsx`, the `convexClient` auth plugin) and about 38 type-only `Id` imports from `backend/convex/_generated/dataModel`. No data call goes to Convex. These go in Phase 5.
+
+Hardening found in the browser check: tRPC attached stack traces to non-internal errors because the built server ran without `NODE_ENV=production`; `init.ts` now sets `isDev: false`, so stacks are never sent.
+
+Browser check of slices 5–6 (built server through the forwarder, existing dev account):
+
+- Activity, Logs, Telemetry, Notifications settings, Workers and ACP settings all render with no request errors. The ACP registry list loads.
+- `workers.createEnrollment` returned a setup code with its expiry once dev-only `WORKER_AUTH_PRIVATE_JWK`/`WORKER_AUTH_JWKS` were set. An unknown workspace answers `NOT_FOUND` with no stack.
+- **Not exercised**: Worker enrollment and every machine route (the Worker client is still on Convex until Phase 5; the server suite covers them), Web Push (no VAPID keys in the dev env), and ACP sessions (no Worker).
+- **Operator note**: JSON-valued variables (`WORKER_AUTH_PRIVATE_JWK`, `WORKER_AUTH_JWKS`) do not survive `set -a; . ./.env` in a shell, which strips their quotes. Start with Bun's own `.env` loading or a compose `env_file`.
+
+### Phase 3 Outcome
+
+- **All six slices are on the new backend**: 44 server test files and 563 tests against real Postgres and Valkey, and every invariant in the [table](../Backend_Migration/Runtime.md#transactions-and-invariants) has a concurrency test that was seen failing without its guard. The web app makes no Convex data calls.
+- **What Phase 4 must close before any release**:
+  - ACP cooling (the warm cap blocks a Worker after 64 prompted chats);
+  - the ACP transcript and live frames;
+  - Worker inbox doorbells;
+  - Worker chat tools in `/api/chat`;
+  - live invalidation replacing the polls listed above;
+  - detached and resumable built-in runs.
+- **Phase 5**: the Worker client (`packages/worker`) still calls Convex. Its machine procedures exist under `worker.*` (shapes in slice 6 above). The web shell still mounts the Convex providers.
+- **Phase 6 env values that must equal the Convex deployment's**: `SECRET_STORE_KEYS`, `TELEMETRY_HASH_SECRET`, `LWC_SECRET`, `WEB_PUSH_VAPID_*`, `WORKER_AUTH_PRIVATE_JWK`/`WORKER_AUTH_JWKS`, `BETTER_AUTH_SECRET`, `OPAQUE_SERVER_SETUP`.
 
 ## Phase 4: Live Layer
 

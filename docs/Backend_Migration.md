@@ -1,6 +1,12 @@
 # Backend Migration: Convex to Bun, Hono, Postgres
 
-Status: **in progress.** Phase 1 (foundation: `packages/contracts`, `packages/server` with auth, tRPC base, migrations and outbox, compose services, web `/api/*` forwarder) and Phase 2 (the Drizzle schema of every retained table) are implemented on the branch; domain services, live data and the importer are not. The running product is still the Convex backend described in [architecture](architecture.md). Execution plan and status: [task 14](tasks/14_Backend_Migration.md).
+Status: **in progress.** Phases 1–3 are implemented on the branch:
+
+- Phase 1, the foundation: `packages/contracts`, `packages/server` with auth, tRPC base, migrations and outbox, compose services, and the web `/api/*` forwarder.
+- Phase 2: the Drizzle schema of every retained table.
+- Phase 3: every domain's services, routers and HTTP routes, with the web app's data calls moved off Convex.
+
+The live layer, the Worker client cutover and the importer are not. The running product is still the Convex backend described in [architecture](architecture.md). Execution plan and status: [task 14](tasks/14_Backend_Migration.md).
 
 Focused guides:
 

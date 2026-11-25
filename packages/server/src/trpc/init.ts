@@ -16,12 +16,13 @@ export type Context = {
 };
 
 const t = initTRPC.context<Context>().create({
+  // tRPC adds stack traces whenever NODE_ENV is not "production"; a self-hosted build must not
+  // depend on that being set, so stacks are never sent.
+  isDev: false,
   // Only domain refusals (`AppError`) carry their message to the client. An internal error's
   // message may hold SQL, parameters or driver details, so the client gets a generic one.
   errorFormatter: ({ shape, error }) =>
-    error.code === "INTERNAL_SERVER_ERROR"
-      ? { ...shape, message: "Internal server error", data: { ...shape.data, stack: undefined } }
-      : shape,
+    error.code === "INTERNAL_SERVER_ERROR" ? { ...shape, message: "Internal server error" } : shape,
 });
 
 export const router = t.router;

@@ -1,6 +1,6 @@
 # Backend Runtime And Code Layout
 
-Status: **Phase 1 (foundation), Phase 2 (schema) and the first Phase 3 slice (workspaces, members, Projects, preferences) implemented** in `packages/server`; the other domain slices, live layer and importer are still planned. Part of the [backend migration](../Backend_Migration.md). Covers how the new backend is organized, how one codebase deploys to Bun or to serverless targets, and the conventions that replace Convex's.
+Status: **Phases 1–3 implemented** in `packages/server`: the foundation, the schema, and every domain (workspaces, gateway, chatroom, e2ee, notifications/usage/telemetry/logging, worker and ACP) with its tRPC routers and HTTP routes. The live layer (Phase 4), the Worker client cutover (Phase 5) and the importer (Phase 6) are still planned. Part of the [backend migration](../Backend_Migration.md). Covers how the new backend is organized, how one codebase deploys to Bun or to serverless targets, and the conventions that replace Convex's.
 
 The goal is a backend that reads like an ordinary TypeScript service, with no shape inherited from Convex. Port domain _behavior_ and its tests; rewrite the mechanics. The `AGENTS.md` code-clarity rules apply unchanged.
 
