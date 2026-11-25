@@ -48,7 +48,7 @@ export function notificationWorker(): Promise<ServiceWorkerRegistration | undefi
  * rather than duplicates. `onOpen` handles clicks only for the plain `Notification` fallback.
  */
 export async function showSystemNotification(
-  notification: { id: string; title: string; body: string; path: string; workspace?: string },
+  notification: { id: string; title: string; body: string; path: string; workspace?: string | null },
   onOpen?: () => void,
 ) {
   if (notificationPermission() !== "granted") return;
@@ -56,7 +56,7 @@ export async function showSystemNotification(
   const options: NotificationOptions = {
     body: notification.body,
     tag: notification.id,
-    data: { path: notification.path, workspace: notification.workspace },
+    data: { path: notification.path, workspace: notification.workspace ?? undefined },
   };
   const worker = await notificationWorker();
   if (worker) {
@@ -96,7 +96,7 @@ export async function subscribeToPush(publicKey: string): Promise<PushSubscripti
   });
 }
 
-/** Endpoint and keys in the shape `api.notifications.subscribe` takes. */
+/** Endpoint and keys in the shape `notifications.subscribe` takes. */
 export function pushSubscriptionFields(subscription: PushSubscription) {
   const json = subscription.toJSON();
   return {

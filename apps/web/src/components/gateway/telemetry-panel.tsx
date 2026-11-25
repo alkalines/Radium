@@ -1,7 +1,11 @@
-import { convexQuery, useConvexAuth } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import {
+  skipToken,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useMutation, usePaginatedQuery } from "convex/react";
 import type { Id } from "backend/convex/_generated/dataModel";
 import {
   ActivityIcon,
@@ -14,7 +18,7 @@ import {
   TimerIcon,
   WorkflowIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -62,7 +66,8 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
-import { api } from "backend/convex/_generated/api";
+import { useTrpc } from "@/lib/trpc";
+import { useAccount } from "@/lib/use-account";
 import { DataSection } from "./data-section";
 import { TelemetryDestinations } from "./telemetry-destinations";
 import {
@@ -123,21 +128,23 @@ export function TelemetryPanel() {
   const [model, setModel] = useState("all");
   const [saving, setSaving] = useState(false);
   const isHydrated = useIsHydrated();
-  const { isAuthenticated } = useConvexAuth();
+  const { signedIn } = useAccount();
   const { workspaceId } = useWorkspace();
-  const ready = isHydrated && isAuthenticated && workspaceId !== undefined;
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const ready = isHydrated && signedIn && workspaceId !== undefined;
   const { data: settings } = useQuery(
-    convexQuery(
-      api.observability.telemetry.getSettings,
-      ready ? { workspace: workspaceId } : "skip",
-    ),
+    trpc.telemetry.getSettings.queryOptions(ready ? { workspace: workspaceId } : skipToken),
   );
-  const setSettings = useMutation(api.observability.telemetry.setSettings);
+  const { mutateAsync: setSettings } = useMutation(
+    trpc.telemetry.setSettings.mutationOptions({
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.telemetry.pathKey() }),
+    }),
+  );
   const since = ranges[range].days ? now - ranges[range].days! * 86_400_000 : 0;
   const { data: summary } = useQuery(
-    convexQuery(
-      api.observability.telemetry.getSummary,
-      ready ? { workspace: workspaceId, since } : "skip",
+    trpc.telemetry.getSummary.queryOptions(
+      ready ? { workspace: workspaceId, since } : skipToken,
     ),
   );
 
@@ -401,18 +408,18 @@ function RetentionRow({
   disabled,
   onChange,
 }: {
-  retentionDays: number | undefined;
+  retentionDays: number | null;
   disabled: boolean;
   onChange: (retentionDays: number | null) => void;
 }) {
   const isPreset = RETENTION_PRESETS.some((preset) => preset.days === retentionDays);
-  const [custom, setCustom] = useState(retentionDays !== undefined && !isPreset);
+  const [custom, setCustom] = useState(retentionDays !== null && !isPreset);
   const [draft, setDraft] = useState(String(retentionDays ?? DEFAULT_CUSTOM_RETENTION_DAYS));
   const parsed = Number(draft);
   const valid = Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_RETENTION_DAYS;
   const choice = custom
     ? "custom"
-    : retentionDays === undefined
+    : retentionDays === null
       ? "forever"
       : String(retentionDays);
 
@@ -437,7 +444,7 @@ function RetentionRow({
     <Row
       title="Retention"
       description={
-        retentionDays === undefined
+        retentionDays === null
           ? "Captured requests are kept until you delete them."
           : `Requests older than ${retentionDays} ${retentionDays === 1 ? "day" : "days"} are deleted automatically.`
       }
@@ -541,21 +548,29 @@ function RequestsTab({
   onStatusChange: (status: "all" | RequestStatusValue) => void;
   onModelChange: (model: string) => void;
 }) {
-  const {
-    results,
-    status: pageStatus,
-    loadMore,
-  } = usePaginatedQuery(
-    api.observability.telemetry.listRequests,
-    ready && workspaceId
-      ? {
-          workspace: workspaceId,
-          status: status === "all" ? undefined : status,
-          model: model === "all" ? undefined : model,
-        }
-      : "skip",
-    { initialNumItems: 25 },
+  const trpc = useTrpc();
+  const pages = useInfiniteQuery(
+    trpc.telemetry.listRequests.infiniteQueryOptions(
+      ready && workspaceId
+        ? {
+            workspace: workspaceId,
+            limit: 25,
+            status: status === "all" ? undefined : status,
+            model: model === "all" ? undefined : model,
+          }
+        : skipToken,
+      { initialCursor: null, getNextPageParam: (last) => last.nextCursor },
+    ),
   );
+  const results = useMemo(() => pages.data?.pages.flatMap((page) => page.page) ?? [], [pages.data]);
+  // A filtered page can be short yet continue (`nextCursor`), so "Load more" depends on the cursor.
+  const pageStatus = pages.isPending
+    ? "LoadingFirstPage"
+    : pages.isFetchingNextPage
+      ? "LoadingMore"
+      : pages.hasNextPage
+        ? "CanLoadMore"
+        : "Exhausted";
   // A selected model must stay selectable even after it drops out of the summary's top list.
   const modelOptions = model !== "all" && !models.includes(model) ? [model, ...models] : models;
 
@@ -594,24 +609,29 @@ function RequestsTab({
           <RequestTable rows={results} footer={<LoadingMoreRow />} />
         )
       ) : results.length === 0 ? (
-        <Empty className="py-14">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <RouteIcon />
-            </EmptyMedia>
-            <EmptyTitle>No requests</EmptyTitle>
-            <EmptyDescription>
-              {status !== "all" || model !== "all"
-                ? "No requests match these filters."
-                : "Turn on capture and send a request through the Gateway to start recording."}
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <>
+          <Empty className="py-14">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <RouteIcon />
+              </EmptyMedia>
+              <EmptyTitle>No requests</EmptyTitle>
+              <EmptyDescription>
+                {status !== "all" || model !== "all"
+                  ? "No requests match these filters."
+                  : "Turn on capture and send a request through the Gateway to start recording."}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+          {pageStatus === "CanLoadMore" && <LoadMoreRow onClick={() => void pages.fetchNextPage()} />}
+        </>
       ) : (
         <RequestTable
           rows={results}
           footer={
-            pageStatus === "CanLoadMore" ? <LoadMoreRow onClick={() => loadMore(25)} /> : undefined
+            pageStatus === "CanLoadMore" ? (
+              <LoadMoreRow onClick={() => void pages.fetchNextPage()} />
+            ) : undefined
           }
         />
       )}
@@ -666,7 +686,7 @@ function RequestTable({ rows, footer }: { rows: RequestRow[]; footer?: React.Rea
         </TableHeader>
         <TableBody>
           {rows.map((request) => (
-            <RequestTableRow key={request._id} request={request} />
+            <RequestTableRow key={request.id} request={request} />
           ))}
         </TableBody>
       </Table>
@@ -711,8 +731,8 @@ function RequestTableRow({ request }: { request: RequestRow }) {
       <TableCell>
         <Link
           to="/gateway/telemetry/$id"
-          params={{ id: request._id }}
-          aria-label={`Inspect request ${request._id}`}
+          params={{ id: request.id }}
+          aria-label={`Inspect request ${request.id}`}
           className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <ArrowUpRightIcon className="size-4" />
@@ -729,11 +749,22 @@ function SessionsTab({
   ready: boolean;
   workspaceId: Id<"workspaces"> | undefined;
 }) {
-  const { results, status, loadMore } = usePaginatedQuery(
-    api.observability.telemetry.listSessions,
-    ready && workspaceId ? { workspace: workspaceId } : "skip",
-    { initialNumItems: 20 },
+  const trpc = useTrpc();
+  const pages = useInfiniteQuery(
+    trpc.telemetry.listSessions.infiniteQueryOptions(
+      ready && workspaceId ? { workspace: workspaceId, limit: 20 } : skipToken,
+      { initialCursor: null, getNextPageParam: (last) => last.nextCursor },
+    ),
   );
+  const results = useMemo(() => pages.data?.pages.flatMap((page) => page.page) ?? [], [pages.data]);
+  // Hidden sessions are dropped after paging, so a page can be short yet continue (`nextCursor`).
+  const status = pages.isPending
+    ? "LoadingFirstPage"
+    : pages.isFetchingNextPage
+      ? "LoadingMore"
+      : pages.hasNextPage
+        ? "CanLoadMore"
+        : "Exhausted";
 
   return (
     <DataSection
@@ -744,15 +775,18 @@ function SessionsTab({
       {status === "LoadingFirstPage" ? (
         <ListSkeleton />
       ) : results.length === 0 ? (
-        <Empty className="py-14">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <WorkflowIcon />
-            </EmptyMedia>
-            <EmptyTitle>No sessions</EmptyTitle>
-            <EmptyDescription>Sessions appear after the first captured request.</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <>
+          <Empty className="py-14">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <WorkflowIcon />
+              </EmptyMedia>
+              <EmptyTitle>No sessions</EmptyTitle>
+              <EmptyDescription>Sessions appear after the first captured request.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+          {status === "CanLoadMore" && <LoadMoreRow onClick={() => void pages.fetchNextPage()} />}
+        </>
       ) : (
         <>
           <Table>
@@ -767,7 +801,7 @@ function SessionsTab({
             </TableHeader>
             <TableBody>
               {results.map((session) => (
-                <TableRow key={session._id}>
+                <TableRow key={session.id}>
                   <TableCell className="max-w-64">
                     <span className="flex flex-col">
                       <span className="truncate font-mono text-xs">{session.key}</span>
@@ -791,7 +825,7 @@ function SessionsTab({
                   <TableCell>
                     <Link
                       to="/gateway/telemetry/sessions/$id"
-                      params={{ id: session._id }}
+                      params={{ id: session.id }}
                       aria-label={`Open session ${session.key}`}
                       className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                     >
@@ -802,7 +836,7 @@ function SessionsTab({
               ))}
             </TableBody>
           </Table>
-          {status === "CanLoadMore" && <LoadMoreRow onClick={() => loadMore(20)} />}
+          {status === "CanLoadMore" && <LoadMoreRow onClick={() => void pages.fetchNextPage()} />}
           {status === "LoadingMore" && <LoadingMoreRow />}
         </>
       )}

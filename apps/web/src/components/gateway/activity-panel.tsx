@@ -1,6 +1,6 @@
 import { convexQuery } from "@convex-dev/react-query";
 import { skipToken, useQuery } from "@tanstack/react-query";
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
 import {
   ActivityIcon,
   ArrowUpRightIcon,
@@ -40,6 +40,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 import { useTrpc } from "@/lib/trpc";
+import type { AppRouter } from "server/router";
 import {
   Select,
   SelectContent,
@@ -58,7 +59,7 @@ import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence"
 import { DataSection } from "./data-section";
 import { formatCurrency } from "./telemetry-utils";
 
-type Activity = FunctionReturnType<typeof api.observability.usage.getActivity>;
+type Activity = inferRouterOutputs<AppRouter>["usage"]["getActivity"];
 
 /**
  * `all` adds the ACP agent turns Workers report to the Gateway's own traffic; `gateway` shows only
@@ -157,11 +158,10 @@ export function ActivityPanel({
   const projects = useDecryptedNames(projectsData ?? [], "projects", workspaceId);
   const projectFilter =
     project === "none" || projects?.some((candidate) => candidate.id === project)
-      ? (project as Id<"projects"> | "none")
+      ? project
       : undefined;
   const { data: activity } = useQuery(
-    convexQuery(
-      api.observability.usage.getActivity,
+    trpc.usage.getActivity.queryOptions(
       workspaceId
         ? {
             workspace: workspaceId,
@@ -169,7 +169,7 @@ export function ActivityPanel({
             sources,
             ...(projectFilter ? { project: projectFilter } : {}),
           }
-        : "skip",
+        : skipToken,
     ),
   );
 
@@ -393,9 +393,8 @@ export function ActivityPanel({
  */
 function LocalUsageStatus({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
   const now = useWorkerPresenceClock();
-  const { data: syncs } = useQuery(
-    convexQuery(api.agent_usage.LocalUsageSyncs, { workspace: workspaceId }),
-  );
+  const trpc = useTrpc();
+  const { data: syncs } = useQuery(trpc.usage.localUsageSyncs.queryOptions({ workspace: workspaceId }));
   const { data: workers } = useQuery(convexQuery(api.workers.list, { workspace: workspaceId }));
   if (!syncs || now === 0) return null;
   const names = new Map((workers ?? []).map((worker) => [worker.workerId, worker.name]));
@@ -412,7 +411,7 @@ function LocalUsageStatus({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
         syncs.map((sync) => {
           const age = formatRelativeTime(sync.lastSyncAt, now);
           return (
-            <span key={sync.worker} title={sync.error}>
+            <span key={sync.worker} title={sync.error ?? undefined}>
               {names.get(sync.worker) ?? "Removed Worker"}:{" "}
               {sync.error ? "sync failed" : `synced ${age === "now" ? "just now" : `${age} ago`}`}
             </span>

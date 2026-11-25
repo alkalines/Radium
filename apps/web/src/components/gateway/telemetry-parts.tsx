@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
 import {
   BotIcon,
   BrainCircuitIcon,
@@ -11,7 +11,6 @@ import {
   WrenchIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { blobValue } from "contracts/telemetry/store";
 
 import { AgentStatus } from "@/components/agentic/agent-status";
 import { Tag } from "@/components/harness/group-list";
@@ -26,9 +25,10 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useHighlightedCode } from "@/hooks/use-highlighted-code";
 import { cn } from "@/lib/utils";
-import type { api } from "backend/convex/_generated/api";
+import type { AppRouter } from "server/router";
 import {
   asRecord,
+  blobValue,
   changeLabel,
   contentText,
   lineageLabel,
@@ -42,13 +42,11 @@ import {
 } from "./telemetry-utils";
 import { ProviderLogo } from "./provider-logo";
 
+type TelemetryOutputs = inferRouterOutputs<AppRouter>["telemetry"];
+
 /** A stored blob as returned by the telemetry read functions. */
-export type TelemetryBlob = NonNullable<
-  FunctionReturnType<typeof api.observability.telemetry.getRequest>["system"]
->;
-export type RequestRow = FunctionReturnType<
-  typeof api.observability.telemetry.listRequests
->["page"][number];
+export type TelemetryBlob = NonNullable<TelemetryOutputs["getRequest"]["system"]>;
+export type RequestRow = TelemetryOutputs["listRequests"]["page"][number];
 
 export function RequestStatusLabel({ status }: { status: RequestStatusValue }) {
   return (
@@ -57,7 +55,7 @@ export function RequestStatusLabel({ status }: { status: RequestStatusValue }) {
 }
 
 /** Provider logo for requests that may have failed before any provider was chosen. */
-export function RequestProviderLogo({ slug, className }: { slug?: string; className?: string }) {
+export function RequestProviderLogo({ slug, className }: { slug?: string | null; className?: string }) {
   return slug ? <ProviderLogo slug={slug} className={className} /> : null;
 }
 

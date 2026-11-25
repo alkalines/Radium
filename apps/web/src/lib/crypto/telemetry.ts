@@ -1,30 +1,30 @@
-import type { Id } from "backend/convex/_generated/dataModel";
 import type { LoadedBlob } from "contracts/telemetry/store";
 import {
   CryptoError,
   decodeCapsule,
   decodeEnvelope,
   equalBytes,
+  fromBase64Url,
   openCapsule,
   openWithCapsule,
   type AadParts,
 } from "radium-crypto";
 import { keyManager, KeysLockedError } from "./key-manager";
-import { bytes } from "./runtime";
 import { trust } from "./trust-store";
 import { CustodialContentError, openLegacyContent } from "./legacy-content";
 import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import { getOwnerKey } from "./workspace-keys";
 
+/** Sealed content as the backend sends it: bytes are base64url; a large envelope is fetched from `storageUrl`. */
 type Sealed = {
   epoch: number;
   requestId: string;
-  capsule: ArrayBuffer;
-  envelope?: ArrayBuffer;
-  storageUrl?: string;
+  capsule: string;
+  envelope?: string | null;
+  storageUrl?: string | null;
 };
 type Entry = { workspace: string; data?: unknown; failed?: boolean; promise: Promise<void> };
-type CapsuleCache = Map<string, { wire: ArrayBuffer; key: Promise<Uint8Array> }>;
+type CapsuleCache = Map<string, { wire: Uint8Array; key: Promise<Uint8Array> }>;
 const active = new Map<AbortController, CapsuleCache>();
 let opened = new WeakMap<object, Entry>();
 let generation = 0;
@@ -56,7 +56,7 @@ export const telemetryContent = {
     return () => listeners.delete(listener);
   },
   getSnapshot: () => revision,
-  get<T extends object>(source: T, workspace: Id<"workspaces">): { data?: T; failed?: boolean } | undefined {
+  get<T extends object>(source: T, workspace: string): { data?: T; failed?: boolean } | undefined {
     const entry = opened.get(source);
     return entry?.workspace === workspace ? entry as { data?: T; failed?: boolean } : undefined;
   },
@@ -73,13 +73,13 @@ export function hasSealedTelemetry(value: unknown): boolean {
   if (value instanceof ArrayBuffer || !value || typeof value !== "object") return false;
   if (Array.isArray(value)) return value.some(hasSealedTelemetry);
   const object = value as Record<string, unknown>;
-  return object.sealed !== undefined || object.sealedError !== undefined || object.legacyContent !== undefined ||
+  return object.sealed != null || object.sealedError != null || object.legacyContent != null ||
     Object.values(object).some(hasSealedTelemetry);
 }
 
 async function openPayload(
   sealed: Sealed,
-  workspace: Id<"workspaces">,
+  workspace: string,
   table: string,
   objectId: string,
   field: string,
@@ -87,10 +87,11 @@ async function openPayload(
   signal: AbortSignal,
 ): Promise<unknown> {
   signal.throwIfAborted();
-  const capsule = decodeCapsule(bytes(sealed.capsule));
+  const capsuleBytes = fromBase64Url(sealed.capsule);
+  const capsule = decodeCapsule(capsuleBytes);
   const id = `${sealed.epoch}:${sealed.requestId}`;
   let cached = capsules.get(id);
-  if (cached && !equalBytes(bytes(cached.wire), bytes(sealed.capsule))) {
+  if (cached && !equalBytes(cached.wire, capsuleBytes)) {
     throw new CryptoError("BAD_ENVELOPE", "Telemetry capsule changed");
   }
   if (!cached) {
@@ -106,16 +107,16 @@ async function openPayload(
       });
     });
     void key.then((value) => { if (signal.aborted) value.fill(0); }, () => {});
-    cached = { wire: sealed.capsule, key };
+    cached = { wire: capsuleBytes, key };
     capsules.set(id, cached);
   }
-  let envelope = sealed.envelope;
+  let envelope = sealed.envelope ? fromBase64Url(sealed.envelope) : undefined;
   if (!envelope && sealed.storageUrl) {
     const response = await fetch(sealed.storageUrl, { credentials: "omit", cache: "no-store", signal });
     if (!response.ok) throw new CryptoError("DECRYPT_FAILED", "Telemetry download failed");
-    envelope = await response.arrayBuffer();
+    envelope = new Uint8Array(await response.arrayBuffer());
   }
-  if (!envelope || !equalBytes(decodeEnvelope(bytes(envelope)).keyRef, capsule.capsuleId)) {
+  if (!envelope || !equalBytes(decodeEnvelope(envelope).keyRef, capsule.capsuleId)) {
     throw new CryptoError("BAD_ENVELOPE", "Telemetry capsule mismatch");
   }
   const aad: AadParts = {
@@ -124,7 +125,7 @@ async function openPayload(
   const capsuleKey = await cached.key;
   signal.throwIfAborted();
   const plaintext = await openWithCapsule({
-    capsuleKey, envelope: bytes(envelope), aad, pad: "content",
+    capsuleKey, envelope, aad, pad: "content",
   });
   try {
     signal.throwIfAborted();
@@ -155,7 +156,7 @@ function blobPayload(value: unknown): Pick<LoadedBlob, "content" | "meta"> {
  * envelopes never fall back to plaintext siblings. Owner grants verify roster, trust and epoch.
  * Results live only in this module and are discarded on key-status or trust changes.
  */
-export function openTelemetryData<T extends object>(source: T, workspace: Id<"workspaces">): Promise<void> {
+export function openTelemetryData<T extends object>(source: T, workspace: string): Promise<void> {
   const existing = opened.get(source);
   if (existing?.workspace === workspace) return existing.promise;
   const start = generation;
@@ -168,15 +169,15 @@ export function openTelemetryData<T extends object>(source: T, workspace: Id<"wo
     if (value instanceof ArrayBuffer || !value || typeof value !== "object") return value;
     if (Array.isArray(value)) return Promise.all(value.map(visit));
     const object = value as Record<string, unknown>;
-    if (object.legacyContent !== undefined) {
+    if (object.legacyContent != null) {
       const isBlob = typeof object.hash === "string" && typeof object.id === "string";
-      const isRequest = typeof object._id === "string" && Array.isArray(object.attempts);
+      const isRequest = typeof object.id === "string" && Array.isArray(object.attempts);
       if (!isBlob && !isRequest) throw new CryptoError("BAD_ENVELOPE", "Invalid legacy telemetry record");
       let payload: Record<string, unknown> | undefined;
       try {
         payload = record(await openLegacyContent<unknown>(object.legacyContent as LegacyBox, {
           table: isBlob ? "telemetry_blobs" : "telemetry_requests",
-          record: (isBlob ? object.id : object._id) as string,
+          record: object.id as string,
           workspace,
         }));
         if (!payload) throw new CryptoError("BAD_ENVELOPE", "Invalid legacy telemetry payload");
@@ -184,13 +185,13 @@ export function openTelemetryData<T extends object>(source: T, workspace: Id<"wo
         // Custody awaits release; the rest of the request stays readable and this part stays hidden.
         if (!(error instanceof CustodialContentError)) throw error;
       }
-      const clean = { ...object, legacyContent: undefined };
+      const clean = { ...object, legacyContent: null };
       const result = await visit(clean) as Record<string, unknown>;
-      if (!payload) return isBlob ? { ...result, content: undefined, meta: undefined, redacted: true } : result;
+      if (!payload) return isBlob ? { ...result, content: null, meta: null, redacted: true } : result;
       if (isBlob) {
         const legacy = blobPayload(payload);
-        return { ...result, content: result.content ?? legacy.content, meta: result.meta ?? legacy.meta,
-          redacted: result.content === undefined && legacy.content === undefined };
+        return { ...result, content: result.content ?? legacy.content ?? null, meta: result.meta ?? legacy.meta ?? null,
+          redacted: result.content == null && legacy.content === undefined };
       }
       if (payload.error !== undefined && !record(payload.error)) throw new CryptoError("BAD_ENVELOPE", "Invalid legacy error");
       const attemptMessages = payload.attempts;
@@ -206,15 +207,15 @@ export function openTelemetryData<T extends object>(source: T, workspace: Id<"wo
       result.error ??= payload.error;
       return result;
     }
-    if (object.sealed !== undefined) {
+    if (object.sealed != null) {
       if (typeof object.hash !== "string") throw new CryptoError("BAD_ENVELOPE", "Invalid telemetry blob");
       const payload = blobPayload(await openPayload(
         object.sealed as Sealed, workspace, "telemetry_blobs", object.hash, "content", capsules, controller.signal,
       ));
-      return { ...object, sealed: undefined, storageUrl: undefined,
-        content: payload.content, meta: payload.meta, redacted: payload.content === undefined };
+      return { ...object, sealed: null, storageUrl: null,
+        content: payload.content ?? null, meta: payload.meta ?? null, redacted: payload.content === undefined };
     }
-    if (object.sealedError !== undefined) {
+    if (object.sealedError != null) {
       const sealed = object.sealedError as Sealed;
       const payload = record(await openPayload(
         sealed, workspace, "telemetry_requests", sealed.requestId, "error", capsules, controller.signal,
@@ -231,7 +232,7 @@ export function openTelemetryData<T extends object>(source: T, workspace: Id<"wo
       if (sealed.requestId !== object.requestId) {
         throw new CryptoError("BAD_ENVELOPE", "Telemetry request mismatch");
       }
-      return { ...object, sealedError: undefined, error,
+      return { ...object, sealedError: null, error: error ?? null,
         attempts: attempts.map((attempt, index) => ({
           ...record(attempt), message: (payload.attempts as (string | null)[])[index] ?? undefined,
         })) };

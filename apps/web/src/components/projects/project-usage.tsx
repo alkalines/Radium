@@ -1,4 +1,3 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowUpRightIcon, CircleDollarSignIcon } from "lucide-react";
@@ -15,7 +14,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "backend/convex/_generated/api";
+import { useTrpc } from "@/lib/trpc";
 import type { Id } from "backend/convex/_generated/dataModel";
 
 const WINDOW_DAYS = 30;
@@ -54,12 +53,9 @@ function ProjectUsageSummary({
   project: Id<"projects"> | "none";
 }) {
   const since = useMemo(() => Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000, []);
+  const trpc = useTrpc();
   const { data: activity } = useQuery(
-    convexQuery(api.observability.usage.getActivity, {
-      workspace: workspaceId,
-      since,
-      project,
-    }),
+    trpc.usage.getActivity.queryOptions({ workspace: workspaceId, since, project }),
   );
   const unknown = activity
     ? activity.summary.unknownCostRequests + activity.summary.unknownCostTurns

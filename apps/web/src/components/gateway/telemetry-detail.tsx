@@ -1,10 +1,7 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { FunctionReturnType } from "convex/server";
-import type { Id } from "backend/convex/_generated/dataModel";
+import type { inferRouterOutputs } from "@trpc/server";
 import { ArrowLeftIcon, ArrowRightIcon, CircleAlertIcon, CopyIcon } from "lucide-react";
-import { blobValue } from "contracts/telemetry/store";
 
 import { AgentStatus, type RunState } from "@/components/agentic/agent-status";
 import { Tag } from "@/components/harness/group-list";
@@ -13,7 +10,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { api } from "backend/convex/_generated/api";
+import type { AppRouter } from "server/router";
+import { useTrpc } from "@/lib/trpc";
 import { DataSection } from "./data-section";
 import { ProviderLogo } from "./provider-logo";
 import {
@@ -28,6 +26,7 @@ import {
 import { RequestConversation } from "./telemetry-conversation";
 import { TelemetryContentNotice, useTelemetryContent } from "./telemetry-content";
 import {
+  blobValue,
   diffLines,
   diffParams,
   formatCost,
@@ -39,12 +38,11 @@ import {
   telemetryToolChanges,
 } from "./telemetry-utils";
 
-type RequestResult = FunctionReturnType<typeof api.observability.telemetry.getRequest>;
+type RequestResult = inferRouterOutputs<AppRouter>["telemetry"]["getRequest"];
 
-export function TelemetryDetail({ requestId }: { requestId: Id<"telemetry_requests"> }) {
-  const { data, error } = useQuery(
-    convexQuery(api.observability.telemetry.getRequest, { request: requestId }),
-  );
+export function TelemetryDetail({ requestId }: { requestId: string }) {
+  const trpc = useTrpc();
+  const { data, error } = useQuery(trpc.telemetry.getRequest.queryOptions({ request: requestId }));
   const content = useTelemetryContent(data, data?.request.workspace);
 
   if (error) {
@@ -169,7 +167,7 @@ function Lineage({ data }: { data: RequestResult }) {
             {" "}
             <Link
               to="/gateway/telemetry/$id"
-              params={{ id: related._id }}
+              params={{ id: related.id }}
               className="text-foreground underline underline-offset-2"
             >
               the request at {formatTelemetryDate(related.startedAt)}
@@ -183,7 +181,7 @@ function Lineage({ data }: { data: RequestResult }) {
       {session && (
         <Link
           to="/gateway/telemetry/sessions/$id"
-          params={{ id: session._id }}
+          params={{ id: session.id }}
           className="ml-auto text-sm underline underline-offset-2"
         >
           View session
@@ -193,7 +191,7 @@ function Lineage({ data }: { data: RequestResult }) {
   );
 }
 
-function Overview({ data, cost }: { data: RequestResult; cost: number | undefined }) {
+function Overview({ data, cost }: { data: RequestResult; cost: number | null }) {
   const { request, session } = data;
   const usage = request.usage;
   const displayedCost = request.reportedCost ?? request.estimatedCost ?? cost;
@@ -201,7 +199,7 @@ function Overview({ data, cost }: { data: RequestResult; cost: number | undefine
   return (
     <DataSection
       title="Overview"
-      description={displayedCost !== undefined ? `Cost ${formatCost(displayedCost)}` : undefined}
+      description={displayedCost !== null ? `Cost ${formatCost(displayedCost)}` : undefined}
       contentClassName="grid gap-x-8 gap-y-2 p-4 text-xs sm:grid-cols-2 lg:grid-cols-3"
     >
       <Detail label="Request ID" value={request.requestId} copy />
@@ -219,14 +217,14 @@ function Overview({ data, cost }: { data: RequestResult; cost: number | undefine
       <Detail label="Cache write" value={formatTokenCount(usage?.cacheWriteTokens ?? 0)} />
       <Detail
         label="Cost"
-        value={displayedCost === undefined ? "Unknown" : formatCost(displayedCost)}
+        value={displayedCost === null ? "Unknown" : formatCost(displayedCost)}
       />
       <Detail
         label="Cost source"
         value={
-          request.reportedCost !== undefined
+          request.reportedCost !== null
             ? "Provider reported"
-            : request.estimatedCost !== undefined
+            : request.estimatedCost !== null
               ? "Gateway estimate"
               : "Unknown"
         }
@@ -323,7 +321,7 @@ function ChangeBlock({ title, children }: { title: string; children: React.React
 }
 
 function SystemDiff({ from, to }: { from: TelemetryBlob | null; to: TelemetryBlob | null }) {
-  const unavailable = [from, to].some((blob) => blob && blob.content === undefined);
+  const unavailable = [from, to].some((blob) => blob && blob.content === null);
   if (unavailable) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -386,7 +384,7 @@ function ToolChanges({ tools }: { tools: ToolChangeData }) {
 }
 
 function ParamsDiff({ from, to }: { from: TelemetryBlob | null; to: TelemetryBlob | null }) {
-  if ([from, to].some((blob) => blob && blob.content === undefined)) {
+  if ([from, to].some((blob) => blob && blob.content === null)) {
     return <p className="text-sm text-muted-foreground">Parameters were not recorded, so no diff is available.</p>;
   }
   const changes = diffParams(blobValue(from), blobValue(to));
@@ -435,7 +433,7 @@ function ParamsSection({
         description="The request body without messages and tools."
         contentClassName="p-3"
       >
-        {params?.content !== undefined ? (
+        {params?.content != null ? (
           <JsonBlock value={blobValue(params)} />
         ) : (
           <p className="px-1 py-2 text-sm text-muted-foreground">No parameters were captured.</p>
@@ -446,7 +444,7 @@ function ParamsSection({
         description="Allowlisted client headers. Credentials are never stored."
         contentClassName="p-3"
       >
-        {headers?.content !== undefined ? (
+        {headers?.content != null ? (
           <JsonBlock value={blobValue(headers)} />
         ) : (
           <p className="px-1 py-2 text-sm text-muted-foreground">No headers were captured.</p>
@@ -524,7 +522,7 @@ function LegacyPayloads({ data }: { data: RequestResult }) {
           {blob.truncated && (
             <Tag className="self-start">truncated at the old 32,000-character limit</Tag>
           )}
-          {blob.content !== undefined ? (
+          {blob.content !== null ? (
             <JsonSection label={label} value={blobValue(blob)} />
           ) : (
             <p className="text-xs text-muted-foreground">{label} was not recorded.</p>

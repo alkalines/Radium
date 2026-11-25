@@ -1,8 +1,6 @@
 import { useId, useState, type FormEvent } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useAction, useMutation } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import { PencilIcon, PlusIcon, SendIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -29,13 +27,11 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
+import type { AppRouter } from "server/router";
 import { useTrpc } from "@/lib/trpc";
 
-type Destination = FunctionReturnType<
-  typeof api.observability.telemetryExport.listDestinations
->[number];
+type Destination = inferRouterOutputs<AppRouter>["telemetryExport"]["listDestinations"][number];
 type Kind = Destination["kind"];
 type HeaderRow = { name: string; value: string };
 
@@ -60,30 +56,40 @@ function deliveryStatus(destination: Destination) {
  * list only reports that headers are stored.
  */
 export function TelemetryDestinations({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
   const { data: destinations } = useQuery(
-    convexQuery(api.observability.telemetryExport.listDestinations, { workspace: workspaceId }),
+    trpc.telemetryExport.listDestinations.queryOptions({ workspace: workspaceId }),
   );
-  const updateDestination = useMutation(api.observability.telemetryExport.updateDestination);
-  const testDestination = useAction(api.observability.telemetryExport.testDestination);
+  const { mutateAsync: updateDestination } = useMutation(
+    trpc.telemetryExport.updateDestination.mutationOptions({
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.telemetryExport.pathKey() }),
+    }),
+  );
+  const { mutateAsync: testDestination } = useMutation(
+    trpc.telemetryExport.testDestination.mutationOptions({
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.telemetryExport.pathKey() }),
+    }),
+  );
 
   const [editing, setEditing] = useState<Destination | "new" | null>(null);
   const [deleting, setDeleting] = useState<Destination | null>(null);
-  const [testing, setTesting] = useState<Id<"telemetry_destinations"> | null>(null);
+  const [testing, setTesting] = useState<string | null>(null);
 
   async function toggle(destination: Destination, enabled: boolean) {
     try {
-      await updateDestination({ workspace: workspaceId, destination: destination._id, enabled });
+      await updateDestination({ workspace: workspaceId, destination: destination.id, enabled });
     } catch (error) {
       toast.error(errorMessage(error, "Failed to update the destination."));
     }
   }
 
   async function test(destination: Destination) {
-    setTesting(destination._id);
+    setTesting(destination.id);
     try {
       const result = await testDestination({
         workspace: workspaceId,
-        destination: destination._id,
+        destination: destination.id,
       });
       if (result.ok) toast.success(`Test span delivered to ${destination.name}.`);
       else toast.error(`Test failed: ${result.error}`);
@@ -117,7 +123,7 @@ export function TelemetryDestinations({ workspaceId }: { workspaceId: Id<"worksp
         ) : (
           destinations.map((destination) => (
             <Row
-              key={destination._id}
+              key={destination.id}
               title={destination.name}
               tag={kindLabels[destination.kind]}
               description={
@@ -139,10 +145,10 @@ export function TelemetryDestinations({ workspaceId }: { workspaceId: Id<"worksp
                 variant="ghost"
                 size="icon-xs"
                 aria-label={`Send a test span to ${destination.name}`}
-                disabled={testing === destination._id}
+                disabled={testing === destination.id}
                 onClick={() => void test(destination)}
               >
-                {testing === destination._id ? <Spinner /> : <SendIcon />}
+                {testing === destination.id ? <Spinner /> : <SendIcon />}
               </Button>
               <Button
                 variant="ghost"
@@ -168,7 +174,7 @@ export function TelemetryDestinations({ workspaceId }: { workspaceId: Id<"worksp
 
       <DestinationDialog
         // Remount per target so form state always starts from the destination being edited.
-        key={editing === null ? "closed" : editing === "new" ? "new" : editing._id}
+        key={editing === null ? "closed" : editing === "new" ? "new" : editing.id}
         workspaceId={workspaceId}
         target={editing}
         onOpenChange={(open) => !open && setEditing(null)}
@@ -193,9 +199,16 @@ function DestinationDialog({
 }) {
   const existing = target !== null && target !== "new" ? target : null;
   const fieldId = useId();
-  const createDestination = useMutation(api.observability.telemetryExport.createDestination);
-  const updateDestination = useMutation(api.observability.telemetryExport.updateDestination);
   const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: trpc.telemetryExport.pathKey() });
+  const { mutateAsync: createDestination } = useMutation(
+    trpc.telemetryExport.createDestination.mutationOptions({ onSuccess: invalidate }),
+  );
+  const { mutateAsync: updateDestination } = useMutation(
+    trpc.telemetryExport.updateDestination.mutationOptions({ onSuccess: invalidate }),
+  );
   const { data: apiKeys = [], isPending: keysLoading } = useQuery(
     trpc.keys.list.queryOptions({ workspace: workspaceId }),
   );
@@ -247,10 +260,8 @@ function DestinationDialog({
       enabled,
       privacyMode,
       samplingRate: samplingPercent / 100,
-      // Destinations are still Convex rows until the observability slice moves; the key ids are
-      // the Gateway's, and the Convex validator only types them as its own ids.
-      includeApiKeys: include as Id<"api_keys">[],
-      excludeApiKeys: exclude as Id<"api_keys">[],
+      includeApiKeys: include,
+      excludeApiKeys: exclude,
     };
 
     setSubmitting(true);
@@ -258,7 +269,7 @@ function DestinationDialog({
       if (existing) {
         await updateDestination({
           workspace: workspaceId,
-          destination: existing._id,
+          destination: existing.id,
           ...settings,
           ...(replaceHeaders ? { headers: headerMap } : {}),
         });
@@ -529,14 +540,20 @@ function DeleteDestinationDialog({
   target: Destination | null;
   onOpenChange: (open: boolean) => void;
 }) {
-  const deleteDestination = useMutation(api.observability.telemetryExport.deleteDestination);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { mutateAsync: deleteDestination } = useMutation(
+    trpc.telemetryExport.deleteDestination.mutationOptions({
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.telemetryExport.pathKey() }),
+    }),
+  );
   const [submitting, setSubmitting] = useState(false);
 
   async function confirm() {
     if (!target) return;
     setSubmitting(true);
     try {
-      await deleteDestination({ workspace: workspaceId, destination: target._id });
+      await deleteDestination({ workspace: workspaceId, destination: target.id });
       toast.success(`Deleted ${target.name}.`);
       onOpenChange(false);
     } catch (error) {

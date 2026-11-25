@@ -1,11 +1,10 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { Id } from "backend/convex/_generated/dataModel";
 import { EncryptionNotice } from "@/components/auth/encryption-notice";
 import { hasSealedTelemetry, openTelemetryData, telemetryContent } from "@/lib/crypto/telemetry";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 
 /** Keeps decrypted views out of React/query state and invalidates them synchronously on lock. */
-export function useTelemetryContent<T extends object>(source: T | undefined, workspace?: Id<"workspaces">) {
+export function useTelemetryContent<T extends object>(source: T | undefined, workspace?: string) {
   const status = useKeyStatus();
   const revision = useSyncExternalStore(telemetryContent.subscribe, telemetryContent.getSnapshot, () => 0);
   const sealed = hasSealedTelemetry(source);

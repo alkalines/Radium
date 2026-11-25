@@ -1,19 +1,16 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import type { Id } from "backend/convex/_generated/dataModel";
 import {
-  createCapsule, encodeCapsule, generateEncryptionKeyPair, sealWithCapsule, utf8,
+  createCapsule, encodeCapsule, fromBase64Url, generateEncryptionKeyPair, sealWithCapsule, toBase64Url, utf8,
 } from "radium-crypto";
 import { keyManager } from "./key-manager";
 import * as workspaceKeys from "./workspace-keys";
 import * as legacyContent from "./legacy-content";
 import { hasSealedTelemetry, openTelemetryData, telemetryContent } from "./telemetry";
 import { telemetryToolChanges } from "@/components/gateway/telemetry-utils";
-import type { LoadedBlob } from "contracts/telemetry/store";
 
-const workspace = "telemetry-test" as Id<"workspaces">;
+const workspace = "telemetry-test";
 const requestId = "capture-uuid";
 const hash = "opaque-keyed-hash";
-const wire = (value: Uint8Array) => value.slice().buffer as ArrayBuffer;
 afterEach(() => mock.restore());
 
 async function fixture() {
@@ -33,9 +30,9 @@ async function fixture() {
     pad: "content",
   });
   const blob = {
-    id: "blob" as Id<"telemetry_blobs">, hash, kind: "message" as const, size: 50,
+    id: "blob", hash, kind: "message" as const, size: 50,
     redacted: false, content: '"unsafe plaintext sibling"', meta: { role: "unsafe sibling" },
-    sealed: { epoch: 3, requestId, capsule: wire(encodeCapsule(batch.capsule)), envelope: wire(envelope) },
+    sealed: { epoch: 3, requestId, capsule: toBase64Url(encodeCapsule(batch.capsule)), envelope: toBase64Url(envelope), storageUrl: null as string | null },
   };
   return { owner, batch, blob };
 }
@@ -51,27 +48,28 @@ describe("owner-only telemetry content", () => {
     expect(opened?.blob.meta).toEqual({ role: "assistant" });
     expect(opened?.legacy).toEqual(source.legacy);
     expect(source.blob.content).toBe('"unsafe plaintext sibling"');
-    expect(telemetryContent.get(source, "different-workspace" as Id<"workspaces">)).toBeUndefined();
+    expect(telemetryContent.get(source, "different-workspace")).toBeUndefined();
   });
 
   test("downloads encrypted bytes and decrypts locally rather than linking to ciphertext", async () => {
     const { blob } = await fixture();
-    spyOn(globalThis, "fetch").mockResolvedValue(new Response(blob.sealed.envelope));
-    const source = { ...blob, sealed: { ...blob.sealed, envelope: undefined, storageUrl: "https://storage.invalid/sealed" } };
+    spyOn(globalThis, "fetch").mockResolvedValue(new Response(fromBase64Url(blob.sealed.envelope).slice().buffer as ArrayBuffer));
+    const source = { ...blob, sealed: { ...blob.sealed, envelope: null, storageUrl: "https://storage.invalid/sealed" } };
     await openTelemetryData(source, workspace);
     expect(telemetryContent.get(source, workspace)?.data?.content).toContain("Private answer");
-    expect(telemetryContent.get(source, workspace)?.data?.sealed).toBeUndefined();
+    expect(telemetryContent.get(source, workspace)?.data?.sealed).toBeNull();
   });
 
   test("wrong workspace, substituted record, corrupted bytes and download failures never use plaintext", async () => {
     const { blob } = await fixture();
-    const tampered = blob.sealed.envelope.slice(0);
-    new Uint8Array(tampered)[40] ^= 1;
+    const damaged = fromBase64Url(blob.sealed.envelope);
+    damaged[40] ^= 1;
+    const tampered = toBase64Url(damaged);
     const cases = [
-      { source: { ...blob }, workspace: "other" as Id<"workspaces"> },
+      { source: { ...blob }, workspace: "other" },
       { source: { ...blob, hash: "substituted" }, workspace },
       { source: { ...blob, sealed: { ...blob.sealed, envelope: tampered } }, workspace },
-      { source: { ...blob, sealed: { ...blob.sealed, envelope: undefined, storageUrl: "https://storage.invalid/missing" } }, workspace },
+      { source: { ...blob, sealed: { ...blob.sealed, envelope: null, storageUrl: "https://storage.invalid/missing" } }, workspace },
     ];
     spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 404 }));
     for (const item of cases) {
@@ -85,10 +83,10 @@ describe("owner-only telemetry content", () => {
     const { blob } = await fixture();
     const response = Promise.withResolvers<Response>();
     spyOn(globalThis, "fetch").mockReturnValue(response.promise);
-    const source = { ...blob, sealed: { ...blob.sealed, envelope: undefined, storageUrl: "https://storage.invalid/delayed" } };
+    const source = { ...blob, sealed: { ...blob.sealed, envelope: null, storageUrl: "https://storage.invalid/delayed" } };
     const opening = openTelemetryData(source, workspace);
     spyOn(keyManager, "getSnapshot").mockReturnValue({ state: "locked", userId: "owner" });
-    response.resolve(new Response(blob.sealed.envelope));
+    response.resolve(new Response(fromBase64Url(blob.sealed.envelope).slice().buffer as ArrayBuffer));
     await opening;
     expect(telemetryContent.get(source, workspace)?.data).toBeUndefined();
   });
@@ -106,7 +104,7 @@ describe("owner-only telemetry content", () => {
       error: { message: string; status?: number };
       attempts: { message?: string }[];
     } = {
-      requestId, sealedError: { ...blob.sealed, envelope: wire(envelope) },
+      requestId, sealedError: { ...blob.sealed, envelope: toBase64Url(envelope) },
       error: { message: "unsafe sibling" },
       attempts: [{ message: "unsafe first" }, { message: "unsafe second" }],
     };
@@ -129,20 +127,18 @@ describe("owner-only telemetry content", () => {
     const source = {
       open: { id: "b1", hash: "h1", kind: "message", size: 1, redacted: true, legacyContent: box("workspace_owner") },
       custodial: { id: "b2", hash: "h2", kind: "message", size: 1, redacted: true, legacyContent: box("custody") },
-      request: { _id: "r1", requestId: "r1", attempts: [{ provider: "p" }], legacyContent: box("workspace_owner") },
+      request: { id: "r1", requestId: "r1", attempts: [{ provider: "p" }], legacyContent: box("workspace_owner") },
     };
     expect(hasSealedTelemetry(source)).toBe(true);
     await openTelemetryData(source, workspace);
     const opened = telemetryContent.get(source, workspace)?.data;
     expect(opened?.open).toMatchObject({ content: '"old"', meta: { role: "user" }, redacted: false });
-    expect(opened?.custodial).toMatchObject({ content: undefined, redacted: true });
+    expect(opened?.custodial).toMatchObject({ content: null, redacted: true });
     expect(opened?.request).toMatchObject({ error: { message: "Old failure" }, attempts: [{ provider: "p", message: "Old attempt" }] });
   });
 
   test("tool diffs compare decrypted names but keyed definition hashes", () => {
-    const tool = (name: string, hash: string) => ({
-      id: hash as Id<"telemetry_blobs">, hash, kind: "tool", size: 10, redacted: true, meta: { names: [name] },
-    } as LoadedBlob);
+    const tool = (name: string, hash: string) => ({ hash, content: null, meta: { names: [name] } });
     const changes = telemetryToolChanges(
       [tool("read", "old"), tool("write", "same")],
       [tool("write", "same"), tool("read", "new"), tool("bash", "added")],

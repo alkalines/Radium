@@ -1,8 +1,5 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { useQueries } from "@tanstack/react-query";
-import type { FunctionReturnType } from "convex/server";
-import type { Id } from "backend/convex/_generated/dataModel";
-import { blobValue } from "contracts/telemetry/store";
+import type { inferRouterOutputs } from "@trpc/server";
 import { ChevronDownIcon, HistoryIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -10,14 +7,16 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "backend/convex/_generated/api";
+import type { AppRouter } from "server/router";
+import { useTrpc } from "@/lib/trpc";
 import { DataSection } from "./data-section";
 import { MessageView, ToolItem, type TelemetryBlob, type ToolResultView } from "./telemetry-parts";
-import { asRecord, messageToolCalls, telemetryToolChanges, telemetryToolName } from "./telemetry-utils";
+import { asRecord, blobValue, messageToolCalls, telemetryToolChanges, telemetryToolName } from "./telemetry-utils";
 import { TelemetryContentNotice, useTelemetryContent } from "./telemetry-content";
 
-type RequestResult = FunctionReturnType<typeof api.observability.telemetry.getRequest>;
-type MessagePage = FunctionReturnType<typeof api.observability.telemetry.getRequestMessages>;
+type TelemetryOutputs = inferRouterOutputs<AppRouter>["telemetry"];
+type RequestResult = TelemetryOutputs["getRequest"];
+type MessagePage = TelemetryOutputs["getRequestMessages"];
 type ConversationNode = MessagePage["nodes"][number];
 
 const PAGE_SIZE = 20;
@@ -107,7 +106,7 @@ function OpenedRequestConversation({
         }
         empty="This request carried no conversation messages."
       >
-        {summary.inputDepth > 0 && <ConversationMessages key={request._id} requestId={request._id} workspace={request.workspace} />}
+        {summary.inputDepth > 0 && <ConversationMessages key={request.id} requestId={request.id} workspace={request.workspace} />}
       </Part>
 
       <Part label="Output" empty={outputNote(data)}>
@@ -163,14 +162,15 @@ function Part({
  * merged before rendering so a tool result pairs with its call even across a page boundary.
  */
 function ConversationMessages({ requestId, workspace }: {
-  requestId: Id<"telemetry_requests">;
-  workspace: Id<"workspaces">;
+  requestId: string;
+  workspace: string;
 }) {
+  const trpc = useTrpc();
   // Cursors of the loaded pages, newest page first.
-  const [cursors, setCursors] = useState<(Id<"telemetry_nodes"> | undefined)[]>([undefined]);
+  const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const { error, loaded, oldest, nodes: sealedNodes } = useQueries({
     queries: cursors.map((cursor) =>
-      convexQuery(api.observability.telemetry.getRequestMessages, {
+      trpc.telemetry.getRequestMessages.queryOptions({
         request: requestId,
         cursor,
         limit: PAGE_SIZE,

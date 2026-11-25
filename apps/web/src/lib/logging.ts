@@ -1,6 +1,7 @@
-import { useConvexAuth, useMutation } from "convex/react";
+import { useMutation } from "@tanstack/react-query";
 
-import { api } from "backend/convex/_generated/api";
+import { useTrpc } from "@/lib/trpc";
+import { useAccount } from "@/lib/use-account";
 import {
   createLoggingEnvelope,
   isLoggingEnvelopeWithinLimits,
@@ -18,11 +19,12 @@ export type FrontendLogInput = Omit<LoggingEventInput, "product" | "source">;
  * waits for ingestion, so logging failures cannot block the caller.
  */
 export function useFrontendLogger(): (input: FrontendLogInput) => void {
-  const ingest = useMutation(api.observability.events.ingest);
-  const { isAuthenticated } = useConvexAuth();
+  const trpc = useTrpc();
+  const { mutateAsync: ingest } = useMutation(trpc.logging.ingest.mutationOptions());
+  const { signedIn } = useAccount();
 
   return (input) => {
-    if (!isAuthenticated) return;
+    if (!signedIn) return;
 
     try {
       const envelope = createLoggingEnvelope({

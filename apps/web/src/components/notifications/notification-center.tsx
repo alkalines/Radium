@@ -1,12 +1,11 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useConvexAuth, useMutation } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
-
-import { api } from "backend/convex/_generated/api";
+import type { inferRouterOutputs } from "@trpc/server";
 import type { Id } from "backend/convex/_generated/dataModel";
+import type { AppRouter } from "server/router";
+import { useTrpc } from "@/lib/trpc";
+import { useAccount } from "@/lib/use-account";
 import { keyManager } from "@/lib/crypto/key-manager";
 import { openNotification } from "@/lib/crypto/notification-content";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
@@ -23,7 +22,7 @@ import {
 import { playNotificationSound, primeNotificationAudio } from "./notification-sounds";
 import { NotificationToaster, showNotificationToast } from "./notification-toast";
 
-type NotificationView = FunctionReturnType<typeof api.notifications.recent>[number];
+type NotificationView = inferRouterOutputs<AppRouter>["notifications"]["recent"][number];
 
 /**
  * A tab without focus waits this long before claiming, so a focused tab (where the user is
@@ -33,7 +32,7 @@ const BACKGROUND_CLAIM_DELAY_MS = 1_500;
 
 function isViewing(notification: NotificationView, activeChatId: string | undefined) {
   return (
-    notification.chat !== undefined &&
+    notification.chat !== null &&
     notification.chat === activeChatId &&
     document.visibilityState === "visible" &&
     document.hasFocus()
@@ -53,17 +52,23 @@ function isViewing(notification: NotificationView, activeChatId: string | undefi
  */
 export function NotificationCenter({ activeChatId }: { activeChatId?: string }) {
   const keyStatus = useKeyStatus();
-  const { isAuthenticated } = useConvexAuth();
+  const { signedIn: isAuthenticated } = useAccount();
+  const trpc = useTrpc();
   const navigate = useNavigate();
   const { setWorkspace, workspaces } = useWorkspace();
+  // No live subscription: the inbox refetches when the window regains focus and every 30 s while
+  // the tab is visible (TanStack pauses the interval in background tabs). Doorbells replace this.
   const { data: notifications } = useQuery(
-    convexQuery(api.notifications.recent, isAuthenticated ? {} : "skip"),
+    trpc.notifications.recent.queryOptions(isAuthenticated ? undefined : skipToken, {
+      refetchInterval: 30_000,
+      refetchOnWindowFocus: true,
+    }),
   );
   const { data: preferences } = useQuery(
-    convexQuery(api.notifications.getPreferences, isAuthenticated ? {} : "skip"),
+    trpc.notifications.getPreferences.queryOptions(isAuthenticated ? undefined : skipToken),
   );
-  const claim = useMutation(api.notifications.claim);
-  const subscribe = useMutation(api.notifications.subscribe);
+  const { mutateAsync: claim } = useMutation(trpc.notifications.claim.mutationOptions());
+  const { mutateAsync: subscribe } = useMutation(trpc.notifications.subscribe.mutationOptions());
 
   // Rows present at load are history; only rows that arrive afterwards notify.
   const known = useRef<Set<string> | null>(null);
@@ -74,9 +79,9 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
     displayed.current.clear();
   }, [keyStatus.state, keyStatus.state === "unlocked" ? keyStatus.userId : null]);
 
-  function open(target: { path: string; workspace?: string; chat?: string }) {
+  function open(target: { path: string; workspace?: string | null; chat?: string | null }) {
     // Limit events belong to a workspace; Gateway pages show the current one.
-    if (target.chat === undefined && target.workspace) {
+    if (target.chat == null && target.workspace) {
       setWorkspace(target.workspace as Id<"workspaces">);
     }
     void navigate({ href: target.path });
@@ -137,14 +142,14 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
   useEffect(() => {
     if (!notifications) return;
     if (known.current === null) {
-      known.current = new Set(notifications.map((notification) => notification._id));
+      known.current = new Set(notifications.map((notification) => notification.id));
       return;
     }
 
     const seen = known.current;
-    const arrived = notifications.filter((notification) => !seen.has(notification._id)).reverse();
+    const arrived = notifications.filter((notification) => !seen.has(notification.id)).reverse();
     for (const notification of arrived) {
-      seen.add(notification._id);
+      seen.add(notification.id);
       // Pushed while this tab was asleep or disconnected: the device already showed it.
       if (notification.pushed) continue;
 
@@ -162,14 +167,14 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
           }
         }
         if (!isViewing(notification, latest.current.activeChatId)) {
-          displayed.current.add(notification._id);
+          displayed.current.add(notification.id);
           showNotificationToast(display, () => latest.current.open(notification));
         }
         if (notification.claimed) return;
 
         const delay = document.hasFocus() ? 0 : BACKGROUND_CLAIM_DELAY_MS;
         window.setTimeout(() => {
-          void claim({ notification: notification._id })
+          void claim({ notification: notification.id })
             .then((won) => {
               if (!latest.current.isAuthenticated) return;
               const { activeChatId: chatId, preferences: current } = latest.current;
@@ -181,7 +186,7 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
                 const now = keyManager.getSnapshot();
                 const safe = now.state === "unlocked" && now.userId === notification.userId &&
                   now.keyId === (notification.sealed?.keyId ?? notification.legacyContent?.keyId) ? display : notification;
-                void showSystemNotification({ ...safe, id: notification._id }, () =>
+                void showSystemNotification({ ...safe, id: notification.id }, () =>
                   latest.current.open(notification),
                 );
               }

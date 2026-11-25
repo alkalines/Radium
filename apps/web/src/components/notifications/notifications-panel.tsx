@@ -1,7 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNowStrict } from "date-fns";
 import {
   BellRingIcon,
@@ -17,7 +15,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
+import { useTrpc } from "@/lib/trpc";
 import type { NotificationCategory } from "contracts/notifications/contract";
 import { GroupList, Row, RowBlock, Tag } from "@/components/harness/group-list";
 import { PageHeader } from "@/components/harness/page-header";
@@ -81,18 +79,27 @@ function permissionDescription(permission: NotificationPermissionState) {
 }
 
 /**
- * Settings → Account → Notifications. Account-level choices (`api.notifications.getPreferences`)
+ * Settings → Account → Notifications. Account-level choices (`notifications.getPreferences`)
  * decide which categories notify and which sound; this device's row asks for the browser
  * permission and, when the deployment has VAPID keys, subscribes it to Web Push so notifications
  * arrive with every tab closed. The device list shows every subscribed browser; the Expo app row
  * is a placeholder until a phone app exists.
  */
 export function NotificationsPanel() {
-  const { data: preferences } = useQuery(convexQuery(api.notifications.getPreferences, {}));
-  const { data: pushConfig } = useQuery(convexQuery(api.notifications.pushConfig, {}));
-  const setPreference = useMutation(api.notifications.setPreference);
-  const subscribe = useMutation(api.notifications.subscribe);
-  const unsubscribe = useMutation(api.notifications.unsubscribe);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: trpc.notifications.pathKey() });
+  const { data: preferences } = useQuery(trpc.notifications.getPreferences.queryOptions());
+  const { data: pushConfig } = useQuery(trpc.notifications.pushConfig.queryOptions());
+  const { mutateAsync: setPreference } = useMutation(
+    trpc.notifications.setPreference.mutationOptions({ onSuccess: invalidate }),
+  );
+  const { mutateAsync: subscribe } = useMutation(
+    trpc.notifications.subscribe.mutationOptions({ onSuccess: invalidate }),
+  );
+  const { mutateAsync: unsubscribe } = useMutation(
+    trpc.notifications.unsubscribe.mutationOptions({ onSuccess: invalidate }),
+  );
 
   // Browser state is client-only; read it after mount so server and client markup agree.
   const [permission, setPermission] = useState<NotificationPermissionState>("unsupported");
@@ -106,7 +113,7 @@ export function NotificationsPanel() {
   }, []);
 
   const { data: devices } = useQuery(
-    convexQuery(api.notifications.listDevices, endpoint ? { endpoint } : {}),
+    trpc.notifications.listDevices.queryOptions(endpoint ? { endpoint } : {}),
   );
 
   const publicKey = pushConfig?.publicKey ?? null;
@@ -151,7 +158,7 @@ export function NotificationsPanel() {
         await disablePush();
         return;
       }
-      await unsubscribe({ device: device._id });
+      await unsubscribe({ device: device.id });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not remove the device.");
     }
@@ -161,7 +168,7 @@ export function NotificationsPanel() {
   // sound, and the system notification, so the user can check volume and permissions.
   function sendTest() {
     const test = {
-      _id: `test-${Date.now()}`,
+      id: `test-${Date.now()}`,
       kind: "session_approval" as const,
       category: "attention" as const,
       title: "Test notification",
@@ -169,7 +176,7 @@ export function NotificationsPanel() {
     };
     showNotificationToast(test);
     previewNotificationSound(test.category);
-    void showSystemNotification({ ...test, id: test._id, path: "/settings/notifications" });
+    void showSystemNotification({ ...test, path: "/settings/notifications" });
   }
 
   // Push needs the server's VAPID keys, a browser with the Push API, and permission (which
@@ -309,7 +316,7 @@ export function NotificationsPanel() {
         ) : null}
         {devices?.map((device) => (
           <Row
-            key={device._id}
+            key={device.id}
             icon={MonitorIcon}
             title={device.label}
             tag={device.current ? "This device" : undefined}

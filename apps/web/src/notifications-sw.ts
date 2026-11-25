@@ -1,5 +1,4 @@
 /// <reference lib="webworker" />
-import { fromBase64Url } from "radium-crypto";
 import { openNotification } from "./lib/crypto/notification-content";
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
@@ -28,12 +27,11 @@ sw.addEventListener("push", (event) => {
         typeof sealed.box === "string" && sealed.box.length <= 3500 &&
         (payload.workspace === undefined || typeof payload.workspace === "string")) {
       try {
-        const bytes = fromBase64Url(sealed.box);
         const content = await openNotification({
-          _id: payload.id,
+          id: payload.id,
           userId: payload.userId,
           workspace: payload.workspace as string | undefined,
-          sealed: { keyId: sealed.keyId, box: bytes.slice().buffer },
+          sealed: { keyId: sealed.keyId, box: sealed.box },
         }, true);
         if (content) ({ title, body } = content);
       } catch {

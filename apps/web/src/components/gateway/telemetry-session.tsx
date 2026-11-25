@@ -1,15 +1,14 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { FunctionReturnType } from "convex/server";
-import type { Id } from "backend/convex/_generated/dataModel";
+import type { inferRouterOutputs } from "@trpc/server";
 import { ArrowLeftIcon, CircleAlertIcon } from "lucide-react";
 
 import { WorkspacePageHeader } from "@/components/settings/workspace-page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "backend/convex/_generated/api";
+import type { AppRouter } from "server/router";
+import { useTrpc } from "@/lib/trpc";
 import { DataSection } from "./data-section";
 import {
   ChangeTags,
@@ -21,13 +20,12 @@ import { RequestConversation } from "./telemetry-conversation";
 import { RequestTree } from "./telemetry-tree";
 import { formatTelemetryDate, formatTelemetryDuration, formatTokenCount } from "./telemetry-utils";
 
-type SessionResult = FunctionReturnType<typeof api.observability.telemetry.getSession>;
+type SessionResult = inferRouterOutputs<AppRouter>["telemetry"]["getSession"];
 type Entry = SessionResult["requests"][number];
 
-export function TelemetrySession({ sessionId }: { sessionId: Id<"telemetry_sessions"> }) {
-  const { data, error } = useQuery(
-    convexQuery(api.observability.telemetry.getSession, { session: sessionId }),
-  );
+export function TelemetrySession({ sessionId }: { sessionId: string }) {
+  const trpc = useTrpc();
+  const { data, error } = useQuery(trpc.telemetry.getSession.queryOptions({ session: sessionId }));
 
   if (error) {
     return (
@@ -77,7 +75,7 @@ export function TelemetrySession({ sessionId }: { sessionId: Id<"telemetry_sessi
               Subagent of{" "}
               <Link
                 to="/gateway/telemetry/sessions/$id"
-                params={{ id: parentSession._id }}
+                params={{ id: parentSession.id }}
                 className="font-mono text-xs text-foreground underline underline-offset-2"
               >
                 {parentSession.key}
@@ -89,9 +87,9 @@ export function TelemetrySession({ sessionId }: { sessionId: Id<"telemetry_sessi
               Subagents:
               {children.map((child) => (
                 <Link
-                  key={child._id}
+                  key={child.id}
                   to="/gateway/telemetry/sessions/$id"
-                  params={{ id: child._id }}
+                  params={{ id: child.id }}
                   className="max-w-48 truncate font-mono text-xs text-foreground underline underline-offset-2"
                 >
                   {child.key}
@@ -123,12 +121,12 @@ export function TelemetrySession({ sessionId }: { sessionId: Id<"telemetry_sessi
           <p className="p-4 text-sm text-muted-foreground">No visible requests in this session.</p>
         ) : (
           data.requests.map((entry, index) => (
-            <TimelineRow key={entry._id} entry={entry} index={index + 1} />
+            <TimelineRow key={entry.id} entry={entry} index={index + 1} />
           ))
         )}
       </DataSection>
 
-      {latest && <LatestConversation requestId={latest._id} />}
+      {latest && <LatestConversation requestId={latest.id} />}
     </>
   );
 }
@@ -161,7 +159,7 @@ function TimelineRow({ entry, index }: { entry: Entry; index: number }) {
       <LineageBadge lineage={entry.lineage} />
       <Link
         to="/gateway/telemetry/$id"
-        params={{ id: entry._id }}
+        params={{ id: entry.id }}
         className="flex min-w-0 items-center gap-2 font-medium underline-offset-2 hover:underline"
       >
         <RequestProviderLogo slug={entry.provider} className="size-4" />
@@ -187,10 +185,9 @@ function TimelineRow({ entry, index }: { entry: Entry; index: number }) {
 }
 
 /** The newest request's full body, shown the way the model received it. */
-function LatestConversation({ requestId }: { requestId: Id<"telemetry_requests"> }) {
-  const { data, error } = useQuery(
-    convexQuery(api.observability.telemetry.getRequest, { request: requestId }),
-  );
+function LatestConversation({ requestId }: { requestId: string }) {
+  const trpc = useTrpc();
+  const { data, error } = useQuery(trpc.telemetry.getRequest.queryOptions({ request: requestId }));
 
   if (error) {
     return (

@@ -1,13 +1,13 @@
 import { useNavigate } from "@tanstack/react-router";
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
 import { useMemo, useState } from "react";
 
 import { MermaidDiagram } from "@/components/mermaid-diagram";
-import type { api } from "backend/convex/_generated/api";
+import type { AppRouter } from "server/router";
 import { DataSection } from "./data-section";
 import { changeLabel, type LineageKind } from "./telemetry-utils";
 
-type SessionResult = FunctionReturnType<typeof api.observability.telemetry.getSession>;
+type SessionResult = inferRouterOutputs<AppRouter>["telemetry"]["getSession"];
 type Entry = SessionResult["requests"][number];
 type Indexed = { entry: Entry; index: number };
 
@@ -116,9 +116,9 @@ const edgeLabels: Partial<Record<LineageKind, (depth: number) => string>> = {
  */
 function requestTreeChart(data: SessionResult, expanded: ReadonlySet<string>) {
   const entries = new Map<string, Indexed>(
-    data.requests.map((entry, index) => [entry._id, { entry, index: index + 1 }]),
+    data.requests.map((entry, index) => [entry.id, { entry, index: index + 1 }]),
   );
-  const latest = data.requests.at(-1)?._id;
+  const latest = data.requests.at(-1)?.id;
   const forkSources = new Set(
     data.lanes.flatMap((lane) => (lane.forkRequest ? [lane.forkRequest] : [])),
   );
@@ -144,11 +144,11 @@ function requestTreeChart(data: SessionResult, expanded: ReadonlySet<string>) {
     lines.push(`  ${id}("${text.join("<br/>")}")`);
     const classes = [
       entry.status !== "ok" ? "failed" : entry.changedFields.length > 0 ? "changed" : "request",
-      ...(entry._id === latest ? ["latest"] : []),
+      ...(entry.id === latest ? ["latest"] : []),
     ];
     lines.push(`  class ${id} ${classes.join(",")}`);
-    nodeOf.set(entry._id, id);
-    targets.set(id, { kind: "request", request: entry._id });
+    nodeOf.set(entry.id, id);
+    targets.set(id, { kind: "request", request: entry.id });
     return id;
   };
 
@@ -163,8 +163,8 @@ function requestTreeChart(data: SessionResult, expanded: ReadonlySet<string>) {
       "Click to expand",
     ];
     lines.push(`  ${id}("${text.join("<br/>")}")`, `  class ${id} group`);
-    for (const item of run) nodeOf.set(item.entry._id, id);
-    targets.set(id, { kind: "group", group: first.entry._id });
+    for (const item of run) nodeOf.set(item.entry.id, id);
+    targets.set(id, { kind: "group", group: first.entry.id });
     return id;
   };
 
@@ -183,7 +183,7 @@ function requestTreeChart(data: SessionResult, expanded: ReadonlySet<string>) {
       previous = id;
     };
     const flush = () => {
-      if (run.length === 1 || (run.length > 1 && expanded.has(run[0]!.entry._id))) {
+      if (run.length === 1 || (run.length > 1 && expanded.has(run[0]!.entry.id))) {
         for (const item of run) link(addRequestNode(item, false));
       } else if (run.length > 1) {
         link(addGroupNode(run));
@@ -194,10 +194,10 @@ function requestTreeChart(data: SessionResult, expanded: ReadonlySet<string>) {
     laneEntries.forEach((item, position) => {
       const notable =
         position === 0 ||
-        item.entry._id === latest ||
+        item.entry.id === latest ||
         item.entry.status !== "ok" ||
         item.entry.changedFields.length > 0 ||
-        forkSources.has(item.entry._id);
+        forkSources.has(item.entry.id);
       if (!notable) {
         run.push(item);
         return;
@@ -219,7 +219,7 @@ function requestTreeChart(data: SessionResult, expanded: ReadonlySet<string>) {
       // A compacted restart follows the session's preceding request in time.
       const first = entries.get(lane.requests[0]!);
       const before = first ? data.requests[first.index - 2] : undefined;
-      const source = before && nodeOf.get(before._id);
+      const source = before && nodeOf.get(before.id);
       if (source) edge(source, target, edgeLabels.compacted!(0));
     }
   }

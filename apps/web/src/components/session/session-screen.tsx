@@ -325,9 +325,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       retry: retryTransient,
     }),
   );
-  // The Session's estimated total; subscribed only while its Tab is active.
+  // The Session's estimated total; fetched only while its Tab is active, and refetched when a turn ends.
   const { data: sessionCost } = useQuery(
-    convexQuery(api.agent_usage.GetChatCost, chatId && isActive ? { chat: chatId } : "skip"),
+    trpc.usage.getChatCost.queryOptions(chatId && isActive ? { chat: chatId } : skipToken),
   );
   // A refusal is final; a network failure only counts while nothing has loaded yet.
   const isChatUnavailable =
@@ -956,6 +956,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     previousStatus.current = status;
     if (wasRunning && (status === "ready" || status === "error")) {
       void queryClient.invalidateQueries({ queryKey: trpc.chats.pathKey() });
+      void queryClient.invalidateQueries({ queryKey: trpc.usage.getChatCost.pathKey() });
     }
   }, [status, queryClient, trpc]);
 

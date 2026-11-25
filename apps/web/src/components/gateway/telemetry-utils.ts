@@ -1,7 +1,17 @@
-import type { LoadedBlob } from "contracts/telemetry/store";
-import { blobValue } from "contracts/telemetry/store";
 import { diffTools } from "contracts/telemetry/reads";
 import type { RunState } from "@/components/agentic/agent-status";
+
+/** A blob as the tool helpers read it: opened content plus keyed hash and metadata. */
+export type ToolBlob = {
+  hash: string;
+  content: string | null;
+  meta: { names?: readonly string[] } | null;
+};
+
+/** Parsed blob content, or `undefined` when the content is not inline. */
+export function blobValue(blob: { content: string | null } | null | undefined): unknown {
+  return blob?.content == null ? undefined : JSON.parse(blob.content);
+}
 
 /** Request status as stored by the backend. */
 export type RequestStatusValue = "ok" | "error" | "aborted";
@@ -30,8 +40,8 @@ export function formatTelemetryDate(timestamp: number): string {
 }
 
 /** Format a duration in milliseconds; an absent value means the phase was not measured. */
-export function formatTelemetryDuration(ms: number | undefined): string {
-  if (ms === undefined) return "–";
+export function formatTelemetryDuration(ms: number | null | undefined): string {
+  if (ms == null) return "–";
   if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)}m`;
   return ms >= 1_000 ? `${(ms / 1_000).toFixed(2)}s` : `${Math.round(ms)}ms`;
 }
@@ -44,8 +54,8 @@ export function formatTokenCount(value: number): string {
 }
 
 /** Estimated cost in USD; sub-cent values keep enough digits to stay distinguishable. */
-export function formatCost(cost: number | undefined): string {
-  if (cost === undefined) return "–";
+export function formatCost(cost: number | null | undefined): string {
+  if (cost == null) return "–";
   if (cost > 0 && cost < 0.000001) return "<$0.000001";
   return `$${cost < 0.01 ? cost.toFixed(6) : cost.toFixed(4)}`;
 }
@@ -231,15 +241,15 @@ export function prettyJson(value: unknown): string {
 }
 
 /** Tool labels come only from opened content/metadata (or legacy plaintext), never ciphertext. */
-export function telemetryToolName(blob: LoadedBlob): string {
+export function telemetryToolName(blob: ToolBlob): string {
   const value = asRecord(blobValue(blob));
   const fn = asRecord(value?.function) ?? value;
   return blob.meta?.names?.[0] ?? (typeof fn?.name === "string" ? fn.name : "Unnamed tool");
 }
 
 /** Reuses the lineage comparison policy after decrypting both toolsets on this device. */
-export function telemetryToolChanges(from: LoadedBlob[], to: LoadedBlob[]) {
-  const named = (blobs: LoadedBlob[]) => blobs.map((blob) => ({
+export function telemetryToolChanges<T extends ToolBlob>(from: T[], to: T[]) {
+  const named = (blobs: T[]) => blobs.map((blob) => ({
     name: telemetryToolName(blob), hash: blob.hash, blob,
   }));
   const before = named(from);

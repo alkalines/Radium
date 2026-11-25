@@ -1,6 +1,5 @@
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import type { FunctionReturnType } from "convex/server";
+import { skipToken, useQuery } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import { CalendarIcon, CheckIcon, CopyIcon, ScrollTextIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { DateRange } from "react-day-picker";
@@ -43,16 +42,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { api } from "backend/convex/_generated/api";
+import { useTrpc } from "@/lib/trpc";
+import type { AppRouter } from "server/router";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { ProviderLogo } from "./provider-logo";
 import { DataSection } from "./data-section";
 
-type Generation = FunctionReturnType<typeof api.observability.usage.getGenerations>[number];
+type Generation = inferRouterOutputs<AppRouter>["usage"]["getGenerations"][number];
 const DAY_IN_MS = 86_400_000;
 
-function formatCost(value: number | undefined): string {
-  if (value === undefined) return "Unknown";
+function formatCost(value: number | null): string {
+  if (value === null) return "Unknown";
   if (value > 0 && value < 0.0001) return "<$0.0001";
   return `$${value.toFixed(Math.abs(value) < 1 ? 4 : 2)}`;
 }
@@ -92,11 +92,9 @@ type RangePreset = keyof typeof RANGE_PRESETS;
 
 export function LogsPanel() {
   const { workspaceId } = useWorkspace();
+  const trpc = useTrpc();
   const { data: generations } = useQuery(
-    convexQuery(
-      api.observability.usage.getGenerations,
-      workspaceId ? { workspace: workspaceId } : "skip",
-    ),
+    trpc.usage.getGenerations.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
   );
 
   const [preset, setPreset] = useState<RangePreset>("all");
@@ -119,8 +117,8 @@ export function LogsPanel() {
     }
 
     return generations.filter((generation) => {
-      if (from != null && generation._creationTime < from) return false;
-      if (to != null && generation._creationTime >= to) return false;
+      if (from != null && generation.createdAt < from) return false;
+      if (to != null && generation.createdAt >= to) return false;
       return true;
     });
   }, [generations, preset, customRange]);
@@ -240,7 +238,7 @@ export function LogsPanel() {
               <TableBody>
                 {filtered.map((generation) => (
                   <GenerationRow
-                    key={generation._id}
+                    key={generation.id}
                     generation={generation}
                     onSelect={() => setSelected(generation)}
                   />
@@ -263,7 +261,7 @@ function GenerationRow({ generation, onSelect }: { generation: Generation; onSel
   return (
     <TableRow className="cursor-pointer" onClick={onSelect}>
       <TableCell className="text-muted-foreground">
-        {formatDate(generation._creationTime)}
+        {formatDate(generation.createdAt)}
       </TableCell>
       <TableCell className="max-w-28 truncate font-mono text-xs text-muted-foreground">
         {response.genId}
@@ -331,7 +329,7 @@ function GenerationDetail({ generation }: { generation: Generation }) {
             <SheetDescription>
               {request.provider}
               {request.credentialName ? ` · ${request.credentialName}` : ""} ·{" "}
-              {formatDate(generation._creationTime)}
+              {formatDate(generation.createdAt)}
             </SheetDescription>
           </div>
         </div>
@@ -349,7 +347,7 @@ function GenerationDetail({ generation }: { generation: Generation }) {
           <DetailRow label="TTFT" value={formatDuration(response.ttft)} />
           <DetailRow label="TPS" value={`${tps.toFixed(1)} tok/s`} />
           <DetailRow label="Provider Latency" value={formatDuration(response.gen_time)} />
-          {response.moderation_latency !== undefined && (
+          {response.moderation_latency != null && (
             <DetailRow label="Moderation" value={formatDuration(response.moderation_latency)} />
           )}
         </DetailSection>

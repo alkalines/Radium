@@ -1,9 +1,6 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import type { Id } from "backend/convex/_generated/dataModel";
 
 import { TelemetryDetail } from "@/components/gateway/telemetry-detail";
-import { api } from "backend/convex/_generated/api";
 
 // Session and owner access are enforced by the parent `/gateway/telemetry` route.
 export const Route = createFileRoute("/gateway/telemetry/$id")({
@@ -12,17 +9,13 @@ export const Route = createFileRoute("/gateway/telemetry/$id")({
     screen: "settings",
     settingsWidth: "wide",
   },
-  loader: ({ context: { queryClient }, params: { id } }) => {
-    void queryClient.prefetchQuery(
-      convexQuery(api.observability.telemetry.getRequest, {
-        request: id as Id<"telemetry_requests">,
-      }),
-    );
+  loader: ({ context: { queryClient, trpc }, params: { id } }) => {
+    void queryClient.prefetchQuery(trpc.telemetry.getRequest.queryOptions({ request: id }));
   },
   component: TelemetryRequestPage,
 });
 
 function TelemetryRequestPage() {
   const { id } = Route.useParams();
-  return <TelemetryDetail requestId={id as Id<"telemetry_requests">} />;
+  return <TelemetryDetail requestId={id} />;
 }

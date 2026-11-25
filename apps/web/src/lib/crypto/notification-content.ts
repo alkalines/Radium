@@ -1,16 +1,15 @@
-import { openBox } from "radium-crypto";
+import { fromBase64Url, openBox } from "radium-crypto";
 import { notificationAad } from "contracts/notifications/contract";
-import type { LegacyBox } from "contracts/e2ee/legacy-contract";
-import type { Id } from "backend/convex/_generated/dataModel";
-import { openLegacyContent } from "./legacy-content";
+import { openLegacyContent, type SealedLegacyBox } from "./legacy-content";
 import { keyManager, useRememberedIdentity } from "./key-manager";
 
+/** A notification as `notifications.recent` and the push payload carry it; `box` is base64url. */
 type SealedNotification = {
-  _id: string;
+  id: string;
   userId: string;
-  workspace?: string;
-  sealed?: { keyId: string; box: ArrayBuffer };
-  legacyContent?: LegacyBox;
+  workspace?: string | null;
+  sealed?: { keyId: string; box: string } | null;
+  legacyContent?: SealedLegacyBox | null;
 };
 
 /** Authenticate and parse notification content; never return partial or malformed plaintext. */
@@ -22,8 +21,8 @@ export async function openNotificationBox(
   try {
     const plaintext = await openBox({
       seed,
-      box: new Uint8Array(notification.sealed.box),
-      aad: notificationAad(notification.userId, notification.workspace, notification._id),
+      box: fromBase64Url(notification.sealed.box),
+      aad: notificationAad(notification.userId, notification.workspace ?? undefined, notification.id),
       pad: "short",
     });
     try {
@@ -53,7 +52,7 @@ export async function openNotification(
     try {
       // Identity boxes never use a workspace key; the id only binds the AAD string.
       const value = await openLegacyContent<unknown>(legacy, {
-        table: "notifications", record: notification._id, workspace: notification.workspace as Id<"workspaces"> | undefined,
+        table: "notifications", record: notification.id, workspace: notification.workspace ?? undefined,
       });
       const after = keyManager.getSnapshot();
       if (after.state !== "unlocked" || after.userId !== before.userId || after.keyId !== before.keyId ||

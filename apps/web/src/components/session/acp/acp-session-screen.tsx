@@ -8,13 +8,11 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { UIMessage } from "ai";
-import { convexQuery } from "@convex-dev/react-query";
 import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { AnimatePresence } from "motion/react";
 import { ArchiveXIcon, KeyRoundIcon, ServerOffIcon } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { AcpInteractionAnswer } from "contracts/acp/contract";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -136,9 +134,10 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   // array keeps the hook from re-opening names on every render.
   const projectRows = useMemo(() => projectsData ?? [], [projectsData]);
   const projects = useDecryptedNames(projectRows, "projects", chat?.workspace);
-  // Radium's estimate of the recorded turns; subscribed only while the Session is on screen.
+  // Radium's estimate of the recorded turns; fetched only while the Session is on screen and
+  // refetched when a turn ends.
   const { data: estimate } = useQuery(
-    convexQuery(api.agent_usage.GetChatCost, isVisible ? { chat: chatId } : "skip"),
+    trpc.usage.getChatCost.queryOptions(isVisible ? { chat: chatId } : skipToken),
   );
   // Same workspace preference as built-in Sessions, so both threads render steps alike.
   const { data: chainOfThoughtEnabled = true } = useQuery(
@@ -305,6 +304,13 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     session?.status === "starting" ||
     session?.status === "running" ||
     session?.status === "awaiting";
+  const wasRunning = useRef(running);
+  useEffect(() => {
+    if (wasRunning.current && !running) {
+      void queryClient.invalidateQueries({ queryKey: trpc.usage.getChatCost.pathKey() });
+    }
+    wasRunning.current = running;
+  }, [running, queryClient, trpc]);
   const ended = session?.status === "ended";
   // A Gateway session runs only while its Worker holds an active Gateway key.
   const gatewayAccess = session?.gateway?.access;

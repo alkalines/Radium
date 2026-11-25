@@ -1,4 +1,4 @@
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
 import {
   CircleCheckIcon,
   GaugeIcon,
@@ -9,17 +9,17 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import type { api } from "backend/convex/_generated/api";
+import type { AppRouter } from "server/router";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 
-type NotificationView = FunctionReturnType<typeof api.notifications.recent>[number];
+type NotificationView = inferRouterOutputs<AppRouter>["notifications"]["recent"][number];
 
-/** What a notification toast shows; `_id` also dedupes the toast. */
+/** What a notification toast shows; `id` also dedupes the toast. */
 export type NotificationToastContent = Pick<
   NotificationView,
-  "kind" | "category" | "title" | "body"
-> & { _id: string };
+  "id" | "kind" | "category" | "title" | "body"
+>;
 
 /** Sonner toaster that only renders notifications, so app feedback toasts keep their place. */
 const NOTIFICATION_TOASTER = "notifications";
@@ -52,7 +52,7 @@ export function showNotificationToast(notification: NotificationToastContent, on
         onDismiss={() => toast.dismiss(toastId)}
       />
     ),
-    { toasterId: NOTIFICATION_TOASTER, id: notification._id },
+    { toasterId: NOTIFICATION_TOASTER, id: notification.id },
   );
 }
 
