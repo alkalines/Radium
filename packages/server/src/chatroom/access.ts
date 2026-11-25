@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Database } from "../drivers/types";
 import { AppError } from "../errors";
 import { workspaceMembers, workspaces } from "../workspaces/schema";
@@ -62,12 +62,44 @@ export async function chatAccess(
   const { chat, workspace } = row;
   const role = workspace.ownerId === userId ? "owner" : row.member !== null ? "member" : null;
   if (!role) return null;
-  const visible =
-    chat.scope === "workspace" ||
-    chat.userId === userId ||
-    (chat.scope === "shared" && row.chatMember !== null);
-  if (!visible) return null;
+  if (!isChatVisible(chat, userId, row.chatMember !== null)) return null;
   return { chat, workspace, userId, role, canManage: canManageChat(chat, workspace, userId) };
+}
+
+/**
+ * The visibility rule of {@link chatAccess} for a user of the chat's (active) workspace:
+ * `workspace` scope, the creator, or a `chat_members` row of a `shared` chat.
+ */
+function isChatVisible(chat: Pick<Chat, "scope" | "userId">, userId: string, isMember: boolean) {
+  return (
+    chat.scope === "workspace" || chat.userId === userId || (chat.scope === "shared" && isMember)
+  );
+}
+
+/**
+ * {@link chatAccess} for many chats at once (usage and log reads): the chats of `chatIds` that
+ * belong to `workspace` and that `userId` may see, by id. The caller has already authorized
+ * `userId` in `workspace` (active, owner or member); this applies only the per-chat rule. One
+ * query; unknown, foreign and invisible chats are absent alike.
+ */
+export async function visibleWorkspaceChats(
+  db: Database,
+  userId: string,
+  workspace: string,
+  chatIds: Iterable<string>,
+): Promise<Map<string, Chat>> {
+  const ids = [...new Set(chatIds)];
+  if (ids.length === 0) return new Map();
+  const rows = await db
+    .select({ chat: chats, chatMember: chatMembers.id })
+    .from(chats)
+    .leftJoin(chatMembers, and(eq(chatMembers.chat, chats.id), eq(chatMembers.userId, userId)))
+    .where(and(inArray(chats.id, ids), eq(chats.workspace, workspace)));
+  return new Map(
+    rows
+      .filter((row) => isChatVisible(row.chat, userId, row.chatMember !== null))
+      .map((row) => [row.chat.id, row.chat]),
+  );
 }
 
 /**

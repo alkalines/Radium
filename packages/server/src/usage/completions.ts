@@ -1,5 +1,6 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import type { ProviderPricing } from "contracts/workspaces/provider";
+import { visibleWorkspaceChats } from "../chatroom/access";
 import type { Database } from "../drivers/types";
 import { models } from "../gateway/schema";
 import { estimateCompletionCost, type completionUsage } from "./pricing";
@@ -42,6 +43,18 @@ export type CompletionRecord = {
   upstreamInferenceCost?: number;
   cacheWriteTtlUnknown?: boolean;
 };
+
+/**
+ * Whether a completion with no chat counts as Gateway usage: no Chatroom user and a Gateway key.
+ * A deleted chat's completions keep `user_id` and stay hidden; so do unattributed rows.
+ */
+export function isGatewayCompletionWithoutChat(row: {
+  chat: string | null;
+  userId: string | null;
+  apiKey: string | null;
+}): boolean {
+  return row.chat === null && row.userId === null && row.apiKey !== null;
+}
 
 /**
  * Records one completion with its operational cost estimate (never a charge): the served
@@ -177,4 +190,41 @@ export async function credentialSpendSince(
     .from(chatCompletions)
     .where(and(eq(chatCompletions.credential, credential), gte(chatCompletions.createdAt, since)));
   return row!.unknown > 0 ? null : Number(row!.total);
+}
+
+/**
+ * Recorded cost (`null` when unknown) of the completions among `ids` that `userId` may see in
+ * `workspace` (telemetry request rows): a completion of a chat the user can see (chat access
+ * function), or Gateway usage without a chat. Hidden and foreign completions are absent. The
+ * caller has already authorized `userId` in `workspace`.
+ */
+export async function visibleCompletionCosts(
+  db: Database,
+  userId: string,
+  workspace: string,
+  ids: Iterable<string>,
+): Promise<Map<string, number | null>> {
+  const wanted = [...new Set(ids)];
+  if (wanted.length === 0) return new Map();
+  const rows = await db
+    .select({
+      id: chatCompletions.id,
+      chat: chatCompletions.chat,
+      userId: chatCompletions.userId,
+      apiKey: chatCompletions.apiKey,
+      cost: chatCompletions.cost,
+    })
+    .from(chatCompletions)
+    .where(and(eq(chatCompletions.workspace, workspace), inArray(chatCompletions.id, wanted)));
+  const chats = await visibleWorkspaceChats(
+    db,
+    userId,
+    workspace,
+    rows.flatMap((row) => (row.chat === null ? [] : [row.chat])),
+  );
+  return new Map(
+    rows
+      .filter((row) => (row.chat === null ? isGatewayCompletionWithoutChat(row) : chats.has(row.chat)))
+      .map((row) => [row.id, row.cost]),
+  );
 }

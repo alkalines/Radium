@@ -1,6 +1,19 @@
 import { z } from "zod";
 import { FILES_RELEASE_JOB, runReleaseJob } from "../chatroom/files";
 import { BUDGET_JOB, runBudgetJob } from "../gateway/limits/store";
+import { FALLBACK_JOB, SEAL_JOB } from "../notifications/notify";
+import { runFallbackJob } from "../notifications/push";
+import { runSealJob } from "../notifications/sealing";
+import { EXPORT_JOB, runExportJob } from "../telemetry/export";
+import { GC_JOB, runGcJob } from "../telemetry/retention";
+import {
+  PRICE_LOCAL_ROW_JOB,
+  PRICE_TURN_JOB,
+  REPRICE_PENDING_JOB,
+  runPriceLocalRowJob,
+  runPriceTurnJob,
+  runRepricePendingJob,
+} from "../usage/prices";
 import type { JobHandlers } from "./outbox";
 
 const budgetPayload = z.object({ credential: z.string() });
@@ -16,4 +29,18 @@ export const jobHandlers: JobHandlers = {
     runBudgetJob(runtime, budgetPayload.parse(payload).credential),
   // Deletes a deleted chat's objects once no row references them (`queueChatFileRelease`).
   [FILES_RELEASE_JOB]: (payload, runtime) => runReleaseJob(runtime, payload),
+  // Seals a new notification's detail to its recipient (`notify`).
+  [SEAL_JOB]: (payload, runtime) => runSealJob(runtime, payload),
+  // Pushes a notification no open tab claimed within 10 s (`notify`).
+  [FALLBACK_JOB]: (payload, runtime) => runFallbackJob(runtime, payload),
+  // Prices one recorded ACP turn (`recordAcpTurn`).
+  [PRICE_TURN_JOB]: (payload, runtime) => runPriceTurnJob(runtime, payload),
+  // Prices the models ccusage could not price in one local usage row (`reportLocalUsage`).
+  [PRICE_LOCAL_ROW_JOB]: (payload, runtime) => runPriceLocalRowJob(runtime, payload),
+  // Releases the turns and local rows that waited for a model's lookup (`storeModelPrices`).
+  [REPRICE_PENDING_JOB]: (payload, runtime) => runRepricePendingJob(runtime, payload),
+  // Sends a captured request's metadata span to privacy-mode destinations (`finishRequest`).
+  [EXPORT_JOB]: (payload, runtime) => runExportJob(runtime, payload),
+  // Collects the blobs and nodes deleted telemetry requests left unreferenced (`retention.ts`).
+  [GC_JOB]: (payload, runtime) => runGcJob(runtime, payload),
 };

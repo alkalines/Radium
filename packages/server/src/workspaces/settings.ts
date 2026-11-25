@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull } from "drizzle-orm";
 import type { Database } from "../drivers/types";
 import { workspaceSettings } from "./schema";
 
@@ -36,4 +36,27 @@ export async function updateWorkspaceSettings(
     .insert(workspaceSettings)
     .values({ workspace, ...change })
     .onConflictDoUpdate({ target: workspaceSettings.workspace, set: change });
+}
+
+/**
+ * One page of workspaces that keep telemetry for a limited time, in workspace id order after
+ * `after` (the telemetry retention task). Scans the settings table: one small row per workspace.
+ */
+export async function telemetryRetentionPage(
+  db: Database,
+  after: string | null,
+  limit: number,
+): Promise<Array<{ workspace: string; days: number }>> {
+  const rows = await db
+    .select({ workspace: workspaceSettings.workspace, days: workspaceSettings.telemetryRetentionDays })
+    .from(workspaceSettings)
+    .where(
+      and(
+        isNotNull(workspaceSettings.telemetryRetentionDays),
+        after === null ? undefined : gt(workspaceSettings.workspace, after),
+      ),
+    )
+    .orderBy(asc(workspaceSettings.workspace))
+    .limit(limit);
+  return rows.map((row) => ({ workspace: row.workspace, days: row.days! }));
 }

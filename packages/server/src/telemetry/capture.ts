@@ -10,6 +10,7 @@ import type {
 import { createCapsule, encodeCapsule, sealWithCapsule, utf8 } from "radium-crypto";
 import { workspaceOwnerSealingKey } from "../e2ee/workspace-keys";
 import type { Database } from "../drivers/types";
+import { dispatchJobs } from "../jobs/outbox";
 import type {
   ChatCompletions_NotStreaming_ResponseBody_Type,
   ChatCompletions_Streaming_Chunk_Type,
@@ -25,7 +26,9 @@ import {
   StreamOutputAssembler,
   toolMeta,
   type OutputMessage,
+  type DecomposedRequest,
 } from "./decompose";
+import { deliverFromMemory } from "./export";
 import { blobHash, nodeHash, utf8Length } from "./hash";
 import {
   deepestExistingPrefix,
@@ -34,15 +37,22 @@ import {
   ingestBlobs,
   ingestNodes,
   type BlobInput,
+  type FinishedRequest,
+  type SealedBlob,
   type SealedContent,
+  TelemetryReferenceGone,
 } from "./ingest";
+import { INLINE_ENVELOPE_LIMIT, newEnvelopeKey } from "./store";
 
 /**
  * Capture of one Gateway request. Capture is off while the deployment has no
  * `TELEMETRY_HASH_SECRET`: `startCapture` then returns a capture whose methods do nothing and
  * whose `finish` resolves, and no row is written. Content recorded with `recordInputs` /
  * `recordOutputs` is sealed to the workspace owner key (a workspace without a key stores no
- * content); plaintext is never written. Envelopes are stored inline in `sealed_envelope`.
+ * content); plaintext is never written. Envelopes are stored inline in `sealed_envelope`, or
+ * above {@link INLINE_ENVELOPE_LIMIT} in the object store at `storage_key`. Once the request row
+ * commits, `finish` hands it to export (`export.ts`): the privacy-mode job queued with the row,
+ * and content destinations from memory, waited for at most {@link CONTENT_EXPORT_WAIT_MS}.
  */
 
 /** Server-derived workspace attribution and settings for one captured request. */
@@ -131,6 +141,17 @@ const BLOB_BATCH_BYTES = 4 * 1024 * 1024;
 /** Fixed row overhead plus a toolset member's size, for the byte bound of a blob batch. */
 const BLOB_ROW_BYTES = 2048;
 const MEMBER_BYTES = 48;
+/**
+ * Longest `finish` waits for content export after the request row is written (Convex
+ * `CONTENT_EXPORT_WAIT_MS`); a slower destination keeps sending in the background.
+ */
+const CONTENT_EXPORT_WAIT_MS = 1_000;
+/**
+ * Postgres codes of a capture that lost a race with telemetry GC: a blob or node it reuses was
+ * collected between its lookup and the reference (foreign key violation), or the two locked
+ * the same rows in opposite order (deadlock).
+ */
+const GC_CONFLICT_CODES: Record<string, true> = { "23503": true, "40P01": true };
 
 /** `workspace_settings` as capture settings; defaults (capture off) when the row does not exist. */
 export async function telemetrySettingsFor(
@@ -160,7 +181,7 @@ export function startCapture(
   const secret = runtime.config.TELEMETRY_HASH_SECRET;
   return secret === undefined
     ? inertCapture
-    : new ActiveCapture(runtime.drivers.db, secret, context, options);
+    : new ActiveCapture(runtime, secret, context, options);
 }
 
 const inertCapture: TelemetryCapture = {
@@ -205,11 +226,20 @@ type Sealing = {
   key: Uint8Array;
 };
 
-function logFailure(stage: string, error: unknown) {
+/** Driver codes of a database error (`code`, and Bun's SQLSTATE `errno`), its cause included. */
+function databaseCodes(error: unknown): string[] {
   const cause = error instanceof Error ? error.cause : undefined;
-  const code = [error, cause]
-    .map((candidate) => (candidate as { code?: unknown } | undefined)?.code)
-    .find((candidate) => typeof candidate === "string");
+  return [error, cause].flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const codes: string[] = [];
+    if ("code" in candidate && typeof candidate.code === "string") codes.push(candidate.code);
+    if ("errno" in candidate && typeof candidate.errno === "string") codes.push(candidate.errno);
+    return codes;
+  });
+}
+
+function logFailure(stage: string, error: unknown) {
+  const code = databaseCodes(error)[0];
   const name = error instanceof Error ? error.name : "UnknownError";
   console.error(boundedMessage(`Telemetry ${stage} failed: ${name}${code ? ` (${code})` : ""}`));
 }
@@ -231,24 +261,27 @@ class ActiveCapture implements TelemetryCapture {
       }
     | undefined;
   private chatCompletion: string | undefined;
+  private readonly db: Database;
   private readonly sealing: Promise<Sealing | null>;
-  private readonly inputs: Promise<IngestedInputs | undefined>;
+  private readonly inputs: Promise<IngestedInputs>;
+  /** The decomposed request body, for content export once the row is stored. */
+  private parts: DecomposedRequest | undefined;
   private finishing: Promise<void> | undefined;
 
   constructor(
-    private readonly db: Database,
+    private readonly runtime: Runtime,
     private readonly secret: string,
     private readonly context: TelemetryRequestContext,
     private readonly options: StartCaptureOptions,
   ) {
+    this.db = runtime.drivers.db;
     this.sealing = this.createSealing().catch((error) => {
       logFailure("sealing", error);
       return null;
     });
-    this.inputs = this.ingestInputs().catch((error) => {
-      logFailure("input capture", error);
-      return undefined;
-    });
+    this.inputs = this.ingestInputs();
+    // `finish` awaits it and logs its failure; until then it must not be an unhandled rejection.
+    this.inputs.catch(() => {});
   }
 
   attempt(attempt: TelemetryAttempt) {
@@ -374,6 +407,7 @@ class ActiveCapture implements TelemetryCapture {
   private async ingestInputs(): Promise<IngestedInputs> {
     const { workspace, settings } = this.context;
     const parts = decomposeRequest(this.options.rawBody, this.options.headers);
+    this.parts = parts;
     const recordContent = settings.recordInputs;
 
     const [system, params, headers, tools, messages] = await Promise.all([
@@ -481,35 +515,59 @@ class ActiveCapture implements TelemetryCapture {
       if (!stored || (!stored.recorded && blob.canonical !== undefined)) pending.push(blob);
     }
 
+    const { objects } = this.runtime.drivers;
     let batch: BlobInput[] = [];
     let batchBytes = 0;
     const flush = async () => {
       if (batch.length === 0) return;
-      for (const blob of await ingestBlobs(this.db, workspace, batch)) ids.set(blob.hash, blob.id);
+      const stored = await ingestBlobs(this.db, workspace, batch);
+      for (const blob of stored.ids) ids.set(blob.hash, blob.id);
       batch = [];
       batchBytes = 0;
+      // Uploads that lost to content stored meanwhile; `files/` objects are never swept.
+      await Promise.all(stored.unusedKeys.map((key) => objects.delete(key)));
     };
 
-    for (const blob of pending) {
-      const sealed =
-        blob.canonical !== undefined
-          ? await this.seal("telemetry_blobs", blob.hash, "content", {
-              content: blob.canonical,
-              meta: blob.meta,
-            })
-          : undefined;
-      const cost =
-        (sealed?.envelope.byteLength ?? 0) + BLOB_ROW_BYTES + (blob.members?.length ?? 0) * MEMBER_BYTES;
-      if (
-        batch.length > 0 &&
-        (batch.length >= BLOB_BATCH_COUNT || batchBytes + cost > BLOB_BATCH_BYTES)
-      ) {
-        await flush();
+    try {
+      for (const blob of pending) {
+        const content =
+          blob.canonical !== undefined
+            ? await this.seal("telemetry_blobs", blob.hash, "content", {
+                content: blob.canonical,
+                meta: blob.meta,
+              })
+            : undefined;
+        let sealed: SealedBlob | undefined = content;
+        if (content && content.envelope.byteLength > INLINE_ENVELOPE_LIMIT) {
+          const key = newEnvelopeKey();
+          await objects.put(key, content.envelope, { maxBytes: content.envelope.byteLength });
+          sealed = {
+            epoch: content.epoch,
+            requestId: content.requestId,
+            capsule: content.capsule,
+            storageKey: key,
+          };
+        }
+        const inline = sealed && "envelope" in sealed ? sealed.envelope.byteLength : 0;
+        const cost = inline + BLOB_ROW_BYTES + (blob.members?.length ?? 0) * MEMBER_BYTES;
+        if (
+          batch.length > 0 &&
+          (batch.length >= BLOB_BATCH_COUNT || batchBytes + cost > BLOB_BATCH_BYTES)
+        ) {
+          await flush();
+        }
+        batch.push({ hash: blob.hash, kind: blob.kind, size: blob.size, sealed, members: blob.members });
+        batchBytes += cost;
       }
-      batch.push({ hash: blob.hash, kind: blob.kind, size: blob.size, sealed, members: blob.members });
-      batchBytes += cost;
+      await flush();
+    } catch (error) {
+      // Nothing references the objects of a batch that was not stored.
+      const keys = batch.flatMap((blob) =>
+        blob.sealed && "storageKey" in blob.sealed ? [blob.sealed.storageKey] : [],
+      );
+      await Promise.all(keys.map((key) => objects.delete(key).catch(() => {})));
+      throw error;
     }
-    await flush();
   }
 
   /** Store the model's answer as a child of the input leaf. Absent when nothing was produced. */
@@ -535,12 +593,63 @@ class ActiveCapture implements TelemetryCapture {
     return run.node;
   }
 
+  /**
+   * Stores the output and the request row, then hands the row to export. A capture that lost a
+   * race with telemetry GC (content it reuses was collected between lookup and reference; see
+   * `retention.ts`) stores everything once more, which recreates that content.
+   */
   private async finishRequest(result: CaptureResult) {
-    const { settings } = this.context;
     const endedAt = Date.now();
-    const inputs = await this.inputs;
-    if (!inputs) return;
+    let finished: FinishedRequest;
+    try {
+      finished = await this.storeRequest(result, endedAt, await this.inputs);
+    } catch (error) {
+      const lostToGc =
+        error instanceof TelemetryReferenceGone ||
+        databaseCodes(error).some((code) => GC_CONFLICT_CODES[code]);
+      if (!lostToGc) throw error;
+      finished = await this.storeRequest(result, endedAt, await this.ingestInputs());
+    }
+    if (!finished.inserted) return;
+    this.runtime.defer(dispatchJobs(this.runtime, [finished.exportJob]));
+    await this.exportContent(finished.id, result);
+  }
 
+  /**
+   * Content export from memory to destinations without privacy mode. The response waits for it
+   * at most {@link CONTENT_EXPORT_WAIT_MS}; the rest of it runs on in the background.
+   */
+  private async exportContent(request: string, result: CaptureResult) {
+    if (!this.parts) return;
+    const { settings } = this.context;
+    const delivery = deliverFromMemory(
+      this.runtime,
+      { id: request, workspace: this.context.workspace },
+      {
+        parts: this.parts,
+        output: this.responseOutput ? this.responseOutput.message : this.streamOutput.message(),
+        error: result.error && {
+          message: boundedMessage(result.error.message),
+          status: result.error.status,
+        },
+        attempts: this.attempts,
+        recordInputs: settings.recordInputs,
+        recordOutputs: settings.recordOutputs,
+      },
+    );
+    this.runtime.defer(delivery);
+    const waited = Promise.withResolvers<void>();
+    const timer = setTimeout(waited.resolve, CONTENT_EXPORT_WAIT_MS);
+    await Promise.race([delivery, waited.promise]);
+    clearTimeout(timer);
+  }
+
+  private async storeRequest(
+    result: CaptureResult,
+    endedAt: number,
+    inputs: IngestedInputs,
+  ): Promise<FinishedRequest> {
+    const { settings } = this.context;
     let output: string | undefined;
     try {
       output = await this.ingestOutput(inputs);
@@ -560,7 +669,7 @@ class ActiveCapture implements TelemetryCapture {
           })
         : undefined;
 
-    await finishRequest(this.db, {
+    return await finishRequest(this.db, {
       workspace: this.context.workspace,
       requestId: this.context.requestId,
       source: this.options.source,

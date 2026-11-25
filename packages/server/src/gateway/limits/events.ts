@@ -1,11 +1,13 @@
-import { asc, inArray, lt } from "drizzle-orm";
+import { asc, eq, inArray, lt } from "drizzle-orm";
 import type { LimitEventKind } from "contracts/limits/events";
 import type { LimitSettings, Meter } from "contracts/limits/meters";
 import type { Database } from "../../drivers/types";
 import { notify } from "../../notifications/notify";
+import { readWorkspaceSettings } from "../../workspaces/settings";
 import { activeWorkspaceOwner } from "../../workspaces/workspaces";
-import { limitEvents } from "../schema";
-import { meterFraction } from "./meters";
+import { credentialDisplayName } from "../credentials";
+import { credentialLimits, limitEvents, workspaceCredentials } from "../schema";
+import { meterFraction, resolveLimitSettings } from "./meters";
 
 /** Limit events are kept this long. */
 const EVENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -38,9 +40,14 @@ export type LimitEvent = {
  * trigger point for limit events: threshold crossings, resets, credential expiry and
  * restoration, and poll failures all come through here, so delivery channels attach in one place
  * (`notifications/notify.ts`). Run it in the transaction that changed the snapshot, so an event
- * exists exactly when its change committed.
+ * exists exactly when its change committed; the notification's job ids are added to `jobs` for
+ * `dispatchJobs` after commit.
  */
-export async function recordLimitEvent(db: Database, event: LimitEvent): Promise<string> {
+export async function recordLimitEvent(
+  db: Database,
+  event: LimitEvent,
+  jobs?: (string | null)[],
+): Promise<string> {
   const occurredAt = new Date(event.occurredAt);
   const [row] = await db
     .insert(limitEvents)
@@ -69,15 +76,89 @@ export async function recordLimitEvent(db: Database, event: LimitEvent): Promise
   // stay quiet.
   const owner = await activeWorkspaceOwner(db, event.workspace);
   if (owner !== null) {
-    await notify(db, {
-      userId: owner,
-      workspace: event.workspace,
-      kind: event.kind,
-      limitEvent: id,
-      createdAt: occurredAt,
-    });
+    await notify(
+      db,
+      {
+        userId: owner,
+        workspace: event.workspace,
+        kind: event.kind,
+        limitEvent: id,
+        createdAt: occurredAt,
+      },
+      jobs,
+    );
   }
   return id;
+}
+
+/**
+ * Everything a delivery channel needs about one limit event (Convex `limits.exportEvent`): the
+ * stored event with its snapshot at the time, the workspace owner, provider and credential
+ * identity, the credential's current snapshot, and the thresholds now in force. `null` once the
+ * event is gone or its workspace is archived (archived workspaces stay quiet). Workspace names
+ * are sealed, so channels name the workspace by id. Server-internal: never expose it to members.
+ */
+export async function exportLimitEvent(db: Database, eventId: string) {
+  const [row] = await db
+    .select({
+      event: limitEvents,
+      credential: {
+        id: workspaceCredentials.id,
+        label: workspaceCredentials.label,
+        preview: workspaceCredentials.preview,
+        enabled: workspaceCredentials.enabled,
+        account: workspaceCredentials.account,
+      },
+      current: {
+        meters: credentialLimits.meters,
+        plan: credentialLimits.plan,
+        polledAt: credentialLimits.polledAt,
+        pollErrorMessage: credentialLimits.pollErrorMessage,
+        pollErrorStatus: credentialLimits.pollErrorStatus,
+        pollErrorAt: credentialLimits.pollErrorAt,
+        expiredAt: credentialLimits.expiredAt,
+      },
+    })
+    .from(limitEvents)
+    .leftJoin(workspaceCredentials, eq(workspaceCredentials.id, limitEvents.credential))
+    .leftJoin(credentialLimits, eq(credentialLimits.credential, limitEvents.credential))
+    .where(eq(limitEvents.id, eventId));
+  if (!row) return null;
+  const ownerId = await activeWorkspaceOwner(db, row.event.workspace);
+  if (ownerId === null) return null;
+  const settings = await readWorkspaceSettings(db, row.event.workspace);
+  const { credential, current } = row;
+  return {
+    event: row.event,
+    workspace: { id: row.event.workspace, ownerId },
+    provider: { slug: row.event.provider, name: row.event.providerName },
+    credential: credential
+      ? {
+          id: credential.id,
+          name: credentialDisplayName(credential),
+          enabled: credential.enabled,
+          account: credential.account,
+        }
+      : null,
+    current:
+      credential && current
+        ? {
+            meters: current.meters,
+            plan: current.plan,
+            polledAt: current.polledAt?.getTime() ?? null,
+            pollError:
+              current.pollErrorMessage !== null && current.pollErrorAt !== null
+                ? {
+                    message: current.pollErrorMessage,
+                    status: current.pollErrorStatus,
+                    at: current.pollErrorAt.getTime(),
+                  }
+                : null,
+            expired: current.expiredAt !== null,
+          }
+        : null,
+    settings: resolveLimitSettings(settings?.limits),
+  };
 }
 
 /**

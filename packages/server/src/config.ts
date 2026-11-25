@@ -80,12 +80,40 @@ const configSchema = z.object({
   S3_ENDPOINT: optional,
   /** …or a local directory for single-node installs. Exactly one of the two. */
   FILES_DIR: optional,
+  /**
+   * Web Push VAPID key pair (`bunx web-push generate-vapid-keys`; base64url P-256 public point
+   * and private scalar, the Convex values unchanged). Without both, push is off and Settings
+   * shows it as unconfigured.
+   */
+  WEB_PUSH_VAPID_PUBLIC_KEY: optional.refine(
+    (value) => value === undefined || /^[A-Za-z0-9_-]{87}$/.test(value),
+    "must be a base64url-encoded uncompressed P-256 public key",
+  ),
+  WEB_PUSH_VAPID_PRIVATE_KEY: optional.refine(
+    (value) => value === undefined || /^[A-Za-z0-9_-]{43}$/.test(value),
+    "must be a base64url-encoded P-256 private key",
+  ),
+  /** VAPID contact, `mailto:` or `https:`; defaults to `SITE_URL`. */
+  WEB_PUSH_SUBJECT: optional.refine(
+    (value) => value === undefined || /^(mailto:|https:\/\/)\S+$/.test(value),
+    "must be a mailto: or https: URL",
+  ),
 }).superRefine((value, context) => {
   if ((value.S3_BUCKET === undefined) === (value.FILES_DIR === undefined)) {
     context.addIssue({
       code: "custom",
       path: ["S3_BUCKET"],
       message: "set exactly one of S3_BUCKET and FILES_DIR",
+    });
+  }
+  if (
+    (value.WEB_PUSH_VAPID_PUBLIC_KEY === undefined) !==
+    (value.WEB_PUSH_VAPID_PRIVATE_KEY === undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["WEB_PUSH_VAPID_PRIVATE_KEY"],
+      message: "set both WEB_PUSH_VAPID_PUBLIC_KEY and WEB_PUSH_VAPID_PRIVATE_KEY, or neither",
     });
   }
 });

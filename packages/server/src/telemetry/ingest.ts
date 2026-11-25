@@ -21,6 +21,7 @@ import {
   telemetrySessions,
   telemetryToolsetTools,
 } from "./schema";
+import { queueRequestExport } from "./export";
 
 /**
  * Write path of Gateway telemetry capture (`capture.ts` is the only caller). Rows are content
@@ -31,6 +32,14 @@ import {
  * against app-owned rows before anything is attributed to a workspace.
  */
 
+/**
+ * A node this request reuses no longer exists: telemetry GC collected it after capture looked it
+ * up (or the id was never the workspace's). Capture stores the request once more.
+ */
+export class TelemetryReferenceGone extends Error {
+  override name = "TelemetryReferenceGone";
+}
+
 /** Content sealed to the workspace owner key under a capsule of one request. */
 export type SealedContent = {
   epoch: number;
@@ -40,13 +49,21 @@ export type SealedContent = {
   envelope: Uint8Array;
 };
 
+/**
+ * A sealed blob: the envelope inline, or (above `INLINE_ENVELOPE_LIMIT`) already written to the
+ * object store at `storageKey`.
+ */
+export type SealedBlob =
+  | SealedContent
+  | (Omit<SealedContent, "envelope"> & { storageKey: string });
+
 export type BlobInput = {
   hash: string;
   kind: TelemetryBlobKind;
   /** UTF-8 byte length of the canonical JSON, even when the content is not stored. */
   size: number;
   /** Absent when content recording is off or the workspace has no key. */
-  sealed?: SealedContent;
+  sealed?: SealedBlob;
   /** Tool blob ids of a `toolset`, in request order; the tools must already exist. */
   members?: string[];
 };
@@ -133,12 +150,13 @@ export async function existingBlobs(
   return found;
 }
 
-function sealedColumns(sealed: SealedContent | undefined) {
+function sealedColumns(sealed: SealedBlob | undefined) {
   return {
     sealedEpoch: sealed?.epoch,
     sealedRequestId: sealed?.requestId,
     sealedCapsule: sealed?.capsule,
-    sealedEnvelope: sealed?.envelope,
+    sealedEnvelope: sealed && "envelope" in sealed ? sealed.envelope : undefined,
+    storageKey: sealed && "storageKey" in sealed ? sealed.storageKey : undefined,
   };
 }
 
@@ -147,13 +165,15 @@ function sealedColumns(sealed: SealedContent | undefined) {
  * content is upgraded when content arrives later; content never replaces content that is already
  * stored. Toolset member rows are written once, in the transaction that first inserts the toolset.
  * Rows go in hash order so concurrent batches wait on each other in one direction only.
+ * `unusedKeys` are the object-store keys of inputs that ended up stored nowhere (the blob was
+ * already recorded); the caller deletes those objects.
  */
 export async function ingestBlobs(
   db: Database,
   workspace: string,
   blobs: readonly BlobInput[],
-): Promise<Array<{ hash: string; id: string }>> {
-  if (blobs.length === 0) return [];
+): Promise<{ ids: Array<{ hash: string; id: string }>; unusedKeys: string[] }> {
+  if (blobs.length === 0) return { ids: [], unusedKeys: [] };
   const sorted = [...blobs].sort((left, right) => (left.hash < right.hash ? -1 : 1));
 
   return await db.transaction(async (tx) => {
@@ -190,18 +210,26 @@ export async function ingestBlobs(
     )) {
       ids.set(existing.hash, existing.id);
     }
+    const unusedKeys: string[] = [];
     for (const blob of rest) {
       const id = ids.get(blob.hash);
       if (id === undefined) throw new Error("Telemetry blob was not stored.");
       if (blob.sealed === undefined) continue;
       // Conditional, so a concurrent upgrade or a recorded blob is never overwritten.
-      await tx
+      const upgraded = await tx
         .update(telemetryBlobs)
         .set(sealedColumns(blob.sealed))
-        .where(and(eq(telemetryBlobs.id, id), sql`not ${blobRecorded}`));
+        .where(and(eq(telemetryBlobs.id, id), sql`not ${blobRecorded}`))
+        .returning({ id: telemetryBlobs.id });
+      if (upgraded.length === 0 && "storageKey" in blob.sealed) {
+        unusedKeys.push(blob.sealed.storageKey);
+      }
     }
 
-    return sorted.map((blob) => ({ hash: blob.hash, id: ids.get(blob.hash)! }));
+    return {
+      ids: sorted.map((blob) => ({ hash: blob.hash, id: ids.get(blob.hash)! })),
+      unusedKeys,
+    };
   });
 }
 
@@ -228,7 +256,7 @@ export async function ingestNodes(
     const declared =
       run.parentHash === undefined ? undefined : await nodeByHash(tx, workspace, run.parentHash);
     if (run.parentHash !== undefined && !declared) {
-      throw new Error("Telemetry parent node not found.");
+      throw new TelemetryReferenceGone("Telemetry parent node not found.");
     }
     let held = await lockChildren(tx, workspace, declared?.id);
 
@@ -487,7 +515,7 @@ async function workspaceNodes(db: Database, workspace: string, ids: Array<string
     .select({ id: telemetryNodes.id, depth: telemetryNodes.depth })
     .from(telemetryNodes)
     .where(and(eq(telemetryNodes.workspace, workspace), inArray(telemetryNodes.id, wanted)));
-  if (rows.length !== wanted.length) throw new Error("Telemetry node mismatch.");
+  if (rows.length !== wanted.length) throw new TelemetryReferenceGone("Telemetry node mismatch.");
   return new Map(rows.map((row) => [row.id, row]));
 }
 
@@ -536,14 +564,28 @@ async function findOrCreateSession(db: Database, input: FinishRequestInput) {
   return found.id;
 }
 
+/** What {@link finishRequest} stored: the row, whether this call inserted it, its export job. */
+export type FinishedRequest = {
+  id: string;
+  /** False when the request was already stored (a retried or concurrent call). */
+  inserted: boolean;
+  /** The `telemetry.export` job queued with the row, for `dispatchJobs` after commit. */
+  exportJob: string | null;
+};
+
 /**
  * Record one finished Gateway request, idempotent by `(workspace, requestId)`: a retried call
  * returns the existing row's id. The caller ingests blobs and nodes first; `prefix` is the
- * deepest chain node found before its own nodes were inserted.
+ * deepest chain node found before its own nodes were inserted. The insert queues the request's
+ * privacy-mode export in the same transaction (`export.ts`), so the job exists exactly when the
+ * row does and a retried call never queues a second one.
  */
-export async function finishRequest(db: Database, input: FinishRequestInput): Promise<string> {
+export async function finishRequest(
+  db: Database,
+  input: FinishRequestInput,
+): Promise<FinishedRequest> {
   const existing = await requestByRequestId(db, input.workspace, input.requestId);
-  if (existing) return existing;
+  if (existing) return { id: existing, inserted: false, exportJob: null };
 
   await checkClaims(db, input);
   const nodes = await workspaceNodes(db, input.workspace, [input.input, input.prefix, input.output]);
@@ -634,11 +676,17 @@ export async function finishRequest(db: Database, input: FinishRequestInput): Pr
         target: [telemetryRequests.workspace, telemetryRequests.requestId],
       })
       .returning({ id: telemetryRequests.id });
-    if (inserted) return inserted.id;
+    if (inserted) {
+      return {
+        id: inserted.id,
+        inserted: true,
+        exportJob: await queueRequestExport(tx, input.workspace, inserted.id),
+      };
+    }
 
     // A concurrent call with the same request id won.
     const winner = await requestByRequestId(tx, input.workspace, input.requestId);
     if (!winner) throw new Error("Telemetry request was not stored.");
-    return winner;
+    return { id: winner, inserted: false, exportJob: null };
   });
 }

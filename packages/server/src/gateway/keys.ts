@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { z } from "zod";
 import type { keyTelemetryValidator } from "contracts/acp/gateway";
 import type { Database, Kv } from "../drivers/types";
@@ -156,6 +156,23 @@ export async function listApiKeys(db: Database, workspace: string) {
     telemetry: row.telemetry,
     worker: row.worker ? { id: row.worker, name: names.get(row.worker) ?? row.name } : null,
   }));
+}
+
+/**
+ * Which of `ids` are keys of `workspace`, revoked ones included (rows are never deleted, so a
+ * stored reference stays valid). Used to validate key lists other domains store.
+ */
+export async function workspaceApiKeyIds(
+  db: Database,
+  workspace: string,
+  ids: readonly string[],
+): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await db
+    .select({ id: apiKeys.id })
+    .from(apiKeys)
+    .where(and(eq(apiKeys.workspace, workspace), inArray(apiKeys.id, [...ids])));
+  return new Set(rows.map((row) => row.id));
 }
 
 /** Creates a workspace key; the plaintext key is returned exactly once. */

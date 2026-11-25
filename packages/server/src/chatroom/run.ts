@@ -40,6 +40,7 @@ import {
   upstreamFailureFromError,
   type GatewayErrorPayload,
 } from "../gateway/routing/failures";
+import { dispatchJobs } from "../jobs/outbox";
 import { notify } from "../notifications/notify";
 import type { Runtime } from "../runtime";
 import { telemetrySettingsFor, type TelemetryRequestContext } from "../telemetry/capture";
@@ -425,9 +426,15 @@ function startRun(
         // Notifications are a side channel: a failure here must not fail the saved request.
         const kind = sessionNotificationKind(end);
         if (kind) {
-          await notify(db, { userId, workspace: workspace.id, chat: chat.id, kind }).catch(() =>
-            console.error("chat: session notification failed"),
-          );
+          try {
+            const jobs: (string | null)[] = [];
+            await db.transaction((tx) =>
+              notify(tx, { userId, workspace: workspace.id, chat: chat.id, kind }, jobs),
+            );
+            runtime.defer(dispatchJobs(runtime, jobs));
+          } catch {
+            console.error("chat: session notification failed");
+          }
         }
       },
     });

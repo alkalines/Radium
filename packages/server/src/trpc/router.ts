@@ -5,7 +5,11 @@ import { authRouter } from "../auth/router";
 import { e2eeRouter } from "../e2ee/router";
 import { limitsRouter } from "../gateway/limits/router";
 import { keysRouter, modelsRouter, providersRouter, routingRouter } from "../gateway/router";
+import { loggingRouter } from "../logging/router";
+import { notificationsRouter } from "../notifications/router";
+import { telemetryExportRouter, telemetryRouter } from "../telemetry/router";
 import { preferencesRouter, projectsRouter, workspacesRouter } from "../workspaces/router";
+import { usageRouter } from "../usage/router";
 import { router } from "./init";
 
 /** Root router: one sub-router per domain. The web app imports only its type. */
@@ -24,6 +28,11 @@ export const appRouter = router({
   chatFiles: chatFilesRouter,
   chats: chatsRouter,
   e2ee: e2eeRouter,
+  notifications: notificationsRouter,
+  logging: loggingRouter,
+  usage: usageRouter,
+  telemetry: telemetryRouter,
+  telemetryExport: telemetryExportRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import type { ProviderSnapshot } from "contracts/workspaces/provider";
 import type { Database } from "../../drivers/types";
 import { AppError } from "../../errors";
+import { dispatchJobs } from "../../jobs/outbox";
 import type { Runtime } from "../../runtime";
 import { limitKeySecretName, readCredentialValues, type CredentialRow } from "../credentials";
 import { providerContextFor } from "../providers";
@@ -202,13 +203,14 @@ function pollErrorFields(error: { message: string; status?: number } | undefined
  * Stores a poll outcome. Success replaces upstream meters (keeping metered budgets), clears the
  * error streak and restores an expired credential. Failure keeps the last meters, stores the
  * error, backs off (5 minutes, doubling, at most an hour) and fires `credential_expired` on
- * 401/403 or otherwise one `poll_failed` per streak.
+ * 401/403 or otherwise one `poll_failed` per streak. Notification job ids go to `jobs`.
  */
 export async function recordPoll(
   db: Database,
   credentialId: string,
   result: PollOutcome,
   now = Date.now(),
+  jobs?: (string | null)[],
 ) {
   await db.transaction(async (tx) => {
     const target = await lockSnapshot(tx, credentialId, now);
@@ -239,6 +241,7 @@ export async function recordPoll(
           },
         },
         now,
+        jobs,
       );
       return;
     }
@@ -259,18 +262,23 @@ export async function recordPoll(
         },
       },
       now,
+      jobs,
     );
     if (failures === 1 && !unauthorized) {
-      await recordLimitEvent(tx, {
-        ...eventBase(
-          target,
-          { meters: target.row.meters, plan: target.row.plan ?? undefined },
-          now,
-        ),
-        kind: "poll_failed",
-        ...(result.status !== undefined ? { status: result.status } : {}),
-        detail: result.message,
-      });
+      await recordLimitEvent(
+        tx,
+        {
+          ...eventBase(
+            target,
+            { meters: target.row.meters, plan: target.row.plan ?? undefined },
+            now,
+          ),
+          kind: "poll_failed",
+          ...(result.status !== undefined ? { status: result.status } : {}),
+          detail: result.message,
+        },
+        jobs,
+      );
     }
   });
 }
@@ -307,7 +315,9 @@ async function pollAndRecord(runtime: Runtime, target: PollTarget) {
         : {}),
     };
   }
-  await recordPoll(runtime.drivers.db, target.credential, result);
+  const jobs: (string | null)[] = [];
+  await recordPoll(runtime.drivers.db, target.credential, result, Date.now(), jobs);
+  runtime.defer(dispatchJobs(runtime, jobs));
 }
 
 /**
@@ -336,7 +346,9 @@ async function recomputeDueBudgets(runtime: Runtime, now: number): Promise<numbe
     .limit(BUDGET_BATCH);
   for (const { credential } of due) {
     try {
-      await db.transaction((tx) => refreshBudget(tx, credential, now));
+      const jobs: (string | null)[] = [];
+      await db.transaction((tx) => refreshBudget(tx, credential, now, jobs));
+      runtime.defer(dispatchJobs(runtime, jobs));
     } catch {
       console.error("Budget recompute failed", { credential });
     }

@@ -104,6 +104,19 @@ describe("outbox", () => {
     expect(runs).toEqual([]);
   });
 
+  it("runs a job due within seconds from a timer after its dispatch, without a sweep", async () => {
+    const { db } = test.runtime.drivers;
+    const id = await enqueueJob(db, {
+      kind: "record",
+      payload: { name: "soon" },
+      runAt: new Date(Date.now() + 300),
+    });
+    await dispatchJobs(test.runtime, [id]);
+    expect(runs).toEqual([]);
+    await expect.poll(() => runs, { timeout: 3000, interval: 50 }).toEqual(["soon"]);
+    expect(await db.select().from(jobs)).toEqual([]);
+  });
+
   it("retries a failing job with backoff and parks it after the last attempt", async () => {
     const { db } = test.runtime.drivers;
     failuresLeft = 1;

@@ -4,6 +4,7 @@ import { pruneExpiredInvites } from "../../e2ee/invites";
 import { pruneWorkerPairings } from "../../e2ee/worker-keys";
 import { pruneLimitEvents } from "../../gateway/limits/events";
 import { pruneChatRuns } from "../../chatroom/run";
+import { pruneNotifications } from "../../notifications/inbox";
 import { useProcessRuntime } from "../../runtime";
 import { claimLease } from "../lease";
 
@@ -25,6 +26,7 @@ const policies: RetentionPolicy[] = [
   { table: "chat_runs", prune: pruneChatRuns },
   { table: "e2ee_invites", prune: pruneExpiredInvites },
   { table: "e2ee_worker_pairings", prune: pruneWorkerPairings },
+  { table: "notifications", prune: pruneNotifications },
 ];
 
 /**

@@ -24,10 +24,12 @@ export default defineConfig({
     "limits:poll": { handler: path("./src/jobs/tasks/limits-poll.ts") },
     retention: { handler: path("./src/jobs/tasks/retention.ts") },
     "files:orphans": { handler: path("./src/jobs/tasks/files-orphans.ts") },
+    "usage:prices": { handler: path("./src/jobs/tasks/usage-prices.ts") },
+    "telemetry:retention": { handler: path("./src/jobs/tasks/telemetry-retention.ts") },
   },
   scheduledTasks: {
-    "* * * * *": ["jobs:sweep"],
+    "* * * * *": ["jobs:sweep", "usage:prices"],
     "*/5 * * * *": ["limits:poll", "retention"],
-    "0 * * * *": ["files:orphans"],
+    "0 * * * *": ["files:orphans", "telemetry:retention"],
   },
 });

@@ -5,6 +5,8 @@ export const LOGGING_PRODUCT = "radium" as const;
 export const LOGGING_SOURCES = {
   backend: "convex",
   frontend: "frontend",
+  /** The Bun/Hono backend (`packages/server`). */
+  server: "server",
 } as const;
 
 /** Shared ingestion bounds for operational log envelopes. */

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Database } from "../drivers/types";
 import type { Runtime } from "../runtime";
 import { jobs } from "./schema";
@@ -118,14 +118,55 @@ async function runJob(runtime: Runtime, job: ClaimedJob) {
   }
 }
 
-/** Runs the given jobs now if they are due and unclaimed; called right after their commit. */
+/**
+ * Jobs due within this window after their dispatch get an in-process timer instead of waiting
+ * for the one-minute sweep (notification fallback after 10 s, budget debounce after 5 s).
+ */
+const TIMER_WINDOW_MS = 30_000;
+
+/**
+ * Runs the given jobs now if they are due and unclaimed; called right after their commit. Jobs
+ * due within {@link TIMER_WINDOW_MS} run from a timer at their `run_at` through `runtime.defer`;
+ * the sweep still covers them if the process goes away first.
+ */
 export async function dispatchJobs(runtime: Runtime, ids: readonly (string | null)[]) {
   const queued = ids.filter((id): id is string => id !== null);
   if (queued.length === 0) {
     return;
   }
-  const claimed = await claimJobs(runtime.drivers.db, queued.length, queued);
+  const { db } = runtime.drivers;
+  const claimed = await claimJobs(db, queued.length, queued);
   await Promise.all(claimed.map((job) => runJob(runtime, job)));
+  if (claimed.length === queued.length) {
+    return;
+  }
+  const ran = new Set(claimed.map((job) => job.id));
+  const later = await db
+    .select({ id: jobs.id, runAt: jobs.runAt })
+    .from(jobs)
+    .where(
+      and(
+        inArray(
+          jobs.id,
+          queued.filter((id) => !ran.has(id)),
+        ),
+        isNull(jobs.failedAt),
+        isNull(jobs.lockedUntil),
+        gt(jobs.runAt, sql`now()`),
+        lte(jobs.runAt, sql`now() + ${`${TIMER_WINDOW_MS} milliseconds`}::interval`),
+      ),
+    );
+  for (const job of later) {
+    // A small floor keeps clock skew between this process and Postgres from spinning.
+    const delay = Math.max(job.runAt.getTime() - Date.now(), 0) + 50;
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    const timer = setTimeout(() => {
+      dispatchJobs(runtime, [job.id]).then(resolve, reject);
+    }, delay);
+    // A pending timer never keeps a process (or a test run) alive; the sweep covers it.
+    timer.unref();
+    runtime.defer(promise);
+  }
 }
 
 /**

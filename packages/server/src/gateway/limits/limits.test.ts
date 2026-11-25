@@ -19,7 +19,7 @@ import {
   workspaceProviders,
 } from "../schema";
 import { getSecret, putSecret, workspaceProviderSecretNamespace } from "../secrets";
-import { pruneLimitEvents } from "./events";
+import { exportLimitEvent, pruneLimitEvents } from "./events";
 import { limitsRouter } from "./router";
 import { claimDuePolls, pollDueCredentials, refreshCredentialLimits } from "./poll";
 import {
@@ -437,6 +437,24 @@ describe("passive capture through attempt reports", () => {
       settingsWarnPercent: 80,
     });
     expect((await limitRow(plain.id))?.expiredAt).toBeNull();
+
+    // What a delivery channel reads for the event (Convex `limits.exportEvent`).
+    const expired = events.find((event) => event.kind === "credential_expired")!;
+    expect(await exportLimitEvent(db(), expired.id)).toMatchObject({
+      event: { kind: "credential_expired", status: 401, providerName: "Plain" },
+      workspace: { id: workspace, ownerId: users.owner.id },
+      provider: { slug: "plain", name: "Plain" },
+      credential: { id: plain.id, name: "Plain key", enabled: true },
+      current: { expired: false },
+      settings: { warnPercent: 80 },
+    });
+    expect(await exportLimitEvent(db(), "no-such-event")).toBeNull();
+    // Archived workspaces stay quiet on every channel.
+    await db()
+      .update(workspaces)
+      .set({ archivedAt: new Date() })
+      .where(eq(workspaces.id, workspace));
+    expect(await exportLimitEvent(db(), expired.id)).toBeNull();
   });
 
   it("an attempt for a deleted credential records nothing", async () => {

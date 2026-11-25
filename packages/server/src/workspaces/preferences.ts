@@ -1,6 +1,8 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   resolveNotificationPreferences,
+  type CategoryPreference,
+  type NotificationCategory,
   type NotificationPreferences,
 } from "contracts/notifications/contract";
 import type { Database } from "../drivers/types";
@@ -40,6 +42,29 @@ export async function notificationPreferences(
     .from(userPreferences)
     .where(eq(userPreferences.userId, userId));
   return resolveNotificationPreferences(row?.notifications ?? undefined);
+}
+
+/**
+ * Switches one notification category on or off, or silences it. Account-level, so it applies on
+ * every device and channel. One statement merges the category into the stored object, so changes
+ * to different categories from several tabs all apply; model preferences in the row are untouched.
+ */
+export async function setNotificationPreference(
+  db: Database,
+  userId: string,
+  category: NotificationCategory,
+  preference: CategoryPreference,
+): Promise<void> {
+  const change = { [category]: { enabled: preference.enabled, sound: preference.sound } };
+  await db
+    .insert(userPreferences)
+    .values({ userId, notifications: change })
+    .onConflictDoUpdate({
+      target: userPreferences.userId,
+      set: {
+        notifications: sql`coalesce(${userPreferences.notifications}, '{}'::jsonb) || jsonb_build_object(${category}::text, jsonb_build_object('enabled', ${preference.enabled}::boolean, 'sound', ${preference.sound}::boolean))`,
+      },
+    });
 }
 
 /**

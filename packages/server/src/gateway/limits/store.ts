@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { LimitObservation, LimitSettings, Meter } from "contracts/limits/meters";
 import type { Database } from "../../drivers/types";
-import { enqueueJob } from "../../jobs/outbox";
+import { dispatchJobs, enqueueJob } from "../../jobs/outbox";
 import type { Runtime } from "../../runtime";
 import { credentialSpendSince } from "../../usage/completions";
 import { readWorkspaceSettings } from "../../workspaces/settings";
@@ -144,13 +144,15 @@ export async function lockSnapshot(
 /**
  * Applies one observation to a locked snapshot: merges meters, evaluates thresholds with
  * hysteresis, tracks credential expiry and records the resulting events. Passive-only updates
- * are throttled (see `shouldSkipWrite`) unless an alert or other state changed.
+ * are throttled (see `shouldSkipWrite`) unless an alert or other state changed. Job ids of the
+ * events' notifications are added to `jobs` for `dispatchJobs` after commit.
  */
 export async function updateSnapshot(
   tx: Database,
   target: SnapshotTarget,
   update: SnapshotUpdate,
   now: number,
+  jobs?: (string | null)[],
 ) {
   const { row, settings } = target;
   const previous = row.meters;
@@ -218,10 +220,10 @@ export async function updateSnapshot(
 
   const base = eventBase(target, { meters, plan: plan ?? undefined }, now);
   for (const transition of transitions) {
-    await recordLimitEvent(tx, { ...base, ...transition });
+    await recordLimitEvent(tx, { ...base, ...transition }, jobs);
   }
   for (const event of healthEvents) {
-    await recordLimitEvent(tx, { ...base, ...event });
+    await recordLimitEvent(tx, { ...base, ...event }, jobs);
   }
 }
 
@@ -286,6 +288,7 @@ export async function recordAttemptLimits(
     return;
   }
 
+  const jobs: (string | null)[] = [];
   await db.transaction(async (tx) => {
     const target = await lockSnapshot(tx, args.credential, now);
     if (!target) {
@@ -303,8 +306,10 @@ export async function recordAttemptLimits(
             : {}),
       },
       now,
+      jobs,
     );
   });
+  runtime.defer(dispatchJobs(runtime, jobs));
 }
 
 /**
@@ -343,9 +348,14 @@ async function budgetMeter(
 /**
  * Recomputes (or, without a budget, removes) the credential's budget meter, fires thresholds and
  * clears the pending mark. Reads the credential fresh, so call it after changing the budget in
- * the same transaction. A credential that is gone is skipped.
+ * the same transaction. A credential that is gone is skipped. Notification job ids go to `jobs`.
  */
-export async function refreshBudget(tx: Database, credentialId: string, now = Date.now()) {
+export async function refreshBudget(
+  tx: Database,
+  credentialId: string,
+  now = Date.now(),
+  jobs?: (string | null)[],
+) {
   const target = await lockSnapshot(tx, credentialId, now);
   if (!target) {
     return;
@@ -364,6 +374,7 @@ export async function refreshBudget(tx: Database, credentialId: string, now = Da
           fields: { budgetResetsAt: null, budgetPendingAt: null },
         },
     now,
+    jobs,
   );
 }
 
@@ -403,5 +414,7 @@ export async function scheduleBudgetRefresh(
 
 /** Outbox handler of {@link BUDGET_JOB}. */
 export async function runBudgetJob(runtime: Runtime, credentialId: string) {
-  await runtime.drivers.db.transaction((tx) => refreshBudget(tx, credentialId));
+  const jobs: (string | null)[] = [];
+  await runtime.drivers.db.transaction((tx) => refreshBudget(tx, credentialId, Date.now(), jobs));
+  runtime.defer(dispatchJobs(runtime, jobs));
 }
