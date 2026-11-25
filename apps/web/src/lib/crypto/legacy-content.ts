@@ -1,10 +1,10 @@
-import { api } from "backend/convex/_generated/api";
 import { legacyAad, type LegacyBox } from "contracts/e2ee/legacy-contract";
 import { fromBase64Url, openBox, toBase64Url } from "radium-crypto";
 import { keyManager, KeysLockedError } from "./key-manager";
 import { getMemberKey, getOwnerKey } from "./workspace-keys";
 import { openChatSeed } from "./chat-keys";
-import { cryptoClient, secretGeneration } from "./runtime";
+import { secretGeneration } from "./runtime";
+import { trpcClient } from "@/lib/trpc-client";
 
 /** Custody is server-readable storage, not a client key or a lost-history condition. */
 export class CustodialContentError extends Error {
@@ -32,9 +32,12 @@ export async function openLegacyContent<T = Record<string, unknown>>(sealed: Sea
   let box = typeof sealed.box === "string" ? fromBase64Url(sealed.box) : new Uint8Array(sealed.box);
   if (sealed.storageId) {
     if (box.byteLength !== 0) throw new Error("Ambiguous historical envelope storage");
-    const url = await cryptoClient().query(api.e2ee_legacy.storageUrl, { table: context.table, record: context.record });
+    // NOT_FOUND means unknown or not authorized: both are "unavailable".
+    const url = await trpcClient()
+      .e2ee.legacyStorageUrl.query({ table: context.table, record: context.record })
+      .catch(() => null);
     if (!url) throw new Error("Historical envelope storage is unavailable");
-    const response = await fetch(url);
+    const response = await fetch(url, { credentials: "same-origin" });
     if (!response.ok) throw new Error("Historical envelope download failed");
     box = new Uint8Array(await response.arrayBuffer());
   }

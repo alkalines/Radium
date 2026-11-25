@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { skipToken, useQuery } from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useMutation } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
 import {
   CheckIcon,
   CopyIcon,
@@ -14,7 +12,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { AgentStatus } from "@/components/agentic/agent-status";
 import {
@@ -60,6 +57,8 @@ import { acpActionError } from "@/components/session/acp/use-acp-session";
 import { EncryptionNotice } from "@/components/auth/encryption-notice";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { useTrpc } from "@/lib/trpc";
+import { useWorkers } from "./use-workers";
+import type { AppRouter } from "server/router";
 import {
   createWorkerPairingCode,
   createWorkerSetupCode,
@@ -68,7 +67,7 @@ import {
 } from "@/lib/crypto/workers";
 import { useWorkspace } from "./workspace-provider";
 
-type WorkerList = Exclude<FunctionReturnType<typeof api.workers.list>, string>;
+type WorkerList = inferRouterOutputs<AppRouter>["workers"]["list"];
 
 /** A secret setup (`kind: "setup"`) or pairing code; it never leaves this dialog's state. */
 type EnrollmentCode = {
@@ -94,9 +93,7 @@ export function WorkerManagement() {
   const trpc = useTrpc();
   const { workspace, workspaceId } = useWorkspace();
   const isOwner = workspace?.role === "owner";
-  const { data, error } = useQuery(
-    convexQuery(api.workers.list, isOwner && workspaceId ? { workspace: workspaceId } : "skip"),
-  );
+  const { data, error } = useWorkers(isOwner ? workspaceId : undefined);
   const { data: keyState } = useQuery(
     trpc.e2ee.workspaceKeyState.queryOptions(
       isOwner && workspaceId ? { workspace: workspaceId } : skipToken,
@@ -111,10 +108,17 @@ export function WorkerManagement() {
     ),
   );
   const [pairing, setPairing] = useState<Map<string, WorkerPairingState> | null>(null);
-  const revokeWorker = useMutation(api.workers.revoke);
-  const revokeEnrollment = useMutation(api.workers.revokeEnrollment);
-  const setGatewayAccess = useMutation(api.workers.setGatewayAccess);
-  const setGatewayTelemetry = useMutation(api.workers.setGatewayTelemetry);
+  const queryClient = useQueryClient();
+  const { mutateAsync: revokeWorker } = useMutation(trpc.workers.revoke.mutationOptions());
+  const { mutateAsync: revokeEnrollment } = useMutation(
+    trpc.workers.revokeEnrollment.mutationOptions(),
+  );
+  const { mutateAsync: setGatewayAccess } = useMutation(
+    trpc.workers.setGatewayAccess.mutationOptions(),
+  );
+  const { mutateAsync: setGatewayTelemetry } = useMutation(
+    trpc.workers.setGatewayTelemetry.mutationOptions(),
+  );
 
   const [name, setName] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -252,6 +256,7 @@ export function WorkerManagement() {
     setPendingAction("revoke-enrollment");
     try {
       await revokeEnrollment({ workspace: workspaceAtStart, enrollmentId });
+      void queryClient.invalidateQueries({ queryKey: trpc.workers.pathKey() });
       if (workspaceIdRef.current === workspaceAtStart) {
         clearEnrollment();
         setDialogOpen(false);
@@ -275,6 +280,7 @@ export function WorkerManagement() {
     setPendingAction(`revoke-worker:${workerId}`);
     try {
       await revokeWorker({ workspace: workspaceAtStart, workerId });
+      void queryClient.invalidateQueries({ queryKey: trpc.workers.pathKey() });
       if (workspaceIdRef.current === workspaceAtStart) setRevokeTarget(null);
       toast.success("Worker identity revoked.");
     } catch (actionError) {
@@ -290,12 +296,13 @@ export function WorkerManagement() {
 
   async function updateGateway(
     workerId: string,
-    update: (workspace: Id<"workspaces">) => Promise<null>,
+    update: (workspace: string) => Promise<unknown>,
   ) {
     if (!workspaceId || pendingAction) return;
     setPendingAction(`gateway:${workerId}`);
     try {
       await update(workspaceId);
+      void queryClient.invalidateQueries({ queryKey: trpc.workers.pathKey() });
     } catch (actionError) {
       toast.error(acpActionError(actionError) ?? "Could not update Gateway access.");
     } finally {
@@ -818,17 +825,20 @@ export function IssueGatewayKeyButton({
   workerId,
   disabled,
 }: {
-  workspace: Id<"workspaces">;
+  workspace: string;
   workerId: string;
   disabled?: boolean;
 }) {
-  const issueGatewayKey = useMutation(api.workers.issueGatewayKey);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const { mutateAsync: issueGatewayKey } = useMutation(trpc.workers.issueGatewayKey.mutationOptions());
   const [busy, setBusy] = useState(false);
 
   async function issue() {
     setBusy(true);
     try {
       await issueGatewayKey({ workspace, workerId });
+      void queryClient.invalidateQueries({ queryKey: trpc.workers.pathKey() });
       toast.success("New Gateway key requested. The Worker creates it when it is online.");
     } catch (actionError) {
       toast.error(acpActionError(actionError) ?? "Could not issue a new Gateway key.");

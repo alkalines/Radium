@@ -1,5 +1,3 @@
-import { api } from "backend/convex/_generated/api";
-import type { Id } from "backend/convex/_generated/dataModel";
 import {
   CryptoError,
   equalBytes,
@@ -18,7 +16,7 @@ import {
   type RosterWorker,
 } from "radium-crypto";
 import { keyManager } from "./key-manager";
-import { cryptoClient, currentUserId, newKeyId } from "./runtime";
+import { currentUserId, newKeyId } from "./runtime";
 import { trpcClient } from "@/lib/trpc-client";
 import { trust, workerPinKey } from "./trust-store";
 import { keyedWorkspaceClaim, publishRosterWorkers, verifyWorkspaceState } from "./workspace-keys";
@@ -199,10 +197,8 @@ export async function createWorkerSetupCode(
 ): Promise<{ code: string; enrollmentId: string; expiresAt: number }> {
   const state = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
   const keyed = keyedWorkspaceClaim(workspaceId, state.keyEpoch != null);
-  // `workers.createEnrollment` is still Convex, whose branded id is a plain string at runtime.
-  const convexWorkspace = workspaceId as Id<"workspaces">;
-  const enrollment = await cryptoClient().action(api.workers.createEnrollment, {
-    workspace: convexWorkspace,
+  const enrollment = await trpcClient().workers.createEnrollment.mutate({
+    workspace: workspaceId,
     name,
   });
   if (!keyed) {
@@ -260,7 +256,7 @@ async function assessWorkers(workspaceId: string): Promise<WorkerAssessment | nu
   const [rows, pairings, workers] = await Promise.all([
     trpcClient().e2ee.workerKeys.query({ workspace: workspaceId }),
     trpcClient().e2ee.workerPairings.query({ workspace: workspaceId }),
-    cryptoClient().query(api.workers.list, { workspace: workspaceId as Id<"workspaces"> }),
+    trpcClient().workers.list.query({ workspace: workspaceId }),
   ]);
   const assessment: WorkerAssessment = { states: new Map(), certified: [], verified: [] };
   const active = new Set(

@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useConvex } from "convex/react";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { useTrpc } from "@/lib/trpc";
-import { configureCryptoClient } from "@/lib/crypto/runtime";
 import { refreshOwnPublicKey } from "@/lib/crypto/public-keys";
 import { signUnsignedChatKeys } from "@/lib/crypto/chat-keys";
 import { syncWorkspaceKeys, TrustRequiredError } from "@/lib/crypto/workspace-keys";
@@ -16,12 +14,8 @@ import {
 } from "@/components/trust/trust-prompt";
 import { useWorkspace } from "./workspace-provider";
 
-/**
- * Mounted once under WorkspaceProvider. Keys go through tRPC; the one Convex client it shares with
- * crypto serves what has no tRPC route yet (ACP, Worker enrollment, historical reads).
- */
+/** Mounted once under WorkspaceProvider: keeps the workspace keys, roster and Worker certificates in sync. */
 export function WorkspaceKeySync() {
-  configureCryptoClient(useConvex());
   const status = useKeyStatus();
   const { workspaces } = useWorkspace();
   useEffect(() => {

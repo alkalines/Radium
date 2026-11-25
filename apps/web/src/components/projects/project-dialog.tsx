@@ -1,11 +1,9 @@
 import { type FormEvent, useId, useRef, useState } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { FunctionReturnType } from "convex/server";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import { PlusIcon, StarIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { validChatWorkerDirectory } from "contracts/worker/chat-config";
 import { TileAppearanceFields } from "@/components/harness/tile-appearance-fields";
@@ -28,10 +26,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useWorkers } from "@/components/workspaces/use-workers";
 import { WorkerPresence, useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { cn } from "@/lib/utils";
 import { setEncryptedName } from "@/lib/crypto/names";
 import { useTrpc } from "@/lib/trpc";
+import type { AppRouter } from "server/router";
 import { ProjectGlyph, type ProjectSummary } from "./project-glyph";
 
 /** Matches the backend's Project name limit. */
@@ -40,7 +40,7 @@ const maxNameLength = 80;
 /** Matches the backend's cap on Worker folders per Project. */
 const maxFolders = 20;
 
-type WorkerList = FunctionReturnType<typeof api.workers.list>;
+type WorkerList = inferRouterOutputs<AppRouter>["workers"]["list"];
 
 /** One editable Worker folder; `key` stays stable while the row's Worker changes. */
 type FolderRow = { key: string; workerId: string; directory: string; isInvalid: boolean };
@@ -125,9 +125,7 @@ function ProjectForm({
   // Project lists are not live; the dialog refetches them once its writes (and name seal) landed.
   const refreshProjects = () => queryClient.invalidateQueries({ queryKey: trpc.projects.pathKey() });
   // Worker identities are owner-only; members never see the Workers section.
-  const { data: workersData } = useQuery(
-    convexQuery(api.workers.list, isOwner ? { workspace: workspaceId } : "skip"),
-  );
+  const { data: workersData } = useWorkers(isOwner ? workspaceId : undefined);
 
   const trimmedName = name.trim();
 

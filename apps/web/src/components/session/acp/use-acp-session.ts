@@ -1,24 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useAction, useMutation, useQueries } from "convex/react";
-import { ConvexError } from "convex/values";
-import type { FunctionReturnType } from "convex/server";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import { toast } from "sonner";
-import { fromBase64Url } from "radium-crypto";
-import { api } from "backend/convex/_generated/api";
-import type { Id } from "backend/convex/_generated/dataModel";
+import type { AppRouter } from "server/router";
 import {
   ACP_HISTORY_REQUEST_ITEMS,
-  ACP_VIEWER_HEARTBEAT_MS,
   acpAnswerError,
   type AcpCommandPayload,
   type AcpInteractionAnswer,
   type AcpInteractionRequest,
 } from "contracts/acp/contract";
-import { applyAcpFrames, emptyAcpTimeline, startAcpEpoch, type AcpFrame } from "contracts/acp/fold";
-import { isWorkerOnline } from "contracts/worker/presence";
-import { acpBrowserTabId } from "./browser-tab";
+import { emptyAcpTimeline, startAcpEpoch } from "contracts/acp/fold";
+import { isWorkerOnline, WORKER_ONLINE_WINDOW_MS } from "contracts/worker/presence";
 import { acpChatStatus, acpRunState, createAcpViewModel } from "./view-model";
 import {
   createChatKeys,
@@ -27,74 +20,79 @@ import {
   type ChatScope,
 } from "@/lib/crypto/chat-keys";
 import { sealTitle } from "@/lib/crypto/chat-content";
-import { buffer, currentUserId } from "@/lib/crypto/runtime";
+import { currentUserId } from "@/lib/crypto/runtime";
 import { trpcClient } from "@/lib/trpc-client";
+import { useTrpc } from "@/lib/trpc";
+import { isTrpcRefusal, retryTransient } from "@/lib/trpc-error";
 import { KeysLockedError } from "@/lib/crypto/key-manager";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
-import { KeylessDowngradeError, workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
 import {
   acpFallbackTitle,
-  chatKeysToConvex,
   openAcpError,
-  openAcpFrames,
   openAcpInteraction,
   sealAcpAnswer,
   signAcpBinding,
   signAcpCommand,
   type AcpChatContext,
-  type AcpFrameRow,
 } from "./acp-crypto";
 import {
-  isHistoricalFrame,
-  openHistoricalAcpFrames,
   openHistoricalAcpSession,
   type HistoricalAcpSession,
 } from "@/lib/crypto/legacy-relay";
 
-type Interactions = FunctionReturnType<typeof api.acp.OpenInteractions>;
-type WorkerStatus = FunctionReturnType<typeof api.acp.WorkerStatus>;
+type Interactions = inferRouterOutputs<AppRouter>["acp"]["openInteractions"];
 
-/** An open interaction whose request is readable: plaintext in legacy mode, verified in signed mode. */
+/** An open interaction whose Worker-signed request was verified and opened. */
 export type AcpInteractionView = Omit<Interactions[number], "request" | "sealed"> & {
   request: AcpInteractionRequest;
 };
 const noInteractions: AcpInteractionView[] = [];
 /** Quiet time after which a history request counts as finished (or failed, if nothing came). */
 const HISTORY_STALL_MS = 15_000;
-const downgradeMessage = new KeylessDowngradeError().message;
+/** Refetch period while an ACP command the user issued is pending; never faster than this. */
+const ACP_POLL_MS = 5_000;
+/** How long after a one-shot command (config, mode, answer, cancel) the session keeps refetching. */
+const ACP_COMMAND_WATCH_MS = 60_000;
+/** The clock that notices a stale heartbeat, and so when to ask for a fresh one. */
+const WORKER_CLOCK_MS = 15_000;
 
-/** Read structured Convex errors instead of showing their serialized server envelope. */
+const actionMessages: Record<string, string> = {
+  ACP_SESSION_BUSY: "The agent is already running",
+  ACP_SESSION_ENDED: "This agent Session has ended",
+  ACP_AGENT_UNAVAILABLE: "This agent is not available on the Worker",
+  ACP_UNSUPPORTED: "This agent does not support that action",
+  ACP_INVALID_PROMPT: "The prompt is empty or too large",
+  ACP_INVALID_CONFIG: "This agent setting is no longer available",
+  ACP_INVALID_MODE: "This agent mode is no longer available",
+  ACP_INVALID_ANSWER: "This answer does not match the agent's request",
+  ACP_DENIED: "You no longer have access to this Session",
+  ACP_NOT_ACP: "This agent Session is no longer available",
+  ACP_COMMAND_CLOSED: "This agent command is no longer available",
+  ACP_SESSION_BOUND: "This agent session is already open in another Session",
+  ACP_E2EE_REQUIRED:
+    "Agent Sessions need workspace encryption keys. Set up encryption for this workspace first.",
+  WORKER_NOT_PAIRED:
+    "This Worker is not paired for end-to-end encryption. Pair it from Settings → Workers.",
+  ACP_BINDING_REQUIRED: "This Session is not bound to its Worker yet. Reopen it and try again.",
+  ACP_INVALID_BINDING: "This Session's audience changed. Reopen it and try again.",
+  ACP_GATEWAY_UNAVAILABLE: "The Gateway profile is not available for this agent or Worker",
+  ACP_GATEWAY_KEY_MISSING: "This Worker has no active Gateway key",
+  ACP_WORKER_BUSY: "This Worker already has too many open agent Sessions",
+  ACP_STALE_EPOCH: "The agent restarted. Reopen the Session and try again.",
+};
+
+/**
+ * Reads an ACP refusal: the tRPC message of an ACP error is its code (`ACP_SESSION_BUSY`), or a
+ * human sentence for the few refusals that carry one. `undefined` means nothing to tell the user.
+ */
 export function acpActionError(error: unknown): string | undefined {
-  if (error instanceof ConvexError) {
-    const data: unknown = error.data;
-    const code =
-      typeof data === "object" && data !== null && "code" in data ? String(data.code) : undefined;
-    if (code === "ACP_INTERACTION_CLOSED") return undefined;
-    const messages: Record<string, string> = {
-      ACP_SESSION_BUSY: "The agent is already running",
-      ACP_SESSION_ENDED: "This agent Session has ended",
-      ACP_AGENT_UNAVAILABLE: "This agent is not available on the Worker",
-      ACP_UNSUPPORTED: "This agent does not support that action",
-      ACP_INVALID_PROMPT: "The prompt is empty or too large",
-      ACP_INVALID_CONFIG: "This agent setting is no longer available",
-      ACP_INVALID_MODE: "This agent mode is no longer available",
-      ACP_INVALID_ANSWER: "This answer does not match the agent's request",
-      ACP_DENIED: "You no longer have access to this Session",
-      ACP_NOT_ACP: "This agent Session is no longer available",
-      ACP_COMMAND_CLOSED: "This agent command is no longer available",
-      ACP_SESSION_BOUND: "This agent session is already open in another Session",
-    };
-    if (code && messages[code]) return messages[code];
-    if (
-      typeof data === "object" &&
-      data !== null &&
-      "message" in data &&
-      typeof data.message === "string"
-    )
-      return data.message;
-    if (code?.startsWith("ACP_")) return "The agent could not complete this action";
+  const text = error instanceof Error ? error.message : "";
+  if (text === "ACP_INTERACTION_CLOSED") return undefined;
+  if (actionMessages[text]) return actionMessages[text];
+  if (/^[A-Z][A-Z0-9_]+$/.test(text)) {
+    return text.startsWith("ACP_") ? "The agent could not complete this action" : text;
   }
-  return error instanceof Error ? error.message : "The agent could not complete this action";
+  return text || "The agent could not complete this action";
 }
 
 function showActionError(error: unknown) {
@@ -103,26 +101,44 @@ function showActionError(error: unknown) {
 }
 
 /**
- * Quiet metadata stays mounted; native Convex subscriptions are removed immediately when hidden
- * (TanStack's retained query cache would otherwise keep receiving transient content until GC).
- * The immutable fold stays in this hook, independently of those subscriptions.
+ * Quiet metadata (`getSession`, `openInteractions`, `workerStatus`) loads while the Tab is visible
+ * and refetches on focus and after the user's own commands. While a turn or a one-shot command the
+ * user issued is pending it refetches every `ACP_POLL_MS`, and only then. Agent output itself has
+ * no browser route before Phase 4, so the transcript shows no live content.
  */
 export function useAcpSession({
   chatId,
   isVisible,
 }: {
-  chatId: Id<"aisdk_chats">;
+  chatId: string;
   isVisible: boolean;
 }) {
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
   const keyStatus = useKeyStatus();
-  const { data: liveSession, error: sessionError } = useQuery(
-    convexQuery(api.acp.GetSession, { chat: chatId }),
+  const [watching, setWatching] = useState(false);
+  const watchTimer = useRef<number | undefined>(undefined);
+  const [polling, setPolling] = useState(false);
+  const { data: liveSession, error: liveSessionError } = useQuery(
+    trpc.acp.getSession.queryOptions(
+      { chat: chatId },
+      {
+        retry: retryTransient,
+        refetchOnWindowFocus: true,
+        refetchInterval: isVisible && polling ? ACP_POLL_MS : false,
+      },
+    ),
   );
-  // Migrated Sessions keep their former error, config, commands and draft in a sealed sidecar.
-  // They fill in only where live data is absent, so a Worker's newer values always win.
+  // A refusal is final; a network failure only counts while nothing has loaded yet.
+  const sessionError =
+    liveSessionError && (isTrpcRefusal(liveSessionError) || liveSession === undefined)
+      ? liveSessionError
+      : null;
+  // Migrated Sessions keep their former error, config and commands in a sealed sidecar. They fill
+  // in only where live data is absent, so a Worker's newer values always win.
   const [historicalSession, setHistoricalSession] = useState<HistoricalAcpSession>();
   const historicalSource = liveSession?.legacyContent;
-  const liveRecord = liveSession?._id;
+  const liveRecord = liveSession?.id;
   const liveWorkspace = liveSession?.workspace;
   useEffect(() => {
     if (!historicalSource || !liveRecord || !liveWorkspace) {
@@ -149,73 +165,61 @@ export function useAcpSession({
       liveSession && historicalSession
         ? {
             ...liveSession,
-            error: liveSession.error ?? historicalSession.error,
-            config: liveSession.config ?? historicalSession.config,
-            commands: liveSession.commands ?? historicalSession.commands,
-            draft: liveSession.draft ?? historicalSession.draft,
+            error: liveSession.error ?? historicalSession.error ?? null,
+            config: liveSession.config ?? historicalSession.config ?? null,
+            commands: liveSession.commands ?? historicalSession.commands ?? null,
           }
         : liveSession,
     [historicalSession, liveSession],
   );
+  const running =
+    session?.status === "starting" || session?.status === "running" || session?.status === "awaiting";
+  const shouldPoll = running || watching;
+  useEffect(() => {
+    setPolling(shouldPoll);
+  }, [shouldPoll]);
+  useEffect(
+    () => () => {
+      window.clearTimeout(watchTimer.current);
+    },
+    [],
+  );
   const [timeline, setTimeline] = useState(emptyAcpTimeline);
   const timelineRef = useRef(timeline);
   timelineRef.current = timeline;
-  const [fromSeq, setFromSeq] = useState(0);
-  const followed = useRef(false);
-  const caughtUp = useRef(false);
-  const previousVisible = useRef(false);
   const [loadingBefore, setLoadingBefore] = useState<number>();
   /** Window start whose history request failed; automatic loading stops there until a retry. */
   const [failedBefore, setFailedBefore] = useState<number>();
   const requestedHistory = useRef(new Set<string>());
   const [now, setNow] = useState(() => Date.now());
-  const lastWorker = useRef<WorkerStatus | undefined>(undefined);
-  const watch = useMutation(api.chatroom.Watch);
-  const promptMutation = useMutation(api.acp.Prompt);
-  const generateTitle = useAction(api.acp.GenerateTitle);
-  const fallbackTitleMutation = useMutation(api.acp.SetFallbackTitle);
-  const cancelMutation = useMutation(api.acp.Cancel);
-  const configMutation = useMutation(api.acp.SetConfig);
-  const modeMutation = useMutation(api.acp.SetMode);
-  const answerMutation = useMutation(api.acp.Answer);
-  const historyMutation = useMutation(api.acp.RequestHistory);
-  const forkMutation = useMutation(api.acp.Fork);
-  const startForkMutation = useMutation(api.acp.StartFork);
+
+  const { data: rawInteractions } = useQuery(
+    trpc.acp.openInteractions.queryOptions(isVisible ? { chat: chatId } : skipToken, {
+      retry: retryTransient,
+      refetchOnWindowFocus: true,
+      refetchInterval: polling ? ACP_POLL_MS : false,
+    }),
+  );
+  const { data: workerData, refetch: refetchWorker } = useQuery(
+    trpc.acp.workerStatus.queryOptions(isVisible ? { chat: chatId } : skipToken, {
+      retry: retryTransient,
+      refetchOnWindowFocus: true,
+    }),
+  );
+  const lastWorker = useRef(workerData);
+  if (workerData) lastWorker.current = workerData;
+
+  const promptMutation = useMutation(trpc.acp.prompt.mutationOptions());
+  const fallbackTitleMutation = useMutation(trpc.acp.setFallbackTitle.mutationOptions());
+  const cancelMutation = useMutation(trpc.acp.cancel.mutationOptions());
+  const configMutation = useMutation(trpc.acp.setConfig.mutationOptions());
+  const modeMutation = useMutation(trpc.acp.setMode.mutationOptions());
+  const answerMutation = useMutation(trpc.acp.answer.mutationOptions());
+  const historyMutation = useMutation(trpc.acp.requestHistory.mutationOptions());
+  const forkMutation = useMutation(trpc.acp.fork.mutationOptions());
+  const startForkMutation = useMutation(trpc.acp.startFork.mutationOptions());
 
   const epoch = session?.epoch;
-  const streamEnabled = isVisible && epoch !== undefined && timeline.epoch === epoch;
-  // `useQueries` resubscribes whenever its argument changes identity, so key it on the inputs.
-  const queries = useMemo(
-    () => ({
-      ...(streamEnabled
-        ? {
-            frames: {
-              query: api.chatroom.LiveFrames,
-              args: { chat: chatId, stream: `acp:${epoch}`, fromSeq },
-            },
-          }
-        : {}),
-      ...(isVisible
-        ? {
-            interactions: { query: api.acp.OpenInteractions, args: { chat: chatId } },
-            worker: { query: api.acp.WorkerStatus, args: { chat: chatId } },
-          }
-        : {}),
-    }),
-    [chatId, epoch, fromSeq, isVisible, streamEnabled],
-  );
-  const results = useQueries(queries);
-  const rawFrames = results.frames as AcpFrameRow[] | Error | undefined;
-  const rawInteractions = results.interactions as Interactions | Error | undefined;
-  const worker = results.worker as WorkerStatus | Error | undefined;
-  if (worker && !(worker instanceof Error)) lastWorker.current = worker;
-
-  // Signed mode: the workspace has keys, so every command is sealed to the Worker and every Worker
-  // object is verified and opened here instead of being read as the backend delivered it. A
-  // workspace this device verified as keyed stays in signed mode when the server calls it keyless,
-  // and its commands are refused: nothing is sent or shown in plaintext.
-  const downgraded = !!session && session.signed !== true && workspaceKnownKeyed(session.workspace);
-  const signed = session?.signed === true || downgraded;
   const workspaceId = session?.workspace;
   const workerId = session?.agent.worker;
   const e2eeId = session?.e2eeId ?? undefined;
@@ -224,53 +228,28 @@ export function useAcpSession({
       workspaceId && workerId && e2eeId ? { chatId, workspaceId, workerId, e2eeId } : undefined,
     [chatId, e2eeId, workerId, workspaceId],
   );
-  const [openedFrames, setOpenedFrames] = useState<{
-    source: AcpFrameRow[];
-    frames: AcpFrame[] | Error;
-  }>();
-  const hasHistoricalFrames =
-    !!rawFrames && !(rawFrames instanceof Error) && rawFrames.some(isHistoricalFrame);
-  useEffect(() => {
-    if (!rawFrames || rawFrames instanceof Error || epoch === undefined || !workspaceId) return;
-    // Each row is routed by its own form: sealed history opens through its sidecar, native frames
-    // are verified against the roster Worker, and a plaintext stream is used as delivered.
-    const historical = rawFrames.filter(isHistoricalFrame);
-    const native = rawFrames.filter((row) => !isHistoricalFrame(row));
-    if (!signed && historical.length === 0) return;
-    if (signed && native.length > 0 && !chatContext) return;
-    let cancelled = false;
-    void (async () => {
-      const history = await openHistoricalAcpFrames(historical, { workspace: workspaceId, chatId });
-      if (native.length === 0) return history;
-      if (!signed || !chatContext) return [...history, ...(native as AcpFrame[])];
-      return [...history, ...(await openAcpFrames(chatContext, epoch, native))];
-    })().then(
-      (frames) => {
-        if (!cancelled) setOpenedFrames({ source: rawFrames, frames });
-      },
-      (error: unknown) => {
-        if (cancelled) return;
-        const failure =
-          error instanceof Error ? error : new Error("Could not verify the agent's content.");
-        setOpenedFrames({ source: rawFrames, frames: failure });
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-    // `keyStatus` re-runs a decryption that failed while the keys were locked.
-  }, [chatContext, chatId, epoch, rawFrames, keyStatus, signed, workspaceId]);
-  let frames: AcpFrame[] | Error | undefined;
-  if (rawFrames instanceof Error) frames = rawFrames;
-  else if (!signed && !hasHistoricalFrames) frames = rawFrames as AcpFrame[] | undefined;
-  else if (openedFrames && openedFrames.source === rawFrames) frames = openedFrames.frames;
+
+  /** Refetches what an own command changes now, then keeps refetching while it is pending. */
+  const afterCommand = useCallback(
+    (options: { watch: boolean }) => {
+      void queryClient.invalidateQueries({ queryKey: trpc.acp.getSession.queryKey({ chat: chatId }) });
+      void queryClient.invalidateQueries({
+        queryKey: trpc.acp.openInteractions.queryKey({ chat: chatId }),
+      });
+      if (!options.watch) return;
+      setWatching(true);
+      window.clearTimeout(watchTimer.current);
+      watchTimer.current = window.setTimeout(() => setWatching(false), ACP_COMMAND_WATCH_MS);
+    },
+    [chatId, queryClient, trpc],
+  );
 
   const [openedInteractions, setOpenedInteractions] = useState<{
     source: Interactions;
     rows: AcpInteractionView[];
   }>();
   useEffect(() => {
-    if (!chatContext || !rawInteractions || rawInteractions instanceof Error) return;
+    if (!chatContext || !rawInteractions) return;
     let cancelled = false;
     void Promise.all(
       rawInteractions.map(async (row): Promise<AcpInteractionView | undefined> => {
@@ -280,7 +259,7 @@ export function useAcpSession({
             requestKey: row.requestKey,
             sealed: row.sealed,
           });
-          const { request: _legacy, sealed: _sealed, ...rest } = row;
+          const { request: _plain, sealed: _sealed, ...rest } = row;
           return { ...rest, request };
         } catch {
           // An unverifiable or unreadable request is dropped: it is never shown or answered.
@@ -298,17 +277,10 @@ export function useAcpSession({
       cancelled = true;
     };
   }, [chatContext, rawInteractions, keyStatus]);
-  const interactions = useMemo(() => {
-    if (!rawInteractions || rawInteractions instanceof Error) return noInteractions;
-    if (signed)
-      return openedInteractions?.source === rawInteractions
-        ? openedInteractions.rows
-        : noInteractions;
-    return rawInteractions.flatMap((row) => {
-      const { request, sealed: _sealed, ...rest } = row;
-      return request ? [{ ...rest, request }] : [];
-    });
-  }, [openedInteractions, rawInteractions, signed]);
+  const interactions =
+    rawInteractions && openedInteractions?.source === rawInteractions
+      ? openedInteractions.rows
+      : noInteractions;
 
   const sealedError = session?.sealedError ?? undefined;
   const [openedError, setOpenedError] = useState<{
@@ -329,13 +301,13 @@ export function useAcpSession({
     };
   }, [chatContext, sealedError, keyStatus]);
 
-  // A paired Worker seals frames and errors only to a chat key epoch bound to this chat, and new
-  // chats start with an epoch made before their ID existed. Against an unbound (or rekey-pending)
-  // epoch the Worker refuses without a readable error, so the Session would wait for its snapshot
-  // forever; a reader starts a bound epoch here instead. Already-bound keys are verified from cache.
+  // A paired Worker seals errors only to a chat key epoch bound to this chat, and new chats start
+  // with an epoch made before their ID existed. Against an unbound (or rekey-pending) epoch the
+  // Worker refuses without a readable error; a reader starts a bound epoch here instead.
+  // Already-bound keys are verified from cache.
   const [keyError, setKeyError] = useState<string>();
   useEffect(() => {
-    if (!signed || !e2eeId || keyStatus.state !== "unlocked") return;
+    if (!e2eeId || keyStatus.state !== "unlocked") return;
     let cancelled = false;
     writableChatKey(chatId)
       .catch((error: unknown) => {
@@ -358,62 +330,30 @@ export function useAcpSession({
     return () => {
       cancelled = true;
     };
-  }, [chatId, e2eeId, keyStatus.state, signed]);
+  }, [chatId, e2eeId, keyStatus.state]);
 
   // A Worker re-reporting an error seals it into a new box each time; the last opened text stays
   // until the new box opens, so the generic server text only stands in before the first one does.
   const openedMessage = sealedError ? openedError?.message : undefined;
-  const errorMessage = downgraded
-    ? downgradeMessage
-    : (openedMessage ?? session?.error ?? keyError);
+  const errorMessage = openedMessage ?? session?.error ?? keyError;
 
-  /** Seals and signs a command for this chat's Worker; never used outside signed mode. */
+  /** Seals and signs a command for this chat's Worker. */
   const signCommand = useCallback(
     (command: AcpCommandPayload, clientId?: string) => {
-      if (downgraded) throw new KeylessDowngradeError();
       if (!workspaceId || !workerId) throw new Error("This agent Session is still loading.");
       return signAcpCommand({ workspaceId, workerId, chatId, command, clientId });
     },
-    [chatId, downgraded, workerId, workspaceId],
+    [chatId, workerId, workspaceId],
   );
 
   useEffect(() => {
-    // A return from a hidden Tab starts at the fold's next op, not its old subscription page.
-    if (isVisible && !previousVisible.current) setFromSeq(timelineRef.current.nextSeq);
-    if (!isVisible) {
-      followed.current = false;
-      caughtUp.current = false;
-    }
-    previousVisible.current = isVisible;
-  }, [isVisible]);
-
-  useEffect(() => {
     if (!isVisible || epoch === undefined || timelineRef.current.epoch === epoch) return;
-    const keepOlder = isVisible && followed.current && caughtUp.current;
-    const next = startAcpEpoch(timelineRef.current, epoch, { keepOlder });
+    const next = startAcpEpoch(timelineRef.current, epoch, { keepOlder: false });
     timelineRef.current = next;
     setTimeline(next);
-    setFromSeq(0);
     setLoadingBefore(undefined);
     setFailedBefore(undefined);
-    caughtUp.current = false;
-    followed.current = false;
   }, [epoch, isVisible]);
-
-  useEffect(() => {
-    if (!streamEnabled || !frames || frames instanceof Error || timelineRef.current.epoch !== epoch)
-      return;
-    const next = applyAcpFrames(timelineRef.current, frames);
-    timelineRef.current = next;
-    setTimeline(next);
-    followed.current = true;
-    const last = frames.at(-1);
-    const consumed = !last || next.nextSeq > last.seqTo;
-    caughtUp.current = frames.length < 64 && consumed && next.hasSnapshot;
-    // Subscribe past every applied frame: a cursor left on a partial page would make each later
-    // append re-read the whole page (up to 64 frames of 32 KiB) for every viewer.
-    if (consumed && last) setFromSeq(last.seqTo + 1);
-  }, [epoch, frames, streamEnabled]);
 
   // One request streams every older page. While pages keep arriving it stays in flight; when they
   // stop with more left (item limit, Worker restart), the next request continues from there, and
@@ -431,20 +371,19 @@ export function useAcpSession({
     return () => window.clearTimeout(timer);
   }, [loadingBefore, timeline.windowStart]);
 
+  // The clock decides online/offline from the last heartbeat read, so it also asks for a fresh one
+  // once that reading is half a window old (a connected Worker reports every 20 s).
   useEffect(() => {
     if (!isVisible) return;
-    const heartbeat = () => {
-      void watch({ chat: chatId, tab: acpBrowserTabId() }).catch(showActionError);
-    };
-    heartbeat();
-    const interval = window.setInterval(heartbeat, ACP_VIEWER_HEARTBEAT_MS);
     setNow(Date.now());
-    const clock = window.setInterval(() => setNow(Date.now()), 15_000);
-    return () => {
-      window.clearInterval(interval);
-      window.clearInterval(clock);
-    };
-  }, [chatId, isVisible, watch]);
+    const clock = window.setInterval(() => {
+      const current = Date.now();
+      setNow(current);
+      const seen = lastWorker.current?.lastSeenAt;
+      if (seen == null || current - seen > WORKER_ONLINE_WINDOW_MS / 2) void refetchWorker();
+    }, WORKER_CLOCK_MS);
+    return () => window.clearInterval(clock);
+  }, [isVisible, refetchWorker]);
 
   const loadOlder = useCallback(async () => {
     const state = timelineRef.current;
@@ -463,29 +402,28 @@ export function useAcpSession({
     setLoadingBefore(before);
     try {
       const request = { epoch: state.epoch, before, limit: ACP_HISTORY_REQUEST_ITEMS };
-      await historyMutation({
+      await historyMutation.mutateAsync({
         chat: chatId,
-        ...request,
-        ...(signed
-          ? {
-              signed: await signCommand(
-                { kind: "history", ...request },
-                `history:${chatId}:${request.epoch}:${before}:${crypto.randomUUID()}`,
-              ),
-            }
-          : {}),
+        epoch: request.epoch,
+        before,
+        signed: await signCommand(
+          { kind: "history", ...request },
+          `history:${chatId}:${request.epoch}:${before}:${crypto.randomUUID()}`,
+        ),
       });
+      afterCommand({ watch: true });
     } catch (error) {
       requestedHistory.current.delete(key);
       setLoadingBefore(undefined);
       setFailedBefore(before);
       showActionError(error);
     }
-  }, [chatId, historyMutation, isVisible, signCommand, signed]);
+  }, [afterCommand, chatId, historyMutation, isVisible, signCommand]);
 
-  // Hidden Tabs drop the WorkerStatus subscription, so presence is unknown rather than offline.
-  const workerKnown = isVisible && worker !== undefined && !(worker instanceof Error);
-  const workerOnline = workerKnown && isWorkerOnline(worker.lastSeenAt ?? undefined, now);
+  const lastSeenAt = lastWorker.current?.lastSeenAt ?? undefined;
+  // Hidden Tabs drop the WorkerStatus query, so presence is unknown rather than offline.
+  const workerKnown = isVisible && workerData !== undefined;
+  const workerOnline = workerKnown && isWorkerOnline(workerData.lastSeenAt ?? undefined, now);
   const historyFailed = failedBefore !== undefined && failedBefore === timeline.windowStart;
   const loadingHistory = timeline.hasSnapshot && timeline.hasMore && workerOnline && !historyFailed;
   // Where the epoch's snapshot began. While older pages stream in, they stay out of the thread and
@@ -520,89 +458,77 @@ export function useAcpSession({
       try {
         const prompt = [{ type: "text" as const, text }];
         const clientId = crypto.randomUUID();
-        if (signed) {
-          await promptMutation({
-            chat: chatId,
-            clientId,
-            signed: await signCommand({ kind: "prompt", prompt }, clientId),
-          });
-          if (!session?.agent.sessionId) {
-            // Keyed chats never send the prompt text to a title action; the title is sealed here.
-            void (async () => {
-              const key = await writableChatKey(chatId);
-              const sealedTitle = await sealTitle({ title: acpFallbackTitle(text) }, key);
-              // The ACP mutations still run on Convex, whose bytes are `ArrayBuffer`s.
-              await fallbackTitleMutation({
-                chat: chatId,
-                sealedTitle: { epoch: sealedTitle.epoch, box: buffer(fromBase64Url(sealedTitle.box)) },
-              });
-            })().catch(() => {});
-          }
-          return;
+        await promptMutation.mutateAsync({
+          chat: chatId,
+          clientId,
+          signed: await signCommand({ kind: "prompt", prompt }, clientId),
+        });
+        afterCommand({ watch: false });
+        if (!session?.agent.sessionId) {
+          // The server never sees the prompt text, so the fallback title is sealed here.
+          void (async () => {
+            const key = await writableChatKey(chatId);
+            const sealedTitle = await sealTitle({ title: acpFallbackTitle(text) }, key);
+            await fallbackTitleMutation.mutateAsync({ chat: chatId, sealedTitle });
+          })().catch(() => {});
         }
-        await promptMutation({ chat: chatId, prompt, clientId });
-        if (!session?.agent.sessionId) void generateTitle({ chat: chatId, text }).catch(() => {});
       } catch (error) {
         // Composer restores the draft and toasts this readable error when submission rejects.
         throw new Error(acpActionError(error) ?? "The agent could not send this prompt");
       }
     },
     [
+      afterCommand,
       chatId,
       fallbackTitleMutation,
-      generateTitle,
       promptMutation,
       session?.agent.sessionId,
       signCommand,
-      signed,
     ],
   );
   const cancel = useCallback(async () => {
     try {
-      await cancelMutation({
+      await cancelMutation.mutateAsync({
         chat: chatId,
-        ...(signed ? { signed: await signCommand({ kind: "cancel" }) } : {}),
+        signed: await signCommand({ kind: "cancel" }),
       });
+      afterCommand({ watch: true });
     } catch (error) {
       showActionError(error);
     }
-  }, [cancelMutation, chatId, signCommand, signed]);
+  }, [afterCommand, cancelMutation, chatId, signCommand]);
   const setConfig = useCallback(
     async (configId: string, value: string | boolean) => {
       try {
-        await configMutation({
+        await configMutation.mutateAsync({
           chat: chatId,
-          ...(signed
-            ? { signed: await signCommand({ kind: "set_config", configId, value }) }
-            : { configId, value }),
+          signed: await signCommand({ kind: "set_config", configId, value }),
         });
+        afterCommand({ watch: true });
       } catch (error) {
         showActionError(error);
       }
     },
-    [chatId, configMutation, signCommand, signed],
+    [afterCommand, chatId, configMutation, signCommand],
   );
   const setMode = useCallback(
     async (modeId: string) => {
       try {
-        await modeMutation({
+        await modeMutation.mutateAsync({
           chat: chatId,
-          ...(signed ? { signed: await signCommand({ kind: "set_mode", modeId }) } : { modeId }),
+          signed: await signCommand({ kind: "set_mode", modeId }),
         });
+        afterCommand({ watch: true });
       } catch (error) {
         showActionError(error);
       }
     },
-    [chatId, modeMutation, signCommand, signed],
+    [afterCommand, chatId, modeMutation, signCommand],
   );
   const answer = useCallback(
-    async (interaction: Id<"acp_interactions">, response: AcpInteractionAnswer) => {
+    async (interaction: string, response: AcpInteractionAnswer) => {
       try {
-        if (!signed) {
-          await answerMutation({ interaction, answer: response });
-          return true;
-        }
-        const row = interactions.find((candidate) => candidate._id === interaction);
+        const row = interactions.find((candidate) => candidate.id === interaction);
         if (!row || !workspaceId || !workerId) throw new Error("This question is no longer open.");
         // The server cannot read a sealed answer, so the browser validates it before sending.
         const invalid = acpAnswerError(row.request, response);
@@ -617,20 +543,19 @@ export function useAcpSession({
           requestKey: row.requestKey,
           answer: response,
         });
-        await answerMutation({ interaction, sealed });
+        await answerMutation.mutateAsync({ interaction, sealed });
+        afterCommand({ watch: true });
         return true;
       } catch (error) {
         showActionError(error);
         return false;
       }
     },
-    [answerMutation, chatId, interactions, signed, workerId, workspaceId],
+    [afterCommand, answerMutation, chatId, interactions, workerId, workspaceId],
   );
   const fork = useCallback(async () => {
     try {
       const clientId = crypto.randomUUID();
-      if (downgraded) throw new KeylessDowngradeError();
-      if (!signed) return await forkMutation({ chat: chatId, clientId });
       if (!session) throw new Error("This agent Session is still loading.");
       // The fork keeps the source's audience but belongs to the caller, who is not a member.
       const source = await trpcClient().e2ee.chatKeys.query({ chatId });
@@ -641,15 +566,14 @@ export function useAcpSession({
           ? [...new Set([...source.members, source.creatorId])].filter((id) => id !== me)
           : [];
       const keys = await createChatKeys({ workspaceId: session.workspace, scope, members });
-      const target = await forkMutation({
+      const target = await forkMutation.mutateAsync({
         chat: chatId,
-        clientId,
-        e2ee: { keys: chatKeysToConvex(keys.keys), ...(scope === "shared" ? { members } : {}) },
+        e2ee: { keys: keys.keys, ...(scope === "shared" ? { members } : {}) },
       });
       rememberChatSeed(target, keys.e2eeId, 1, keys.seed);
       // The Worker seals the fork's frames only to a key epoch bound to the target chat.
       await writableChatKey(target);
-      await startForkMutation({
+      await startForkMutation.mutateAsync({
         chat: chatId,
         target,
         binding: await signAcpBinding({
@@ -664,14 +588,14 @@ export function useAcpSession({
           members,
           version: 1,
         }),
-        signed: await signCommand({ kind: "fork", targetChat: target }),
+        signed: await signCommand({ kind: "fork", targetChat: target }, clientId),
       });
       return target;
     } catch (error) {
       showActionError(error);
       return undefined;
     }
-  }, [chatId, downgraded, forkMutation, session, signCommand, signed, startForkMutation]);
+  }, [chatId, forkMutation, session, signCommand, startForkMutation]);
   const [buildView] = useState(createAcpViewModel);
   const view = useMemo(
     () => buildView(timeline, session?.status, shownFrom),
@@ -692,16 +616,14 @@ export function useAcpSession({
     sessionError,
     timeline,
     ...view,
-    runState: acpRunState(session?.status, session?.stopReason, timeline),
+    runState: acpRunState(session?.status, session?.stopReason ?? undefined, timeline),
     chatStatus: acpChatStatus(session?.status),
     workerOnline,
     workerKnown,
-    workerLastSeenAt: lastWorker.current?.lastSeenAt,
-    workerName: lastWorker.current?.name,
+    workerLastSeenAt: lastSeenAt,
+    workerName: lastWorker.current?.name ?? undefined,
     interactions,
-    contentError: frames instanceof Error ? frames : undefined,
     errorMessage,
-    signed,
     loadOlder,
     historyFailed,
     loadingHistory,

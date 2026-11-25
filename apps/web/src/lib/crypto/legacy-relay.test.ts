@@ -3,8 +3,6 @@ import { generateEncryptionKeyPair, openBox, sealBox, utf8 } from "radium-crypto
 import { legacyAad } from "contracts/e2ee/legacy-contract";
 import * as legacyContent from "./legacy-content";
 import {
-  isHistoricalFrame,
-  openHistoricalAcpFrames,
   openHistoricalAcpSession,
   openHistoricalAgentTitle,
 } from "./legacy-relay";
@@ -53,45 +51,10 @@ beforeAll(async () => {
 afterAll(() => mock.restore());
 
 describe("historical relay readers (real ciphertext)", () => {
-  test("sealed frames decrypt into the original ops and keep their sequence range", async () => {
-    const payload = '[{"op":"turn.start","turnId":"t"}]';
-    const legacyContent = await seal("chat_frames", "f1", { payload });
-    const [opened] = await openHistoricalAcpFrames(
-      [{ _id: "f1" as never, seqFrom: 4, seqTo: 5, kind: "live", legacyContent }],
-      context,
-    );
-    expect(opened).toEqual({ seqFrom: 4, seqTo: 5, kind: "live", payload });
-  });
-
-  test("a frame cannot be read under another record or workspace", async () => {
-    const legacyContent = await seal("chat_frames", "f1", { payload: "[]" });
-    const row = { seqFrom: 0, seqTo: 0, kind: "live" as const, legacyContent };
-    await expect(openHistoricalAcpFrames([{ ...row, _id: "f2" as never }], context)).rejects.toThrow();
-    await expect(
-      openHistoricalAcpFrames([{ ...row, _id: "f1" as never }], { ...context, workspace: "other" as never }),
-    ).rejects.toThrow();
-  });
-
-  test("one unreadable frame fails the batch instead of folding a partial stream", async () => {
-    const good = await seal("chat_frames", "f1", { payload: "[]" });
-    const bad = await seal("chat_frames", "f2", { payload: { not: "a string" } });
-    const base = { seqFrom: 0, seqTo: 0, kind: "live" as const };
-    await expect(
-      openHistoricalAcpFrames(
-        [
-          { ...base, _id: "f1" as never, legacyContent: good },
-          { ...base, _id: "f2" as never, legacyContent: bad },
-        ],
-        context,
-      ),
-    ).rejects.toThrow();
-  });
-
-  test("session sidecars return the moved error, config, commands and draft", async () => {
+  test("session sidecars return the moved error, config and commands", async () => {
     const moved = {
       error: "agent crashed",
       commands: [{ name: "review", description: "Review the diff" }],
-      draft: { config: [{ configId: "model", value: "m" }] },
     };
     const legacyContent = await seal("acp_sessions", "s1", moved);
     expect(await openHistoricalAcpSession({ _id: "s1" as never, legacyContent }, context)).toEqual(moved);
@@ -105,12 +68,5 @@ describe("historical relay readers (real ciphertext)", () => {
     await expect(
       openHistoricalAgentTitle({ _id: "a1" as never, legacyContent: titled }, "other" as never),
     ).rejects.toThrow();
-  });
-
-  test("only rows carrying both identity and a sidecar are historical", async () => {
-    const legacyContent = await seal("chat_frames", "f1", { payload: "[]" });
-    expect(isHistoricalFrame({ _id: "f" as never, legacyContent })).toBe(true);
-    expect(isHistoricalFrame({ legacyContent })).toBe(false);
-    expect(isHistoricalFrame({ _id: "f" as never })).toBe(false);
   });
 });

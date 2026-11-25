@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   FolderInputIcon,
   FolderMinusIcon,
@@ -54,6 +54,8 @@ import { openMessages, sealTitle } from "@/lib/crypto/chat-content";
 import { ensureChatKeys, writableChatKey } from "@/lib/crypto/chat-keys";
 import { ChatKeysRequiredError, openHistoricalChat } from "@/lib/crypto/legacy-chat";
 import type { SealedLegacyBox } from "@/lib/crypto/legacy-content";
+import { signAcpCommand, type AcpSignedCommandWire } from "@/components/session/acp/acp-crypto";
+import { WorkerNotPairedError } from "@/lib/crypto/workers";
 import { getMessageText } from "@/components/session/message-parts";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { useTrpc } from "@/lib/trpc";
@@ -101,6 +103,12 @@ export function SessionActionsMenu({
   const keyStatus = useKeyStatus();
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deleteInAgentStep, setDeleteInAgentStep] = useState(false);
+  const { data: acpSession, error: acpSessionError } = useQuery(
+    trpc.acp.getSession.queryOptions(
+      isDeleteOpen && session.agent ? { chat: session.id } : skipToken,
+    ),
+  );
   // The target outlives the open state so the dialog keeps its text while it animates closed.
   const [moveTarget, setMoveTarget] = useState<{ id: string | null; name: string } | null>(null);
   const [isMoveOpen, setIsMoveOpen] = useState(false);
@@ -232,12 +240,46 @@ export function SessionActionsMenu({
     }
   }
 
-  async function confirmDelete() {
-    // An open Tab for this session drops itself once the chat is gone (spec §4).
-    const succeeded = await run("delete", () => deleteChat({ chatId: session.id }));
+  async function confirmDelete(deleteInAgent = false) {
+    if (session.agent && acpSession?.capabilities?.delete && !deleteInAgentStep) {
+      setDeleteInAgentStep(true);
+      return;
+    }
+    // An open Tab for this session drops itself once the chat is gone (spec §4). The agent-side
+    // close/delete is a sealed command signed here: the chat row is gone when the Worker sees it,
+    // so the command carries the session it targets.
+    const succeeded = await run("delete", async () => {
+      const agentSession = acpSession?.agent;
+      let acpCommand: AcpSignedCommandWire | undefined;
+      if (acpSession && agentSession?.sessionId) {
+        try {
+          acpCommand = await signAcpCommand({
+            workspaceId: acpSession.workspace,
+            workerId: agentSession.worker,
+            chatId: session.id,
+            command: {
+              kind: deleteInAgent && acpSession.capabilities?.delete ? "delete" : "close",
+              agentId: agentSession.agentId,
+              profile: agentSession.profile,
+              sessionId: agentSession.sessionId,
+              cwd: agentSession.cwd,
+            },
+          });
+        } catch (error) {
+          // A revoked or uncertified Worker cannot be told; the chat is still removed here.
+          if (!(error instanceof WorkerNotPairedError)) throw error;
+        }
+      }
+      return deleteChat({
+        chatId: session.id,
+        deleteInAgent,
+        ...(acpCommand ? { acpCommand } : {}),
+      });
+    });
     if (succeeded) {
       toast.success("Session deleted.");
       setIsDeleteOpen(false);
+      setDeleteInAgentStep(false);
     }
   }
 
@@ -354,28 +396,51 @@ export function SessionActionsMenu({
       <AlertDialog
         open={isDeleteOpen}
         onOpenChange={(open) => {
-          if (!isBusy) setIsDeleteOpen(open);
+          if (!isBusy) {
+            setIsDeleteOpen(open);
+            if (!open) setDeleteInAgentStep(false);
+          }
         }}
       >
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete session?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {deleteInAgentStep
+                ? `Also delete this session in ${acpSession?.agentName ?? "the agent"}?`
+                : "Delete session?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This removes “{displayTitle}” and its messages. This cannot be undone.
+              {deleteInAgentStep
+                ? "This conversation will disappear from the agent and other clients such as Zed. You can instead remove it from Radium only."
+                : `This removes “${displayTitle}” and its messages. This cannot be undone.`}
+              {acpSessionError ? (
+                <span className="mt-2 block text-destructive">
+                  Could not load the agent's deletion capabilities. Close this dialog and try again.
+                </span>
+              ) : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
+            {deleteInAgentStep ? (
+              <Button variant="outline" disabled={isBusy} onClick={() => void confirmDelete(false)}>
+                Radium only
+              </Button>
+            ) : null}
             <AlertDialogAction
               variant="destructive"
-              disabled={isBusy}
+              disabled={
+                isBusy ||
+                Boolean(acpSessionError) ||
+                Boolean(session.agent && acpSession === undefined)
+              }
               onClick={(event) => {
                 // Stay open until the mutation settles so a refusal is visible in context.
                 event.preventDefault();
-                void confirmDelete();
+                void confirmDelete(deleteInAgentStep);
               }}
             >
-              Delete
+              {deleteInAgentStep ? "Delete in both" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

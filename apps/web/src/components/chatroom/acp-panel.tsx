@@ -1,8 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useAction, useMutation } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 import {
   ExternalLinkIcon,
   MoreHorizontalIcon,
@@ -13,8 +11,9 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
-import type { Id } from "backend/convex/_generated/dataModel";
+import type { SessionAgentDefinition, SessionAgentRow, SessionWorker } from "@/components/session/agents";
+import { useWorkers } from "@/components/workspaces/use-workers";
+import type { AppRouter } from "server/router";
 import { acpAgentDefinitionError, type AcpAgentDefinition } from "contracts/acp/contract";
 import { ACP_GATEWAY_PLACEHOLDERS, ACP_GATEWAY_TEMPLATES } from "contracts/acp/gateway";
 import { isWorkerOnline } from "contracts/worker/presence";
@@ -73,39 +72,46 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { formatAgentCommandLine, parseAgentCommandLine } from "./agent-command-line";
-import { acpAgentDefinitionStatement } from "radium-crypto";
-import { buffer } from "@/lib/crypto/runtime";
+import { acpAgentDefinitionStatement, toBase64Url } from "radium-crypto";
+import { useTrpc } from "@/lib/trpc";
 import { trpcClient } from "@/lib/trpc-client";
 import { signAsUser } from "@/lib/crypto/workers";
 import { keyedWorkspaceClaim } from "@/lib/crypto/workspace-keys";
 
-type AgentDefinition = FunctionReturnType<typeof api.acp.ListAgentDefinitions>[number];
-type RegistryAgent = FunctionReturnType<typeof api.acp.RegistryAgents>[number];
-type Worker = FunctionReturnType<typeof api.workers.list>[number];
-type AgentReport = FunctionReturnType<typeof api.acp.ListAgents>[number];
+type DefinitionFields = Omit<AcpAgentDefinition, "authorization">;
+type RouterOutputs = inferRouterOutputs<AppRouter>;
+type SavedDefinition = inferRouterInputs<AppRouter>["acp"]["saveAgentDefinition"]["definition"];
+type AgentDefinition = SessionAgentDefinition;
+type RegistryAgent = RouterOutputs["acp"]["registryAgents"][number];
+type Worker = SessionWorker;
+type AgentReport = SessionAgentRow;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Could not save the agent.";
 }
 
-function definitionFields(agent: AcpAgentDefinition): AcpAgentDefinition {
+function definitionFields(agent: DefinitionFields): DefinitionFields {
   const { agentId, name, command, args, env, gateway, enabled, source, icon, version } = agent;
   return { agentId, name, command, args, env, gateway, enabled, source, icon, version };
 }
 
 /** Only explicit form submission (or disabling a launch) authorizes executable settings. */
 async function authorizeDefinition(
-  workspaceId: Id<"workspaces">,
-  definition: AcpAgentDefinition,
+  workspaceId: string,
+  definition: DefinitionFields,
   previousIssuedAt = 0,
-): Promise<AcpAgentDefinition> {
+): Promise<SavedDefinition> {
   const state = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
   if (!keyedWorkspaceClaim(workspaceId, state.keyEpoch !== null)) return definition;
   const issuedAt = Math.max(Date.now(), previousIssuedAt + 1);
   const signed = await signAsUser(acpAgentDefinitionStatement({ workspaceId, issuedAt, definition }));
   return {
     ...definition,
-    authorization: { issuedAt, signerKeyId: signed.signerKeyId, signature: buffer(signed.signature) },
+    authorization: {
+      issuedAt,
+      signerKeyId: signed.signerKeyId,
+      signature: toBase64Url(signed.signature),
+    },
   };
 }
 
@@ -119,25 +125,24 @@ function gatewayTemplate(agentId: string): AcpAgentDefinition["gateway"] {
 
 /** Workspace definitions are independent of each Worker's installation and login. */
 export function AcpPanel() {
+  const trpc = useTrpc();
   const { workspaceId, workspace } = useWorkspace();
   const canManage = workspace?.role === "owner" && Boolean(workspaceId);
-  const queryArgs = canManage && workspaceId ? { workspace: workspaceId } : "skip";
+  const ownerWorkspace = canManage && workspaceId ? workspaceId : undefined;
+  const queryArgs = ownerWorkspace ? { workspace: ownerWorkspace } : skipToken;
   const { data: definitions, error } = useQuery(
-    convexQuery(api.acp.ListAgentDefinitions, queryArgs),
+    trpc.acp.listAgentDefinitions.queryOptions(queryArgs),
   );
-  const { data: workers, error: workerError } = useQuery(convexQuery(api.workers.list, queryArgs));
-  const { data: reports, error: reportError } = useQuery(
-    convexQuery(api.acp.ListAgents, queryArgs),
+  const { data: workers, error: workerError } = useWorkers(ownerWorkspace);
+  const { data: reports, error: reportError } = useQuery(trpc.acp.listAgents.queryOptions(queryArgs));
+  const registry = useQuery(
+    trpc.acp.registryAgents.queryOptions(canManage && workspaceId ? { workspace: workspaceId } : skipToken, {
+      staleTime: 5 * 60_000,
+    }),
   );
-  const registryAgents = useAction(api.acp.RegistryAgents);
-  const registry = useQuery({
-    queryKey: ["acp-registry", workspaceId],
-    queryFn: () => registryAgents({ workspace: workspaceId! }),
-    enabled: canManage,
-    staleTime: 5 * 60_000,
-  });
-  const saveAgent = useMutation(api.acp.SaveAgentDefinition);
-  const deleteAgent = useMutation(api.acp.DeleteAgentDefinition);
+  const saveAgent = useMutation(trpc.acp.saveAgentDefinition.mutationOptions());
+  const deleteAgent = useMutation(trpc.acp.deleteAgentDefinition.mutationOptions());
+  const queryClient = useQueryClient();
   const now = useWorkerPresenceClock();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [target, setTarget] = useState<AgentDefinition | null>(null);
@@ -172,17 +177,18 @@ export function AcpPanel() {
       openForm({ ...agent, enabled: true });
       return;
     }
-    setPending(agent._id);
+    setPending(agent.id);
     try {
-      await saveAgent({
+      await saveAgent.mutateAsync({
         workspace: workspaceId,
-        id: agent._id,
+        id: agent.id,
         definition: await authorizeDefinition(
           workspaceId,
           { ...definitionFields(agent), enabled },
           agent.authorization?.issuedAt,
         ),
       });
+      void queryClient.invalidateQueries({ queryKey: trpc.acp.listAgentDefinitions.pathKey() });
     } catch (saveError) {
       toast.error(errorMessage(saveError));
     } finally {
@@ -197,10 +203,11 @@ export function AcpPanel() {
 
   async function remove() {
     if (!workspaceId || !deleting || pending) return;
-    setPending(deleting._id);
+    setPending(deleting.id);
     setDeleteError(null);
     try {
-      await deleteAgent({ workspace: workspaceId, id: deleting._id });
+      await deleteAgent.mutateAsync({ workspace: workspaceId, id: deleting.id });
+      void queryClient.invalidateQueries({ queryKey: trpc.acp.listAgentDefinitions.pathKey() });
       setDeleting(null);
     } catch (removeError) {
       setDeleteError(errorMessage(removeError));
@@ -263,7 +270,7 @@ export function AcpPanel() {
             const command = formatAgentCommandLine([agent.command, ...agent.args]);
             return (
               <Row
-                key={agent._id}
+                key={agent.id}
                 leading={<AcpAgentIcon name={agent.name} icon={agent.icon} className="size-6" />}
                 tag={
                   agent.gateway?.enabled ? (
@@ -375,7 +382,7 @@ export function AcpPanel() {
                           );
                           if (
                             now <= 0 ||
-                            !isWorkerOnline(worker.lastSeenAt, now) ||
+                            !isWorkerOnline(worker.lastSeenAt ?? undefined, now) ||
                             !report ||
                             (report.status !== "needs_auth" &&
                               !(report.status === "ready" && report.capabilities.logout))
@@ -566,7 +573,7 @@ function workerAvailability(
   now: number,
   report?: AgentReport,
 ): { label: string; state: RunState; detail: string } {
-  if (now > 0 && !isWorkerOnline(worker.lastSeenAt, now))
+  if (now > 0 && !isWorkerOnline(worker.lastSeenAt ?? undefined, now))
     return {
       label: "Offline",
       state: "idle",
@@ -672,10 +679,12 @@ function AgentDefinitionDialog({
   open: boolean;
   target: AgentDefinition | null;
   setup: RegistryAgent | null;
-  workspaceId?: Id<"workspaces">;
+  workspaceId?: string;
   onOpenChange: (open: boolean) => void;
 }) {
-  const saveAgent = useMutation(api.acp.SaveAgentDefinition);
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const saveAgent = useMutation(trpc.acp.saveAgentDefinition.mutationOptions());
   const [name, setName] = useState("");
   const [agentId, setAgentId] = useState("");
   const [idEdited, setIdEdited] = useState(false);
@@ -738,11 +747,12 @@ function AgentDefinitionDialog({
     setSubmitting(true);
     setSaveError(null);
     try {
-      await saveAgent({
+      await saveAgent.mutateAsync({
         workspace: workspaceId,
-        id: target?._id,
+        id: target?.id,
         definition: await authorizeDefinition(workspaceId, definition, target?.authorization?.issuedAt),
       });
+      void queryClient.invalidateQueries({ queryKey: trpc.acp.listAgentDefinitions.pathKey() });
       onOpenChange(false);
     } catch (error) {
       setSaveError(errorMessage(error));
@@ -823,7 +833,7 @@ function AgentDefinitionDialog({
             <FieldSet>
               <FieldLegend>Environment variables</FieldLegend>
               <FieldDescription>
-                Stored in Convex and visible to the workspace owner. Not for secrets: agents keep
+                Stored on the server and visible to the workspace owner. Not for secrets: agents keep
                 their own login on each machine.
               </FieldDescription>
               <AgentEnvEditor

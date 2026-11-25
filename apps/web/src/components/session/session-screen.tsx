@@ -9,7 +9,6 @@ import {
   type UIMessage,
 } from "ai";
 import { useChat } from "@ai-sdk/react";
-import { convexQuery } from "@convex-dev/react-query";
 import {
   skipToken,
   useMutation as useQueryMutation,
@@ -17,7 +16,6 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useAction, useMutation } from "convex/react";
 import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
 import { RotateCcwIcon, Undo2Icon } from "lucide-react";
@@ -26,7 +24,6 @@ import type { inferRouterOutputs } from "@trpc/server";
 import { fromBase64Url, toBase64Url } from "radium-crypto";
 import type { AppRouter } from "server/router";
 
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { CodeModeInteractionResponse } from "contracts/chatroom/code-mode";
 import type { AcpCommandPayload, AcpDraftConfig } from "contracts/acp/contract";
@@ -98,12 +95,7 @@ import { ToolsDialog } from "./tools-dialog";
 import { AcpSessionScreen } from "./acp/acp-session-screen";
 import { AcpConfigControls, applyAcpDraft } from "./acp/config-controls";
 import { acpActionError } from "./acp/use-acp-session";
-import {
-  acpFallbackTitle,
-  chatKeysToConvex,
-  publishAcpBinding,
-  signAcpCommand,
-} from "./acp/acp-crypto";
+import { acpFallbackTitle, publishAcpBinding, signAcpCommand } from "./acp/acp-crypto";
 import { EncryptionNotice } from "@/components/auth/encryption-notice";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { keyManager, KeysLockedError } from "@/lib/crypto/key-manager";
@@ -148,6 +140,7 @@ import {
 } from "./worker-authorization";
 import { keyedWorkspaceClaim, workspaceKnownKeyed } from "@/lib/crypto/workspace-keys";
 import { buffer } from "@/lib/crypto/runtime";
+import { useWorkers } from "@/components/workspaces/use-workers";
 
 // A stable identity while the Projects list loads, so the name decryption effect does not restart.
 const NO_PROJECTS: never[] = [];
@@ -346,12 +339,15 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   );
   // Approval signatures by tool call ID; the continuation request carries those it answers.
   const approvalSignatures = useRef(new Map<string, WorkerApprovalSignature>());
-  const createAcpSession = useMutation(api.acp.CreateSession);
-  const setAcpConfig = useMutation(api.acp.SetConfig);
-  const setAcpMode = useMutation(api.acp.SetMode);
-  const promptAcp = useMutation(api.acp.Prompt);
-  const setAcpFallbackTitle = useMutation(api.acp.SetFallbackTitle);
-  const generateAcpTitle = useAction(api.acp.GenerateTitle);
+  const { mutateAsync: createAcpSession } = useQueryMutation(
+    trpc.acp.createSession.mutationOptions(),
+  );
+  const { mutateAsync: setAcpConfig } = useQueryMutation(trpc.acp.setConfig.mutationOptions());
+  const { mutateAsync: setAcpMode } = useQueryMutation(trpc.acp.setMode.mutationOptions());
+  const { mutateAsync: promptAcp } = useQueryMutation(trpc.acp.prompt.mutationOptions());
+  const { mutateAsync: setAcpFallbackTitle } = useQueryMutation(
+    trpc.acp.setFallbackTitle.mutationOptions(),
+  );
 
   // An existing chat's settings belong to its own workspace; a draft uses the current one.
   const settingsWorkspaceId = chat?.workspace ?? workspaceId;
@@ -518,22 +514,14 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     trpc.chatroom.getWorkerToolDefaults.queryOptions(settingsInput),
   );
   // Owner-only; the same query the Session context uses, so it is fetched once.
-  const { data: workers, error: workersError } = useQuery(
-    convexQuery(
-      api.workers.list,
-      isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
-    ),
-  );
+  const ownerWorkspace = isOwner ? settingsWorkspaceId : undefined;
+  const { data: workers, error: workersError } = useWorkers(ownerWorkspace);
   const { data: agentRows } = useQuery(
-    convexQuery(
-      api.acp.ListAgents,
-      isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
-    ),
+    trpc.acp.listAgents.queryOptions(ownerWorkspace ? { workspace: ownerWorkspace } : skipToken),
   );
   const { data: agentDefinitions, isLoading: isAgentCatalogLoading } = useQuery(
-    convexQuery(
-      api.acp.ListAgentDefinitions,
-      isOwner && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : "skip",
+    trpc.acp.listAgentDefinitions.queryOptions(
+      ownerWorkspace ? { workspace: ownerWorkspace } : skipToken,
     ),
   );
   const agents = workspaceAgents(agentDefinitions, draftWorker?.workerId, agentRows);
@@ -726,7 +714,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       const candidate = workers?.find(
         (worker) => worker.workerId === candidateId && worker.status === "active",
       );
-      const isOnline = candidate !== undefined && isWorkerOnline(candidate.lastSeenAt, Date.now());
+      const isOnline =
+        candidate !== undefined && isWorkerOnline(candidate.lastSeenAt ?? undefined, Date.now());
 
       setDraftWorker((current) => {
         const chosenTools = current?.tools ?? [];
@@ -1362,24 +1351,25 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       setCreateError(null);
       setIsCreating(true);
       setPendingPrompt(text);
-      let created: Id<"aisdk_chats"> | undefined;
+      let created: string | undefined;
       try {
-        // A keyed workspace takes only keyed Sessions: chat keys, then the creator's signed binding
-        // and sealed, signed commands. A keyless workspace keeps the plaintext path unchanged.
+        // Agent Sessions are always keyed: chat keys, then the creator's signed binding and
+        // sealed, signed commands. A keyless workspace cannot run them.
         if (!workspaceKeyState) throw new Error("Waiting for workspace encryption keys.");
         const keyed = keyedWorkspaceClaim(settingsWorkspaceId, workspaceKeyState.keyEpoch != null);
-        const keys = keyed ? await getDraftKeys() : undefined;
-        if (keyed && !keys) throw new Error("Unlock to create encryption keys.");
+        if (!keyed) throw new Error("ACP_E2EE_REQUIRED");
+        const keys = await getDraftKeys();
+        if (!keys) throw new Error("Unlock to create encryption keys.");
         const members = draftScope === "shared" ? sharedMembers : [];
         created = await createAcpSession({
           workspace: settingsWorkspaceId,
-          scope: keyed ? draftScope : draftScope === "workspace" ? "workspace" : "personal",
-          ...(keyed && draftScope === "shared" ? { members } : {}),
+          scope: draftScope,
+          ...(draftScope === "shared" ? { members } : {}),
           project: selectedProject?.id,
           worker: draftWorker.workerId,
           agentId: agent.agentId,
           profile: agent.profile,
-          ...(keys ? { e2ee: { keys: chatKeysToConvex(keys.keys) } } : {}),
+          e2ee: { keys: keys.keys },
         });
         const createdChat = created;
         const workerId = draftWorker.workerId;
@@ -1393,75 +1383,53 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           });
         // The draft epoch was made before the chat ID existed; the Worker seals frames only to an
         // epoch bound to this chat, so bind one before the first command reaches it.
-        let boundKey: ChatContentKey | undefined;
-        if (keys) {
-          rememberChatSeed(created, keys.e2eeId, keys.epoch, keys.seed);
-          draftKeys.current = undefined;
-          await publishAcpBinding({
-            chatId: created,
-            e2eeId: keys.e2eeId,
-            scope: draftScope,
-            members,
-            version: 1,
-          });
-          boundKey = await writableChatKey(created);
-        }
+        // The config and mode choices exist only in these signed commands: no draft is written.
+        rememberChatSeed(created, keys.e2eeId, keys.epoch, keys.seed);
+        draftKeys.current = undefined;
+        await publishAcpBinding({
+          chatId: created,
+          e2eeId: keys.e2eeId,
+          scope: draftScope,
+          members,
+          version: 1,
+        });
+        const boundKey = await writableChatKey(created);
         for (const option of acpDraft.config) {
           await setAcpConfig({
             chat: created,
-            ...(keys
-              ? {
-                  signed: await signCommand({
-                    kind: "set_config",
-                    configId: option.configId,
-                    value: option.value,
-                  }),
-                }
-              : option),
+            signed: await signCommand({
+              kind: "set_config",
+              configId: option.configId,
+              value: option.value,
+            }),
           });
         }
         if (acpDraft.modeId) {
           await setAcpMode({
             chat: created,
-            ...(keys
-              ? { signed: await signCommand({ kind: "set_mode", modeId: acpDraft.modeId }) }
-              : { modeId: acpDraft.modeId }),
+            signed: await signCommand({ kind: "set_mode", modeId: acpDraft.modeId }),
           });
         }
         const prompt = [{ type: "text" as const, text }];
         const clientId = crypto.randomUUID();
-        if (boundKey) {
-          await promptAcp({
-            chat: created,
-            clientId,
-            signed: await signCommand({ kind: "prompt", prompt }, clientId),
-          });
-          // Keyed Sessions never send the prompt to a title action: the fallback title is sealed here.
-          void sealTitle({ title: acpFallbackTitle(text) }, boundKey)
-            .then((sealedTitle) =>
-              // The ACP mutations still run on Convex, whose bytes are `ArrayBuffer`s.
-              setAcpFallbackTitle({
-                chat: createdChat,
-                sealedTitle: {
-                  epoch: sealedTitle.epoch,
-                  box: buffer(fromBase64Url(sealedTitle.box)),
-                },
-              }),
-            )
-            .catch(() => {});
-        } else {
-          await promptAcp({ chat: created, prompt, clientId });
-          void generateAcpTitle({ chat: created, text }).catch(() => {});
-        }
+        await promptAcp({
+          chat: created,
+          clientId,
+          signed: await signCommand({ kind: "prompt", prompt }, clientId),
+        });
+        // The server never sees the prompt: the fallback title is sealed here.
+        void sealTitle({ title: acpFallbackTitle(text) }, boundKey)
+          .then((sealedTitle) => setAcpFallbackTitle({ chat: createdChat, sealedTitle }))
+          .catch(() => {});
         setCreatedChatId(created);
-        onAcpCreated(created, text);
+        onAcpCreated(created as Id<"aisdk_chats">, text);
       } catch (error) {
         const message = acpActionError(error) ?? "Could not start the agent session.";
         if (created) {
           // A created binding survives failed admission/config: open it, preserving the text to retry.
           composerRef.current?.swapDraft({ text, files: [] });
           toast.error(message);
-          onAcpCreated(created);
+          onAcpCreated(created as Id<"aisdk_chats">);
         } else {
           setPendingPrompt(undefined);
           setCreateError(message);

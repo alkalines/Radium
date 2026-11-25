@@ -1,4 +1,3 @@
-import { convexQuery } from "@convex-dev/react-query";
 import { skipToken, useQuery } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
 import {
@@ -40,6 +39,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 import { useTrpc } from "@/lib/trpc";
+import { retryTransient } from "@/lib/trpc-error";
 import type { AppRouter } from "server/router";
 import {
   Select,
@@ -52,7 +52,6 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { formatRelativeTime } from "@/components/home/recency";
 import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
@@ -395,7 +394,10 @@ function LocalUsageStatus({ workspaceId }: { workspaceId: Id<"workspaces"> }) {
   const now = useWorkerPresenceClock();
   const trpc = useTrpc();
   const { data: syncs } = useQuery(trpc.usage.localUsageSyncs.queryOptions({ workspace: workspaceId }));
-  const { data: workers } = useQuery(convexQuery(api.workers.list, { workspace: workspaceId }));
+  // Owner-only: a member's refusal just leaves Workers unnamed.
+  const { data: workers } = useQuery(
+    trpc.workers.list.queryOptions({ workspace: workspaceId }, { retry: retryTransient }),
+  );
   if (!syncs || now === 0) return null;
   const names = new Map((workers ?? []).map((worker) => [worker.workerId, worker.name]));
 

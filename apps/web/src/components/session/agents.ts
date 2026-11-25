@@ -1,17 +1,17 @@
-import type { FunctionReturnType } from "convex/server";
+import type { inferRouterOutputs } from "@trpc/server";
+import type { AppRouter } from "server/router";
 
-import type { api } from "backend/convex/_generated/api";
 import type { AcpProfile } from "contracts/acp/contract";
 import type { ProjectSummary } from "@/components/projects/project-glyph";
 import { acpGatewayProfileOffered } from "contracts/acp/gateway";
 import { isWorkerOnline } from "contracts/worker/presence";
 
+type RouterOutputs = inferRouterOutputs<AppRouter>;
+
 /** Owner-only catalogs, shared by the draft and Run target picker. */
-export type SessionWorker = FunctionReturnType<typeof api.workers.list>[number];
-export type SessionAgentRow = FunctionReturnType<typeof api.acp.ListAgents>[number];
-export type SessionAgentDefinition = FunctionReturnType<
-  typeof api.acp.ListAgentDefinitions
->[number];
+export type SessionWorker = RouterOutputs["workers"]["list"][number];
+export type SessionAgentRow = RouterOutputs["acp"]["listAgents"][number];
+export type SessionAgentDefinition = RouterOutputs["acp"]["listAgentDefinitions"][number];
 export type SessionProject = ProjectSummary;
 
 type BuiltInAgent = { id: string; name: string; protocol: "built-in" };
@@ -97,7 +97,8 @@ export function agentAvailability(
     if (worker.status === "active" && worker.gateway.access === "pending") return "gateway_pending";
     if (worker.status === "active" && worker.gateway.access === "missing") return "gateway_missing";
   }
-  if (worker.status !== "active" || !isWorkerOnline(worker.lastSeenAt, now)) return "offline";
+  if (worker.status !== "active" || !isWorkerOnline(worker.lastSeenAt ?? undefined, now))
+    return "offline";
   const installation = agentRows
     ? agentRows.find((row) => row.worker === worker.workerId && row.agentId === agent.agentId)
     : agent.installation?.worker === worker.workerId

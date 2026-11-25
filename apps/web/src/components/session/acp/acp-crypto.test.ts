@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { Id } from "backend/convex/_generated/dataModel";
 import {
   createCapsule,
   encodeCapsule,
@@ -20,7 +19,7 @@ import {
   type AcpReadSources,
 } from "./acp-crypto";
 
-const workspaceId = "workspace-test" as Id<"workspaces">;
+const workspaceId = "workspace-test";
 const workerId = "worker-test";
 
 /** A chat with a chat key, a roster Worker's signing key, and sources serving them. */
@@ -28,12 +27,12 @@ async function fixture() {
   const chatKey = await generateEncryptionKeyPair();
   const worker = await generateSigningKeyPair();
   const chat: AcpChatContext = {
-    chatId: `chat-${toBase64Url(randomBytes(8))}` as Id<"aisdk_chats">,
+    chatId: `chat-${toBase64Url(randomBytes(8))}`,
     workspaceId,
     e2eeId: toBase64Url(randomBytes(16)),
     workerId,
   };
-  const stored: { capsule?: { chatEpoch: number; capsule: ArrayBuffer; signature: ArrayBuffer } } =
+  const stored: { capsule?: { chatEpoch: number; capsule: Uint8Array; signature: Uint8Array } } =
     {};
   const sources: AcpReadSources = {
     workerSigningKey: async () => worker.publicKey,
@@ -73,8 +72,8 @@ async function fixture() {
     );
     stored.capsule = {
       chatEpoch: 1,
-      capsule: encoded.slice().buffer as ArrayBuffer,
-      signature: signature.slice().buffer as ArrayBuffer,
+      capsule: encoded,
+      signature,
     };
     return { capsule, capsuleKey };
   }
@@ -101,7 +100,7 @@ async function sealFrame(
     },
     pad: "content",
   });
-  return envelope.slice().buffer as ArrayBuffer;
+  return envelope;
 }
 
 describe("ACP frame decryption", () => {
@@ -172,8 +171,8 @@ describe("ACP interaction requests", () => {
         requestKey,
         sealed: {
           epoch: 1,
-          box: box.slice().buffer as ArrayBuffer,
-          signature: signature.slice().buffer as ArrayBuffer,
+          box: toBase64Url(box),
+          signature: toBase64Url(signature),
         },
       },
     };

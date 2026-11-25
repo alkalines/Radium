@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { skipToken, useQuery } from "@tanstack/react-query";
 
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import type { ChatWorkerSelection, ChatWorkerTool } from "contracts/worker/chat-config";
+import { useWorkers } from "@/components/workspaces/use-workers";
 import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
+import { useTrpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
   agentAvailability,
@@ -37,7 +37,7 @@ type WorkerControlProps = {
  * `Project · Worker (Agent)` and then `/ branch`. The Project (with its tile) shows once one is
  * set; the Agent shows only for ACP agents; no Worker reads `No Worker`.
  *
- * Worker configuration is owner-only (`api.workers.list` and `SetChatWorker` reject members), so
+ * Worker configuration is owner-only (`workers.list` and `SetChatWorker` reject members), so
  * the Worker list is never queried for members and their Worker part is a plain label. Owners who
  * may manage the draft open the `RunTargetPicker` for Project, Worker, and Agent. Projects are not
  * owner-only: anyone else who may manage the draft gets a separate `ProjectPicker` chip.
@@ -231,16 +231,15 @@ function useSessionWorker({
   agent,
   onSelectionChange,
 }: WorkerControlProps) {
-  const { data: workers, error: workersError } = useQuery(
-    convexQuery(api.workers.list, workspaceId && isOwner ? { workspace: workspaceId } : "skip"),
-  );
+  const trpc = useTrpc();
+  const ownerWorkspace = workspaceId && isOwner ? workspaceId : undefined;
+  const { data: workers, error: workersError } = useWorkers(ownerWorkspace);
   const { data: agentRows } = useQuery(
-    convexQuery(api.acp.ListAgents, workspaceId && isOwner ? { workspace: workspaceId } : "skip"),
+    trpc.acp.listAgents.queryOptions(ownerWorkspace ? { workspace: ownerWorkspace } : skipToken),
   );
   const { data: definitions } = useQuery(
-    convexQuery(
-      api.acp.ListAgentDefinitions,
-      workspaceId && isOwner ? { workspace: workspaceId } : "skip",
+    trpc.acp.listAgentDefinitions.queryOptions(
+      ownerWorkspace ? { workspace: ownerWorkspace } : skipToken,
     ),
   );
   const agents = workspaceAgents(definitions, selection?.workerId, agentRows);

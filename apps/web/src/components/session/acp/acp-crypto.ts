@@ -1,32 +1,28 @@
-import { api } from "backend/convex/_generated/api";
-import type { Id } from "backend/convex/_generated/dataModel";
 import type {
   AcpCommandPayload,
   AcpInteractionAnswer,
   AcpInteractionRequest,
-  AcpSignedBinding,
-  AcpSignedCommand,
 } from "contracts/acp/contract";
 import type { AcpFrame } from "contracts/acp/fold";
-import type { LegacyBox } from "contracts/e2ee/legacy-contract";
 import {
   acpAnswerStatement,
   acpBindingStatement,
   acpCommandStatement,
   CryptoError,
   decodeCapsule,
+  fromBase64Url,
   openBox,
   openCapsule,
   openWithCapsule,
   sealBox,
+  toBase64Url,
   utf8,
   verify,
   workerObjectStatement,
   type ChatScopeName,
-  fromBase64Url,
 } from "radium-crypto";
-import { openChatSeed, type ChatKeysSetupWire } from "@/lib/crypto/chat-keys";
-import { buffer, bytes, cryptoClient, currentUserId, onSecretsCleared } from "@/lib/crypto/runtime";
+import { openChatSeed } from "@/lib/crypto/chat-keys";
+import { currentUserId, onSecretsCleared } from "@/lib/crypto/runtime";
 import { trpcClient } from "@/lib/trpc-client";
 import { signAsUser, trustedWorker, WorkerNotPairedError } from "@/lib/crypto/workers";
 import { getOwnerKey, keyedWorkspaceClaim } from "@/lib/crypto/workspace-keys";
@@ -34,29 +30,42 @@ import { getOwnerKey, keyedWorkspaceClaim } from "@/lib/crypto/workspace-keys";
 /**
  * Browser side of ACP end-to-end encryption (`docs/E2EE/Data.md#acp`): signed and sealed commands,
  * bindings and answers going to a paired Worker, and verified decryption of what the Worker wrote.
- * The Convex backend only relays these objects; nothing here trusts it to have authored any of them.
+ * The backend only relays these objects; nothing here trusts it to have authored any of them.
+ * Every byte string crosses the wire as unpadded base64url text.
  */
+
+/** A sealed, signed command as `acp.*` and `chats.delete` take it. */
+export type AcpSignedCommandWire = {
+  clientId: string;
+  payload: string;
+  signature: string;
+  signerKeyId: string;
+};
+
+/** A creator-signed binding as `acp.publishBinding`, `acp.startFork` and `chats.setScope` take it. */
+export type AcpSignedBindingWire = {
+  version: number;
+  scope: ChatScopeName;
+  members: string[];
+  signerKeyId: string;
+  signature: string;
+};
 
 /** A chat's public identifiers: where its sealed ACP objects live and which Worker signs them. */
 export type AcpChatContext = {
-  chatId: Id<"aisdk_chats">;
-  workspaceId: Id<"workspaces">;
+  chatId: string;
+  workspaceId: string;
   e2eeId: string;
-  /** The Worker that runs the chat's agent session (`GetSession.agent.worker`). */
+  /** The Worker that runs the chat's agent session (`getSession.agent.worker`). */
   workerId: string;
 };
 
-/**
- * One `chatroom.LiveFrames` row; `payload` is bytes in a keyed workspace and text otherwise. A
- * historical frame (`legacyContent`) keeps its JSON in the sealed sidecar and an empty payload.
- */
+/** One stream frame row of an epoch; `payload` is the sealed envelope. */
 export type AcpFrameRow = {
-  _id?: Id<"chat_frames">;
   seqFrom: number;
   seqTo: number;
   kind: AcpFrame["kind"];
-  payload: string | ArrayBuffer;
-  legacyContent?: LegacyBox;
+  payload: string | Uint8Array;
 };
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -74,12 +83,12 @@ onSecretsCleared(() => {
  * the identity is locked, so nothing unsigned is ever produced as a fallback.
  */
 export async function signAcpCommand(input: {
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   workerId: string;
   chatId: string;
   command: AcpCommandPayload;
   clientId?: string;
-}): Promise<AcpSignedCommand> {
+}): Promise<AcpSignedCommandWire> {
   const clientId = input.clientId ?? crypto.randomUUID();
   const worker = await trustedWorker(input.workspaceId, input.workerId);
   const payload = await sealBox({
@@ -104,16 +113,21 @@ export async function signAcpCommand(input: {
       payload,
     }),
   );
-  return { clientId, payload: buffer(payload), signature: buffer(signature), signerKeyId };
+  return {
+    clientId,
+    payload: toBase64Url(payload),
+    signature: toBase64Url(signature),
+    signerKeyId,
+  };
 }
 
 /** Signs one command per Worker for an agent-level action; Workers outside the roster are skipped. */
 export async function signAgentCommands(input: {
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   workers: readonly string[];
   command: AcpCommandPayload;
-}): Promise<Array<{ worker: string } & AcpSignedCommand>> {
-  const signed: Array<{ worker: string } & AcpSignedCommand> = [];
+}): Promise<Array<{ worker: string } & AcpSignedCommandWire>> {
+  const signed: Array<{ worker: string } & AcpSignedCommandWire> = [];
   for (const worker of input.workers) {
     try {
       const command = await signAcpCommand({
@@ -131,38 +145,19 @@ export async function signAgentCommands(input: {
 }
 
 /**
- * Whether a workspace has encryption keys. Keyed workspaces only accept signed ACP commands, so
- * agent-level actions choose their wire from this answer. Throws `KeylessDowngradeError` when the
- * server calls a workspace keyless that this device verified as keyed.
+ * Whether a workspace has encryption keys. Agent-level actions need a keyed workspace, since every
+ * ACP command is signed and sealed. Throws `KeylessDowngradeError` when the server calls a
+ * workspace keyless that this device verified as keyed.
  */
-export async function isKeyedWorkspace(workspaceId: Id<"workspaces">): Promise<boolean> {
+export async function isKeyedWorkspace(workspaceId: string): Promise<boolean> {
   const state = await trpcClient().e2ee.workspaceKeyState.query({ workspace: workspaceId });
   return keyedWorkspaceClaim(workspaceId, state.keyEpoch !== null);
 }
 
-/**
- * Chat keys as `acp.OpenAgentSession` and `acp.ForkSession` (still Convex) take them: bytes are
- * `ArrayBuffer`s, where the tRPC wire of `lib/crypto/chat-keys` carries unpadded base64url text.
- * The one place that converts, until those two actions move to tRPC.
- */
-export function chatKeysToConvex(keys: ChatKeysSetupWire) {
-  const { publicKey, signature, bindingSignature, ...epoch } = keys.epoch;
-  return {
-    e2eeId: keys.e2eeId,
-    epoch: {
-      ...epoch,
-      publicKey: buffer(fromBase64Url(publicKey)),
-      ...(signature ? { signature: buffer(fromBase64Url(signature)) } : {}),
-      ...(bindingSignature ? { bindingSignature: buffer(fromBase64Url(bindingSignature)) } : {}),
-    },
-    wraps: keys.wraps.map((wrap) => ({ ...wrap, sealed: buffer(fromBase64Url(wrap.sealed)) })),
-  };
-}
-
 /** Everything `acpBindingStatement` covers, except the signature. */
 export type AcpBindingInput = {
-  workspaceId: Id<"workspaces">;
-  chatId: Id<"aisdk_chats">;
+  workspaceId: string;
+  chatId: string;
   e2eeId: string;
   workerId: string;
   agentId: string;
@@ -174,7 +169,7 @@ export type AcpBindingInput = {
 };
 
 /** The current user, who must be the chat's creator, signs the chat's binding. */
-export async function signAcpBinding(input: AcpBindingInput): Promise<AcpSignedBinding> {
+export async function signAcpBinding(input: AcpBindingInput): Promise<AcpSignedBindingWire> {
   const { signature, signerKeyId } = await signAsUser(
     acpBindingStatement({
       workspaceId: input.workspaceId,
@@ -195,21 +190,21 @@ export async function signAcpBinding(input: AcpBindingInput): Promise<AcpSignedB
     scope: input.scope,
     members: input.members,
     signerKeyId,
-    signature: buffer(signature),
+    signature: toBase64Url(signature),
   };
 }
 
 /**
  * The owner's proof that they bound an indexed agent session to a chat Radium created for it
- * (`OpenAgentSession`): their signature over an `import` command statement for that session.
+ * (`openAgentSession`): their signature over an `import` command statement for that session.
  */
 export async function signImportProof(input: {
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   workerId: string;
-  chatId: Id<"aisdk_chats">;
+  chatId: string;
   agentId: string;
   sessionId: string;
-}): Promise<{ signerKeyId: string; signature: ArrayBuffer }> {
+}): Promise<{ signerKeyId: string; signature: string }> {
   const { signature, signerKeyId } = await signAsUser(
     acpCommandStatement({
       workspaceId: input.workspaceId,
@@ -220,7 +215,7 @@ export async function signImportProof(input: {
       payload: utf8(input.agentId),
     }),
   );
-  return { signerKeyId, signature: buffer(signature) };
+  return { signerKeyId, signature: toBase64Url(signature) };
 }
 
 /**
@@ -228,14 +223,14 @@ export async function signImportProof(input: {
  * exactly what the signature must cover. Creator-only; `version` is the stored version plus one.
  */
 export async function publishAcpBinding(input: {
-  chatId: Id<"aisdk_chats">;
+  chatId: string;
   e2eeId: string;
   scope: ChatScopeName;
   members: string[];
   version: number;
-  importProof?: { signerKeyId: string; signature: ArrayBuffer };
-}): Promise<AcpSignedBinding> {
-  const session = await cryptoClient().query(api.acp.GetSession, { chat: input.chatId });
+  importProof?: { signerKeyId: string; signature: string };
+}): Promise<AcpSignedBindingWire> {
+  const session = await trpcClient().acp.getSession.query({ chat: input.chatId });
   const binding = await signAcpBinding({
     workspaceId: session.workspace,
     chatId: input.chatId,
@@ -248,12 +243,40 @@ export async function publishAcpBinding(input: {
     members: input.members,
     version: input.version,
   });
-  await cryptoClient().mutation(api.acp.PublishBinding, {
+  await trpcClient().acp.publishBinding.mutate({
     chat: input.chatId,
     binding,
     ...(input.importProof ? { importProof: input.importProof } : {}),
   });
   return binding;
+}
+
+/**
+ * The creator's next binding for exactly the audience a scope change produces, to travel with
+ * `chats.setScope`: the stored version plus one over the session fields the server holds. `undefined`
+ * while the chat has no published binding, which the server then also refuses to receive.
+ */
+export async function nextAcpBinding(
+  chatId: string,
+  audience: { scope: ChatScopeName; members: string[] },
+): Promise<AcpSignedBindingWire | undefined> {
+  const [session, keys] = await Promise.all([
+    trpcClient().acp.getSession.query({ chat: chatId }),
+    trpcClient().e2ee.chatKeys.query({ chatId }),
+  ]);
+  if (!session.binding || !keys.e2eeId) return undefined;
+  return signAcpBinding({
+    workspaceId: session.workspace,
+    chatId,
+    e2eeId: keys.e2eeId,
+    workerId: session.agent.worker,
+    agentId: session.agent.agentId,
+    profile: session.agent.profile,
+    cwd: session.agent.cwd,
+    scope: audience.scope,
+    members: audience.members,
+    version: session.binding.version + 1,
+  });
 }
 
 /**
@@ -264,14 +287,14 @@ export async function publishAcpBinding(input: {
  * explicit confirmation: the stored session ID is server data until the owner vouches for it.
  */
 export async function repairAcpBinding(
-  chatId: Id<"aisdk_chats">,
+  chatId: string,
   options: { authorizeSession?: boolean } = {},
 ): Promise<void> {
   const state = await trpcClient().e2ee.chatKeys.query({ chatId });
   if (!state.e2eeId || state.creatorId !== currentUserId()) return;
-  let importProof: { signerKeyId: string; signature: ArrayBuffer } | undefined;
+  let importProof: { signerKeyId: string; signature: string } | undefined;
   if (options.authorizeSession) {
-    const session = await cryptoClient().query(api.acp.GetSession, { chat: chatId });
+    const session = await trpcClient().acp.getSession.query({ chat: chatId });
     if (session.agent.sessionId) {
       importProof = await signImportProof({
         workspaceId: session.workspace,
@@ -294,12 +317,12 @@ export async function repairAcpBinding(
 
 /** Seals an interaction answer to the Worker and signs it; the Worker alone can validate it. */
 export async function sealAcpAnswer(input: {
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   workerId: string;
-  chatId: Id<"aisdk_chats">;
+  chatId: string;
   requestKey: string;
   answer: AcpInteractionAnswer;
-}): Promise<{ answer: ArrayBuffer; signature: ArrayBuffer; signerKeyId: string }> {
+}): Promise<{ answer: string; signature: string; signerKeyId: string }> {
   const worker = await trustedWorker(input.workspaceId, input.workerId);
   const sealed = await sealBox({
     recipientPublicKey: worker.encryptionPublicKey,
@@ -322,7 +345,7 @@ export async function sealAcpAnswer(input: {
       answer: sealed,
     }),
   );
-  return { answer: buffer(sealed), signature: buffer(signature), signerKeyId };
+  return { answer: toBase64Url(sealed), signature: toBase64Url(signature), signerKeyId };
 }
 
 /** First prompt reduced to one line of at most 80 characters, for the browser's fallback title. */
@@ -332,23 +355,23 @@ export function acpFallbackTitle(text: string): string {
 
 /**
  * What reading a Worker's objects depends on: the roster-verified signing key of the chat's Worker,
- * the stored epoch capsule, and the chat seed. Production reads the verified roster, Convex and the
- * unlocked key store; tests substitute them to exercise the verification itself.
+ * the stored epoch capsule, and the chat seed. Production reads the verified roster, the stream
+ * layer and the unlocked key store; tests substitute them to exercise the verification itself.
  */
 export type AcpReadSources = {
   workerSigningKey(chat: AcpChatContext): Promise<Uint8Array>;
   streamCapsule(
     chat: AcpChatContext,
     epoch: number,
-  ): Promise<{ chatEpoch: number; capsule: ArrayBuffer; signature: ArrayBuffer } | null>;
-  chatSeed(chatId: Id<"aisdk_chats">, epoch: number): Promise<Uint8Array>;
+  ): Promise<{ chatEpoch: number; capsule: Uint8Array; signature: Uint8Array } | null>;
+  chatSeed(chatId: string, epoch: number): Promise<Uint8Array>;
 };
 
 const liveSources: AcpReadSources = {
   workerSigningKey: async (chat) =>
     (await trustedWorker(chat.workspaceId, chat.workerId)).signingPublicKey,
-  streamCapsule: (chat, epoch) =>
-    cryptoClient().query(api.acp.StreamCapsule, { chat: chat.chatId, epoch }),
+  // The epoch capsule is stored with its stream, which has no browser route before Phase 4.
+  streamCapsule: async () => null,
   chatSeed: openChatSeed,
 };
 
@@ -394,17 +417,16 @@ function acpFrameKey(
     if (!stream) {
       throw new CryptoError("DECRYPT_FAILED", "The agent has not published this stream yet");
     }
-    const encoded = bytes(stream.capsule);
     await verifyWorkerObject(
       chat,
       { table: "acp_streams", record: String(epoch), field: "capsule" },
-      encoded,
-      bytes(stream.signature),
+      stream.capsule,
+      stream.signature,
       sources,
     );
     return openCapsule({
       seed: await sources.chatSeed(chat.chatId, stream.chatEpoch),
-      capsule: decodeCapsule(encoded),
+      capsule: decodeCapsule(stream.capsule),
       aad: {
         table: "acp_streams",
         workspace: chat.workspaceId,
@@ -440,7 +462,7 @@ export async function openAcpFrames(
         throw new CryptoError("BAD_ENVELOPE", "Agent frame is not encrypted");
       const plaintext = await openWithCapsule({
         capsuleKey,
-        envelope: bytes(row.payload),
+        envelope: row.payload,
         aad: {
           table: "chat_frames",
           workspace: chat.workspaceId,
@@ -470,16 +492,16 @@ export async function openAcpInteraction(
   chat: AcpChatContext,
   row: {
     requestKey: string;
-    sealed: { epoch: number; box: ArrayBuffer; signature: ArrayBuffer };
+    sealed: { epoch: number; box: string; signature: string };
   },
   sources: AcpReadSources = liveSources,
 ): Promise<AcpInteractionRequest> {
-  const box = bytes(row.sealed.box);
+  const box = fromBase64Url(row.sealed.box);
   await verifyWorkerObject(
     chat,
     { table: "acp_interactions", record: row.requestKey, field: "request" },
     box,
-    bytes(row.sealed.signature),
+    fromBase64Url(row.sealed.signature),
     sources,
   );
   const plaintext = await openBox({
@@ -510,11 +532,11 @@ export async function openAcpInteraction(
 /** Opens the Worker's sealed session error (a JSON string sealed to the chat key). */
 export async function openAcpError(
   chat: Pick<AcpChatContext, "chatId" | "workspaceId" | "e2eeId">,
-  sealed: { epoch: number; box: ArrayBuffer },
+  sealed: { epoch: number; box: string },
 ): Promise<string> {
   const plaintext = await openBox({
     seed: await openChatSeed(chat.chatId, sealed.epoch),
-    box: bytes(sealed.box),
+    box: fromBase64Url(sealed.box),
     aad: {
       table: "acp_sessions",
       workspace: chat.workspaceId,
@@ -535,16 +557,16 @@ export async function openAcpError(
  * the owner can open it; the AAD binds it to the Worker, agent and session.
  */
 export async function openAgentIndexTitle(input: {
-  workspaceId: Id<"workspaces">;
+  workspaceId: string;
   workerId: string;
   agentId: string;
   sessionId: string;
-  sealedTitle: { epoch: number; box: ArrayBuffer };
+  sealedTitle: { epoch: number; box: string };
 }): Promise<string> {
   const owner = await getOwnerKey(input.workspaceId, input.sealedTitle.epoch);
   const plaintext = await openBox({
     seed: owner.seed,
-    box: bytes(input.sealedTitle.box),
+    box: fromBase64Url(input.sealedTitle.box),
     aad: {
       table: "acp_agent_sessions",
       workspace: input.workspaceId,

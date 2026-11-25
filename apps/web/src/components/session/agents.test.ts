@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { Id } from "backend/convex/_generated/dataModel";
 import {
   agentAvailability,
   agentListed,
@@ -15,7 +14,7 @@ import {
 import { readTabState } from "./tab-state";
 
 const definition: SessionAgentDefinition = {
-  _id: "definition" as Id<"acp_agents">,
+  id: "definition",
   agentId: "codex",
   name: "Codex",
   command: "codex",
@@ -28,7 +27,7 @@ const definition: SessionAgentDefinition = {
 const now = 100_000;
 function worker(
   workerId: string,
-  lastSeenAt: number | undefined = now,
+  lastSeenAt: number | null = now,
   access: SessionWorker["gateway"]["access"] = "off",
 ): SessionWorker {
   return {
@@ -39,6 +38,7 @@ function worker(
     capabilities: [],
     identityEpoch: 0,
     lastSeenAt,
+    tempDirectory: null,
     gateway: { access, telemetry: "workspace" },
   };
 }
@@ -49,10 +49,12 @@ const gatewayDefinition: SessionAgentDefinition = {
 };
 function report(worker: string, status: SessionAgentRow["status"] = "ready"): SessionAgentRow {
   return {
-    _id: `${worker}-agent` as Id<"worker_agents">,
-    _creationTime: 0,
-    workspace: "workspace" as Id<"workspaces">,
+    id: `${worker}-agent`,
     worker,
+    icon: null,
+    error: null,
+    defaults: null,
+    sessionsSync: null,
     checkedAt: 0,
     agentId: "codex",
     name: "Codex",
@@ -124,7 +126,7 @@ describe("workspace ACP agent selection", () => {
       const rows = [report("one", status)];
       expect(agentAvailability(agent, undefined, now, rows)).toBe("no_worker");
       expect(agentAvailability(agent, worker("one", now - 60_001), now, rows)).toBe("offline");
-      expect(agentAvailability(agent, { ...worker("one"), lastSeenAt: undefined }, now, rows)).toBe(
+      expect(agentAvailability(agent, { ...worker("one"), lastSeenAt: null }, now, rows)).toBe(
         "offline",
       );
       expect(agentAvailability(agent, worker("one"), now, rows)).toBe(

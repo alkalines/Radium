@@ -24,7 +24,8 @@ export function useWorkerPresenceClock(): number {
 }
 
 /**
- * A Worker's online state from its last heartbeat (`api.workers.list` `lastSeenAt`, owner-only):
+ * A Worker's online state from its last heartbeat (`workers.list` `lastSeenAt`, owner-only; `null`
+ * before its first report):
  * a 6px Signal dot plus `Online`/`Offline`. `now` comes from `useWorkerPresenceClock`.
  */
 export function WorkerPresence({
@@ -32,12 +33,12 @@ export function WorkerPresence({
   now,
   className,
 }: {
-  lastSeenAt?: number;
+  lastSeenAt?: number | null;
   now: number;
   className?: string;
 }) {
   if (now === 0) return null;
-  const isOnline = isWorkerOnline(lastSeenAt, now);
+  const isOnline = isWorkerOnline(lastSeenAt ?? undefined, now);
 
   return (
     <span

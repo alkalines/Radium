@@ -1,19 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { useMutation, usePaginatedQuery } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import { FolderIcon, MessageSquareDashedIcon, RefreshCwIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { fromBase64Url } from "radium-crypto";
-import { api } from "backend/convex/_generated/api";
-import type { Id } from "backend/convex/_generated/dataModel";
+import type { AppRouter } from "server/router";
 import { isWorkerOnline } from "contracts/worker/presence";
 import { ProjectGlyph, type ProjectSummary } from "@/components/projects/project-glyph";
 import { AcpAgentIcon } from "@/components/session/acp/agent-icon";
 import { acpActionError } from "@/components/session/acp/use-acp-session";
 import {
-  chatKeysToConvex,
   isKeyedWorkspace,
   openAgentIndexTitle,
   publishAcpBinding,
@@ -38,20 +35,32 @@ import { Spinner } from "@/components/ui/spinner";
 import { sealTitle } from "@/lib/crypto/chat-content";
 import { createChatKeys, rememberChatSeed } from "@/lib/crypto/chat-keys";
 import { KeysLockedError } from "@/lib/crypto/key-manager";
-import { buffer } from "@/lib/crypto/runtime";
 import { trpcClient } from "@/lib/trpc-client";
+import { useTrpc } from "@/lib/trpc";
 import { openHistoricalAgentTitle } from "@/lib/crypto/legacy-relay";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import { formatRelativeTime, groupByRecency } from "./recency";
+import type { PageStatus } from "./merged-pages";
 
-/** One agent session index row, as `acp.ListAgentSessionIndex` and `ListUnopenedAgentSessions` return it. */
+/** One agent session index row, as `acp.listAgentSessionIndex` and `listUnopenedAgentSessions` return it. */
 export type IndexedAgentSession = Pick<
-  FunctionReturnType<typeof api.acp.ListAgentSessionIndex>["page"][number],
-  "_id" | "worker" | "agentId" | "sessionId" | "chat" | "title" | "sealedTitle" | "legacyContent"
+  inferRouterOutputs<AppRouter>["acp"]["listAgentSessionIndex"]["page"][number],
+  "id" | "worker" | "agentId" | "sessionId" | "chat" | "title" | "sealedTitle" | "legacyContent"
 >;
 
 /** Searching keeps loading older pages until this many rows match (or the index is exhausted). */
 const SEARCH_MIN_MATCHES = 10;
+
+/** The load state of a keyset-paged query, in the words Home's merged lists use. */
+export function pageStatus(query: {
+  isPending: boolean;
+  isFetchingNextPage: boolean;
+  hasNextPage: boolean;
+}): PageStatus {
+  if (query.isPending) return "LoadingFirstPage";
+  if (query.isFetchingNextPage) return "LoadingMore";
+  return query.hasNextPage ? "CanLoadMore" : "Exhausted";
+}
 
 function showSyncError(error: unknown) {
   const message = acpActionError(error);
@@ -59,19 +68,17 @@ function showSyncError(error: unknown) {
 }
 
 /**
- * Requests an index refresh for one agent. A keyed workspace takes one signed `sync_sessions`
- * command per Worker that reports the agent (agent-level commands are owner-only and the Worker
- * ignores unsigned ones); Workers outside the roster are skipped. Throws `KeysLockedError` when a
- * keyed workspace's identity is locked.
+ * Requests an index refresh for one agent: one signed `sync_sessions` command per Worker that
+ * reports the agent (agent-level commands are owner-only and the Worker ignores unsigned ones);
+ * Workers outside the roster are skipped. Throws `KeysLockedError` when the identity is locked,
+ * and `ACP_E2EE_REQUIRED` in a workspace without keys.
  */
 export function useSyncAgentSessions() {
-  const sync = useMutation(api.acp.SyncAgentSessions);
+  const trpc = useTrpc();
+  const { mutateAsync: sync } = useMutation(trpc.acp.syncAgentSessions.mutationOptions());
   return useCallback(
-    async (workspace: Id<"workspaces">, agentId: string, workers: readonly string[]) => {
-      if (!(await isKeyedWorkspace(workspace))) {
-        await sync({ workspace, agentId });
-        return;
-      }
+    async (workspace: string, agentId: string, workers: readonly string[]) => {
+      if (!(await isKeyedWorkspace(workspace))) throw new Error("ACP_E2EE_REQUIRED");
       const signed = await signAgentCommands({
         workspaceId: workspace,
         workers,
@@ -84,13 +91,13 @@ export function useSyncAgentSessions() {
 }
 
 /** The sealed box a row's title comes from; a Worker-sealed title supersedes a migrated one. */
-function indexTitleBox(row: IndexedAgentSession): ArrayBuffer | undefined {
+function indexTitleBox(row: IndexedAgentSession): string | undefined {
   if (row.sealedTitle) return row.sealedTitle.box;
   return row.title ? undefined : row.legacyContent?.box;
 }
 
 /** Opens a row's title from its Worker-sealed box or, for migrated rows, its historical sidecar. */
-async function openIndexTitle(workspace: Id<"workspaces">, row: IndexedAgentSession) {
+async function openIndexTitle(workspace: string, row: IndexedAgentSession) {
   if (row.sealedTitle) {
     return openAgentIndexTitle({
       workspaceId: workspace,
@@ -102,7 +109,7 @@ async function openIndexTitle(workspace: Id<"workspaces">, row: IndexedAgentSess
   }
   if (row.legacyContent) {
     const title = await openHistoricalAgentTitle(
-      { _id: row._id, legacyContent: row.legacyContent },
+      { _id: row.id, legacyContent: row.legacyContent },
       workspace,
     );
     return title ?? "";
@@ -116,12 +123,12 @@ async function openIndexTitle(workspace: Id<"workspaces">, row: IndexedAgentSess
  * `undefined` for an untitled session.
  */
 export function useAgentSessionTitles(
-  workspace: Id<"workspaces">,
+  workspace: string,
   rows: readonly IndexedAgentSession[],
 ) {
   const keyStatus = useKeyStatus();
   const unlocked = keyStatus.state === "unlocked";
-  const [opened, setOpened] = useState<Record<string, { box: ArrayBuffer; title: string }>>({});
+  const [opened, setOpened] = useState<Record<string, { box: string; title: string }>>({});
   useEffect(() => {
     if (!unlocked) {
       setOpened((current) => (Object.keys(current).length ? {} : current));
@@ -129,17 +136,17 @@ export function useAgentSessionTitles(
     }
     const pending = rows.flatMap((row) => {
       const box = indexTitleBox(row);
-      return box && opened[row._id]?.box !== box ? [{ row, box }] : [];
+      return box && opened[row.id]?.box !== box ? [{ row, box }] : [];
     });
     if (pending.length === 0) return;
     let cancelled = false;
     void Promise.all(
       pending.map(async ({ row, box }) => {
         try {
-          return [row._id, { box, title: await openIndexTitle(workspace, row) }] as const;
+          return [row.id, { box, title: await openIndexTitle(workspace, row) }] as const;
         } catch {
           // Locked keys, recovery custody and unverifiable boxes all read as an untitled session.
-          return [row._id, { box, title: "" }] as const;
+          return [row.id, { box, title: "" }] as const;
         }
       }),
     ).then((entries) => {
@@ -154,22 +161,23 @@ export function useAgentSessionTitles(
     if (plain) return plain;
     if (!row.sealedTitle && !row.legacyContent) return undefined;
     if (!unlocked) return "Locked";
-    return opened[row._id]?.title.trim() || undefined;
+    return opened[row.id]?.title.trim() || undefined;
   };
 }
 
 /**
  * Opens an indexed agent session: its chat when Radium has one, otherwise a chat bound to it
- * (`acp.OpenAgentSession`). `pending` holds the rows being opened so repeated clicks are ignored.
- * In a keyed workspace the owner creates the chat keys here, seals the session's title to the new
- * chat key, and signs the import proof that binds the agent session to the chat.
+ * (`acp.openAgentSession`). `pending` holds the rows being opened so repeated clicks are ignored.
+ * The owner creates the chat keys here, seals the session's title to the new chat key, and signs
+ * the import proof that binds the agent session to the chat.
  */
 export function useOpenAgentSession() {
-  const open = useMutation(api.acp.OpenAgentSession);
+  const trpc = useTrpc();
+  const { mutateAsync: open } = useMutation(trpc.acp.openAgentSession.mutationOptions());
   const navigate = useNavigate();
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
 
-  async function openKeyedChat(workspace: Id<"workspaces">, row: IndexedAgentSession) {
+  async function openKeyedChat(workspace: string, row: IndexedAgentSession) {
     const title = await openIndexTitle(workspace, row);
     const keys = await createChatKeys({ workspaceId: workspace, scope: "personal" });
     const sealedTitle = title
@@ -188,13 +196,7 @@ export function useOpenAgentSession() {
       worker: row.worker,
       agentId: row.agentId,
       sessionId: row.sessionId,
-      // `acp.OpenAgentSession` still runs on Convex, whose bytes are `ArrayBuffer`s.
-      e2ee: {
-        keys: chatKeysToConvex(keys.keys),
-        ...(sealedTitle
-          ? { sealedTitle: { epoch: sealedTitle.epoch, box: buffer(fromBase64Url(sealedTitle.box)) } }
-          : {}),
-      },
+      e2ee: { keys: keys.keys, ...(sealedTitle ? { sealedTitle } : {}) },
     });
     // Another client may have opened the session first; then the chat has its own keys and
     // binding, and ours are discarded.
@@ -221,20 +223,12 @@ export function useOpenAgentSession() {
     return chatId;
   }
 
-  async function openRow(workspace: Id<"workspaces">, row: IndexedAgentSession) {
-    if (pending.has(row._id)) return;
-    setPending((current) => new Set(current).add(row._id));
+  async function openRow(workspace: string, row: IndexedAgentSession) {
+    if (pending.has(row.id)) return;
+    setPending((current) => new Set(current).add(row.id));
     try {
-      const chatId =
-        row.chat ??
-        ((await isKeyedWorkspace(workspace))
-          ? await openKeyedChat(workspace, row)
-          : await open({
-              workspace,
-              worker: row.worker,
-              agentId: row.agentId,
-              sessionId: row.sessionId,
-            }));
+      if (!row.chat && !(await isKeyedWorkspace(workspace))) throw new Error("ACP_E2EE_REQUIRED");
+      const chatId = row.chat ?? (await openKeyedChat(workspace, row));
       await navigate({ to: "/chat/$chatId", params: { chatId } });
     } catch (error) {
       const message = acpActionError(error);
@@ -242,7 +236,7 @@ export function useOpenAgentSession() {
     } finally {
       setPending((current) => {
         const next = new Set(current);
-        next.delete(row._id);
+        next.delete(row.id);
         return next;
       });
     }
@@ -262,7 +256,7 @@ export function AgentSessions({
   now,
   presenceNow,
 }: {
-  workspace: Id<"workspaces">;
+  workspace: string;
   agent: SessionAgentDefinition;
   reports: SessionAgentRow[];
   workers: SessionWorker[];
@@ -275,11 +269,20 @@ export function AgentSessions({
   const syncAgentSessions = useSyncAgentSessions();
   const { pending, openRow } = useOpenAgentSession();
   const search = query.trim().toLowerCase();
-  const { results, status, loadMore } = usePaginatedQuery(
-    api.acp.ListAgentSessionIndex,
-    { workspace, agentId: agent.agentId },
-    { initialNumItems: 30 },
+  const trpc = useTrpc();
+  const queryClient = useQueryClient();
+  const indexPages = useInfiniteQuery(
+    trpc.acp.listAgentSessionIndex.infiniteQueryOptions(
+      { workspace, agentId: agent.agentId, limit: 30 },
+      { initialCursor: null, getNextPageParam: (last) => last.nextCursor },
+    ),
   );
+  const results = useMemo(
+    () => indexPages.data?.pages.flatMap((page) => page.page) ?? [],
+    [indexPages.data],
+  );
+  const status = pageStatus(indexPages);
+  const loadMore = useCallback(() => void indexPages.fetchNextPage(), [indexPages]);
   const titleOf = useAgentSessionTitles(workspace, results);
   // A string key keeps the sync effect from re-running on every new `reports` array.
   const syncWorkers = JSON.stringify(reports.map((report) => report.worker));
@@ -303,8 +306,16 @@ export function AgentSessions({
     : results;
   const loading = status === "LoadingFirstPage";
   useEffect(() => {
-    if (search && status === "CanLoadMore" && rows.length < SEARCH_MIN_MATCHES) loadMore(30);
+    if (search && status === "CanLoadMore" && rows.length < SEARCH_MIN_MATCHES) loadMore();
   }, [loadMore, rows.length, search, status]);
+  // A finished refresh changed the index: read it again (not on the first render).
+  const syncedAt = Math.max(failed?.at ?? 0, latest?.at ?? 0);
+  const seenSync = useRef(syncedAt);
+  useEffect(() => {
+    if (seenSync.current === syncedAt) return;
+    seenSync.current = syncedAt;
+    void queryClient.invalidateQueries({ queryKey: trpc.acp.listAgentSessionIndex.pathKey() });
+  }, [queryClient, syncedAt, trpc]);
   const groups = groupByRecency(rows, now, (row) => row.updatedAt);
   const multipleWorkers = new Set(reports.map((report) => report.worker)).size > 1;
   return (
@@ -386,7 +397,7 @@ export function AgentSessions({
                 const offline =
                   workersLoaded &&
                   presenceNow > 0 &&
-                  (!worker || !isWorkerOnline(worker.lastSeenAt, presenceNow));
+                  (!worker || !isWorkerOnline(worker.lastSeenAt ?? undefined, presenceNow));
                 const directory =
                   project?.name ??
                   (row.cwd
@@ -395,14 +406,14 @@ export function AgentSessions({
                     .pop() ||
                     row.cwd);
                 return (
-                  <li key={row._id}>
+                  <li key={row.id}>
                     <button
                       type="button"
                       onClick={() => void openRow(workspace, row)}
-                      disabled={pending.has(row._id)}
+                      disabled={pending.has(row.id)}
                       className="flex h-10 w-full items-center gap-2.5 rounded-xl px-3 text-left text-sm outline-none transition-colors hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-60"
                     >
-                      {pending.has(row._id) ? (
+                      {pending.has(row.id) ? (
                         <Spinner />
                       ) : project ? (
                         <ProjectGlyph project={project} />
@@ -447,7 +458,7 @@ export function AgentSessions({
         ))
       )}
       {status === "CanLoadMore" ? (
-        <Button variant="outline" size="sm" className="self-center" onClick={() => loadMore(30)}>
+        <Button variant="outline" size="sm" className="self-center" onClick={() => loadMore()}>
           Load more
         </Button>
       ) : null}

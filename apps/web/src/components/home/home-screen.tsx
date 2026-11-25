@@ -1,11 +1,7 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
-import { convexQuery } from "@convex-dev/react-query";
 import { skipToken, useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { inferRouterOutputs } from "@trpc/server";
-import type { FunctionReturnType } from "convex/server";
-import { ConvexError } from "convex/values";
-import { usePaginatedQuery } from "convex-helpers/react/cache";
 import type { AppRouter } from "server/router";
 import {
   FolderMinusIcon,
@@ -19,7 +15,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { api } from "backend/convex/_generated/api";
 import type { Id } from "backend/convex/_generated/dataModel";
 import { isWorkerOnline } from "contracts/worker/presence";
 import { AgentStatus } from "@/components/agentic/agent-status";
@@ -29,6 +24,7 @@ import { ProjectUsageButton } from "@/components/projects/project-usage";
 import { AcpAgentIcon } from "@/components/session/acp/agent-icon";
 import { acpActionError } from "@/components/session/acp/use-acp-session";
 import type { SessionAgentDefinition, SessionWorker } from "@/components/session/agents";
+import { useWorkers } from "@/components/workspaces/use-workers";
 import { useWorkerPresenceClock } from "@/components/workspaces/worker-presence";
 import { ProjectGlyph, type ProjectSummary } from "@/components/projects/project-glyph";
 import {
@@ -58,6 +54,7 @@ import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 import { SessionActionsMenu } from "./session-actions-menu";
 import {
   AgentSessions,
+  pageStatus,
   useAgentSessionTitles,
   useOpenAgentSession,
   useSyncAgentSessions,
@@ -71,9 +68,8 @@ import { KeysLockedError } from "@/lib/crypto/key-manager";
 import { CustodialContentError, openLegacyContent } from "@/lib/crypto/legacy-content";
 
 type HomeSession = inferRouterOutputs<AppRouter>["chats"]["listPinned"][number];
-type UnopenedAgentSession = FunctionReturnType<
-  typeof api.acp.ListUnopenedAgentSessions
->["page"][number];
+type UnopenedAgentSession =
+  inferRouterOutputs<AppRouter>["acp"]["listUnopenedAgentSessions"]["page"][number];
 type RowAgent = Pick<SessionAgentDefinition, "name" | "icon">;
 
 /**
@@ -128,10 +124,23 @@ export function HomeScreen() {
   const presenceNow = useWorkerPresenceClock();
   const isOwner = workspace?.role === "owner";
   const logEvent = useFrontendLogger();
-  const ownerArgs = workspaceId && isOwner ? { workspace: workspaceId } : "skip";
-  const { data: workers } = useQuery(convexQuery(api.workers.list, ownerArgs));
-  const { data: definitions } = useQuery(convexQuery(api.acp.ListAgentDefinitions, ownerArgs));
-  const { data: agentRows } = useQuery(convexQuery(api.acp.ListAgents, ownerArgs));
+  const ownerWorkspace = isOwner ? workspaceId : undefined;
+  const trpc = useTrpc();
+  const { data: workers } = useWorkers(ownerWorkspace);
+  const { data: definitions } = useQuery(
+    trpc.acp.listAgentDefinitions.queryOptions(
+      ownerWorkspace ? { workspace: ownerWorkspace } : skipToken,
+    ),
+  );
+  const { data: agentRows } = useQuery(
+    trpc.acp.listAgents.queryOptions(ownerWorkspace ? { workspace: ownerWorkspace } : skipToken, {
+      // While an index refresh the owner started is running, its progress is read every 5 s.
+      refetchInterval: (query) =>
+        query.state.data?.some((report) => report.sessionsSync?.status === "running")
+          ? 5_000
+          : false,
+    }),
+  );
   const activeWorkers = (workers ?? []).filter((worker) => worker.status === "active");
   const activeWorkerIds = new Set(activeWorkers.map((worker) => worker.workerId));
   const agents = (definitions ?? []).filter(
@@ -149,7 +158,6 @@ export function HomeScreen() {
       ? agents.find((agent) => agent.agentId === agentSelection.agentId)
       : undefined;
 
-  const trpc = useTrpc();
   const { data: projectsData, error: projectsError } = useQuery(
     trpc.projects.list.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
   );
@@ -524,27 +532,16 @@ class SessionListBoundary extends Component<
   }
 }
 
-/** The reason a list query failed, without Convex's `[CONVEX Q(…)] [Request ID: …]` envelope. */
+/** The reason a list query failed, as the server worded it. */
 function sessionListError(error: Error): string {
-  if (error instanceof ConvexError) {
-    const data: unknown = error.data;
-    if (typeof data === "string") return data;
-    if (typeof data === "object" && data !== null && "message" in data) {
-      if (typeof data.message === "string") return data.message;
-    }
-  }
-  const message = error.message
-    .replace(/^\[CONVEX [^\]]*\]\s*(?:\[Request ID: [^\]]*\]\s*)?/, "")
-    .split("\n")[0]
-    ?.trim();
-  return message || "The session list could not load.";
+  return error.message.split("\n")[0]?.trim() || "The session list could not load.";
 }
 
 /**
  * One filter's session list: pinned sessions, then the Radium sessions and (for the owner) the
  * unopened agent sessions merged by recency, `HOME_PAGE_SIZE` rows at a time. Both lists are
- * paginated on the server, and their subscriptions outlive the screen for five minutes
- * (`ConvexQueryCacheProvider`), so returning Home reuses the loaded pages.
+ * keyset-paged on the server; the query cache keeps their pages for five minutes, so returning
+ * Home reuses them, and they refetch on focus and after this tab's own changes.
  */
 function SessionList({
   workspaceId,
@@ -596,13 +593,23 @@ function SessionList({
   if (chatPages.isPending) chatStatus = "LoadingFirstPage";
   else if (chatPages.isFetchingNextPage) chatStatus = "LoadingMore";
   else if (chatPages.hasNextPage) chatStatus = "CanLoadMore";
-  const agentSessions = usePaginatedQuery(
-    api.acp.ListUnopenedAgentSessions,
-    isOwner ? filter : "skip",
-    { initialNumItems: HOME_PAGE_SIZE, customPagination: true },
+  const agentPages = useInfiniteQuery(
+    trpc.acp.listUnopenedAgentSessions.infiniteQueryOptions(
+      isOwner ? { ...filter, limit: HOME_PAGE_SIZE } : skipToken,
+      {
+        initialCursor: null,
+        getNextPageParam: (last) => last.nextCursor,
+        gcTime: 5 * minute,
+      },
+    ),
   );
+  const agentItems = useMemo(
+    () => agentPages.data?.pages.flatMap((page) => page.page) ?? [],
+    [agentPages.data],
+  );
+  const agentStatus: PageStatus = isOwner ? pageStatus(agentPages) : "Exhausted";
   const { pending: openingAgentSessions, openRow: openAgentSession } = useOpenAgentSession();
-  const agentSessionTitle = useAgentSessionTitles(workspaceId, agentSessions.results);
+  const agentSessionTitle = useAgentSessionTitles(workspaceId, agentItems);
   const keyStatus = useKeyStatus();
   const [openedTitles, setOpenedTitles] = useState<
     Record<string, { box: string; title: string; emoji?: string }>
@@ -692,17 +699,17 @@ function SessionList({
     },
     isOwner
       ? {
-          items: agentSessions.results.map((row) => ({
+          items: agentItems.map((row) => ({
             kind: "agent" as const,
-            id: row._id,
+            id: row.id,
             title: agentSessionTitle(row) ?? "Untitled session",
             untitled: agentSessionTitle(row) === undefined,
             at: row.updatedAt,
             row,
             agent: definitionsById.get(row.agentId) ?? { name: row.agentId },
           })),
-          status: agentSessions.status,
-          loadMore: agentSessions.loadMore,
+          status: agentStatus,
+          loadMore: () => void agentPages.fetchNextPage(),
         }
       : { items: [], status: "Exhausted", loadMore: () => {} },
   ];
@@ -758,7 +765,7 @@ function SessionList({
                   untitled={row.untitled}
                   updatedAt={row.at}
                   agent={row.agent}
-                  project={row.row.project ? projectsById.get(row.row.project) : undefined}
+                  project={row.row.project ? projectsById.get(row.row.project as Id<"projects">) : undefined}
                   now={now}
                   offline={isWorkerOffline(workers, row.row.worker, presenceNow)}
                   opening={openingAgentSessions.has(row.id)}
@@ -969,13 +976,13 @@ function SessionListSkeleton() {
 
 /** Owner-only presence: unknown Workers count as offline once the Worker list has loaded. */
 function isWorkerOffline(
-  workers: readonly { workerId: string; status: string; lastSeenAt?: number }[] | undefined,
+  workers: readonly { workerId: string; status: string; lastSeenAt?: number | null }[] | undefined,
   workerId: string,
   now: number,
 ) {
   if (!workers || now === 0) return false;
   const worker = workers.find((item) => item.workerId === workerId);
-  return !worker || worker.status !== "active" || !isWorkerOnline(worker.lastSeenAt, now);
+  return !worker || worker.status !== "active" || !isWorkerOnline(worker.lastSeenAt ?? undefined, now);
 }
 
 function sessionTitle(session: HomeSession) {

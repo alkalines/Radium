@@ -1,8 +1,5 @@
-import type { ConvexReactClient } from "convex/react";
-import { CryptoError, randomBytes, toBase64Url } from "radium-crypto";
+import { randomBytes, toBase64Url } from "radium-crypto";
 import { keyManager, KeysLockedError } from "./key-manager";
-/** Convex client for the one-way ACP/Worker-enrollment/legacy reads that have no tRPC route yet. */
-let client: ConvexReactClient | null = null;
 const clearers = new Set<() => void>();
 let previousUser: string | null = null;
 let subscribed = false;
@@ -27,15 +24,6 @@ function watchKeyManager(): void {
     }
     previousUser = userId;
   });
-}
-/** Binds the existing authenticated Convex client; no second transport or query cache is created. */
-export function configureCryptoClient(value: ConvexReactClient): void {
-  client = value;
-}
-/** The authenticated Convex client, for ACP, Worker enrollment and historical reads only. */
-export function cryptoClient(): ConvexReactClient {
-  if (!client) throw new CryptoError("BAD_INPUT", "Encryption client is not mounted");
-  return client;
 }
 /**
  * Reads a tRPC client error structurally (`error.data.code` and `error.message`), so it also works
@@ -68,11 +56,10 @@ export function secretGeneration(): number {
 export function newKeyId(): string {
   return toBase64Url(randomBytes(16));
 }
-/** Converts Convex bytes (ACP, telemetry and historical rows, still Convex) to a view without copying. */
-export function bytes(value: ArrayBuffer | Uint8Array): Uint8Array {
-  return value instanceof Uint8Array ? value : new Uint8Array(value);
-}
-/** Produces an exact ArrayBuffer for Convex's bytes validator; tRPC procedures take base64url text. */
+/**
+ * Produces an exact ArrayBuffer for contract types that still carry bytes that way (a chat Worker
+ * grant's signature); every tRPC procedure takes base64url text instead.
+ */
 export function buffer(value: Uint8Array): ArrayBuffer {
   return value.slice().buffer as ArrayBuffer;
 }

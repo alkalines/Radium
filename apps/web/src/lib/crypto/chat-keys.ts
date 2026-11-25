@@ -1,4 +1,4 @@
-import type { inferRouterOutputs } from "@trpc/server";
+import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "server/router";
 import { trpcClient } from "@/lib/trpc-client";
 import {
@@ -45,6 +45,8 @@ async function approvedIdentity(
     return await trustedIdentity(workspaceId, userId);
   }
 }
+
+type SetScopeInput = inferRouterInputs<AppRouter>["chats"]["setScope"];
 
 /** Audience of a chat's key epochs. */
 export type ChatScope = "personal" | "shared" | "workspace";
@@ -1056,14 +1058,18 @@ export async function prepareCustodyRelease(chatId: string): Promise<boolean> {
 /**
  * Changes audience. Every actual change of scope or picked members starts a fresh epoch bound to
  * the next policy, so no earlier binding ever certifies a new audience; every historical epoch is
- * also wrapped for the new audience, so added readers get the complete history. The backend's
- * `chats.setScope` carries no ACP binding yet, so a keyed ACP Session's re-signed binding cannot
- * travel with the key change (the ACP Session screen refuses that change).
+ * also wrapped for the new audience, so added readers get the complete history. A keyed ACP
+ * Session's binding names its audience too: `acpBinding` signs the next binding for exactly the
+ * final audience, and it travels with the key change in the same `chats.setScope` call.
  */
 export async function changeChatScope(input: {
   chatId: string;
   scope: ChatScope;
   members?: string[];
+  acpBinding?: (audience: {
+    scope: ChatScope;
+    members: string[];
+  }) => Promise<SetScopeInput["acpBinding"]>;
 }): Promise<void> {
   const state = await trpcClient().e2ee.chatKeys.query({ chatId: input.chatId });
   if (state.creatorId !== currentUserId())
@@ -1074,8 +1080,15 @@ export async function changeChatScope(input: {
       ? (input.members ?? (state.scope === "shared" ? state.members : []))
       : [];
   const next = chatPolicy(input.scope, state.creatorId, members);
+  const acpBinding = await input.acpBinding?.({ scope: input.scope, members });
+  const request = {
+    chatId: input.chatId,
+    scope: input.scope,
+    ...(input.scope === "shared" ? { members } : {}),
+    ...(acpBinding ? { acpBinding } : {}),
+  };
   if (!state.e2eeId || !state.keyEpoch || samePolicy(next, servedPolicy(state))) {
-    await trpcClient().chats.setScope.mutate(input);
+    await trpcClient().chats.setScope.mutate(request);
     return;
   }
   const audience = await chatAudience({
@@ -1113,7 +1126,7 @@ export async function changeChatScope(input: {
         })),
       );
     await trpcClient().chats.setScope.mutate({
-      ...input,
+      ...request,
       keys: { rotate: fresh.wire, wraps },
     });
   } catch (error) {

@@ -45,12 +45,12 @@ import { TodoPanel, useTodoTrayItems } from "../todo-list";
 import { ContextUsage } from "../context-usage";
 import { SessionWorkerControl } from "../session-context";
 import { ToolsDialog } from "../tools-dialog";
-import { AcpConfigControls, acpModelConfig, applyAcpDraft } from "./config-controls";
+import { AcpConfigControls, acpModelConfig } from "./config-controls";
 import { AcpElicitationPrompt } from "./elicitation-prompt";
 import { AcpPermissionPrompt } from "./permission-prompt";
 import { useAcpSession } from "./use-acp-session";
 import { AcpSessionFolder } from "./session-folder";
-import { repairAcpBinding } from "./acp-crypto";
+import { nextAcpBinding, repairAcpBinding } from "./acp-crypto";
 import { openTitle } from "@/lib/crypto/chat-content";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
 import { openHistoricalChat } from "@/lib/crypto/legacy-chat";
@@ -113,7 +113,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   // A keyed chat without a binding (created before the workspace had keys) is bound by its creator
   // once it has chat keys; the Worker refuses to run it until then.
   const repairedBinding = useRef<string>(undefined);
-  const needsBinding = acp.signed && session?.e2eeId != null && session.binding === null;
+  const needsBinding = session?.e2eeId != null && session.binding === null;
   const legacyNeedsImport = needsBinding && Boolean(session?.agent.sessionId);
   useEffect(() => {
     if (!isVisible || keyStatus.state !== "unlocked" || !needsBinding || legacyNeedsImport) return;
@@ -257,10 +257,10 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
   const [hiddenInteractions, setHiddenInteractions] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => {
     if (!isVisible) return;
-    const ids = new Set(acp.interactions.map((interaction) => interaction._id));
+    const ids = new Set(acp.interactions.map((interaction) => interaction.id));
     let changed = false;
     for (const id of submittedInteractions.current) {
-      if (!ids.has(id as Id<"acp_interactions">)) {
+      if (!ids.has(id)) {
         submittedInteractions.current.delete(id);
         changed = true;
       }
@@ -268,11 +268,11 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     if (changed) setHiddenInteractions(new Set(submittedInteractions.current));
   }, [acp.interactions, isVisible]);
   const pendingInteractions = acp.interactions.filter(
-    (interaction) => interaction.status === "pending" && !hiddenInteractions.has(interaction._id),
+    (interaction) => interaction.status === "pending" && !hiddenInteractions.has(interaction.id),
   );
   const currentInteraction = pendingInteractions[0];
   const answeringInteractions = useRef(new Set<string>());
-  async function answer(interaction: Id<"acp_interactions">, response: AcpInteractionAnswer) {
+  async function answer(interaction: string, response: AcpInteractionAnswer) {
     if (
       answeringInteractions.current.has(interaction) ||
       submittedInteractions.current.has(interaction)
@@ -289,11 +289,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     }
   }
 
-  const config = acp.signed
-    ? (acp.timeline.session.config ?? session?.defaultConfig)
-    : session?.agent.sessionId
-      ? session.config
-      : applyAcpDraft(session?.config ?? session?.defaultConfig, session?.draft);
+  const config = timeline.session.config ?? session?.config ?? session?.defaultConfig ?? undefined;
   // Same `Lab: Model` label as built-in turns, without the agent's routing-provider prefix.
   const { models: modelOptions, selectedModel } = useMemo(() => acpModelConfig(config), [config]);
   const currentModel = modelOptions.find((option) => option.slug === selectedModel);
@@ -343,15 +339,13 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     setScopeSaving(true);
     try {
       if (chat.e2eeId && session) {
-        // A signed keyed Session's binding names its audience and would have to be re-signed with
-        // the key change; `chats.setScope` carries no ACP binding yet (ACP slice).
-        if (acp.signed) {
-          throw new Error("Visibility of this encrypted agent Session cannot be changed yet.");
-        }
+        // A keyed Session's binding names its audience: the next binding for exactly the new
+        // audience is signed here and travels with the key change.
         await changeChatScope({
           chatId,
           scope,
           members: scope === "shared" ? members : undefined,
+          acpBinding: (audience) => nextAcpBinding(chatId, audience),
         });
       } else {
         await setChatScope({ chatId, scope });
@@ -375,9 +369,6 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
     );
 
   const hasContent = messages.length > 0 || visiblePendingPrompt !== undefined;
-  // A snapshot can hold no message (one oversized item); its history is then the first content.
-  const waitingForSnapshot =
-    hasOpened && (!timeline.hasSnapshot || acp.loadingHistory) && !hasContent && !ended;
   const offline = acp.workerKnown && !acp.workerOnline;
   const lastSeen = acp.workerLastSeenAt
     ? `Last seen ${formatLastSeen(acp.workerLastSeenAt)}.`
@@ -470,16 +461,6 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
-        ) : waitingForSnapshot && isVisible ? (
-          <div className="flex min-h-0 flex-1 items-center justify-center px-6">
-            {acp.errorMessage && !running ? (
-              <p className="max-w-sm text-center text-sm text-muted-foreground">
-                {acp.errorMessage}
-              </p>
-            ) : (
-              <Spinner className="text-muted-foreground" />
-            )}
-          </div>
         ) : ended && !hasContent ? (
           <Empty className="min-h-0 flex-1">
             <EmptyHeader>
@@ -605,10 +586,13 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
               </AlertDescription>
             </Alert>
           ) : null}
-          {acp.contentError ? (
-            <Alert variant="destructive">
-              <AlertTitle>Unable to load agent content</AlertTitle>
-              <AlertDescription>{acp.contentError.message}</AlertDescription>
+          {!ended ? (
+            <Alert>
+              <AlertTitle>Live agent output is not connected yet</AlertTitle>
+              <AlertDescription>
+                Prompts, approvals and settings still reach the agent, but its replies cannot be
+                shown in this Session until live streaming is available.
+              </AlertDescription>
             </Alert>
           ) : null}
           {chat?.interruption && !running && !currentInteraction ? (
@@ -627,7 +611,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
               {trayTodos ? <TodoPanel key="todos" items={trayTodos} isRunning={running} /> : null}
             </AnimatePresence>
             {currentInteraction ? (
-              <div key={currentInteraction._id} className="flex flex-col gap-1">
+              <div key={currentInteraction.id} className="flex flex-col gap-1">
                 {currentInteraction.request.kind === "permission" ? (
                   <AcpPermissionPrompt
                     request={currentInteraction.request}
@@ -635,7 +619,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
                     total={pendingInteractions.length}
                     shortcutsEnabled={isActive}
                     onAnswer={(optionId) =>
-                      void answer(currentInteraction._id, { kind: "permission", optionId })
+                      void answer(currentInteraction.id, { kind: "permission", optionId })
                     }
                   />
                 ) : (
@@ -649,7 +633,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
                       request={currentInteraction.request}
                       agentName={agentName}
                       shortcutsEnabled={isActive}
-                      onAnswer={(response) => void answer(currentInteraction._id, response)}
+                      onAnswer={(response) => void answer(currentInteraction.id, response)}
                     />
                   </>
                 )}
@@ -668,7 +652,7 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
                   <AcpConfigControls
                     agentId={session?.agent.agentId}
                     config={config}
-                    defaults={session?.defaultConfig}
+                    defaults={session?.defaultConfig ?? undefined}
                     disabled={ended || !acp.workerOnline}
                     isOpen={modelOpen}
                     onOpenChange={setModelOpen}
@@ -677,13 +661,13 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
                   />
                 }
                 toolbarControls={<ToolsDialog disabledReason="The agent brings its own tools" />}
-                commands={acp.signed ? timeline.session.commands : session?.commands}
+                commands={timeline.session.commands ?? session?.commands ?? undefined}
                 attachmentsDisabledReason="Attachments for agent Sessions are not supported yet."
                 menuItems={
                   <ConversationVisibilityMenu
                     scope={chat?.scope ?? "personal"}
                     isDraft={false}
-                    allowShared={acp.signed}
+                    allowShared
                     members={keyState?.members ?? []}
                     availableMembers={(workspaceKeyState?.members ?? [])
                       .filter((member) => member.userId !== authSession?.user.id)
