@@ -40,6 +40,7 @@ import {
   setPhrase,
   setPhraseInput,
 } from "./invites";
+import { legacyStorageInput, legacyStorageUrl } from "./legacy-storage";
 import {
   getTrustStore,
   identityKeys,
@@ -258,4 +259,13 @@ export const e2eeRouter = router({
   workerKeys: workspaceProcedure.query(({ ctx }) =>
     workerKeys(ctx.runtime.drivers.db, ctx.access.workspace),
   ),
+
+  /**
+   * Download URL of a historical box's envelope kept in the object store (`storageId`): a
+   * presigned GET, or the same-origin `/api/files/legacy?table&record` route on local disk;
+   * `null` when the box is inline. Authorized like the source row itself.
+   */
+  legacyStorageUrl: sessionProcedure
+    .input(legacyStorageInput)
+    .query(({ ctx, input }) => legacyStorageUrl(ctx.runtime, ctx.user.id, input)),
 });

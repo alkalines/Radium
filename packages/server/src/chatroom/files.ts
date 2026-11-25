@@ -5,6 +5,7 @@ import { z } from "zod";
 import { takeToken, type RateLimit } from "../auth/ratelimit";
 import type { Config } from "../config";
 import type { Database } from "../drivers/types";
+import { legacyReferencedKeys } from "../e2ee/legacy-tables";
 import { AppError } from "../errors";
 import { enqueueJob } from "../jobs/outbox";
 import { kvGet, kvSet, kvTake } from "../kv";
@@ -373,13 +374,21 @@ export async function referencedKeys(db: Database, keys: string[]): Promise<Set<
   return new Set(rows.map((row) => row.storageKey!));
 }
 
-/** Deletes each object in `keys` that no `chat_files` row references; returns how many. */
+/**
+ * Deletes each object in `keys` that no `chat_files` row references and no historical
+ * `legacy_content.storageId` names (a sidecar envelope is never garbage, whichever job asks);
+ * returns how many.
+ */
 export async function deleteUnreferencedObjects(runtime: Runtime, keys: string[]): Promise<number> {
-  const referenced = await referencedKeys(runtime.drivers.db, keys);
+  const { db, objects } = runtime.drivers;
+  const [referenced, legacy] = await Promise.all([
+    referencedKeys(db, keys),
+    legacyReferencedKeys(db, keys),
+  ]);
   let deleted = 0;
   for (const key of keys) {
-    if (referenced.has(key)) continue;
-    await runtime.drivers.objects.delete(key);
+    if (referenced.has(key) || legacy.has(key)) continue;
+    await objects.delete(key);
     deleted += 1;
   }
   return deleted;

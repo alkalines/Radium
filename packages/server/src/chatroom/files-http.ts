@@ -1,5 +1,7 @@
 import type { Hono } from "hono";
 import { ObjectTooLargeError } from "../drivers/types";
+import { legacyStorageInput, legacyStorageKey } from "../e2ee/legacy-storage";
+import { AppError } from "../errors";
 import { kvGet } from "../kv";
 import type { Runtime } from "../runtime";
 import {
@@ -85,6 +87,27 @@ export function mountFileRoutes(app: FilesApp) {
     const url = c.req.query("url");
     if (!url || url.length > 2048) return notFound();
     const key = await resolveLegacyDownload(runtime.drivers.db, userId, url);
+    return key ? await downloadResponse(runtime, key) : notFound();
+  });
+
+  // Historical sidecar envelopes kept in the object store (`e2ee.legacyStorageUrl` points here on
+  // stores that cannot presign); authorized like the source row, `404` otherwise.
+  app.get("/api/files/legacy", async (c) => {
+    const runtime = c.var.runtime;
+    const userId = await sessionUserId(runtime, c.req.raw);
+    if (!userId) return unauthorized();
+    const input = legacyStorageInput.safeParse({
+      table: c.req.query("table"),
+      record: c.req.query("record"),
+    });
+    if (!input.success) return notFound();
+    let key: string | null;
+    try {
+      key = await legacyStorageKey(runtime.drivers.db, userId, input.data);
+    } catch (error) {
+      if (error instanceof AppError) return notFound();
+      throw error;
+    }
     return key ? await downloadResponse(runtime, key) : notFound();
   });
 
