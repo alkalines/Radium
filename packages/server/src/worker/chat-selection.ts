@@ -1,13 +1,15 @@
 import { toBase64Url } from "radium-crypto";
 import {
   grantedChatWorkerTools,
+  validChatWorkerDirectory,
   validateChatWorkerSelection,
   type ChatWorkerTool,
 } from "contracts/worker/chat-config";
 import type { StoredJson } from "../db/columns";
-import type { Database } from "../drivers/types";
+import type { Database, Kv } from "../drivers/types";
 import { AppError } from "../errors";
 import { projectWorkerDirectory } from "../workspaces/projects";
+import { workerPresence } from "./presence";
 import { activeWorkspaceWorkers } from "./workers";
 
 /** A chat's stored Worker selection (`chats.worker` + `chats.worker_selection`), grant as text. */
@@ -26,17 +28,23 @@ export type StoredChatWorkerGrant = {
 };
 
 /**
- * A chat's Worker directory is derived server-side: the chat Project's folder for that Worker.
- * The Worker's reported temp directory (Convex's fallback) comes with Worker presence (Worker
- * slice); until then a chat without a Project folder has none and Worker tools say so.
+ * A chat's Worker directory is derived server-side (Convex `deriveChatWorkerDirectory`): the chat
+ * Project's folder for that Worker, else the Worker's reported temp directory (presence), else
+ * none, and Worker tools then say the Worker has no working directory.
  */
 async function deriveChatWorkerDirectory(
   db: Database,
+  kv: Kv,
   workspace: string,
   workerId: string,
   project: string | null,
 ): Promise<string | undefined> {
-  return project ? await projectWorkerDirectory(db, workspace, project, workerId) : undefined;
+  if (project) {
+    const folder = await projectWorkerDirectory(db, workspace, project, workerId);
+    if (folder !== undefined) return folder;
+  }
+  const tempDirectory = (await workerPresence(kv, [workerId])).get(workerId)?.tempDirectory;
+  return tempDirectory && validChatWorkerDirectory(tempDirectory) ? tempDirectory : undefined;
 }
 
 function storedSelection(
@@ -60,6 +68,7 @@ function storedSelection(
  */
 export async function resolveChatWorkerSelection(
   db: Database,
+  kv: Kv,
   args: {
     requested: { workerId?: string; tools: ChatWorkerTool[] };
     userId: string;
@@ -85,7 +94,13 @@ export async function resolveChatWorkerSelection(
     }
     return kept;
   }
-  const directory = await deriveChatWorkerDirectory(db, args.workspace.id, workerId, args.project);
+  const directory = await deriveChatWorkerDirectory(
+    db,
+    kv,
+    args.workspace.id,
+    workerId,
+    args.project,
+  );
   return storedSelection(tools, workerId, directory);
 }
 
@@ -116,12 +131,13 @@ async function validateSelection(
  */
 export async function rederiveChatWorkerDirectory(
   db: Database,
+  kv: Kv,
   workspace: string,
   selection: StoredChatWorkerSelection,
   project: string | null,
 ): Promise<StoredChatWorkerSelection> {
   if (selection.workerId === undefined) return selection;
-  const directory = await deriveChatWorkerDirectory(db, workspace, selection.workerId, project);
+  const directory = await deriveChatWorkerDirectory(db, kv, workspace, selection.workerId, project);
   return storedSelection(selection.tools, selection.workerId, directory);
 }
 

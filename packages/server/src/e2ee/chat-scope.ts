@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { isAcpChat } from "../acp/sessions";
+import { rebindAcpChat, type SignedBinding } from "../acp/policy";
 import type { Chat, ChatWorkspace } from "../chatroom/access";
 import { chatMemberIds, setChatMembers } from "../chatroom/members";
 import { chats } from "../chatroom/schema";
@@ -31,7 +31,9 @@ export const scopeKeysInput = z.object({
  * the chat row lock. Every actual scope or member change starts a fresh epoch signed and bound to
  * the NEXT scope and members; widening additionally rewraps every historical epoch to the added
  * readers, and narrowing away from `workspace` deletes the workspace wraps. A chat without keys
- * changes scope without key material.
+ * changes scope without key material. An ACP chat whose binding was published needs the creator's
+ * next binding version for exactly the new audience (`acpBinding`), so its Worker authorizes the
+ * new members (or stops authorizing removed ones).
  */
 export async function changeChatScope(
   tx: Database,
@@ -42,24 +44,20 @@ export async function changeChatScope(
     scope: Chat["scope"];
     members?: string[];
     keys?: { rotate?: ChatKeyInput; wraps: WrapInput[] };
+    acpBinding?: SignedBinding;
   },
 ): Promise<void> {
   if (chat.userId !== userId) {
     throw new AppError("FORBIDDEN", "Only the chat creator can change its scope.");
   }
   if (input.scope !== "shared" && input.members !== undefined) invalidKeys();
-  // An ACP chat's Worker binding must be re-signed for the new audience; that path comes with the
-  // ACP slice, so its scope stays fixed until then.
-  if (await isAcpChat(tx, chat.id)) {
-    throw new AppError("CONFLICT", "ACP chats cannot change scope yet.");
-  }
   const oldScope = chat.scope;
   const oldMembers = await chatMemberIds(tx, chat.id);
   const members =
     input.scope === "shared" ? (input.members ?? (oldScope === "shared" ? oldMembers : [])) : [];
   const next = { ...chat, scope: input.scope };
   await setChatMembers(tx, next, workspace, members);
-
+  await rebindAcpChat(tx, chat, { scope: input.scope, members }, input.acpBinding);
   if (!chat.e2eeId) {
     if (input.keys) invalidKeys();
   } else {

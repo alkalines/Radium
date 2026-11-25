@@ -6,8 +6,11 @@ export const TEST_POSTGRES_URL =
   process.env.TEST_POSTGRES_URL ?? "postgres://radium:radium-test@127.0.0.1:55432/radium";
 export const TEST_VALKEY_URL = process.env.TEST_VALKEY_URL ?? "redis://127.0.0.1:56379";
 
-/** Database every test database is cloned from, migrated once per run. */
-export const TEMPLATE_DATABASE = "radium_test_template";
+/**
+ * Database every test database is cloned from, migrated once per run. `TEST_TEMPLATE_DATABASE`
+ * names another one, so two runs (with distinct `TEST_VALKEY_DB_OFFSET`s) can share the servers.
+ */
+export const TEMPLATE_DATABASE = process.env.TEST_TEMPLATE_DATABASE ?? "radium_test_template";
 
 /** `TEST_POSTGRES_URL` pointing at another database on the same server. */
 export function databaseUrl(name: string) {

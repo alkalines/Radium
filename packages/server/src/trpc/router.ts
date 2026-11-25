@@ -1,3 +1,4 @@
+import { acpRouter } from "../acp/router";
 import { chatFilesRouter } from "../chatroom/files-router";
 import { chatsRouter } from "../chatroom/router";
 import { chatroomSettingsRouter, toolsRouter } from "../chatroom/tools-router";
@@ -10,6 +11,7 @@ import { notificationsRouter } from "../notifications/router";
 import { telemetryExportRouter, telemetryRouter } from "../telemetry/router";
 import { preferencesRouter, projectsRouter, workspacesRouter } from "../workspaces/router";
 import { usageRouter } from "../usage/router";
+import { workerMachineRouter, workersRouter } from "../worker/router";
 import { router } from "./init";
 
 /** Root router: one sub-router per domain. The web app imports only its type. */
@@ -33,6 +35,10 @@ export const appRouter = router({
   usage: usageRouter,
   telemetry: telemetryRouter,
   telemetryExport: telemetryExportRouter,
+  workers: workersRouter,
+  acp: acpRouter,
+  /** Worker machines only (`workerProcedure`). */
+  worker: workerMachineRouter,
 });
 
 export type AppRouter = typeof appRouter;

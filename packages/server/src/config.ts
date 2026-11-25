@@ -1,5 +1,6 @@
 import * as z from "zod";
 import { parseSecretStoreKeys } from "./gateway/secrets";
+import { parseWorkerSigningKey, workerSigningKeyMatches } from "./worker/signing";
 
 /**
  * An origin the backend can be reached at: HTTPS, or HTTP on loopback for local development.
@@ -49,6 +50,20 @@ const configSchema = z.object({
   AUTH_PROXY_SECRET: optional,
   /** Public issuer keys for Worker access tokens; without them every Worker call is refused. */
   WORKER_AUTH_JWKS: optional,
+  /**
+   * Private issuer key (JSON JWK, ES256 with `kid`) that signs Worker access tokens; its public
+   * half must be in `WORKER_AUTH_JWKS` under the same `kid`. Without it Worker sign-in and setup
+   * codes are refused.
+   */
+  WORKER_AUTH_PRIVATE_JWK: optional.transform((value, context) => {
+    if (value === undefined) return undefined;
+    try {
+      return parseWorkerSigningKey(value);
+    } catch (error) {
+      context.addIssue({ code: "custom", message: (error as Error).message });
+      return z.NEVER;
+    }
+  }),
   /**
    * Key-encryption keys of the `secrets` table, `version:base64,…` (the `convex-secret-store`
    * format and values); the highest version wraps new secrets.
@@ -114,6 +129,16 @@ const configSchema = z.object({
       code: "custom",
       path: ["WEB_PUSH_VAPID_PRIVATE_KEY"],
       message: "set both WEB_PUSH_VAPID_PUBLIC_KEY and WEB_PUSH_VAPID_PRIVATE_KEY, or neither",
+    });
+  }
+  if (
+    value.WORKER_AUTH_PRIVATE_JWK !== undefined &&
+    !workerSigningKeyMatches(value.WORKER_AUTH_PRIVATE_JWK, value.WORKER_AUTH_JWKS)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["WORKER_AUTH_PRIVATE_JWK"],
+      message: "has no public key with the same kid and key in WORKER_AUTH_JWKS",
     });
   }
 });

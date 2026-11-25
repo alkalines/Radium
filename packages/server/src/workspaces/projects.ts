@@ -120,6 +120,28 @@ export async function projectWorkerDirectory(
   return row?.directory;
 }
 
+/**
+ * Every Worker folder of the workspace's Projects, oldest Project first, then in each Project's
+ * own order (ACP: which Project an agent session's folder belongs to). Bounded by the Project and
+ * folder limits.
+ */
+export async function workspaceProjectFolders(
+  db: Database,
+  workspace: string,
+): Promise<{ project: string; worker: string; directory: string }[]> {
+  return await db
+    .select({
+      project: projectFolders.project,
+      worker: projectFolders.worker,
+      directory: projectFolders.directory,
+    })
+    .from(projectFolders)
+    .innerJoin(projects, eq(projects.id, projectFolders.project))
+    .where(eq(projects.workspace, workspace))
+    .orderBy(asc(projects.createdAt), asc(projects.id), asc(projectFolders.position))
+    .limit(MAX_PROJECTS * MAX_PROJECT_FOLDERS);
+}
+
 /** A workspace's Projects for any owner or member, by name then age. */
 export async function listProjects(
   db: Database,

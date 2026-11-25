@@ -151,3 +151,25 @@ export async function chatVisibleInWorkspace(
   const access = await chatAccess(db, userId, chatId);
   return access !== null && access.workspace.id === workspace;
 }
+
+/**
+ * A chat and its workspace without any user check, for paths whose caller is authorized another
+ * way (a Worker acting on the chat bound to it). `null` for unknown chats and archived workspaces.
+ */
+export async function chatWithWorkspace(
+  db: Database,
+  chatId: string,
+  lock?: ChatLock,
+): Promise<{ chat: Chat; workspace: ChatWorkspace } | null> {
+  let query = db
+    .select({ chat: chats, workspace: workspaces })
+    .from(chats)
+    .innerJoin(workspaces, and(eq(workspaces.id, chats.workspace), isNull(workspaces.archivedAt)))
+    .where(eq(chats.id, chatId))
+    .$dynamic();
+  if (lock) {
+    query = query.for(lock, { of: chats });
+  }
+  const [row] = await query;
+  return row ?? null;
+}

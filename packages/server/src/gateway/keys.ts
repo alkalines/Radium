@@ -105,7 +105,7 @@ export async function resolveApiKey(db: Database, kv: Kv, key: string): Promise<
 }
 
 /** Makes cached resolutions of the given key hashes stale (see the module comment). */
-async function invalidateKeys(kv: Kv, hashes: string[]) {
+export async function invalidateApiKeys(kv: Kv, hashes: string[]) {
   await Promise.all(
     hashes.map((hash) => kvSet(kv, keyCacheKey(hash), KEY_TOMBSTONE, { ttlMs: KEY_CACHE_TTL_MS })),
   );
@@ -120,7 +120,7 @@ export async function invalidateWorkspaceKeys(db: Database, kv: Kv, workspace: s
     .select({ hash: apiKeys.hash })
     .from(apiKeys)
     .where(and(eq(apiKeys.workspace, workspace), isNull(apiKeys.revokedAt)));
-  await invalidateKeys(
+  await invalidateApiKeys(
     kv,
     rows.map((row) => row.hash),
   );
@@ -210,7 +210,7 @@ export async function renameApiKey(
     await tx.update(apiKeys).set({ name }).where(eq(apiKeys.id, row.id));
     return row.hash;
   });
-  await invalidateKeys(kv, [hash]);
+  await invalidateApiKeys(kv, [hash]);
 }
 
 /**
@@ -229,7 +229,7 @@ export async function revokeApiKey(db: Database, kv: Kv, workspace: string, id: 
     if (row.worker) await releaseWorkerGatewayKey(tx, id);
     return row.hash;
   });
-  if (hash) await invalidateKeys(kv, [hash]);
+  if (hash) await invalidateApiKeys(kv, [hash]);
   return true;
 }
 
@@ -251,5 +251,57 @@ export async function setApiKeyTelemetry(
     await tx.update(apiKeys).set({ telemetry: input.telemetry }).where(eq(apiKeys.id, row.id));
     return row.hash;
   });
-  await invalidateKeys(kv, [hash]);
+  await invalidateApiKeys(kv, [hash]);
+}
+
+/**
+ * Revokes the live Gateway key of `worker`, if any, in the caller's transaction. Returns the
+ * revoked keys' hashes for {@link invalidateApiKeys} after commit.
+ */
+export async function revokeWorkerApiKeys(tx: Database, worker: string): Promise<string[]> {
+  const rows = await tx
+    .update(apiKeys)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(apiKeys.worker, worker), isNull(apiKeys.revokedAt)))
+    .returning({ hash: apiKeys.hash });
+  return rows.map((row) => row.hash);
+}
+
+/**
+ * Mints a new Gateway key for `worker` in the caller's transaction, revoking its previous live
+ * key first (a Worker holds at most one). The plaintext key is returned exactly once, with the
+ * revoked hashes to invalidate after commit.
+ */
+export async function mintWorkerApiKey(
+  tx: Database,
+  input: { workspace: string; worker: string; name: string; telemetry: KeyTelemetry },
+) {
+  const revoked = await revokeWorkerApiKeys(tx, input.worker);
+  const { key, preview } = generateApiKey();
+  const [row] = await tx
+    .insert(apiKeys)
+    .values({
+      workspace: input.workspace,
+      worker: input.worker,
+      name: input.name,
+      hash: await hashApiKey(key),
+      preview,
+      telemetry: input.telemetry,
+    })
+    .returning({ id: apiKeys.id });
+  return { id: row!.id, key, revoked };
+}
+
+/** Applies a Worker's Gateway telemetry choice to its live key; returns hashes to invalidate. */
+export async function setWorkerApiKeyTelemetry(
+  tx: Database,
+  worker: string,
+  telemetry: KeyTelemetry,
+): Promise<string[]> {
+  const rows = await tx
+    .update(apiKeys)
+    .set({ telemetry })
+    .where(and(eq(apiKeys.worker, worker), isNull(apiKeys.revokedAt)))
+    .returning({ hash: apiKeys.hash });
+  return rows.map((row) => row.hash);
 }

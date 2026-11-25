@@ -1,4 +1,5 @@
 import { defineTask } from "nitro/task";
+import { expireAcpCommands, pruneAcpCommands, pruneAcpInteractions } from "../../acp/retention";
 import type { Database } from "../../drivers/types";
 import { pruneExpiredInvites } from "../../e2ee/invites";
 import { pruneWorkerPairings } from "../../e2ee/worker-keys";
@@ -6,6 +7,7 @@ import { pruneLimitEvents } from "../../gateway/limits/events";
 import { pruneChatRuns } from "../../chatroom/run";
 import { pruneNotifications } from "../../notifications/inbox";
 import { useProcessRuntime } from "../../runtime";
+import { pruneWorkerEnrollments, pruneWorkerTasks } from "../../worker/identity";
 import { claimLease } from "../lease";
 
 /** Rows deleted per policy and run; a backlog drains over the following runs. */
@@ -27,6 +29,11 @@ const policies: RetentionPolicy[] = [
   { table: "e2ee_invites", prune: pruneExpiredInvites },
   { table: "e2ee_worker_pairings", prune: pruneWorkerPairings },
   { table: "notifications", prune: pruneNotifications },
+  { table: "worker_tasks", prune: pruneWorkerTasks },
+  { table: "worker_enrollments", prune: pruneWorkerEnrollments },
+  { table: "acp_commands", prune: pruneAcpCommands },
+  { table: "acp_commands (expired intent)", prune: expireAcpCommands },
+  { table: "acp_interactions", prune: pruneAcpInteractions },
 ];
 
 /**

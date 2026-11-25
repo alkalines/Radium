@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Database } from "../drivers/types";
-import { acpAgentSessions, acpAgents, acpCommands, acpSessions } from "./schema";
+import { acpAgentSessions, acpAgents, acpCommands, acpInteractions, acpSessions } from "./schema";
 
 /** The agent binding of an ACP chat, as the Chatroom shows it (no conversation content). */
 export type AcpChatBinding = {
@@ -57,6 +57,43 @@ export async function isAcpChat(db: Database, chat: string): Promise<boolean> {
 /** Marks an ACP chat as user-titled, so later agent-reported titles do not replace the rename. */
 export async function markAcpChatUserTitled(tx: Database, chat: string): Promise<void> {
   await tx.update(acpSessions).set({ userTitled: true }).where(eq(acpSessions.chat, chat));
+}
+
+/**
+ * Revocation (the Worker domain's revoke transaction): the revoked Worker's queued and claimed
+ * commands fail with their payloads erased, its open interactions are cancelled and its busy
+ * sessions fail, so nothing waits on a machine that can no longer authenticate. The fixed code
+ * `ACP_ABANDONED` says the host-side outcome is unknown and never replayed.
+ */
+export async function failWorkerAcpWork(tx: Database, worker: string): Promise<void> {
+  const now = new Date();
+  await tx
+    .update(acpCommands)
+    .set({
+      status: "failed",
+      error: "ACP_ABANDONED",
+      payload: null,
+      signedPayload: null,
+      signedSignature: null,
+      signedSignerKeyId: null,
+      finishedAt: now,
+    })
+    .where(and(eq(acpCommands.worker, worker), inArray(acpCommands.status, ["pending", "claimed"])));
+  await tx
+    .update(acpInteractions)
+    .set({ status: "cancelled", resolvedAt: now })
+    .where(
+      and(eq(acpInteractions.worker, worker), inArray(acpInteractions.status, ["pending", "answered"])),
+    );
+  await tx
+    .update(acpSessions)
+    .set({ status: "failed", error: null, sealedErrorEpoch: null, sealedErrorBox: null, updatedAt: now })
+    .where(
+      and(
+        eq(acpSessions.worker, worker),
+        inArray(acpSessions.status, ["starting", "running", "awaiting"]),
+      ),
+    );
 }
 
 /** The agent session id and Worker of each ACP chat of `chatIds` that has a session id bound. */

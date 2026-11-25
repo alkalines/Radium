@@ -3,8 +3,11 @@ import { toBase64Url } from "radium-crypto";
 import { z } from "zod";
 import { base64urlBytes } from "contracts/wire";
 import { chatWorkerToolValidator } from "contracts/worker/chat-config";
+import { queueAcpChatDeletion } from "../acp/deletion";
+import { signedBindingInput, signedCommandInput } from "../acp/policy";
 import { acpChatBindings, isAcpChat, markAcpChatUserTitled } from "../acp/sessions";
-import type { Database } from "../drivers/types";
+import { removeWarm } from "../acp/warm";
+import type { Database, Kv } from "../drivers/types";
 import {
   callerTitleWrap,
   chatKeysSetupInput,
@@ -117,6 +120,8 @@ export const setChatScopeInput = z.object({
   scope: chatScopeInput,
   members: membersInput.optional(),
   keys: scopeKeysInput.optional(),
+  /** ACP chats with a published binding: the creator's next binding for the new audience. */
+  acpBinding: signedBindingInput.optional(),
 });
 
 export const chatWorkerGrantInput = z.object({
@@ -153,7 +158,7 @@ export async function createChat(
     const project = input.project ?? null;
     if (project) await requireWorkspaceProject(tx, project, access.workspace.id);
     const worker = input.worker
-      ? await resolveChatWorkerSelection(tx, {
+      ? await resolveChatWorkerSelection(tx, runtime.drivers.kv, {
           requested: input.worker,
           userId,
           workspace: access.workspace,
@@ -250,6 +255,7 @@ async function insertChat(
     sealedQueue: SealedBox | null;
     worker: string | null;
     workerSelection: Chat["workerSelection"];
+    lastInteractionAt?: Date;
   },
 ): Promise<Chat> {
   const [chat] = await tx
@@ -264,10 +270,49 @@ async function insertChat(
       worker: values.worker,
       workerSelection: values.workerSelection,
       // Millisecond precision, so Home's keyset cursor (milliseconds on the wire) is exact.
-      lastInteractionAt: new Date(),
+      lastInteractionAt: values.lastInteractionAt ?? new Date(),
     })
     .returning();
   return chat!;
+}
+
+/**
+ * The chat half of a new ACP session, in the ACP service's transaction (Convex
+ * `insertAgentChat`): a keyed chat of `userId` with its members and epoch one, optionally with the
+ * indexed session's sealed title and Home time. The caller inserts the `acp_sessions` row.
+ */
+export async function createAcpChat(
+  tx: Database,
+  workspace: ChatWorkspace,
+  userId: string,
+  values: {
+    scope: ChatScope;
+    members: string[];
+    keys: ChatKeysSetup;
+    project: string | null;
+    sealedTitle?: SealedBox;
+    lastInteractionAt?: Date;
+  },
+): Promise<Chat> {
+  if (values.scope !== "shared" && values.members.length > 0) invalidSealedContent();
+  if (values.project) await requireWorkspaceProject(tx, values.project, workspace.id);
+  const chat = await insertChat(tx, workspace, userId, {
+    scope: values.scope,
+    project: values.project,
+    sealedQueue: null,
+    worker: null,
+    workerSelection: null,
+    lastInteractionAt: values.lastInteractionAt,
+  });
+  await setChatMembers(tx, chat, workspace, values.members);
+  const keyed = await insertChatKeysSetup(tx, {
+    chat,
+    workspace,
+    members: values.members,
+    keys: values.keys,
+  });
+  if (values.sealedTitle) await saveSealedTitle(tx, keyed, values.sealedTitle);
+  return keyed;
 }
 
 /** Members and epoch one of a new chat; the setup also marks the chat keyed. */
@@ -560,10 +605,16 @@ async function requireChatActor(tx: Database, userId: string, chatId: string) {
 /**
  * Stores a sealed title (and clears any historical plaintext one) in the caller's transaction:
  * the chat must be keyed and not waiting for a rekey, and the box sealed to its current epoch.
+ * Browsers seal titles up to {@link MAX_TITLE_BOX_BYTES}; a Worker's ACP title box may be larger.
  */
-export async function saveSealedTitle(tx: Database, chat: Chat, sealedTitle: SealedBox) {
+export async function saveSealedTitle(
+  tx: Database,
+  chat: Chat,
+  sealedTitle: SealedBox,
+  maxBytes = MAX_TITLE_BOX_BYTES,
+) {
   if (!chat.e2eeId || chat.rekey) invalidSealedContent();
-  validateChatBox(sealedTitle, chat.keyEpoch!, MAX_TITLE_BOX_BYTES);
+  validateChatBox(sealedTitle, chat.keyEpoch!, maxBytes);
   await tx
     .update(chats)
     .set({
@@ -608,6 +659,7 @@ export async function setChatPinned(
  */
 export async function setChatProject(
   db: Database,
+  kv: Kv,
   userId: string,
   input: { chatId: string; project: string | null },
 ) {
@@ -619,7 +671,7 @@ export async function setChatProject(
       worker?.workerId !== undefined &&
       (chat.project !== input.project || worker.directory === undefined)
     ) {
-      worker = await rederiveChatWorkerDirectory(tx, workspace.id, worker, input.project);
+      worker = await rederiveChatWorkerDirectory(tx, kv, workspace.id, worker, input.project);
     }
     await tx
       .update(chats)
@@ -630,7 +682,8 @@ export async function setChatProject(
 
 /**
  * Changes a chat's visibility (Convex `SetChatScope`): creator only, with the key changes the new
- * audience needs (`../e2ee/chat-scope.ts`), under the chat row lock.
+ * audience needs (`../e2ee/chat-scope.ts`) and, for an ACP chat with a published binding, the
+ * creator's re-signed binding (`acpBinding`), under the chat row lock.
  */
 export async function setChatScope(
   db: Database,
@@ -647,6 +700,7 @@ export async function setChatScope(
 /** Sets or clears a chat's Worker selection; workspace owner only (Convex `SetChatWorker`). */
 export async function setChatWorker(
   db: Database,
+  kv: Kv,
   userId: string,
   input: { chatId: string; selection: z.output<typeof workerRequestInput> | null },
 ) {
@@ -657,7 +711,7 @@ export async function setChatWorker(
       throw new AppError("FORBIDDEN", "Only the workspace owner can configure a Worker for chats.");
     }
     const worker = input.selection
-      ? await resolveChatWorkerSelection(tx, {
+      ? await resolveChatWorkerSelection(tx, kv, {
           requested: input.selection,
           userId,
           workspace,
@@ -691,20 +745,37 @@ export async function setChatWorkerGrant(
   });
 }
 
+export const deleteChatInput = z.object({
+  chatId: idInput,
+  /** ACP chats: also delete the session in the agent, when it supports that. */
+  deleteInAgent: z.boolean().optional(),
+  /** ACP chats: the caller's signed `close`/`delete` command for the bound Worker. */
+  acpCommand: signedCommandInput.optional(),
+});
+
 /**
  * Deletes a chat in one transaction (Convex `DeleteChat` + `cleanupChatContent`): messages,
- * members, keys, wraps, capsules, runs, tool overrides and file references go with it through
- * foreign keys; the file objects are released by an outbox job. ACP chats are deleted through
- * the ACP service (Worker slice), which also tells the paired Worker.
+ * members, keys, wraps, capsules, runs, tool overrides, file references and ACP session rows go
+ * with it through foreign keys; the file objects are released by an outbox job. An ACP chat first
+ * queues the caller's signed `close`/`delete` command for its Worker (`../acp/deletion.ts`), and
+ * leaves the Worker's warm set after commit.
  */
-export async function deleteChat(runtime: Runtime, userId: string, chatId: string) {
-  const jobs = await runtime.drivers.db.transaction(async (tx) => {
-    const { chat, acp } = await requireChatActor(tx, userId, chatId);
-    if (acp) throw new AppError("CONFLICT", "ACP chats cannot be deleted here yet.");
+export async function deleteChat(
+  runtime: Runtime,
+  userId: string,
+  input: z.output<typeof deleteChatInput>,
+) {
+  const { jobs, acp } = await runtime.drivers.db.transaction(async (tx) => {
+    const { chat } = await requireChatActor(tx, userId, input.chatId);
+    const acp = await queueAcpChatDeletion(tx, chat, userId, {
+      deleteInAgent: input.deleteInAgent,
+      signed: input.acpCommand,
+    });
     const released = await queueChatFileRelease(tx, chat.id);
     await tx.delete(chats).where(eq(chats.id, chat.id));
-    return released;
+    return { jobs: released, acp };
   });
+  if (acp) await removeWarm(runtime.drivers.kv, acp.worker, input.chatId);
   runtime.defer(dispatchJobs(runtime, jobs));
 }
 

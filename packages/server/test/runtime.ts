@@ -48,8 +48,9 @@ export async function createTestRuntime(
     SITE_URL: TEST_SITE_URL,
     API_URL: "http://localhost:3100",
     DATABASE_URL: databaseUrl(name),
-    // Valkey has 16 databases; Vitest pool ids start at 1.
-    VALKEY_URL: `${TEST_VALKEY_URL}/${Number(process.env.VITEST_POOL_ID ?? "1") % 16}`,
+    // Valkey has 16 databases; Vitest pool ids start at 1. A second concurrent run shifts by
+    // `TEST_VALKEY_DB_OFFSET` (8) so the two never flush each other's database.
+    VALKEY_URL: `${TEST_VALKEY_URL}/${(Number(process.env.VITEST_POOL_ID ?? "1") + Number(process.env.TEST_VALKEY_DB_OFFSET ?? "0")) % 16}`,
     BETTER_AUTH_SECRET: crypto.randomUUID() + crypto.randomUUID(),
     OPAQUE_SERVER_SETUP: opaqueServer.createSetup(),
     SECRET_STORE_KEYS: `1:${TEST_SECRET_STORE_KEY}`,

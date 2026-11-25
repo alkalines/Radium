@@ -8,6 +8,7 @@ import {
   createChat,
   createChatInput,
   deleteChat,
+  deleteChatInput,
   forkChat,
   forkChatInput,
   getChat,
@@ -67,7 +68,9 @@ export const chatsRouter = router({
     .mutation(({ ctx, input }) => setChatPinned(ctx.runtime.drivers.db, ctx.user.id, input)),
   setProject: sessionProcedure
     .input(chatInput.extend({ project: idInput.nullable() }))
-    .mutation(({ ctx, input }) => setChatProject(ctx.runtime.drivers.db, ctx.user.id, input)),
+    .mutation(({ ctx, input }) =>
+      setChatProject(ctx.runtime.drivers.db, ctx.runtime.drivers.kv, ctx.user.id, input),
+    ),
   setScope: sessionProcedure
     .input(setChatScopeInput)
     .mutation(({ ctx, input }) => setChatScope(ctx.runtime.drivers.db, ctx.user.id, input)),
@@ -79,7 +82,9 @@ export const chatsRouter = router({
           .nullable(),
       }),
     )
-    .mutation(({ ctx, input }) => setChatWorker(ctx.runtime.drivers.db, ctx.user.id, input)),
+    .mutation(({ ctx, input }) =>
+      setChatWorker(ctx.runtime.drivers.db, ctx.runtime.drivers.kv, ctx.user.id, input),
+    ),
   setWorkerGrant: sessionProcedure
     .input(
       chatInput.extend({
@@ -93,8 +98,8 @@ export const chatsRouter = router({
     .input(chatInput.extend({ prompt: z.string().max(8000) }))
     .mutation(({ ctx, input }) => regenerateChatTitle(ctx.runtime, ctx.user.id, input)),
   delete: sessionProcedure
-    .input(chatInput)
-    .mutation(({ ctx, input }) => deleteChat(ctx.runtime, ctx.user.id, input.chatId)),
+    .input(deleteChatInput)
+    .mutation(({ ctx, input }) => deleteChat(ctx.runtime, ctx.user.id, input)),
   answerInteraction: sessionProcedure
     .input(z.object({ interaction: z.uuid(), response: codeModeInteractionResponseValidator }))
     .mutation(({ ctx, input }) =>

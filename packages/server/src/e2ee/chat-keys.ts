@@ -91,7 +91,7 @@ export const chatKeysSetupInput = z.object({
 export type ChatKeyInput = z.output<typeof chatKeyInput>;
 export type WrapInput = z.output<typeof wrapInput>;
 export type ChatKeysSetup = z.output<typeof chatKeysSetupInput>;
-type ChatKey = typeof e2eeChatKeys.$inferSelect;
+export type ChatKey = typeof e2eeChatKeys.$inferSelect;
 
 /** A sealed 32-byte seed is one capsule plus a short envelope; anything larger is junk. */
 function requireSealedKey(value: Uint8Array) {
@@ -108,7 +108,12 @@ async function isWorkspaceUser(db: Database, workspace: ChatWorkspace, userId: s
   return row !== undefined;
 }
 
-async function chatKeyAt(db: Database, chatId: string, epoch: number): Promise<ChatKey | undefined> {
+/** One stored epoch of a chat's key (public parts and signatures), or undefined. */
+export async function chatKeyAt(
+  db: Database,
+  chatId: string,
+  epoch: number,
+): Promise<ChatKey | undefined> {
   const [row] = await db
     .select()
     .from(e2eeChatKeys)

@@ -6,6 +6,7 @@ import { clientAddress, prepareAuthRequest } from "./auth/ingress";
 import { disableIdleTimeout, mountGatewayRoutes } from "./gateway/http";
 import type { Runtime } from "./runtime";
 import { appRouter } from "./trpc/router";
+import { mountWorkerAuthRoutes } from "./worker/http";
 
 type Env = { Variables: { runtime: Runtime } };
 
@@ -45,6 +46,7 @@ export function createApp(resolveRuntime: () => Promise<Runtime>): App {
 
   mountGatewayRoutes(app);
   mountFileRoutes(app);
+  mountWorkerAuthRoutes(app);
   app.post("/api/chat", (c) => {
     disableIdleTimeout(c.req.raw);
     return handleChat(c.var.runtime, c.req.raw);
