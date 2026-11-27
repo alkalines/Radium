@@ -362,7 +362,7 @@ describe("local CLI usage and reconciliation", () => {
       .insert(projects)
       .values({ workspace: f.workspace, userId: users.owner.id, name: "Repo" })
       .returning();
-    await db().insert(projectFolders).values({ project: project!.id, worker: f.worker, directory: "/repo/", position: 0 });
+    await db().insert(projectFolders).values({ project: project!.id, workspace: f.workspace, worker: f.worker, directory: "/repo/", position: 0 });
     // An ACP agent definition that runs the OpenCode CLI ccusage reads.
     await db().insert(acpAgents).values({
       workspace: f.workspace,

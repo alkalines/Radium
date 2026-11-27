@@ -9,8 +9,10 @@ import type { Database, Kv } from "../drivers/types";
 import { deleteWorkerKeys } from "../e2ee/worker-keys";
 import { AppError } from "../errors";
 import { invalidateApiKeys } from "../gateway/keys";
+import { dispatchJobs } from "../jobs/outbox";
 import { kvSet, kvTake } from "../kv";
 import type { Runtime } from "../runtime";
+import { signalChat } from "../streams/signals";
 import { workspaces } from "../workspaces/schema";
 import type { WorkerScope } from "./auth";
 import { clearWorkerGateway, workerGatewaySettings } from "./gateway";
@@ -26,6 +28,7 @@ import {
   verifyWorkerProof,
   type WorkerIdentity,
 } from "./signing";
+import { TASK_SIGNAL } from "./tasks";
 
 /**
  * Worker identity: owner management (setup codes, listing, revocation) and machine-auth
@@ -202,10 +205,13 @@ export async function revokeEnrollment(db: Database, workspace: string, enrollme
  * the identity epoch advanced (once; a retry changes nothing more), so every token issued before
  * stops at its next call; its E2EE keys and pairings deleted; its Gateway key revoked and access
  * cleared; its unfinished tool tasks failed; its ACP commands, interactions and sessions failed
- * (`failWorkerAcpWork`). After commit: the key cache tombstone, presence and warm sessions.
+ * and its open epochs closed (`failWorkerAcpWork`). After commit: the key cache tombstone,
+ * presence and warm sessions, the epoch stream deletions, and a signal to each chat handler
+ * waiting on a failed task.
  */
-export async function revokeWorker(db: Database, kv: Kv, workspace: string, workerId: string) {
-  const revokedKeys = await db.transaction(async (tx) => {
+export async function revokeWorker(runtime: Runtime, workspace: string, workerId: string) {
+  const { db, kv } = runtime.drivers;
+  const revoked = await db.transaction(async (tx) => {
     const [worker] = await tx
       .select({ status: workers.status })
       .from(workers)
@@ -221,7 +227,7 @@ export async function revokeWorker(db: Database, kv: Kv, workspace: string, work
     await deleteWorkerKeys(tx, workspace, workerId);
     const hashes = await clearWorkerGateway(tx, workerId);
     const now = new Date();
-    await tx
+    const tasks = await tx
       .update(workerTasks)
       .set({
         status: "failed",
@@ -234,15 +240,20 @@ export async function revokeWorker(db: Database, kv: Kv, workspace: string, work
           eq(workerTasks.worker, workerId),
           notInArray(workerTasks.status, ["failed", "success"]),
         ),
-      );
-    await failWorkerAcpWork(tx, workerId);
-    return hashes;
+      )
+      .returning({ id: workerTasks.id, chat: workerTasks.chat });
+    const jobs = await failWorkerAcpWork(tx, workerId);
+    return { hashes, tasks, jobs };
   });
   await Promise.all([
-    invalidateApiKeys(kv, revokedKeys),
+    invalidateApiKeys(kv, revoked.hashes),
     deleteWorkerPresence(kv, workerId),
     clearWarmSessions(kv, workerId),
   ]);
+  runtime.defer(dispatchJobs(runtime, revoked.jobs));
+  for (const task of revoked.tasks) {
+    if (task.chat) await signalChat(runtime, task.chat, { topic: TASK_SIGNAL, ids: [task.id] });
+  }
 }
 
 /** Retention: deletes up to `batch` pending or revoked setup codes past expiry plus a week. */

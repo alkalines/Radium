@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { offeredModel, offeredTitleModel, useWorkspaceSettings } from "@/lib/collections/workspace-settings";
 import { useTrpc } from "@/lib/trpc";
 import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { useAccount } from "@/lib/use-account";
@@ -28,17 +29,13 @@ export function PreferencesPanel() {
   const { data: models } = useQuery(
     trpc.models.availableModels.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
   );
-  const settingsInput = signedIn && workspaceId ? { workspace: workspaceId } : skipToken;
-  const { data: defaultModel } = useQuery(trpc.chatroom.getModelDefault.queryOptions(settingsInput));
-  const { data: titleModel } = useQuery(
-    trpc.chatroom.getTitleModelDefault.queryOptions(settingsInput),
-  );
-  const { data: chainOfThoughtEnabled } = useQuery(
-    trpc.chatroom.getChainOfThoughtEnabled.queryOptions(settingsInput),
-  );
-  const { data: systemPrompt } = useQuery(
-    trpc.chatroom.getSystemPromptSettings.queryOptions(settingsInput),
-  );
+  const settings = useWorkspaceSettings(signedIn ? workspaceId : undefined);
+  // A stored model the workspace no longer offers reads as unset (`chatroom.getModelDefault`).
+  const defaultModel = settings ? offeredModel(settings.defaultModel, models) : undefined;
+  const titleModel = settings ? offeredTitleModel(settings.titleModel, models) : undefined;
+  const chainOfThoughtEnabled = settings?.chainOfThought;
+  const systemPrompt = settings?.systemPrompt;
+  // Without Electric this Tab refetches at once instead of waiting for the `chatroom` event.
   const saved = { onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.chatroom.pathKey() }) };
   const { mutateAsync: setModelDefault } = useMutation(
     trpc.chatroom.setModelDefault.mutationOptions(saved),

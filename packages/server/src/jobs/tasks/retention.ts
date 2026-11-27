@@ -25,7 +25,6 @@ type RetentionPolicy = {
  */
 const policies: RetentionPolicy[] = [
   { table: "limit_events", prune: pruneLimitEvents },
-  { table: "chat_runs", prune: pruneChatRuns },
   { table: "e2ee_invites", prune: pruneExpiredInvites },
   { table: "e2ee_worker_pairings", prune: pruneWorkerPairings },
   { table: "notifications", prune: pruneNotifications },
@@ -48,6 +47,8 @@ export default defineTask<{ pruned: Record<string, number> } | { skipped: true }
       return { result: { skipped: true } };
     }
     const pruned: Record<string, number> = {};
+    // Run rows own their streams, which only the runtime can delete.
+    pruned.chat_runs = await pruneChatRuns(runtime, Date.now(), RETENTION_BATCH);
     for (const policy of policies) {
       pruned[policy.table] = await policy.prune(runtime.drivers.db, Date.now(), RETENTION_BATCH);
     }

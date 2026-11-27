@@ -11,6 +11,7 @@ import { e2eeIdentities } from "../e2ee/schema";
 import { limitEvents } from "../gateway/schema";
 import type { Runtime } from "../runtime";
 import { notifications } from "./schema";
+import { publishEvent, userEvents } from "../streams/events";
 
 /**
  * Sealing of a notification's detail to its recipient (Convex `src/notifications/sealing.ts`).
@@ -26,10 +27,21 @@ const sealPayload = z.object({ notification: z.string() });
 /** The bounded plaintext sealed into a notification box. */
 export type NotificationContent = { title: string; body: string };
 
-/** Outbox handler of `notifications.seal`; idempotent. */
+/**
+ * Outbox handler of `notifications.seal`, queued for every notification: seals its detail when
+ * the recipient has an identity, then rings the recipient's open tabs (`notifications` on their
+ * event stream). Being the notification's after-commit job makes it the doorbell too, so tabs
+ * read the row once its box is there. Idempotent; a repeated ring only refetches.
+ */
 export async function runSealJob(runtime: Runtime, payload: unknown) {
-  const { db } = runtime.drivers;
   const { notification } = sealPayload.parse(payload);
+  const recipient = await sealNotification(runtime, notification);
+  if (recipient) await publishEvent(runtime, [userEvents(recipient)], { topic: "notifications" });
+}
+
+/** Seals `notification` if it can; returns its recipient, or `null` when it no longer exists. */
+async function sealNotification(runtime: Runtime, notification: string): Promise<string | null> {
+  const { db } = runtime.drivers;
   const [row] = await db
     .select({
       userId: notifications.userId,
@@ -54,8 +66,9 @@ export async function runSealJob(runtime: Runtime, payload: unknown) {
       and(eq(e2eeIdentities.userId, notifications.userId), eq(e2eeIdentities.status, "active")),
     )
     .where(eq(notifications.id, notification));
-  if (!row || row.hasBox || row.hasLegacy || row.keyId === null || row.publicKey === null) {
-    return;
+  if (!row) return null;
+  if (row.hasBox || row.hasLegacy || row.keyId === null || row.publicKey === null) {
+    return row.userId;
   }
 
   // A keyed chat's title is unavailable to the server, and a title moved into a migration
@@ -89,7 +102,7 @@ export async function runSealJob(runtime: Runtime, payload: unknown) {
   } catch {
     // An unusable recipient key leaves the generic notification; retrying cannot fix it.
     console.error("notifications: sealing failed");
-    return;
+    return row.userId;
   }
 
   // Stored only while the recipient's active identity is still the one sealed to, and the row
@@ -106,4 +119,5 @@ export async function runSealJob(runtime: Runtime, payload: unknown) {
         sql`exists (select 1 from ${e2eeIdentities} where ${e2eeIdentities.userId} = ${notifications.userId} and ${e2eeIdentities.status} = 'active' and ${e2eeIdentities.keyId} = ${row.keyId})`,
       ),
     );
+  return row.userId;
 }

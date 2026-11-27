@@ -49,6 +49,7 @@ import {
   type SignedCommand,
 } from "./policy";
 import { acpAgentSessions, acpCommands, acpInteractions, acpSessions } from "./schema";
+import { epochStreamPath } from "./live";
 import { admitWarm, isWarm } from "./warm";
 import { workerAgents } from "../worker/schema";
 
@@ -57,8 +58,8 @@ import { workerAgents } from "../worker/schema";
  * Chatroom access rule (`accessibleSession`), so a member's personal ACP chat stays private from
  * the workspace owner. After the encryption cutover only the signed path exists: commands are
  * sealed to the Worker and signed by their issuer, chats are created with keys, and the creator
- * signs the chat's binding before any command. Frame reads (`LiveFrames`), viewer heartbeats
- * (`Watch`) and epoch capsules (`StreamCapsule`) move to Durable Streams in Phase 4.
+ * signs the chat's binding before any command. Agent output, viewer heartbeats and epoch capsules
+ * live on the epoch streams (`./live.ts`).
  */
 
 const idInput = z.string().min(1).max(256);
@@ -1085,6 +1086,8 @@ export async function getCommand(db: Database, userId: string, commandId: string
  * Quiet session metadata for a Session Tab. Before the agent session exists, `defaultConfig` and
  * `commands` come from the agent's last advertised defaults. `binding` is the published audience
  * (null: the creator must publish one first); `sealedError` replaces the generic `error` text.
+ * `stream` is the current epoch's stream (`/api/streams/<stream>`), null while no open epoch
+ * exists (none started yet, or cooled until the Worker starts a newer one).
  */
 export async function getSession(runtime: Runtime, userId: string, chatId: string) {
   const { db, kv } = runtime.drivers;
@@ -1114,6 +1117,10 @@ export async function getSession(runtime: Runtime, userId: string, chatId: strin
     status: session.status,
     epoch: session.epoch,
     warm,
+    stream:
+      session.epoch > 0 && session.epoch > (session.cooledEpoch ?? 0)
+        ? epochStreamPath(session.chat, session.epoch)
+        : null,
     stopReason: session.stopReason,
     error: session.error,
     sealedError: sealedWire(session.sealedErrorEpoch, session.sealedErrorBox),

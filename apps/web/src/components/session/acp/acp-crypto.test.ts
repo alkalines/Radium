@@ -15,7 +15,9 @@ import {
 import {
   openAcpFrames,
   openAcpInteraction,
+  readEpochMessage,
   type AcpChatContext,
+  type AcpEpochCapsule,
   type AcpReadSources,
 } from "./acp-crypto";
 
@@ -32,11 +34,9 @@ async function fixture() {
     e2eeId: toBase64Url(randomBytes(16)),
     workerId,
   };
-  const stored: { capsule?: { chatEpoch: number; capsule: Uint8Array; signature: Uint8Array } } =
-    {};
+  const stored: { capsule?: AcpEpochCapsule } = {};
   const sources: AcpReadSources = {
     workerSigningKey: async () => worker.publicKey,
-    streamCapsule: async () => stored.capsule ?? null,
     chatSeed: async () => chatKey.seed,
   };
   const statement = (record: string, field: string, table: string, object: Uint8Array) =>
@@ -77,7 +77,7 @@ async function fixture() {
     };
     return { capsule, capsuleKey };
   }
-  return { chat, chatKey, worker, sources, statement, publishCapsule };
+  return { chat, chatKey, worker, sources, stored, statement, publishCapsule };
 }
 
 async function sealFrame(
@@ -100,45 +100,60 @@ async function sealFrame(
     },
     pad: "content",
   });
-  return envelope;
+  return toBase64Url(envelope);
 }
 
 describe("ACP frame decryption", () => {
   test("authenticates frame payload and routing metadata", async () => {
-    const { chat, worker, sources, publishCapsule } = await fixture();
+    const { chat, worker, sources, stored, publishCapsule } = await fixture();
     const epoch = await publishCapsule(1, worker.seed);
     const payload = await sealFrame(chat, epoch, 1, 1, "[1]");
     const row = { seqFrom: 1, seqTo: 1, kind: "live" as const, payload };
-    expect((await openAcpFrames(chat, 1, [row], sources))[0].payload).toBe("[1]");
-    await expect(openAcpFrames(chat, 1, [{ ...row, seqTo: 99 }], sources)).rejects.toThrow();
-    await expect(openAcpFrames(chat, 1, [{ ...row, kind: "history" }], sources)).rejects.toThrow();
-    await expect(openAcpFrames(chat, 1, [{ ...row, seqFrom: 2 }], sources)).rejects.toThrow();
-    await expect(openAcpFrames(chat, 1, [{ ...row, payload: "[1]" }], sources)).rejects.toThrow();
+    const open = (rows: (typeof row)[]) => openAcpFrames(chat, 1, stored.capsule, rows, sources);
+    expect((await open([row]))[0].payload).toBe("[1]");
+    await expect(open([{ ...row, seqTo: 99 }])).rejects.toThrow();
+    await expect(open([{ ...row, kind: "history" as "live" }])).rejects.toThrow();
+    await expect(open([{ ...row, seqFrom: 2 }])).rejects.toThrow();
+    await expect(open([{ ...row, payload: "[1]" }])).rejects.toThrow();
   });
 
   test("rejects a capsule not signed by the roster Worker", async () => {
-    const { chat, sources, publishCapsule } = await fixture();
+    const { chat, sources, stored, publishCapsule } = await fixture();
     const attacker = await generateSigningKeyPair();
     const epoch = await publishCapsule(1, attacker.seed);
     const payload = await sealFrame(chat, epoch, 1, 1, "[1]");
     await expect(
-      openAcpFrames(chat, 1, [{ seqFrom: 1, seqTo: 1, kind: "live", payload }], sources),
+      openAcpFrames(chat, 1, stored.capsule, [{ seqFrom: 1, seqTo: 1, kind: "live", payload }], sources),
     ).rejects.toThrow();
   });
 
   test("rejects a Worker-signed capsule replayed for another epoch", async () => {
-    const { chat, worker, sources, publishCapsule } = await fixture();
+    const { chat, worker, sources, stored, publishCapsule } = await fixture();
     // Signed for epoch 1's location but served as epoch 2's capsule.
     const epoch = await publishCapsule(2, worker.seed, "1");
     const payload = await sealFrame(chat, epoch, 2, 1, "[1]");
     await expect(
-      openAcpFrames(chat, 2, [{ seqFrom: 1, seqTo: 1, kind: "live", payload }], sources),
+      openAcpFrames(chat, 2, stored.capsule, [{ seqFrom: 1, seqTo: 1, kind: "live", payload }], sources),
     ).rejects.toThrow();
   });
 
   test("rejects when the stream has no capsule", async () => {
     const { chat, sources } = await fixture();
-    await expect(openAcpFrames(chat, 1, [], sources)).rejects.toThrow();
+    await expect(openAcpFrames(chat, 1, undefined, [], sources)).rejects.toThrow();
+  });
+
+  test("reads the stream's capsule message and frames, refusing other shapes", () => {
+    const capsule = { chatEpoch: 1, capsule: toBase64Url(randomBytes(8)), signature: toBase64Url(randomBytes(64)) };
+    expect(readEpochMessage({ type: "capsule", ...capsule })).toEqual({
+      capsule: { chatEpoch: 1, capsule: expect.any(Uint8Array), signature: expect.any(Uint8Array) },
+    });
+    const frame = { seqFrom: 0, seqTo: 2, kind: "snapshot" as const, payload: "AAAA" };
+    expect(readEpochMessage(frame)).toEqual({ frame });
+    expect(() => readEpochMessage({ type: "capsule", chatEpoch: 1 })).toThrow();
+    expect(() => readEpochMessage({ ...frame, kind: "other" })).toThrow();
+    expect(() => readEpochMessage({ ...frame, seqFrom: 0.5 })).toThrow();
+    expect(() => readEpochMessage({ ...frame, payload: [1] })).toThrow();
+    expect(() => readEpochMessage("frame")).toThrow();
   });
 });
 

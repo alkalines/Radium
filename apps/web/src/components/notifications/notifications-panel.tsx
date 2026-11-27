@@ -15,6 +15,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { PREFERENCES_KEY, useUserPreferences } from "@/lib/collections/user-preferences";
 import { useTrpc } from "@/lib/trpc";
 import type { NotificationCategory } from "contracts/notifications/contract";
 import { GroupList, Row, RowBlock, Tag } from "@/components/harness/group-list";
@@ -88,8 +89,13 @@ function permissionDescription(permission: NotificationPermissionState) {
 export function NotificationsPanel() {
   const trpc = useTrpc();
   const queryClient = useQueryClient();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: trpc.notifications.pathKey() });
-  const { data: preferences } = useQuery(trpc.notifications.getPreferences.queryOptions());
+  // Notification preferences are read with the user's other preferences (`userPreferences`).
+  const invalidate = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: trpc.notifications.pathKey() }),
+      queryClient.invalidateQueries({ queryKey: PREFERENCES_KEY }),
+    ]);
+  const preferences = useUserPreferences()?.notifications;
   const { data: pushConfig } = useQuery(trpc.notifications.pushConfig.queryOptions());
   const { mutateAsync: setPreference } = useMutation(
     trpc.notifications.setPreference.mutationOptions({ onSuccess: invalidate }),

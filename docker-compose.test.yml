@@ -1,9 +1,9 @@
-# Throwaway Postgres and Valkey for `bun run --cwd packages/server test`: in memory, fixed test
-# credentials, own ports and project name, so tests never touch development data. It is a
-# separate file rather than a profile of docker-compose.yml because that file requires real
-# secrets for every command.
+# Throwaway Postgres, Valkey and Durable Streams for `bun run --cwd packages/server test`: in
+# memory, fixed test credentials, own ports and project name, so tests never touch development
+# data. It is a separate file rather than a profile of docker-compose.yml because that file
+# requires real secrets for every command.
 #
-#   docker compose -f docker-compose.test.yml up -d --wait
+#   docker compose -f docker-compose.test.yml up -d --wait --build
 #   docker compose -f docker-compose.test.yml down
 name: radium-test
 
@@ -32,3 +32,13 @@ services:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 1s
       retries: 30
+
+  # The image the deployment runs (docker/durable-streams), with its data directory in memory.
+  # Distroless has no shell for a healthcheck; tests retry their first request instead.
+  streams:
+    build: docker/durable-streams
+    image: radium-durable-streams:0.3.0
+    environment:
+      STREAMS_TOKEN: radium-test-streams
+    tmpfs: ["/data:uid=65532,gid=65532,mode=0700"]
+    ports: ["127.0.0.1:54437:4437"]

@@ -22,6 +22,15 @@ export function parseOrigin(value: string) {
   return url.origin;
 }
 
+/** The stream server's base URL, without a trailing slash; refuses credentials, query and fragment. */
+function parseStreamsUrl(value: string) {
+  const url = new URL(value);
+  if (url.username || url.password || url.search || url.hash || !/^https?:$/.test(url.protocol)) {
+    throw new Error("Invalid streams URL");
+  }
+  return url.toString().replace(/\/+$/, "");
+}
+
 const origin = z.string().transform((value, context) => {
   try {
     return parseOrigin(value);
@@ -44,6 +53,29 @@ const configSchema = z.object({
   API_URL: origin,
   DATABASE_URL: required,
   VALKEY_URL: required,
+  /**
+   * The internal Durable Streams server's stream prefix (`http://streams:4437/v1/stream` with the
+   * Caddy build); stream paths are appended to it. Never exposed: browsers and Workers read
+   * through `/api/streams/*`.
+   */
+  STREAMS_URL: z.string().transform((value, context) => {
+    try {
+      return parseStreamsUrl(value);
+    } catch {
+      context.addIssue({ code: "custom", message: "must be an http(s) URL without credentials, query or fragment" });
+      return z.NEVER;
+    }
+  }),
+  /** Bearer token the stream server requires on every request; only the backend holds it. */
+  STREAMS_TOKEN: required,
+  /**
+   * Optional Electric sync service (`http://electric:3000`), reached only by the shape proxy
+   * (`/api/shapes/*`). With it, selected collections sync live from Postgres; without it they are
+   * tRPC queries refreshed by invalidation events.
+   */
+  ELECTRIC_URL: optional.refine((value) => value === undefined || URL.canParse(value), "must be a URL"),
+  /** Electric's API secret; set exactly when `ELECTRIC_URL` is. */
+  ELECTRIC_SECRET: optional,
   BETTER_AUTH_SECRET: required,
   OPAQUE_SERVER_SETUP: required,
   /** Shared with the web server, which forwards `/api/*` and names the client address. */
@@ -139,6 +171,13 @@ const configSchema = z.object({
       code: "custom",
       path: ["WORKER_AUTH_PRIVATE_JWK"],
       message: "has no public key with the same kid and key in WORKER_AUTH_JWKS",
+    });
+  }
+  if ((value.ELECTRIC_URL === undefined) !== (value.ELECTRIC_SECRET === undefined)) {
+    context.addIssue({
+      code: "custom",
+      path: ["ELECTRIC_SECRET"],
+      message: "set both ELECTRIC_URL and ELECTRIC_SECRET, or neither",
     });
   }
 });

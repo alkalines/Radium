@@ -60,13 +60,60 @@ export type AcpChatContext = {
   workerId: string;
 };
 
-/** One stream frame row of an epoch; `payload` is the sealed envelope. */
+/** One sealed frame of an epoch stream; `payload` is the sealed envelope as base64url. */
 export type AcpFrameRow = {
   seqFrom: number;
   seqTo: number;
   kind: AcpFrame["kind"];
-  payload: string | Uint8Array;
+  payload: string;
 };
+
+/** An epoch's frame capsule as the Worker signed it: the first message of its stream. */
+export type AcpEpochCapsule = { chatEpoch: number; capsule: Uint8Array; signature: Uint8Array };
+
+const FRAME_KINDS: readonly unknown[] = ["snapshot", "live", "history"] satisfies AcpFrame["kind"][];
+
+/**
+ * Reads one message of an epoch stream (`/api/streams/c/<chat>/acp/<epoch>`): the capsule the
+ * backend stored first (`{type: "capsule", chatEpoch, capsule, signature}`, bytes as base64url)
+ * or a frame the Worker appended. Nothing is trusted yet: the capsule's signature and every
+ * frame's seal are checked by {@link openAcpFrames}. Throws on any other shape.
+ */
+export function readEpochMessage(
+  message: unknown,
+): { capsule: AcpEpochCapsule } | { frame: AcpFrameRow } {
+  if (!message || typeof message !== "object") {
+    throw new CryptoError("BAD_ENVELOPE", "Agent stream message is invalid");
+  }
+  if ("type" in message && message.type === "capsule") {
+    if (
+      !("chatEpoch" in message) || typeof message.chatEpoch !== "number" ||
+      !("capsule" in message) || typeof message.capsule !== "string" ||
+      !("signature" in message) || typeof message.signature !== "string"
+    ) throw new CryptoError("BAD_ENVELOPE", "Agent stream capsule is invalid");
+    return {
+      capsule: {
+        chatEpoch: message.chatEpoch,
+        capsule: fromBase64Url(message.capsule),
+        signature: fromBase64Url(message.signature),
+      },
+    };
+  }
+  if (
+    !("seqFrom" in message) || !Number.isSafeInteger(message.seqFrom) ||
+    !("seqTo" in message) || !Number.isSafeInteger(message.seqTo) ||
+    !("kind" in message) || !FRAME_KINDS.includes(message.kind) ||
+    !("payload" in message) || typeof message.payload !== "string"
+  ) throw new CryptoError("BAD_ENVELOPE", "Agent frame is invalid");
+  return {
+    frame: {
+      seqFrom: message.seqFrom as number,
+      seqTo: message.seqTo as number,
+      kind: message.kind as AcpFrame["kind"],
+      payload: message.payload,
+    },
+  };
+}
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const frameKeys = new Map<string, Promise<Uint8Array>>();
@@ -354,24 +401,18 @@ export function acpFallbackTitle(text: string): string {
 }
 
 /**
- * What reading a Worker's objects depends on: the roster-verified signing key of the chat's Worker,
- * the stored epoch capsule, and the chat seed. Production reads the verified roster, the stream
- * layer and the unlocked key store; tests substitute them to exercise the verification itself.
+ * What reading a Worker's objects depends on: the roster-verified signing key of the chat's Worker
+ * and the chat seed. Production reads the verified roster and the unlocked key store; tests
+ * substitute them to exercise the verification itself.
  */
 export type AcpReadSources = {
   workerSigningKey(chat: AcpChatContext): Promise<Uint8Array>;
-  streamCapsule(
-    chat: AcpChatContext,
-    epoch: number,
-  ): Promise<{ chatEpoch: number; capsule: Uint8Array; signature: Uint8Array } | null>;
   chatSeed(chatId: string, epoch: number): Promise<Uint8Array>;
 };
 
 const liveSources: AcpReadSources = {
   workerSigningKey: async (chat) =>
     (await trustedWorker(chat.workspaceId, chat.workerId)).signingPublicKey,
-  // The epoch capsule is stored with its stream, which has no browser route before Phase 4.
-  streamCapsule: async () => null,
   chatSeed: openChatSeed,
 };
 
@@ -407,13 +448,13 @@ async function verifyWorkerObject(
 function acpFrameKey(
   chat: AcpChatContext,
   epoch: number,
+  stream: AcpEpochCapsule | undefined,
   sources: AcpReadSources,
 ): Promise<Uint8Array> {
   const cacheKey = `${chat.chatId}:${epoch}`;
   const cached = frameKeys.get(cacheKey);
   if (cached) return cached;
   const opening = (async () => {
-    const stream = await sources.streamCapsule(chat, epoch);
     if (!stream) {
       throw new CryptoError("DECRYPT_FAILED", "The agent has not published this stream yet");
     }
@@ -444,25 +485,31 @@ function acpFrameKey(
 }
 
 /**
- * Decrypts one stream epoch's frames of a keyed workspace. Throws, applying nothing, when the
- * epoch capsule is missing or not signed by the roster Worker. Each frame must authenticate its
- * range and kind as well as its payload; invalid frames stop the fold instead of advancing it.
+ * Decrypts frames of one stream epoch under its `capsule` (the stream's first message). Throws,
+ * applying nothing, when the capsule is missing or not signed by the roster Worker. Each frame
+ * must authenticate its range and kind as well as its payload; invalid frames stop the fold
+ * instead of advancing it.
  */
 export async function openAcpFrames(
   chat: AcpChatContext,
   epoch: number,
+  capsule: AcpEpochCapsule | undefined,
   rows: readonly AcpFrameRow[],
   sources: AcpReadSources = liveSources,
 ): Promise<AcpFrame[]> {
-  const capsuleKey = await acpFrameKey(chat, epoch, sources);
+  const capsuleKey = await acpFrameKey(chat, epoch, capsule, sources);
   return Promise.all(
     rows.map(async (row): Promise<AcpFrame> => {
       const frame = { seqFrom: row.seqFrom, seqTo: row.seqTo, kind: row.kind };
-      if (typeof row.payload === "string")
+      let envelope: Uint8Array;
+      try {
+        envelope = fromBase64Url(row.payload);
+      } catch {
         throw new CryptoError("BAD_ENVELOPE", "Agent frame is not encrypted");
+      }
       const plaintext = await openWithCapsule({
         capsuleKey,
-        envelope: row.payload,
+        envelope,
         aad: {
           table: "chat_frames",
           workspace: chat.workspaceId,

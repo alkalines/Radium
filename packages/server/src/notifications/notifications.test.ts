@@ -681,14 +681,14 @@ describe("sealing", () => {
     const row = await readRow(id);
     expect(row.sealedBox).toBeNull();
     expect(JSON.stringify(row)).not.toContain("Refactor routing");
-    // Without an identity at creation, no sealing job is queued.
+    // Without an identity at creation, the job still runs (it rings the tabs) and seals nothing.
     const plain = await notifySession();
-    expect(
-      await db()
-        .select()
-        .from(jobs)
-        .where(and(eq(jobs.kind, SEAL_JOB), sql`${jobs.payload}->>'notification' = ${plain.id}`)),
-    ).toEqual([]);
+    const [job] = await db()
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.kind, SEAL_JOB), sql`${jobs.payload}->>'notification' = ${plain.id}`));
+    await runSealJob(test.runtime, job!.payload);
+    expect((await readRow(plain.id)).sealedBox).toBeNull();
   });
 
   it("a rotated identity gets the box sealed to its new key", async () => {

@@ -136,6 +136,28 @@ export function upstreamStream(pieces: string[], usage = { prompt_tokens: 10, co
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+/**
+ * An upstream reply that sends `first` and then nothing until the request is aborted, like a model
+ * that is still thinking; for stop and detached-run tests.
+ */
+export function upstreamHanging(first: string, signal: AbortSignal | null | undefined) {
+  const encoder = new TextEncoder();
+  const opening = `data: ${JSON.stringify({
+    id: "upstream-generation",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "upstream-model",
+    choices: [{ index: 0, delta: { role: "assistant", content: first }, finish_reason: null }],
+  })}\n\n`;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(opening));
+      signal?.addEventListener("abort", () => controller.error(signal.reason));
+    },
+  });
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 /** An upstream error response in the OpenAI error shape. */
 export function upstreamError(status: number, message = `Upstream ${status}`, code?: string) {
   return Response.json(

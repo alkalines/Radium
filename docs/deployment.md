@@ -122,7 +122,7 @@ and `OTEL_SERVICE_NAME` variables are no longer read and can be unset. See
 
 ## New Backend Development
 
-The new backend (`packages/server`, [backend migration](Backend_Migration.md)) is in progress on the `refactor/abandon-convex` branch: auth (Better Auth with OPAQUE), the tRPC base and the job outbox work; domain screens are still on Convex. Its configuration is `packages/server/.env.example` ([variables](Backend_Migration/Runtime.md#configuration)).
+The new backend (`packages/server`, [backend migration](Backend_Migration.md)) is in progress on the `refactor/abandon-convex` branch: every domain and the live layer run on it and the web app makes no Convex data calls; the Worker client still uses Convex until Phase 5. Its configuration is `packages/server/.env.example` ([variables](Backend_Migration/Runtime.md#configuration)).
 
 1. Backing services. `docker-compose.yml` runs Postgres, Valkey and Durable Streams on `127.0.0.1` (Electric with `--profile electric`). Its secrets come from the root `.env`; copy `.env.example` and fill every value:
 
@@ -133,7 +133,7 @@ The new backend (`packages/server`, [backend migration](Backend_Migration.md)) i
 
    The Durable Streams image is built from the upstream release binary, checked against the release checksums (`docker/durable-streams/`). It requires `Authorization: Bearer $STREAMS_TOKEN` on every request and holds in-flight replies in plaintext, so never back up or export its volume.
 
-2. Backend: copy `packages/server/.env.example` to `packages/server/.env`, point `DATABASE_URL` at the compose Postgres, set `BETTER_AUTH_SECRET` and `OPAQUE_SERVER_SETUP` (`bunx better-auth-opaque create-setup`), then:
+2. Backend: copy `packages/server/.env.example` to `packages/server/.env`, point `DATABASE_URL` at the compose Postgres, set `STREAMS_URL` (`http://127.0.0.1:4437/v1/stream`) and the same `STREAMS_TOKEN` as the root `.env`, set `BETTER_AUTH_SECRET` and `OPAQUE_SERVER_SETUP` (`bunx better-auth-opaque create-setup`), and optionally `ELECTRIC_URL` (`http://127.0.0.1:3001`) with `ELECTRIC_SECRET` when Electric runs, then:
 
    ```bash
    bun run --cwd packages/server db:migrate
@@ -144,7 +144,7 @@ The new backend (`packages/server`, [backend migration](Backend_Migration.md)) i
 
 3. Web: set `API_INTERNAL_URL` (the backend origin) in `apps/web/.env.local`, plus the same `AUTH_PROXY_SECRET` on both sides, then `bun run --cwd apps/web vite:dev`.
 
-Tests run against `docker-compose.test.yml` (in-memory Postgres and Valkey on ports 55432 and 56379, fixed test credentials): `docker compose -f docker-compose.test.yml up -d --wait`, then `bun run --cwd packages/server test`.
+Tests run against `docker-compose.test.yml` (in-memory Postgres, Valkey and Durable Streams on ports 55432, 56379 and 54437, fixed test credentials): `docker compose -f docker-compose.test.yml up -d --wait --build`, then `bun run --cwd packages/server test`.
 
 ## Convex Cloud Development
 

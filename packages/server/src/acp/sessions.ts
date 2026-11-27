@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Database } from "../drivers/types";
+import { closeWorkerEpochs } from "./live";
 import { acpAgentSessions, acpAgents, acpCommands, acpInteractions, acpSessions } from "./schema";
 
 /** The agent binding of an ACP chat, as the Chatroom shows it (no conversation content). */
@@ -63,9 +64,11 @@ export async function markAcpChatUserTitled(tx: Database, chat: string): Promise
  * Revocation (the Worker domain's revoke transaction): the revoked Worker's queued and claimed
  * commands fail with their payloads erased, its open interactions are cancelled and its busy
  * sessions fail, so nothing waits on a machine that can no longer authenticate. The fixed code
- * `ACP_ABANDONED` says the host-side outcome is unknown and never replayed.
+ * `ACP_ABANDONED` says the host-side outcome is unknown and never replayed. Its open epochs are
+ * closed (`closeWorkerEpochs`); returns the stream deletion jobs to dispatch after commit.
  */
-export async function failWorkerAcpWork(tx: Database, worker: string): Promise<void> {
+export async function failWorkerAcpWork(tx: Database, worker: string): Promise<(string | null)[]> {
+  const jobs = await closeWorkerEpochs(tx, worker);
   const now = new Date();
   await tx
     .update(acpCommands)
@@ -94,6 +97,7 @@ export async function failWorkerAcpWork(tx: Database, worker: string): Promise<v
         inArray(acpSessions.status, ["starting", "running", "awaiting"]),
       ),
     );
+  return jobs;
 }
 
 /** The agent session id and Worker of each ACP chat of `chatIds` that has a session id bound. */

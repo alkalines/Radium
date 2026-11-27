@@ -1,6 +1,6 @@
 # 14 Backend Migration (Convex → Bun, Hono, Postgres)
 
-Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 schema done (2026-11-22); Phase 3 domains done (2026-11-25): all six slices on the server and in the web app, the Worker client not yet (Phase 5); Phase 4 not started.** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
+Status: **Phase 0 spikes done (2026-11-21); Phase 1 foundation done (2026-11-22); Phase 2 schema done (2026-11-22); Phase 3 domains done (2026-11-25): all six slices on the server and in the web app, the Worker client not yet (Phase 5); Phase 4 live layer done (2026-11-26), with ACP live and Electric's live mode not yet browser-checked (see its results).** Design: [Backend migration](../Backend_Migration.md), with [runtime and layout](../Backend_Migration/Runtime.md), [live data](../Backend_Migration/Live_Data.md) and [Convex import](../Backend_Migration/Convex_Import.md). Branch: `refactor/abandon-convex`.
 
 This is several sessions of work, not one. Each phase ends with the docs updated and its verification recorded here. The Convex backend on `dev` stays the product until the cutover release. The new backend is built beside it and exercised against imported copies of a local deployment, never production data.
 
@@ -625,6 +625,46 @@ Browser check of slices 5–6 (built server through the forwarder, existing dev 
 Stream proxy, user and workspace invalidation streams, chat signal streams, Worker inboxes; built-in chat runs on streams (admission, Stop, lease, detached runs on Bun); ACP epochs on streams with Valkey viewers, warm cap and `acp.cool`; Worker task and Code Mode waits; notification doorbells; optional Electric collections.
 
 Verification: two browsers and a phone-sized viewport on one keyed chat and one ACP session: live reply in both, reload resumes, Stop from the non-sender, approval answered once, session cools after 5 minutes without viewers and re-warms with a new epoch; ACP streams hold only ciphertext for paired sessions; run streams are gone 10 minutes after the run ends.
+
+### Phase 4 Results (2026-11-26)
+
+Decisions taken with the user before starting:
+
+- All of Phase 4 in one session (server and web per part); Electric collections included, all five.
+- The Worker client stays in Phase 5: server tests act as the Worker (real JWT, real appends through the proxy), so ACP live and Worker tools are not browser-checked yet.
+- Tests run the deployment's Caddy Durable Streams image (in-memory `/data`), not `@durable-streams/server`.
+- Nothing is committed; the work is left in the worktree for review.
+
+What was built ([live data](../Backend_Migration/Live_Data.md) describes the behavior; `packages/server/src/streams/`, `src/shapes/`, `src/acp/live.ts`, `src/worker/chat-tools.ts`):
+
+- **Streams foundation**: `STREAMS_URL`/`STREAMS_TOKEN`; `StreamServer` (create, append, delete, head, long-poll read, forward, idempotent producer; management requests time out after 10 s); rotating generations in Valkey with the `streams:rotate` task (every 5 min, drains its backlog within a budget); `GET /api/streams/*` authorizing proxy.
+- **Invalidation**: `events.streams()`; the `sessionProcedure` middleware publishes after every successful browser mutation, with every id from the raw input checked for access first; Worker doorbells per mutation (`WORKER_DOORBELLS`); notifications ring from the seal job; Worker online transitions; Worker ACP mutations. Web: one event reader per tab (`lib/live-events.ts`) with resume-from-offset (`lib/stream-reader.ts`). Removed polls: notification center 30 s, Worker list 30 s, ACP agent-sync 5 s, ACP session 5 s.
+- **Built-in runs**: `/api/chat` answers `201` with the stream location and generates detached; `chats.stop`; `GET /api/chat/:chat/stream` resume; retention fails lost runs (closing their streams) and deletes ended runs with their streams; chat deletion stops the run and queues its streams' deletion (a deletion the stream server refuses is re-queued instead of parked). A failed producer batch ends live delivery and closes the stream with an error chunk; the saved turn is unaffected. Web: `ChatRunTransport`, re-attach of another Tab's run, Stop from any Tab.
+- **Signal waits**: Worker tool results and Code Mode answers wake waits through `c/<chat>/signals`; a wait falls back to a 1 s re-check while the stream server is unavailable.
+- **Worker chat tools in `/api/chat`**, paired (sealed) Workers only; the AI SDK approval replay-guard secret is derived from `BETTER_AUTH_SECRET` (Convex used the Worker issuer key, so an approval requested before the cutover and answered after it is refused). Revocation signals the chats of the tasks it fails.
+- **ACP on streams**: `startEpoch` creates the epoch stream with the capsule as its first message; `POST /api/streams/c/<chat>/acp/<epoch>` for the bound Worker only; `acp.watch` viewers, the `acp:cool` task (fixes the Phase 3 warm-cap blocker), deletion on cool, supersession, chat delete and revocation. Web: the transcript reads the epoch stream; the "not connected yet" placeholder is gone.
+- **Electric**: `GET /api/shapes/:collection` (six shapes, `ELECTRIC_URL`/`ELECTRIC_SECRET`), `events.config()`; web collections in `lib/collections/` (Electric or query source).
+- **Migration** `20261125203844_project_folders_workspace`: `project_folders.workspace` with a composite key to `projects`, backfilled, so the owner's folder shape is a plain predicate.
+- **CI** starts the Durable Streams image before the tests.
+
+Review: an independent review of the server side found no plaintext, sealed-content or personal-chat leak and 9 other issues, all fixed: the producer gap above; extra raw-input keys could address another tenant's event streams and Worker inboxes (now access-checked, with a test); rotation capped at 4,800 generations a day; signal waits failing when the stream server is down; parked stream deletions; a 10 s fence-cache refusal after an epoch rollover; an uncapped viewer set; rotation retiring before closing; `acp.fork` announcing the source chat. Also fixed: a stream re-created after cooling during `startEpoch`, a run stream created after its chat was deleted, timers started before the producer.
+
+Checks (this workstation, test compose with streams):
+
+- `bun run --cwd packages/server test`: 48 files, 601 tests pass, twice in a row; typecheck, `db:check` and regenerate-without-diff pass; the Nitro build passes (7.38 MB). Concurrency and ordering tests seen failing with their guard removed: the task signal, the capsule producer headers, the warm check inside the `startEpoch` lock, the viewer check inside the cooling script.
+- Web: `tsc` at the 28 baseline errors (`components/auth/*`), `vite:build` passes, `bun test src/components/session src/lib/live-relay.test.ts` 52/52. `bun test src/lib/crypto` has one failure in a folder run only, caused by unrestored `spyOn` stubs in `legacy-chat.test.ts` (pre-existing, files untouched here).
+- `db:migrate` on the local dev database applied the new migration.
+- **Browser** (built server and web over HTTP/1.1, dev compose with Electric, a fresh OPAQUE account, a local slow fake OpenAI-compatible upstream as the provider):
+  - **Found and fixed:** browsers allow 6 HTTP/1.1 connections per origin across all Tabs; one Tab with Electric held 7 long-lived requests, so a second Tab could not load. Fixes chosen with the user: one live reader per browser (Web Locks leader, events read in a Web Worker, relay over `BroadcastChannel`; `lib/live-relay.ts`, with its own test), and Electric only on pages served over HTTP/2 or HTTP/3. Afterwards three Tabs loaded, only the leader held live reads, and a mutation in one Tab refetched the others.
+  - **Found and fixed:** a Tab attaching to a run it did not send showed the reply without the prompt, which is saved only at the end; the run stream now starts with a transient `data-radium-prompt` part.
+  - **Passed:** a reply streamed live in the sender's Tab and in a second Tab; the saved turn decrypted in both; Stop from the second Tab ended the run in the sender's Tab ("Interrupted"); a Tab reloaded mid-reply showed the prompt and the reply so far (30 of 40 words), then the full reply, with the prompt once after the save.
+
+Not done or open:
+
+- Electric collections live in a browser: dev is HTTP/1.1, so they ran in query mode; Electric mode needs an HTTP/2 (TLS) origin to check. The shape proxy is covered by server tests against a recording stand-in.
+- ACP live, approvals and Worker tools in a browser: need the Phase 5 Worker client.
+- [E2EE data classification](../E2EE/Data.md) for streams and Valkey (Phase 8 as planned).
+- `packages/worker/src/tasks.sealed.test.ts` still imports the Convex `buildWorkerChatTools` (Phase 5/8).
 
 ## Phase 5: Client Cutover
 

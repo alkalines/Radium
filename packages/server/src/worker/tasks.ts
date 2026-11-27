@@ -16,6 +16,9 @@ import type { Database } from "../drivers/types";
 import { chatKeyAt, chatEpochIsBound, chatKeyIsStale } from "../e2ee/chat-keys";
 import { requireDispatchableWorker } from "../e2ee/worker-keys";
 import { AppError } from "../errors";
+import type { Runtime } from "../runtime";
+import { ringWorkers } from "../streams/events";
+import { signalChat } from "../streams/signals";
 import type { WorkerScope } from "./auth";
 import { chatWorkerSelection } from "./chat-selection";
 import { activeWorkspaceWorkers } from "./workers";
@@ -23,18 +26,24 @@ import { workerChatCalls, workerTasks } from "./schema";
 
 /**
  * Sealed Worker tool tasks (Convex `src/worker/tasks.ts`, the paired-Worker path only): the chat
- * handler (Phase 4) dispatches a built-in tool stage sealed to the Worker's certified key; the
- * Worker claims it once, runs it and completes it with a result sealed under the request key and
- * a durable receipt sealed to the chat key. The backend checks metadata it still sees (owner,
- * chat, selected Worker, directory and tool, stage shape, byte bounds, the Worker's current
- * certified key) and stores bytes.
+ * handler (`chat-tools.ts`) dispatches a built-in tool stage sealed to the Worker's certified
+ * key; the Worker claims it once, runs it and completes it with a result sealed under the request
+ * key and a durable receipt sealed to the chat key. The backend checks metadata it still sees
+ * (owner, chat, selected Worker, directory and tool, stage shape, byte bounds, the Worker's
+ * current certified key) and stores bytes.
  *
  * Invariants (each with a concurrency test):
  * - dispatch dedupe: one task per `(worker, request_id)` (unique index), one receipt per call
  *   stage; a repeat is a `replay`, never a second task;
  * - claim once: `update … set status = 'processing' … where status = 'sent'`;
  * - fenced completion: `update … where status = 'processing' and claim_id = $c and revision = $r`.
+ *
+ * Dispatch rings the Worker's inbox (`tasks`); completion signals the chat (`TASK_SIGNAL`), which
+ * the waiting chat handler long-polls instead of polling the row.
  */
+
+/** Signal topic of a finished sealed task on its chat's signal stream; `ids` names the task. */
+export const TASK_SIGNAL = "task";
 
 function taskDenied(): never {
   throw new AppError("FORBIDDEN", "WORKER_TASK_DENIED");
@@ -102,7 +111,10 @@ async function authorizeChatOwner(db: Database, chatId: string, userId: string) 
 }
 
 // ---------------------------------------------------------------------------------------------
-// Chat handler side (Phase 4 wires these into `/api/chat`)
+// Chat handler side (`chat-tools.ts`, the Worker tools of `/api/chat`)
+
+/** The Worker's certified encryption key a chat handler seals requests to. */
+export type WorkerSealingKey = { keyId: string; encryptionPublicKey: Uint8Array };
 
 /**
  * How the chat handler reaches the selected Worker: the certified encryption key to seal
@@ -113,11 +125,26 @@ async function authorizeChatOwner(db: Database, chatId: string, userId: string) 
 export async function chatWorkerTarget(
   db: Database,
   input: { chatId: string; userId: string; workerId: string },
-) {
+): Promise<WorkerSealingKey | null> {
   const { workspace } = await authorizeChatOwner(db, input.chatId, input.userId);
   const keys = await requireDispatchableWorker(db, workspace.id, input.workerId);
   return keys ? { keyId: keys.keyId, encryptionPublicKey: keys.encryptionPublicKey } : null;
 }
+
+/** A chat key epoch a Worker may seal receipts to, with the proofs it verifies (`chatReceiptKey`). */
+export type ChatReceiptKey = {
+  e2eeId: string;
+  epoch: number;
+  keyId: string;
+  suite: number;
+  publicKey: Uint8Array;
+  signerKeyId: string;
+  signature: Uint8Array;
+  bindingSignature: Uint8Array;
+  scope: "personal" | "shared" | "workspace";
+  creatorId: string;
+  members: string[];
+};
 
 /**
  * The chat key epoch a Worker may seal a durable receipt to, with the proofs it verifies itself.
@@ -126,7 +153,10 @@ export async function chatWorkerTarget(
  * (`chatEpochIsBound`: an active signer with access, valid signature and binding over the current
  * raw members).
  */
-export async function chatReceiptKey(db: Database, input: { chatId: string; userId: string }) {
+export async function chatReceiptKey(
+  db: Database,
+  input: { chatId: string; userId: string },
+): Promise<ChatReceiptKey | null> {
   const { chat, workspace } = await authorizeChatOwner(db, input.chatId, input.userId);
   if (!chat.e2eeId || !chat.keyEpoch || (await chatKeyIsStale(db, chat, workspace))) return null;
   const key = await chatKeyAt(db, chat.id, chat.keyEpoch);
@@ -166,16 +196,17 @@ export type SealedChatTaskDispatch = {
 };
 
 /**
- * Dispatches one sealed built-in tool stage to the chat's selected Worker. A call stage
- * dispatched before is a `replay` and never queued again: its result was sealed to an earlier
- * request key the caller no longer holds. Task and receipt are written in one transaction; the
- * unique `(worker, request_id)` and `(chat, tool_call_id, stage)` indexes make concurrent
- * dispatches of one stage produce one task, the others replays.
+ * Dispatches one sealed built-in tool stage to the chat's selected Worker and rings its inbox
+ * after commit. A call stage dispatched before is a `replay` and never queued again: its result
+ * was sealed to an earlier request key the caller no longer holds. Task and receipt are written
+ * in one transaction; the unique `(worker, request_id)` and `(chat, tool_call_id, stage)` indexes
+ * make concurrent dispatches of one stage produce one task, the others replays.
  */
 export async function dispatchSealedChatTask(
-  db: Database,
+  runtime: Runtime,
   input: SealedChatTaskDispatch,
 ): Promise<{ taskId: string; replay: boolean }> {
+  const { db } = runtime.drivers;
   if (
     !input.userId ||
     !input.toolCallId ||
@@ -210,7 +241,7 @@ export async function dispatchSealedChatTask(
   if (!keys || keys.keyId !== input.sealed.keyId) taskDenied();
 
   const requestId = await workerChatTaskRequestId(input.chatId, input.toolCallId, input.stage);
-  return await db.transaction(async (tx) => {
+  const dispatched = await db.transaction(async (tx) => {
     const { existing, preview } = await boundChatCallStage(tx, input, directory);
     if (existing) return replayOf(existing);
     // The Worker applies only its own preview; this only refuses an apply nothing preceded.
@@ -263,6 +294,8 @@ export async function dispatchSealedChatTask(
     if (!call) taskDenied();
     return { taskId: task.id, replay: false };
   });
+  if (!dispatched.replay) ringWorkers(runtime, [input.workerId], "tasks");
+  return dispatched;
 }
 
 function replayOf(call: typeof workerChatCalls.$inferSelect) {
@@ -407,13 +440,15 @@ export type SealedCompletion = {
  * the chat key epoch named at dispatch (required exactly when the call named one and a result
  * exists). The update is conditional on `(status = 'processing', claim_id, revision)`, so a stale
  * attempt never finishes a later one; an identical repeat is idempotent. A task already pruned
- * has nothing left to accept the payload: `receiptDiscarded`.
+ * has nothing left to accept the payload: `receiptDiscarded`. After commit the chat's waiting
+ * handler is signalled (`TASK_SIGNAL`), also on a repeat, so a handler that missed it re-reads.
  */
 export async function completeSealedTask(
-  db: Database,
+  runtime: Runtime,
   scope: WorkerScope,
   input: SealedCompletion,
 ): Promise<{ completed: true } | { receiptDiscarded: true }> {
+  const { db } = runtime.drivers;
   if (
     !CLAIM_ID.test(input.claimId) ||
     !Number.isSafeInteger(input.expectedRevision) ||
@@ -435,9 +470,12 @@ export async function completeSealedTask(
     task.claimId === input.claimId &&
     sameBytes(task.sealedResult, result);
 
-  return await db.transaction(async (tx) => {
+  // Assigned inside the transaction; the cast keeps TypeScript from narrowing it to `null`.
+  let chat = null as string | null;
+  const outcome = await db.transaction(async (tx) => {
     const task = await assignedTask(tx, scope, input.taskId);
     if (!task) return { receiptDiscarded: true as const };
+    chat = task.chat;
     if (task.claimId !== input.claimId) taskDenied();
     const [call] = await tx
       .select()
@@ -491,6 +529,8 @@ export async function completeSealedTask(
     }
     return { completed: true as const };
   });
+  if (chat) await signalChat(runtime, chat, { topic: TASK_SIGNAL, ids: [input.taskId] });
+  return outcome;
 }
 
 function sameBytes(left: Uint8Array | null, right: Uint8Array | null) {

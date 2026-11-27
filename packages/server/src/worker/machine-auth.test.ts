@@ -543,6 +543,8 @@ describe("request handling", () => {
       API_URL: "http://localhost:3100",
       DATABASE_URL: "postgres://x",
       VALKEY_URL: "redis://x",
+      STREAMS_URL: "http://streams:4437/v1/stream",
+      STREAMS_TOKEN: "token",
       BETTER_AUTH_SECRET: "secret",
       OPAQUE_SERVER_SETUP: "setup",
       SECRET_STORE_KEYS: `1:${TEST_SECRET_STORE_KEY}`,

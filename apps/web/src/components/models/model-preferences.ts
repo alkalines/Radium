@@ -1,24 +1,25 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { PREFERENCES_KEY, useUserPreferences } from "@/lib/collections/user-preferences";
 import { useTrpc } from "@/lib/trpc";
 
 const noModels: string[] = [];
 
 /**
- * The signed-in user's model preferences (`preferences` router): pinned models show first in a
- * `Pinned` group and hidden models leave pickers unless currently selected. User-level, so they
- * follow the user across workspaces; slugs of models a workspace cannot route are simply unused.
- * ACP agent models pin as `acp:<agentId>:<model>` (see `ModelPicker`'s `pinScope`).
+ * The signed-in user's model preferences (the `userPreferences` collection): pinned models show
+ * first in a `Pinned` group and hidden models leave pickers unless currently selected. User-level,
+ * so they follow the user across workspaces; slugs of models a workspace cannot route are simply
+ * unused. ACP agent models pin as `acp:<agentId>:<model>` (see `ModelPicker`'s `pinScope`).
  * Setters report failures with a toast; pinning un-hides and hiding un-pins on the server.
  */
 export function useModelPreferences() {
   const trpc = useTrpc();
   const queryClient = useQueryClient();
-  const { data } = useQuery(trpc.preferences.get.queryOptions());
-  // Pinning un-hides and hiding un-pins, so either change refreshes the one preferences read.
-  const refreshPreferences = () =>
-    queryClient.invalidateQueries({ queryKey: trpc.preferences.get.queryKey() });
+  const data = useUserPreferences();
+  // Without Electric this Tab refetches at once instead of waiting for the `preferences` event;
+  // with Electric the change syncs and there is no query to refresh.
+  const refreshPreferences = () => queryClient.invalidateQueries({ queryKey: PREFERENCES_KEY });
   const { mutateAsync: setModelPinnedMutation } = useMutation(
     trpc.preferences.setModelPinned.mutationOptions({ onSuccess: refreshPreferences }),
   );

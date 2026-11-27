@@ -1,4 +1,6 @@
+import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { deferWorkspaceEvent, publishChatEvent, publishEvent, userEvents } from "../streams/events";
 import { sealedBoxInput } from "../chatroom/sealing";
 import { ownedWorkspaceProcedure, router, sessionProcedure, workerProcedure } from "../trpc/init";
 import {
@@ -68,6 +70,8 @@ import {
   updateSessionInput,
   warmSessions,
 } from "./machine";
+import { watch, watchInput } from "./live";
+import { acpCommands, acpInteractions } from "./schema";
 
 const idInput = z.string().min(1).max(256);
 const chatInput = z.object({ chat: idInput });
@@ -172,6 +176,45 @@ export const acpRouter = router({
   openInteractions: sessionProcedure
     .input(chatInput)
     .query(({ ctx, input }) => openInteractions(ctx.runtime.drivers.db, ctx.user.id, input.chat)),
+  watch: sessionProcedure
+    .input(watchInput)
+    .mutation(({ ctx, input }) => watch(ctx.runtime, ctx.user.id, input)),
+});
+
+/**
+ * A Worker's ACP mutation, announced after it succeeds: a change to a chat's session,
+ * interactions or commands tells the chat's viewers (`acp`, ids = the chat); a command without a
+ * chat (agent sign-in) tells its issuer; catalog and index reports tell the workspace owner.
+ */
+const machineMutation = workerProcedure.use(async ({ ctx, next, getRawInput }) => {
+  const result = await next();
+  if (!result.ok) return result;
+  const raw = (await getRawInput()) as Record<string, unknown>;
+  const { runtime } = ctx;
+  const { db } = runtime.drivers;
+  runtime.defer(
+    (async () => {
+      if (typeof raw.chat === "string") {
+        await publishChatEvent(runtime, raw.chat, "acp");
+      } else if (typeof raw.interaction === "string") {
+        const [row] = await db
+          .select({ chat: acpInteractions.chat })
+          .from(acpInteractions)
+          .where(eq(acpInteractions.id, raw.interaction));
+        if (row) await publishChatEvent(runtime, row.chat, "acp");
+      } else if (typeof raw.command === "string") {
+        const [row] = await db
+          .select({ chat: acpCommands.chat, issuedBy: acpCommands.issuedBy })
+          .from(acpCommands)
+          .where(eq(acpCommands.id, raw.command));
+        if (row?.chat) await publishChatEvent(runtime, row.chat, "acp");
+        else if (row?.issuedBy) await publishEvent(runtime, [userEvents(row.issuedBy)], { topic: "acp" });
+      } else {
+        deferWorkspaceEvent(runtime, ctx.worker.workspaceId, "acp");
+      }
+    })(),
+  );
+  return result;
 });
 
 /** The bound Worker's ACP (Convex `api.acp.*` machine functions); mounted as `worker.acp`. */
@@ -182,37 +225,37 @@ export const acpMachineRouter = router({
   assignedCommands: workerProcedure.query(({ ctx }) =>
     assignedCommands(ctx.runtime.drivers.db, ctx.worker),
   ),
-  claimCommand: workerProcedure
+  claimCommand: machineMutation
     .input(z.object({ command: idInput }))
     .mutation(({ ctx, input }) => claimCommand(ctx.runtime, ctx.worker, input.command)),
-  finishCommand: workerProcedure
+  finishCommand: machineMutation
     .input(finishCommandInput)
     .mutation(({ ctx, input }) => finishCommand(ctx.runtime.drivers.db, ctx.worker, input)),
   warmSessions: workerProcedure.query(({ ctx }) => warmSessions(ctx.runtime, ctx.worker)),
   answeredInteractions: workerProcedure.query(({ ctx }) =>
     answeredInteractions(ctx.runtime.drivers.db, ctx.worker),
   ),
-  openInteraction: workerProcedure
+  openInteraction: machineMutation
     .input(openInteractionInput)
     .mutation(({ ctx, input }) => openInteraction(ctx.runtime, ctx.worker, input)),
-  resolveInteraction: workerProcedure
+  resolveInteraction: machineMutation
     .input(z.object({ interaction: idInput, status: z.enum(["resolved", "cancelled"]) }))
     .mutation(({ ctx, input }) => resolveInteraction(ctx.runtime.drivers.db, ctx.worker, input)),
-  reopenInteraction: workerProcedure
+  reopenInteraction: machineMutation
     .input(z.object({ interaction: idInput }))
     .mutation(({ ctx, input }) =>
       reopenInteraction(ctx.runtime.drivers.db, ctx.worker, input.interaction),
     ),
-  startEpoch: workerProcedure
+  startEpoch: machineMutation
     .input(startEpochInput)
     .mutation(({ ctx, input }) => startEpoch(ctx.runtime, ctx.worker, input)),
-  updateSession: workerProcedure
+  updateSession: machineMutation
     .input(updateSessionInput)
     .mutation(({ ctx, input }) => updateSession(ctx.runtime, ctx.worker, input)),
   chatKey: workerProcedure
     .input(chatInput)
     .query(({ ctx, input }) => chatKey(ctx.runtime.drivers.db, ctx.worker, input.chat)),
-  reportAgents: workerProcedure
+  reportAgents: machineMutation
     .input(reportAgentsInput)
     .mutation(({ ctx, input }) => reportAgents(ctx.runtime.drivers.db, ctx.worker, input.agents)),
   knownAgentSessions: workerProcedure
@@ -220,7 +263,7 @@ export const acpMachineRouter = router({
     .query(({ ctx, input }) =>
       knownAgentSessions(ctx.runtime.drivers.db, ctx.worker, input.agentId),
     ),
-  syncAgentSessions: workerProcedure
+  syncAgentSessions: machineMutation
     .input(syncWorkerAgentSessionsInput)
     .mutation(({ ctx, input }) =>
       syncWorkerAgentSessions(ctx.runtime.drivers.db, ctx.worker, input),

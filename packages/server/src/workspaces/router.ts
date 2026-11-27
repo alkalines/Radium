@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { workspaceKeysInput } from "../e2ee/workspace-keys";
+import { findUserByEmail } from "../auth/users";
+import type { Runtime } from "../runtime";
+import { deferEvent, userEvents } from "../streams/events";
 import {
   ownedWorkspaceProcedure,
   router,
@@ -87,16 +90,28 @@ export const workspacesRouter = router({
   ),
   addMember: ownedWorkspaceProcedure
     .input(z.object({ email: emailInput }))
-    .mutation(({ ctx, input }) =>
-      addMember(ctx.runtime.drivers.db, ctx.access.workspace, input.email),
-    ),
+    .mutation(async ({ ctx, input }) => {
+      const membership = await addMember(ctx.runtime.drivers.db, ctx.access.workspace, input.email);
+      await tellAccount(ctx.runtime, input.email);
+      return membership;
+    }),
   /** Removes a member; a keyed workspace must send the next key epoch in `rotation`. */
   removeMember: ownedWorkspaceProcedure
     .input(z.object({ email: emailInput, rotation: workspaceKeysInput.optional() }))
-    .mutation(({ ctx, input }) =>
-      removeMember(ctx.runtime.drivers.db, ctx.access.workspace, input.email, input.rotation),
-    ),
+    .mutation(async ({ ctx, input }) => {
+      await removeMember(ctx.runtime.drivers.db, ctx.access.workspace, input.email, input.rotation);
+      await tellAccount(ctx.runtime, input.email);
+    }),
 });
+
+/**
+ * The account a membership change is about learns it on its own stream (its workspace list),
+ * since the workspace stream no longer or not yet reaches it.
+ */
+async function tellAccount(runtime: Runtime, email: string) {
+  const account = await findUserByEmail(runtime.drivers.db, email);
+  if (account) deferEvent(runtime, [userEvents(account.id)], { topic: "workspaces" });
+}
 
 const projectWorkers = {
   color: z.string().max(32).optional(),

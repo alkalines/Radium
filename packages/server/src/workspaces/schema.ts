@@ -189,21 +189,24 @@ export const projects = pgTable(
   (table) => [
     // A workspace's Projects (projects.list sorts the at most 200 by name).
     index("projects_workspace").on(table.workspace),
+    // Target of `project_folders`' composite key, so a folder never crosses workspaces.
+    uniqueIndex("projects_id_workspace").on(table.id, table.workspace),
   ],
 );
 
 /**
  * One Worker's absolute working directory for chats in a Project; owner-set, at most one per
  * Worker and Project. `isDefault` marks the Worker picked for a new chat in the Project (at most
- * one, and by being a row it is always one of the Project's folders).
+ * one, and by being a row it is always one of the Project's folders). `workspace` is the
+ * Project's, held by the composite key; it makes a workspace's folders a plain predicate for the
+ * Electric shape of the owner's Project list.
  */
 export const projectFolders = pgTable(
   "project_folders",
   {
     id: id(),
-    project: text("project")
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
+    project: text("project").notNull(),
+    workspace: text("workspace").notNull(),
     worker: text("worker")
       .notNull()
       .references(() => workers.id, { onDelete: "cascade" }),
@@ -214,6 +217,11 @@ export const projectFolders = pgTable(
     createdAt: createdAt(),
   },
   (table) => [
+    foreignKey({
+      name: "project_folders_project_fk",
+      columns: [table.project, table.workspace],
+      foreignColumns: [projects.id, projects.workspace],
+    }).onDelete("cascade"),
     check("project_folders_directory", sql`${table.directory} <> ''`),
     check("project_folders_position", sql`${table.position} >= 0`),
     // One folder per Worker in a Project; also a Project's folders (project list, a chat's
@@ -227,6 +235,8 @@ export const projectFolders = pgTable(
     // ACP session catalog: which Project owns a (Worker, directory) pair (acp.browser
     // projectFolders); also the cascade from `workers`.
     index("project_folders_worker_directory").on(table.worker, table.directory),
+    // The owner's folder shape (Electric) and workspace-wide folder reads.
+    index("project_folders_workspace").on(table.workspace),
   ],
 );
 

@@ -2,17 +2,17 @@ import { createMCPClient, type MCPClient } from "@ai-sdk/mcp";
 import { webSearch } from "@exalabs/ai-sdk";
 import {
   convertToModelMessages,
-  createUIMessageStreamResponse,
   generateId,
   isStepCount,
   streamText,
   toUIMessageStream,
   type ModelMessage,
+  type ToolApprovalConfiguration,
   type ToolSet,
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { ENCRYPTION_PUBLIC_KEY_BYTES } from "radium-crypto";
 import { z } from "zod";
 import { CODE_MODE_TOOL_NAME, type CodeModeInteractionKind } from "contracts/chatroom/code-mode";
@@ -26,6 +26,12 @@ import {
 } from "contracts/chatroom/tools";
 import { decodeExactBytes } from "contracts/e2ee/contract";
 import { sessionNotificationKind } from "contracts/notifications/session";
+import { validateChatWorkerSelection } from "contracts/worker/chat-config";
+import {
+  parseWorkerApprovals,
+  workerCodeModeInteractions,
+  type WorkerApprovalSignature,
+} from "contracts/worker/chat-tools";
 import { isAcpChat } from "../acp/sessions";
 import type { Database } from "../drivers/types";
 import { currentChatPublicKey, type PinnedChatRecipient } from "../e2ee/chat-keys";
@@ -40,15 +46,26 @@ import {
   upstreamFailureFromError,
   type GatewayErrorPayload,
 } from "../gateway/routing/failures";
+import { AppError } from "../errors";
 import { dispatchJobs } from "../jobs/outbox";
+import { kvDelete, kvGet } from "../kv";
 import { notify } from "../notifications/notify";
 import type { Runtime } from "../runtime";
+import { deferChatEvent } from "../streams/events";
 import { telemetrySettingsFor, type TelemetryRequestContext } from "../telemetry/capture";
-import { chatAccess, type Chat, type ChatWorkspace } from "./access";
+import { chatWorkerSelection } from "../worker/chat-selection";
+import {
+  buildWorkerChatTools,
+  resolveWorkerChatTransport,
+  workerChatApprovalSecret,
+} from "../worker/chat-tools";
+import { activeWorkspaceWorkers } from "../worker/workers";
+import { chatAccess, requireChatAccess, type Chat, type ChatWorkspace } from "./access";
 import { EXA_TOOL_CREDENTIAL_PROVIDER, toolNamePrefix, uniqueToolName } from "./aisdk-tools";
 import { touchChat, saveSealedTitle } from "./chats";
-import { closeInteraction, interactionResponse, openInteraction } from "./code-mode";
+import { awaitInteractionResponse, closeInteraction, openInteraction } from "./code-mode";
 import { resolveStoredFiles, storedFileUrls } from "./files";
+import { requestRunStop, runStopKey, runStreamPath } from "./run-streams";
 import { chatMessageHeads, saveSealedChatMessages } from "./messages";
 import { chatRuns, chats } from "./schema";
 import { openFileBytes, parseFileFragment, sealChatMessages, sealChatTitle, stripFileFragment } from "./sealing";
@@ -59,18 +76,25 @@ import { builtinToolCredential, mcpBearerToken } from "./tools";
 import { toExaCountry } from "./user-location";
 
 /**
- * `POST /api/chat`: one built-in reply generation (Convex `src/http/aisdk.chat.ts`), streamed as
- * an AI SDK UI message stream straight to the sender. Phase 4 moves the stream to Durable
- * Streams; admission, the run row, sealing and saving stay as they are here.
+ * `POST /api/chat`: one built-in reply generation (Convex `src/http/aisdk.chat.ts`), written to
+ * the run's stream `c/<chat>/runs/<run>` (`docs/Backend_Migration/Live_Data.md`, Built-in Chat
+ * Runs). The response is `201` with the stream's location; the sender reads it like every other
+ * Tab and device, through the authorizing `/api/streams` proxy, and a reload resumes from the start.
  *
  * - Session auth, then the Chatroom access function; ACP chats use the Worker transport.
  * - Every chat is keyed: the turn is sealed to exactly the key the sender's client prepared
  *   (`recipientKey`), checked before the billed generation and again when saving.
  * - Admission is the `chat_runs` partial unique index: one active run per chat, a second sender
- *   gets `409`. The run row ends on finish, error and abort; its lease is renewed while it runs
+ *   gets `409`. The run row ends on finish, error and stop; its lease is renewed while it runs
  *   and the retention job fails runs whose lease went stale.
- * - Worker tools are not offered yet: dispatching to a Worker and waiting for its result needs the
- *   Worker slice (task claims) and Phase 4 (signal streams).
+ * - The run is detached: on long-lived presets generation continues after the sender's request
+ *   ends, and only `chats.stop` (a Valkey flag the generator polls) stops it.
+ * - The stream holds the reply in plaintext, like the backend's own processing of the turn. It
+ *   is closed when the run ends and deleted with the run row by retention, 10 to 15 minutes
+ *   later; the sealed `chat_messages` rows remain the only stored copy.
+ * - Worker tools (`src/worker/chat-tools.ts`) are the workspace owner's only: each stage is sealed
+ *   to the paired Worker, approved calls carry the user's signature (`approvals`), and the tool
+ *   waits for the result on the chat's signal stream, ending with the run on `chats.stop`.
  */
 
 /** Model calls one request may make before it stops with a `step_limit` interruption. */
@@ -81,8 +105,17 @@ const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const LEASE_RENEW_MS = 15_000;
 /** An active run whose lease is older than this has lost its generator. */
 export const RUN_LEASE_MS = 60_000;
-/** Ended runs are kept this long (the run stream's lifetime in Phase 4). */
+/** Ended runs (and their streams) are kept this long, so late readers can still replay them. */
 const ENDED_RUN_RETENTION_MS = 10 * 60_000;
+/**
+ * Sliding expiry of a run stream: only a backstop, since retention deletes it explicitly (an
+ * expired stream's bytes stay on disk until deleted, task 14 Phase 0).
+ */
+const RUN_STREAM_TTL_SECONDS = 600;
+/** Batching of stream appends: about three appends a second while tokens arrive. */
+const RUN_STREAM_LINGER_MS = 300;
+/** How often a running generator checks the stop flag that `chats.stop` sets. */
+const STOP_POLL_MS = 500;
 const MAX_TITLE_PROMPT = 8000;
 
 const optionalText = z.string().max(256).optional();
@@ -97,7 +130,7 @@ const chatRequest = z.object({
   inferenceMode: optionalText,
   reasoningEffort: optionalText,
   reasoningBudget: z.number().int().nonnegative().optional(),
-  /** Accepted and ignored until Worker tools return (Worker slice). */
+  /** User approval signatures by tool call ID (`parseWorkerApprovals`); paired Workers need them. */
   approvals: z.unknown().optional(),
   /** The exact current chat key the client encrypted this turn's files to and expects. */
   recipientKey: z
@@ -134,7 +167,10 @@ export async function handleChat(runtime: Runtime, request: Request): Promise<Re
   const publicKey = body.recipientKey
     ? decodeExactBytes(body.recipientKey.publicKey, ENCRYPTION_PUBLIC_KEY_BYTES)
     : null;
-  if (!chatId || (body.recipientKey && !publicKey)) return failure(400, "Invalid chat request");
+  const approvals = parseWorkerApprovals(body.approvals);
+  if (!chatId || !approvals || (body.recipientKey && !publicKey)) {
+    return failure(400, "Invalid chat request");
+  }
 
   const access = await chatAccess(db, userId, chatId);
   if (!access) return failure(404, "Chat not found");
@@ -154,7 +190,17 @@ export async function handleChat(runtime: Runtime, request: Request): Promise<Re
     if (!message.id) message.id = generateId();
   }
 
-  const run = await prepareRun(runtime, { chat, workspace, userId, body, messages });
+  // Aborted only by `chats.stop`: the run outlives the sender's request.
+  const abort = new AbortController();
+  const run = await prepareRun(runtime, {
+    chat,
+    workspace,
+    userId,
+    body,
+    messages,
+    approvals,
+    signal: abort.signal,
+  });
   if (run instanceof Response) return run;
 
   const admitted = await admitRun(db, chat.id, userId);
@@ -162,7 +208,21 @@ export async function handleChat(runtime: Runtime, request: Request): Promise<Re
     await run.closeTools();
     return failure(409, "This chat is already replying.");
   }
-  return startRun(runtime, { ...run, chat, workspace, userId, body, messages, recipient, runId: admitted, signal: request.signal });
+  const path = runStreamPath(chat.id, admitted);
+  try {
+    await runtime.streams.create(path, { ttlSeconds: RUN_STREAM_TTL_SECONDS });
+  } catch {
+    console.error("chat: run stream could not be created");
+    await run.closeTools();
+    await endRun(db, admitted, "failed");
+    return failure(503, "Replies are unavailable right now.");
+  }
+  deferChatEvent(runtime, chat.id, "chats");
+  runtime.defer(
+    generateRun(runtime, { ...run, chat, workspace, userId, body, messages, recipient, runId: admitted, path, abort }),
+  );
+  const streamUrl = `/api/streams/${path}`;
+  return Response.json({ streamUrl }, { status: 201, headers: { Location: streamUrl } });
 }
 
 type PreparedRun = ChatTools & {
@@ -172,7 +232,8 @@ type PreparedRun = ChatTools & {
 
 /**
  * Everything a run needs before admission: tools (MCP connections included), the system prompt
- * and the model messages with stored files inlined. Failing here leaves nothing to reset.
+ * and the model messages with stored files inlined. Failing here leaves nothing to reset; a
+ * selected Worker that is no longer active refuses the request (`400`).
  */
 async function prepareRun(
   runtime: Runtime,
@@ -182,11 +243,20 @@ async function prepareRun(
     userId: string;
     body: z.output<typeof chatRequest>;
     messages: UIMessage[];
+    approvals: Map<string, WorkerApprovalSignature>;
+    /** The run's stop signal; Code Mode waits end with it. */
+    signal: AbortSignal;
   },
 ): Promise<PreparedRun | Response> {
   const { db } = runtime.drivers;
   const systemPrompt = await resolveSystemPrompt(db, input.workspace.id, input.body.model);
-  const tools = await buildChatTools(runtime, input, { systemPrompt: systemPrompt !== null });
+  let tools: ChatTools;
+  try {
+    tools = await buildChatTools(runtime, input, { systemPrompt: systemPrompt !== null });
+  } catch (error) {
+    if (error instanceof AppError) return failure(400, error.message);
+    throw error;
+  }
   try {
     const modelMessages = await inlineStoredFiles(
       runtime,
@@ -235,7 +305,14 @@ export async function endRun(db: Database, runId: string, status: "finished" | "
     .where(and(eq(chatRuns.id, runId), eq(chatRuns.status, "active")));
 }
 
-function startRun(
+/**
+ * Generates one admitted run into its stream, detached from the request that started it: UI
+ * message chunks go through an idempotent producer (batched; a retried batch is never stored
+ * twice), the turn is sealed and saved when the model finishes, and the stream is closed last.
+ * Stops when `chats.stop` sets the run's stop flag. Never throws: a failure ends the run as
+ * `failed`.
+ */
+async function generateRun(
   runtime: Runtime,
   run: PreparedRun & {
     chat: Chat;
@@ -245,11 +322,23 @@ function startRun(
     messages: UIMessage[];
     recipient: PinnedChatRecipient;
     runId: string;
-    signal: AbortSignal;
+    path: string;
+    abort: AbortController;
   },
-): Response {
-  const { db } = runtime.drivers;
+): Promise<void> {
+  const { db, kv } = runtime.drivers;
   const { chat, workspace, userId, body, messages, recipient, runId } = run;
+  // The producer does not retry a failed batch, and every later batch is refused after the gap.
+  // So the first failure ends live delivery: later chunks are dropped (the saved turn is
+  // unaffected) and the stream is closed with an error by a plain append in `finally`.
+  let streamBroken = false;
+  const producer = runtime.streams.producer(run.path, runId, {
+    lingerMs: RUN_STREAM_LINGER_MS,
+    onError: () => {
+      if (!streamBroken) console.error("chat: run stream append failed");
+      streamBroken = true;
+    },
+  });
   const lease = setInterval(() => {
     void db
       .update(chatRuns)
@@ -257,6 +346,14 @@ function startRun(
       .where(and(eq(chatRuns.id, runId), eq(chatRuns.status, "active")))
       .catch(() => console.error("chat: run lease renewal failed"));
   }, LEASE_RENEW_MS);
+  const stopWatch = setInterval(() => {
+    kvGet(kv, runStopKey(runId)).then(
+      (stop) => {
+        if (stop !== null) run.abort.abort();
+      },
+      () => console.error("chat: stop flag unavailable"),
+    );
+  }, STOP_POLL_MS);
   let ended = false;
   let saved = false;
   const finish = async (status: "finished" | "failed") => {
@@ -268,6 +365,13 @@ function startRun(
   };
 
   try {
+    // Viewers attaching from another Tab or after a reload replay the stream before the turn is
+    // saved; this transient part carries the prompt they would otherwise not see. Plaintext like
+    // the reply chunks after it, and deleted with them.
+    const prompt = messages.findLast((message) => message.role === "user");
+    if (prompt) {
+      producer.append(JSON.stringify({ type: "data-radium-prompt", data: { message: prompt }, transient: true }));
+    }
     const previous = messages.at(-1);
     const previousMetadata =
       previous?.role === "assistant" && previous.metadata && typeof previous.metadata === "object"
@@ -325,6 +429,8 @@ function startRun(
       instructions: run.instructions,
       messages: run.modelMessages,
       tools: run.tools,
+      toolApproval: run.toolApproval,
+      experimental_toolApprovalSecret: run.approvalSecret,
       stopWhen: isStepCount(MAX_CHAT_STEPS),
       onStepEnd({ finishReason }) {
         stepCount++;
@@ -336,7 +442,7 @@ function startRun(
           error instanceof GatewayInferenceError ? error.details.provider : undefined,
         );
       },
-      abortSignal: run.signal,
+      abortSignal: run.abort.signal,
     });
 
     const reasoningStarts = new Map<string, { startedAt: number; index: number }>();
@@ -438,30 +544,96 @@ function startRun(
         }
       },
     });
-    return createUIMessageStreamResponse({
-      stream: uiStream.pipeThrough(
-        new TransformStream<UIMessageChunk, UIMessageChunk>({
-          transform(chunk, controller) {
-            if (chunk.type === "error" && inferenceError) {
-              controller.enqueue({
-                type: "data-gateway-error",
-                data: inferenceError,
-                transient: true,
-              });
-            }
-            controller.enqueue(chunk);
-          },
-          async flush() {
-            // `onEnd` saved and ended the run; anything else (a cancelled read) fails it.
-            if (!saved) await finish("failed");
-          },
-        }),
-      ),
-    });
-  } catch (error) {
-    void finish("failed");
-    throw error;
+    const chunks = uiStream.pipeThrough(
+      new TransformStream<UIMessageChunk, UIMessageChunk>({
+        transform(chunk, controller) {
+          if (chunk.type === "error" && inferenceError) {
+            controller.enqueue({
+              type: "data-gateway-error",
+              data: inferenceError,
+              transient: true,
+            });
+          }
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+    for await (const chunk of chunks) {
+      if (!streamBroken) producer.append(JSON.stringify(chunk));
+    }
+  } catch {
+    console.error("chat: run failed");
+    // Readers end on an error, not a silent close; the message holds no upstream detail.
+    if (!streamBroken) producer.append(JSON.stringify(RUN_FAILED_CHUNK));
+  } finally {
+    clearInterval(stopWatch);
+    clearInterval(lease);
+    // `onEnd` saved and ended the run; anything else fails it.
+    if (!saved) await finish("failed").catch(() => console.error("chat: run end failed"));
+    const closed = await producer.close().then(
+      () => !streamBroken,
+      () => false,
+    );
+    if (!closed) {
+      // Without a close every viewer would wait on the stream until retention deletes it.
+      await runtime.streams
+        .append(run.path, [RUN_FAILED_CHUNK], { close: true })
+        .catch(() => console.error("chat: run stream close failed"));
+    }
+    await kvDelete(kv, runStopKey(runId)).catch(() => undefined);
+    // A chat deleted while this run started has no row left for retention to find its stream by.
+    const [kept] = await db
+      .select({ id: chatRuns.id })
+      .from(chatRuns)
+      .where(eq(chatRuns.id, runId))
+      .catch(() => [{ id: runId }]);
+    if (!kept) await runtime.streams.delete(run.path).catch(() => console.error("chat: run stream not deleted"));
+    deferChatEvent(runtime, chat.id, "chats");
   }
+}
+
+/** The last chunk of a run whose reply could not be streamed or completed; no upstream detail. */
+const RUN_FAILED_CHUNK = { type: "error", errorText: "The reply could not be completed." };
+
+/**
+ * Asks chat `chatId`'s active run to stop (`chats.stop`), from any Tab or device: the run's
+ * sender or a chat manager. Sets a Valkey flag the generator polls every
+ * {@link STOP_POLL_MS}; the run saves what it has, marked stopped.
+ *
+ * @returns whether a run was active.
+ */
+export async function stopRun(runtime: Runtime, userId: string, chatId: string): Promise<boolean> {
+  const { db, kv } = runtime.drivers;
+  const { chat, canManage } = await requireChatAccess(db, userId, chatId);
+  const [active] = await db
+    .select({ id: chatRuns.id, userId: chatRuns.userId })
+    .from(chatRuns)
+    .where(and(eq(chatRuns.chat, chat.id), eq(chatRuns.status, "active")));
+  if (!active) return false;
+  if (active.userId !== userId && !canManage) {
+    throw new AppError("FORBIDDEN", "Only the sender or a manager of this chat can stop its reply.");
+  }
+  await requestRunStop(kv, active.id);
+  return true;
+}
+
+/**
+ * `GET /api/chat/<chat>/stream`, the resume path of a reloaded Tab: `200` with the location of
+ * chat `chatId`'s active run stream, or `204` when the chat is not replying.
+ */
+export async function activeRunStream(runtime: Runtime, request: Request, chatId: string): Promise<Response> {
+  const session = await runtime.auth.api.getSession({ headers: request.headers });
+  if (!session) return failure(401, "Unauthorized");
+  const { db } = runtime.drivers;
+  const access = await chatAccess(db, session.user.id, chatId);
+  if (!access) return failure(404, "Chat not found");
+  const [active] = await db
+    .select({ id: chatRuns.id })
+    .from(chatRuns)
+    .where(and(eq(chatRuns.chat, chatId), eq(chatRuns.status, "active")));
+  if (!active) return new Response(null, { status: 204 });
+  const streamUrl = `/api/streams/${runStreamPath(chatId, active.id)}`;
+  return Response.json({ streamUrl }, { headers: { Location: streamUrl } });
 }
 
 /**
@@ -563,19 +735,35 @@ type ChatTools = {
   closeTools: () => Promise<void>;
   /** The Code Mode catalog section of the system prompt, when Code Mode is on. */
   codeModeInstructions: string | undefined;
+  /** Worker tools that pause for the user's approval, and the SDK's approval replay guard. */
+  toolApproval: ToolApprovalConfiguration<ToolSet, unknown> | undefined;
+  approvalSecret: Uint8Array | undefined;
   telemetry: Omit<TelemetryRequestContext, "requestId"> | undefined;
 };
 
+/** Refusal of a request whose chat selects a Worker that is not active in its workspace. */
+const WORKER_TOOLS_UNAVAILABLE =
+  "Worker tools are unavailable. Check that the selected Worker is active.";
+
 /**
- * Resolves and connects the tools enabled for a chat (Convex `buildChatTools` without Worker
- * tools). Session tool sets come first, then Exa web search, then MCP servers: a server in Code
- * Mode contributes only to `execute`, the others direct tools named `<prefix>_<tool>`. A failing
- * server is skipped. `closeTools` closes every MCP connection and is idempotent. Telemetry
- * settings are read here too: keyed chats never record content.
+ * Resolves and connects the tools enabled for a chat (Convex `buildChatTools`). Session tool sets
+ * come first, then the owner's Worker tools, then Exa web search, then MCP servers: a server in
+ * Code Mode contributes only to `execute`, the others direct tools named `<prefix>_<tool>`. A
+ * failing server is skipped. Inside Code Mode, Worker tools keep their approvals as in-stream
+ * prompts whose signatures join `approvals`. `closeTools` closes every MCP connection and is
+ * idempotent. Telemetry settings are read here too: keyed chats never record content. Throws
+ * `AppError` when the selected Worker is not active, before any MCP connection opens.
  */
 async function buildChatTools(
   runtime: Runtime,
-  input: { chat: Chat; workspace: ChatWorkspace; userId: string; body: z.output<typeof chatRequest> },
+  input: {
+    chat: Chat;
+    workspace: ChatWorkspace;
+    userId: string;
+    body: z.output<typeof chatRequest>;
+    approvals: Map<string, WorkerApprovalSignature>;
+    signal: AbortSignal;
+  },
   options: { systemPrompt: boolean },
 ): Promise<ChatTools> {
   const { db, kv } = runtime.drivers;
@@ -609,6 +797,43 @@ async function buildChatTools(
       directMcpTools.add(toolName);
     }
   };
+
+  let toolApproval: ToolApprovalConfiguration<ToolSet, unknown> | undefined;
+  let approvalSecret: Uint8Array | undefined;
+  // Shared-chat membership never grants machine execution. Identity and directory come from the
+  // stored chat; dispatch rechecks them on every stage. Tools chosen without a Worker stay
+  // unavailable until the owner picks one.
+  const selection = chatWorkerSelection(chat);
+  const workerId = selection?.workerId;
+  if (userId === workspace.ownerId && selection && workerId !== undefined && selection.tools.length > 0) {
+    try {
+      await validateChatWorkerSelection(
+        { workerId, directory: selection.directory, tools: selection.tools },
+        userId,
+        workspace,
+        async (id) =>
+          (await activeWorkspaceWorkers(db, workspace.id, [id])).has(id)
+            ? { workerId: id, workspaceId: workspace.id, status: "active" }
+            : null,
+      );
+    } catch {
+      throw new AppError("BAD_REQUEST", WORKER_TOOLS_UNAVAILABLE);
+    }
+    const scope = {
+      chatId: chat.id,
+      workspaceId: workspace.id,
+      userId,
+      selection: { ...selection, workerId },
+      transport: await resolveWorkerChatTransport(db, { chatId: chat.id, userId, workerId }),
+      approvals: input.approvals,
+    };
+    const worker = buildWorkerChatTools(runtime, scope);
+    Object.assign(tools, worker.tools);
+    toolApproval = worker.toolApproval;
+    if (Object.keys(toolApproval).length > 0) {
+      approvalSecret = await workerChatApprovalSecret(runtime.config.BETTER_AUTH_SECRET, scope);
+    }
+  }
 
   if (config.builtinToolSets.includes(WEB_SEARCH_TOOL_ID)) {
     const apiKey = await builtinToolCredential(runtime, workspace.id, EXA_TOOL_CREDENTIAL_PROVIDER);
@@ -655,13 +880,16 @@ async function buildChatTools(
 
   let codeModeInstructions: string | undefined;
   if (codeModeEnabled) {
+    // Inner calls keep the approvals of their direct counterparts; the user answers them in-stream
+    // as Code Mode prompts instead of the SDK approval round trip.
+    const approvalTools = new Set(toolApproval ? Object.keys(toolApproval) : []);
     const directTools: CodeModeInventory["tools"] = {};
     for (const [name, definition] of Object.entries(tools)) {
       if (directMcpTools.has(name)) continue;
-      directTools[name] = {
-        tool: definition,
-        ...(name === QUESTION_TOOL_ID ? { interaction: "question" as const } : {}),
-      };
+      let interaction: CodeModeInteractionKind | undefined;
+      if (name === QUESTION_TOOL_ID) interaction = "question";
+      else if (approvalTools.has(name)) interaction = "approval";
+      directTools[name] = { tool: definition, ...(interaction ? { interaction } : {}) };
     }
     const namespaces: CodeModeInventory["namespaces"] = {};
     for (const server of codeModeServers) {
@@ -679,12 +907,16 @@ async function buildChatTools(
       const codeMode = await createCodeMode({
         inventory: { tools: directTools, namespaces },
         catalogInDescription: !options.systemPrompt,
-        interactions: {
-          open: (kind: CodeModeInteractionKind) =>
-            openInteraction(kv, { chatId: chat.id, userId, kind }),
-          response: (id) => interactionResponse(kv, id),
-          close: (id) => closeInteraction(kv, id),
-        },
+        // Inner approvals reach paired Workers as user signatures keyed by the inner call ID.
+        interactions: workerCodeModeInteractions(
+          {
+            open: (kind) => openInteraction(kv, { chatId: chat.id, userId, kind }),
+            response: (id) =>
+              awaitInteractionResponse(runtime, { chat: chat.id, id, signal: input.signal }),
+            close: (id) => closeInteraction(kv, id),
+          },
+          input.approvals,
+        ),
       });
       if (codeMode) {
         tools[CODE_MODE_TOOL_NAME] = codeMode.tool;
@@ -697,7 +929,14 @@ async function buildChatTools(
     }
   }
 
-  return { tools: tools as ToolSet, closeTools, codeModeInstructions, telemetry };
+  return {
+    tools: tools as ToolSet,
+    closeTools,
+    codeModeInstructions,
+    toolApproval,
+    approvalSecret,
+    telemetry,
+  };
 }
 
 /**
@@ -850,22 +1089,44 @@ export function formatInferenceError(details: GatewayErrorPayload): string {
 
 /**
  * Retention of built-in runs: fails active runs whose generator stopped renewing the lease
- * (crash, deploy), then deletes ended runs past their stream's lifetime. Bounded per call.
+ * (crash, deploy) and ends their streams with an error, then deletes ended runs past
+ * {@link ENDED_RUN_RETENTION_MS} together with their streams. Bounded per call; a stream that
+ * cannot be deleted keeps its row for the next run.
  */
-export async function pruneChatRuns(db: Database, now: number, batch: number): Promise<number> {
+export async function pruneChatRuns(runtime: Runtime, now: number, batch: number): Promise<number> {
+  const { db } = runtime.drivers;
   const stale = await db
     .update(chatRuns)
     .set({ status: "failed", endedAt: new Date(now) })
     .where(
       sql`${chatRuns.id} in (select ${chatRuns.id} from ${chatRuns} where ${chatRuns.status} = 'active' and ${chatRuns.leaseAt} < ${new Date(now - RUN_LEASE_MS)} limit ${batch})`,
     )
-    .returning({ id: chatRuns.id });
-  const deleted = await db
-    .delete(chatRuns)
+    .returning({ id: chatRuns.id, chat: chatRuns.chat });
+  for (const run of stale) {
+    // Readers of a lost run would otherwise wait on a stream nobody writes.
+    await runtime.streams
+      .append(runStreamPath(run.chat, run.id), [{ type: "error", errorText: "The reply was interrupted." }], { close: true })
+      .catch(() => console.error("chat: lost run stream not closed"));
+    deferChatEvent(runtime, run.chat, "chats");
+  }
+
+  const ended = await db
+    .select({ id: chatRuns.id, chat: chatRuns.chat })
+    .from(chatRuns)
     .where(
-      sql`${chatRuns.id} in (select ${chatRuns.id} from ${chatRuns} where ${chatRuns.status} <> 'active' and ${chatRuns.endedAt} < ${new Date(now - ENDED_RUN_RETENTION_MS)} limit ${batch})`,
+      and(sql`${chatRuns.status} <> 'active'`, lt(chatRuns.endedAt, new Date(now - ENDED_RUN_RETENTION_MS))),
     )
-    .returning({ id: chatRuns.id });
-  return stale.length + deleted.length;
+    .limit(batch);
+  const deletable: string[] = [];
+  for (const run of ended) {
+    try {
+      await runtime.streams.delete(runStreamPath(run.chat, run.id));
+      deletable.push(run.id);
+    } catch {
+      console.error("chat: run stream not deleted");
+    }
+  }
+  if (deletable.length > 0) await db.delete(chatRuns).where(inArray(chatRuns.id, deletable));
+  return stale.length + deletable.length;
 }
 

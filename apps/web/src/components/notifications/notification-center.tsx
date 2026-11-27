@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import type { inferRouterOutputs } from "@trpc/server";
 import type { Id } from "backend/convex/_generated/dataModel";
-import type { AppRouter } from "server/router";
+import { useRecentNotifications } from "@/lib/collections/notifications";
+import type { NotificationRow } from "@/lib/collections/shapes";
+import { useUserPreferences } from "@/lib/collections/user-preferences";
 import { useTrpc } from "@/lib/trpc";
 import { useAccount } from "@/lib/use-account";
 import { keyManager } from "@/lib/crypto/key-manager";
@@ -22,7 +23,7 @@ import {
 import { playNotificationSound, primeNotificationAudio } from "./notification-sounds";
 import { NotificationToaster, showNotificationToast } from "./notification-toast";
 
-type NotificationView = inferRouterOutputs<AppRouter>["notifications"]["recent"][number];
+type NotificationView = NotificationRow;
 
 /**
  * A tab without focus waits this long before claiming, so a focused tab (where the user is
@@ -56,17 +57,10 @@ export function NotificationCenter({ activeChatId }: { activeChatId?: string }) 
   const trpc = useTrpc();
   const navigate = useNavigate();
   const { setWorkspace, workspaces } = useWorkspace();
-  // No live subscription: the inbox refetches when the window regains focus and every 30 s while
-  // the tab is visible (TanStack pauses the interval in background tabs). Doorbells replace this.
-  const { data: notifications } = useQuery(
-    trpc.notifications.recent.queryOptions(isAuthenticated ? undefined : skipToken, {
-      refetchInterval: 30_000,
-      refetchOnWindowFocus: true,
-    }),
-  );
-  const { data: preferences } = useQuery(
-    trpc.notifications.getPreferences.queryOptions(isAuthenticated ? undefined : skipToken),
-  );
+  // The `notifications` collection: an Electric shape, or `notifications.recent` refreshed by
+  // `notifications` events and on window focus.
+  const notifications = useRecentNotifications(isAuthenticated);
+  const preferences = useUserPreferences()?.notifications;
   const { mutateAsync: claim } = useMutation(trpc.notifications.claim.mutationOptions());
   const { mutateAsync: subscribe } = useMutation(trpc.notifications.subscribe.mutationOptions());
 

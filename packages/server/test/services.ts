@@ -1,10 +1,13 @@
 /**
- * Where tests find Postgres and Valkey: docker-compose.test.yml by default, overridable for CI.
- * The Postgres URL must allow creating databases; tests create one per file and drop it after.
+ * Where tests find Postgres, Valkey and Durable Streams: docker-compose.test.yml by default,
+ * overridable for CI. The Postgres URL must allow creating databases; tests create one per file
+ * and drop it after.
  */
 export const TEST_POSTGRES_URL =
   process.env.TEST_POSTGRES_URL ?? "postgres://radium:radium-test@127.0.0.1:55432/radium";
 export const TEST_VALKEY_URL = process.env.TEST_VALKEY_URL ?? "redis://127.0.0.1:56379";
+export const TEST_STREAMS_URL = process.env.TEST_STREAMS_URL ?? "http://127.0.0.1:54437/v1/stream";
+export const TEST_STREAMS_TOKEN = process.env.TEST_STREAMS_TOKEN ?? "radium-test-streams";
 
 /**
  * Database every test database is cloned from, migrated once per run. `TEST_TEMPLATE_DATABASE`

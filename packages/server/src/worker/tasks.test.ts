@@ -12,18 +12,22 @@ import {
 import { WORKER_TASK_ENCAPSULATED_BYTES } from "contracts/worker/task-contract";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestRuntime, type TestRuntime } from "../../test/runtime";
+import { eventually } from "../../test/streams";
 import { classicUser } from "../../test/users";
 import { insertWorker, machineCaller, workerIssuerEnv } from "../../test/workers";
 import { chats } from "../chatroom/schema";
 import { e2eeChatKeys, e2eeIdentities, e2eeRosters, e2eeWorkerKeys } from "../e2ee/schema";
+import { currentStream } from "../streams/rotating";
 import { appRouter } from "../trpc/router";
 import { workspaceMembers, workspaces } from "../workspaces/schema";
 import { workerChatCalls, workerTasks } from "./schema";
+import { revokeWorker } from "./identity";
 import {
   chatReceiptKey,
   chatWorkerTarget,
   dispatchSealedChatTask,
   sealedChatTaskOutcome,
+  TASK_SIGNAL,
   type SealedChatTaskDispatch,
 } from "./tasks";
 
@@ -186,18 +190,18 @@ describe("chat handler services", () => {
     ).rejects.toMatchObject(denied);
     await expect(chatReceiptKey(db(), asMember)).rejects.toMatchObject(denied);
     await expect(
-      dispatchSealedChatTask(db(), { ...f.dispatch, userId: users.member.id }),
+      dispatchSealedChatTask(test.runtime, { ...f.dispatch, userId: users.member.id }),
     ).rejects.toMatchObject(denied);
     // A workspace chat the member can see is still the owner's to dispatch from.
     const shared = await fixture({ scope: "workspace" });
     await expect(
-      dispatchSealedChatTask(db(), { ...shared.dispatch, userId: users.member.id }),
+      dispatchSealedChatTask(test.runtime, { ...shared.dispatch, userId: users.member.id }),
     ).rejects.toMatchObject(denied);
     await db()
       .update(workspaces)
       .set({ archivedAt: new Date() })
       .where(eq(workspaces.id, f.workspace));
-    await expect(dispatchSealedChatTask(db(), f.dispatch)).rejects.toMatchObject(denied);
+    await expect(dispatchSealedChatTask(test.runtime, f.dispatch)).rejects.toMatchObject(denied);
     expect(await db().select().from(workerTasks).where(eq(workerTasks.worker, f.worker.workerId))).toEqual(
       [],
     );
@@ -220,7 +224,7 @@ describe("chat handler services", () => {
         workerId: unpaired.worker.workerId,
       }),
     ).rejects.toMatchObject({ message: "WORKER_NOT_PAIRED" });
-    await expect(dispatchSealedChatTask(db(), unpaired.dispatch)).rejects.toMatchObject({
+    await expect(dispatchSealedChatTask(test.runtime, unpaired.dispatch)).rejects.toMatchObject({
       message: "WORKER_NOT_PAIRED",
     });
   });
@@ -261,24 +265,24 @@ describe("chat handler services", () => {
       { toolCallId: "x".repeat(129) },
       { receiptEpoch: -1 },
     ]) {
-      await expect(dispatchSealedChatTask(db(), { ...f.dispatch, ...bad })).rejects.toMatchObject(
+      await expect(dispatchSealedChatTask(test.runtime, { ...f.dispatch, ...bad })).rejects.toMatchObject(
         denied,
       );
     }
     // Apply needs a completed preview of the same call.
     await expect(
-      dispatchSealedChatTask(db(), { ...f.dispatch, tool: "edit", stage: "apply", toolCallId: "e" }),
+      dispatchSealedChatTask(test.runtime, { ...f.dispatch, tool: "edit", stage: "apply", toolCallId: "e" }),
     ).rejects.toMatchObject(denied);
 
-    const first = await dispatchSealedChatTask(db(), f.dispatch);
+    const first = await dispatchSealedChatTask(test.runtime, f.dispatch);
     expect(first.replay).toBe(false);
-    expect(await dispatchSealedChatTask(db(), f.dispatch)).toEqual({
+    expect(await dispatchSealedChatTask(test.runtime, f.dispatch)).toEqual({
       taskId: first.taskId,
       replay: true,
     });
     // The call id stays bound to its tool: another tool under it is refused.
     await expect(
-      dispatchSealedChatTask(db(), { ...f.dispatch, tool: "edit", stage: "preview" }),
+      dispatchSealedChatTask(test.runtime, { ...f.dispatch, tool: "edit", stage: "preview" }),
     ).rejects.toMatchObject(denied);
 
     const [task] = await db().select().from(workerTasks).where(eq(workerTasks.id, first.taskId));
@@ -305,10 +309,10 @@ describe("chat handler services", () => {
       .update(chats)
       .set({ workerSelection: { tools: ["edit"], directory: "/work" } })
       .where(eq(chats.id, f.chat));
-    await expect(dispatchSealedChatTask(db(), f.dispatch)).rejects.toMatchObject(denied);
+    await expect(dispatchSealedChatTask(test.runtime, f.dispatch)).rejects.toMatchObject(denied);
     const g = await fixture();
     await call("owner").workers.revoke({ workspace: g.workspace, workerId: g.worker.workerId });
-    await expect(dispatchSealedChatTask(db(), g.dispatch)).rejects.toMatchObject(denied);
+    await expect(dispatchSealedChatTask(test.runtime, g.dispatch)).rejects.toMatchObject(denied);
   });
 });
 
@@ -320,7 +324,7 @@ describe("Worker procedures", () => {
   it("assigned, claim and completeSealed act on the Worker's own sealed tasks", async () => {
     const f = await fixture();
     const other = await fixture();
-    const { taskId } = await dispatchSealedChatTask(db(), f.dispatch);
+    const { taskId } = await dispatchSealedChatTask(test.runtime, f.dispatch);
     expect(await other.machine.worker.tasks.assigned({ status: "sent" })).toEqual([]);
     const [assigned] = await f.machine.worker.tasks.assigned({ status: "sent", operation: "bash" });
     expect(assigned).toMatchObject({
@@ -407,7 +411,7 @@ describe("Worker procedures", () => {
 
   it("a Worker that cannot open the request fails it without a result", async () => {
     const f = await fixture();
-    const { taskId } = await dispatchSealedChatTask(db(), { ...f.dispatch, receiptEpoch: undefined });
+    const { taskId } = await dispatchSealedChatTask(test.runtime, { ...f.dispatch, receiptEpoch: undefined });
     await f.machine.worker.tasks.claim({ taskId, claimId: "process" });
     await expect(
       f.machine.worker.tasks.completeSealed({
@@ -434,9 +438,9 @@ describe("Worker procedures", () => {
   it("an apply follows only a completed preview of the same call", async () => {
     const f = await fixture();
     const preview = { ...f.dispatch, tool: "edit" as const, stage: "preview" as const, toolCallId: "e" };
-    const { taskId } = await dispatchSealedChatTask(db(), preview);
+    const { taskId } = await dispatchSealedChatTask(test.runtime, preview);
     const apply = { ...preview, stage: "apply" as const };
-    await expect(dispatchSealedChatTask(db(), apply)).rejects.toMatchObject(denied);
+    await expect(dispatchSealedChatTask(test.runtime, apply)).rejects.toMatchObject(denied);
     await f.machine.worker.tasks.claim({ taskId, claimId: "process" });
     await f.machine.worker.tasks.completeSealed({
       taskId,
@@ -446,7 +450,53 @@ describe("Worker procedures", () => {
       result: bytes(64, 1),
       receipt: bytes(64, 2),
     });
-    expect((await dispatchSealedChatTask(db(), apply)).replay).toBe(false);
+    expect((await dispatchSealedChatTask(test.runtime, apply)).replay).toBe(false);
+  });
+});
+
+describe("live layer", () => {
+  it("a new task rings its Worker's inbox, a replay does not; completion signals the chat", async () => {
+    const f = await fixture();
+    const { kv } = test.runtime.drivers;
+    const { stream: inbox } = await f.machine.worker.inbox();
+    const signals = await currentStream(kv, test.runtime.streams, `c/${f.chat}/signals`);
+    const messagesOf = async (path: string, count: number) =>
+      await eventually(async () => {
+        const page = await test.runtime.streams.read(path, "-1");
+        return page && page.messages.length >= count ? page.messages : null;
+      });
+
+    const { taskId } = await dispatchSealedChatTask(test.runtime, f.dispatch);
+    expect(await messagesOf(inbox, 1)).toEqual([{ topic: "tasks" }]);
+    await dispatchSealedChatTask(test.runtime, f.dispatch);
+    await dispatchSealedChatTask(test.runtime, { ...f.dispatch, toolCallId: "call-2" });
+    // Only the second new task rang again.
+    expect(await messagesOf(inbox, 2)).toEqual([{ topic: "tasks" }, { topic: "tasks" }]);
+
+    await f.machine.worker.tasks.claim({ taskId, claimId: "process" });
+    expect((await test.runtime.streams.read(signals, "-1"))?.messages).toEqual([]);
+    await f.machine.worker.tasks.completeSealed({
+      taskId,
+      claimId: "process",
+      expectedRevision: 1,
+      ok: true,
+      result: bytes(64, 1),
+      receipt: bytes(64, 2),
+    });
+    expect((await test.runtime.streams.read(signals, "-1"))?.messages).toEqual([
+      { topic: TASK_SIGNAL, ids: [taskId] },
+    ]);
+  });
+
+  it("revocation fails the Worker's open tasks and signals their chats", async () => {
+    const f = await fixture();
+    const signals = await currentStream(test.runtime.drivers.kv, test.runtime.streams, `c/${f.chat}/signals`);
+    const { taskId } = await dispatchSealedChatTask(test.runtime, f.dispatch);
+    await revokeWorker(test.runtime, f.workspace, f.worker.workerId);
+    expect((await db().select().from(workerTasks).where(eq(workerTasks.id, taskId)))[0]?.status).toBe("failed");
+    expect((await test.runtime.streams.read(signals, "-1"))?.messages).toEqual([
+      { topic: TASK_SIGNAL, ids: [taskId] },
+    ]);
   });
 });
 
@@ -454,7 +504,7 @@ describe("invariants under concurrency", () => {
   it("dispatch dedupe: parallel dispatches of one call stage make one task", async () => {
     const f = await fixture();
     const results = await Promise.allSettled(
-      Array.from({ length: 6 }, () => dispatchSealedChatTask(db(), f.dispatch)),
+      Array.from({ length: 6 }, () => dispatchSealedChatTask(test.runtime, f.dispatch)),
     );
     const fulfilled = results.flatMap((result) =>
       result.status === "fulfilled" ? [result.value] : [],
@@ -472,7 +522,7 @@ describe("invariants under concurrency", () => {
 
   it("claim once: of parallel claims by different processes exactly one wins", async () => {
     const f = await fixture();
-    const { taskId } = await dispatchSealedChatTask(db(), f.dispatch);
+    const { taskId } = await dispatchSealedChatTask(test.runtime, f.dispatch);
     const claims = await Promise.all(
       Array.from({ length: 6 }, (_, index) =>
         f.machine.worker.tasks.claim({ taskId, claimId: `process-${index}` }),
@@ -491,7 +541,7 @@ describe("invariants under concurrency", () => {
 
   it("fenced completion: of parallel different completions exactly one lands", async () => {
     const f = await fixture();
-    const { taskId } = await dispatchSealedChatTask(db(), f.dispatch);
+    const { taskId } = await dispatchSealedChatTask(test.runtime, f.dispatch);
     await f.machine.worker.tasks.claim({ taskId, claimId: "process" });
     const results = await Promise.allSettled(
       Array.from({ length: 6 }, (_, index) =>
@@ -521,7 +571,7 @@ describe("invariants under concurrency", () => {
 describe("revocation", () => {
   it("fails the revoked Worker's open tasks; its token can no longer complete them", async () => {
     const f = await fixture();
-    const { taskId } = await dispatchSealedChatTask(db(), f.dispatch);
+    const { taskId } = await dispatchSealedChatTask(test.runtime, f.dispatch);
     await f.machine.worker.tasks.claim({ taskId, claimId: "process" });
     await call("owner").workers.revoke({ workspace: f.workspace, workerId: f.worker.workerId });
     expect(

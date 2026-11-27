@@ -545,6 +545,7 @@ describe("sessions", () => {
     const [project] = await db().insert(projects).values({ workspace, userId: users.owner.id, name: "P" }).returning();
     await db().insert(projectFolders).values({
       project: project!.id,
+      workspace,
       worker: fixture.worker.workerId,
       directory: "/srv/app",
       position: 0,
@@ -1081,6 +1082,7 @@ describe("agent session index", () => {
       .returning();
     await db().insert(projectFolders).values({
       project: project!.id,
+      workspace: workspace.workspace,
       worker: workspace.worker.workerId,
       directory: "/srv/app",
       position: 0,

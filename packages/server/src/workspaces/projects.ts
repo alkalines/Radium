@@ -260,12 +260,17 @@ async function currentWorkers(tx: Database, projectId: string): Promise<WorkerFi
   };
 }
 
-async function writeWorkers(tx: Database, projectId: string, fields: WorkerFields) {
-  await tx.delete(projectFolders).where(eq(projectFolders.project, projectId));
+async function writeWorkers(
+  tx: Database,
+  project: { id: string; workspace: string },
+  fields: WorkerFields,
+) {
+  await tx.delete(projectFolders).where(eq(projectFolders.project, project.id));
   if (fields.folders.length > 0) {
     await tx.insert(projectFolders).values(
       fields.folders.map((folder, position) => ({
-        project: projectId,
+        project: project.id,
+        workspace: project.workspace,
         worker: folder.workerId,
         directory: folder.directory,
         position,
@@ -312,7 +317,7 @@ export async function createProject(
       })
       .returning({ id: projects.id });
     if (workers) {
-      await writeWorkers(tx, row!.id, workers);
+      await writeWorkers(tx, { id: row!.id, workspace: access.workspace.id }, workers);
     }
     return row!.id as Id<"projects">;
   });
@@ -346,7 +351,7 @@ export async function updateProject(
     }
     if (input.folders !== undefined || input.defaultWorkerId !== undefined) {
       const workers = await resolveWorkers(tx, access, input, await currentWorkers(tx, project.id));
-      await writeWorkers(tx, project.id, workers);
+      await writeWorkers(tx, project, workers);
     }
   });
 }

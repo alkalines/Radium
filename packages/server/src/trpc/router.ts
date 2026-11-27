@@ -11,6 +11,7 @@ import { notificationsRouter } from "../notifications/router";
 import { telemetryExportRouter, telemetryRouter } from "../telemetry/router";
 import { preferencesRouter, projectsRouter, workspacesRouter } from "../workspaces/router";
 import { usageRouter } from "../usage/router";
+import { eventsRouter } from "../streams/router";
 import { workerMachineRouter, workersRouter } from "../worker/router";
 import { router } from "./init";
 
@@ -39,6 +40,7 @@ export const appRouter = router({
   acp: acpRouter,
   /** Worker machines only (`workerProcedure`). */
   worker: workerMachineRouter,
+  events: eventsRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -10,6 +10,7 @@ import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { authClient } from "@/lib/auth-client";
 import { useFrontendLogger } from "@/lib/logging";
+import { LiveEvents } from "@/lib/live-events";
 import { useServerKeyStatus } from "@/lib/crypto/use-server-key-status";
 import { keyManager } from "@/lib/crypto/key-manager";
 import { useKeyStatus } from "@/lib/crypto/use-key-status";
@@ -51,6 +52,7 @@ export function Providers({
                 <MotionProvider>
                   <TooltipProvider>
                     <WorkspaceKeySync />
+                    <LiveEvents />
                     {children}
                   </TooltipProvider>
                 </MotionProvider>

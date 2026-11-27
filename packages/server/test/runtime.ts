@@ -8,7 +8,14 @@ import { createApp, type App } from "../src/app";
 import { loadConfig } from "../src/config";
 import type { JobHandlers } from "../src/jobs/outbox";
 import { checkRuntime, createRuntime, driverOptions, type Runtime } from "../src/runtime";
-import { databaseUrl, TEMPLATE_DATABASE, TEST_POSTGRES_URL, TEST_VALKEY_URL } from "./services";
+import {
+  databaseUrl,
+  TEMPLATE_DATABASE,
+  TEST_POSTGRES_URL,
+  TEST_STREAMS_TOKEN,
+  TEST_STREAMS_URL,
+  TEST_VALKEY_URL,
+} from "./services";
 
 /** Web origin the test runtimes trust; auth requests must send it as `Origin`. */
 export const TEST_SITE_URL = "http://localhost:3000";
@@ -51,6 +58,8 @@ export async function createTestRuntime(
     // Valkey has 16 databases; Vitest pool ids start at 1. A second concurrent run shifts by
     // `TEST_VALKEY_DB_OFFSET` (8) so the two never flush each other's database.
     VALKEY_URL: `${TEST_VALKEY_URL}/${(Number(process.env.VITEST_POOL_ID ?? "1") + Number(process.env.TEST_VALKEY_DB_OFFSET ?? "0")) % 16}`,
+    STREAMS_URL: TEST_STREAMS_URL,
+    STREAMS_TOKEN: TEST_STREAMS_TOKEN,
     BETTER_AUTH_SECRET: crypto.randomUUID() + crypto.randomUUID(),
     OPAQUE_SERVER_SETUP: opaqueServer.createSetup(),
     SECRET_STORE_KEYS: `1:${TEST_SECRET_STORE_KEY}`,

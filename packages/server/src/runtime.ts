@@ -7,6 +7,7 @@ import type { DriverOptions, Drivers } from "./drivers/types";
 import { SecretKeyring } from "./gateway/secrets";
 import { jobHandlers } from "./jobs/handlers";
 import type { JobHandlers } from "./jobs/outbox";
+import { StreamServer } from "./streams/server";
 import { createWorkerTokenVerifier, type WorkerTokenVerifier } from "./worker/auth";
 
 /**
@@ -21,6 +22,8 @@ export interface Runtime {
   workerTokens: WorkerTokenVerifier | null;
   /** Key-encryption keys of the Secret Store (`gateway/secrets.ts`). */
   secrets: SecretKeyring;
+  /** The internal Durable Streams server (`streams/server.ts`). */
+  streams: StreamServer;
   /**
    * Outbound HTTP to upstream providers (Gateway inference, usage-limit polls). The global
    * `fetch` in production; tests replace it so they never touch the network.
@@ -52,6 +55,7 @@ export function createRuntime(
     }),
     workerTokens: createWorkerTokenVerifier(config.API_URL, config.WORKER_AUTH_JWKS),
     secrets: new SecretKeyring(config.SECRET_STORE_KEYS),
+    streams: new StreamServer(config.STREAMS_URL, config.STREAMS_TOKEN),
     fetch: globalThis.fetch.bind(globalThis),
     jobs,
     defer(work) {

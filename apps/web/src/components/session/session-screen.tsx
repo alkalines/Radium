@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  DefaultChatTransport,
   getToolName,
   isToolUIPart,
   type ChatStatus,
@@ -61,6 +60,7 @@ import { useWorkspace } from "@/components/workspaces/workspace-provider";
 import { authClient } from "@/lib/auth-client";
 import { variants } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { ChatRunTransport } from "@/lib/chat-run-transport";
 import { useTrpc } from "@/lib/trpc";
 import { isTrpcRefusal, retryTransient } from "@/lib/trpc-error";
 import { useAccount } from "@/lib/use-account";
@@ -118,6 +118,8 @@ import {
 } from "@/lib/crypto/chat-keys";
 import type { ChatKeysSetupWire } from "@/lib/crypto/chat-keys";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
+import { useProjectList } from "@/lib/collections/projects";
+import { useWorkspaceSettings } from "@/lib/collections/workspace-settings";
 import {
   openMessages,
   openQueue,
@@ -174,10 +176,13 @@ export type SessionTabHint = {
  *   the draft's own choices stay on screen until the created chat loads.
  * - Saved: reads `chats.get` metadata for every mounted Tab. Content from `chats.messages` is
  *   read only after the Tab is first active, then kept until unmount. It seeds `useChat` before
- *   sending a queued prompt once, then streams turns from `POST /api/chat` (same origin). Chat
- *   queries refetch on focus and after this Tab's own mutations and finished streams. Either
- *   query refused (or failing before it ever loaded) shows an inline notice and calls
- *   `onUnavailable` once.
+ *   sending a queued prompt once. Turns are built-in runs (`ChatRunTransport`): `POST /api/chat`
+ *   starts one and every Tab and device reads its stream. A run this Tab did not start (another
+ *   Tab or device, or this page before a reload) is attached whenever `chats.get` reports one,
+ *   and the persisted history is seeded again once it ended. Stop ends the run for everyone
+ *   (`chats.stop`); closing the Tab only stops reading. Chat queries refetch on focus, on live
+ *   events, and after this Tab's own mutations and finished runs. Either query refused (or
+ *   failing before it ever loaded) shows an inline notice and calls `onUnavailable` once.
  * - A pending tool approval, then a pending `question` call, takes the Composer's place
  *   (`ApprovalPrompt`, `QuestionPrompt`) until it is answered. Code Mode approvals and questions
  *   each run a server deadline, so every live one shows at once instead of in turn. The latest
@@ -296,6 +301,8 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const hasAccountKeys = keyStatus.state === "unlocked" || keyStatus.state === "locked";
   const [contentFailure, setContentFailure] = useState<string>();
   const [persistedMessages, setPersistedMessages] = useState<UIMessage[]>();
+  // Whether the backend still had a run going when `persistedMessages` was read.
+  const [persistedWhileRunning, setPersistedWhileRunning] = useState(false);
   const [queue, setQueue] = useState<ChatQueue>();
   const [openedTitle, setOpenedTitle] = useState<string>();
   const [openedInterruption, setOpenedInterruption] = useState<string>();
@@ -328,6 +335,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     (chatContentError !== null && (isTrpcRefusal(chatContentError) || chatContent === undefined));
 
   const { mutateAsync: createChat } = useQueryMutation(trpc.chats.create.mutationOptions());
+  const { mutateAsync: stopChat } = useQueryMutation(trpc.chats.stop.mutationOptions());
   const { mutateAsync: forkChat } = useQueryMutation(trpc.chats.fork.mutationOptions());
   const { data: keyState } = useQuery(trpc.e2ee.chatKeys.queryOptions(chatId ? { chatId } : skipToken));
   const { mutateAsync: setChatWorker } = useQueryMutation(trpc.chats.setWorker.mutationOptions());
@@ -428,6 +436,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       }
       revisions.current = opened.revisions;
       setPersistedMessages(opened.messages);
+      setPersistedWhileRunning(chatContent.activeStream);
       setQueue(openedQueue as ChatQueue | undefined);
       setOpenedTitle(title);
       setOpenedInterruption(historical.interruptionMessage);
@@ -492,17 +501,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       settingsWorkspaceId ? { workspace: settingsWorkspaceId } : skipToken,
     ),
   );
-  const settingsInput =
-    signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : skipToken;
-  const defaultModelQuery = useQuery(trpc.chatroom.getModelDefault.queryOptions(settingsInput));
-  const { data: chainOfThoughtEnabled = true } = useQuery(
-    trpc.chatroom.getChainOfThoughtEnabled.queryOptions(settingsInput),
-  );
-  const { data: projectsData } = useQuery(
-    trpc.projects.list.queryOptions(
-      signedIn && settingsWorkspaceId ? { workspace: settingsWorkspaceId } : skipToken,
-    ),
-  );
+  const settings = useWorkspaceSettings(signedIn ? settingsWorkspaceId : undefined);
+  const chainOfThoughtEnabled = settings?.chainOfThought ?? true;
+  const { data: projectsData } = useProjectList(signedIn ? settingsWorkspaceId : undefined);
   // Every use below sees decrypted names; `undefined` still means the list is loading.
   const decryptedProjects = useDecryptedNames(
     projectsData ?? NO_PROJECTS,
@@ -510,9 +511,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     settingsWorkspaceId,
   );
   const projects = projectsData ? decryptedProjects : undefined;
-  const { data: workerToolDefaults } = useQuery(
-    trpc.chatroom.getWorkerToolDefaults.queryOptions(settingsInput),
-  );
+  const workerToolDefaults = settings?.workerTools;
   // Owner-only; the same query the Session context uses, so it is fetched once.
   const ownerWorkspace = isOwner ? settingsWorkspaceId : undefined;
   const { data: workers, error: workersError } = useWorkers(ownerWorkspace);
@@ -781,11 +780,11 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       (isContentEnabled && (isChatContentPending || persistedMessages === undefined)));
   const isWaitingForDefault =
     !(chatModel || queuedModel) &&
-    (isAccountPending || (signedIn && defaultModelQuery.isPending));
+    (isAccountPending || (signedIn && settings === undefined));
   const isModelLoading =
     isModelListLoading ||
     (hasModels && !explicitModel && (isWaitingForChat || isWaitingForDefault));
-  const defaultModel = defaultModelQuery.data;
+  const defaultModel = settings?.defaultModel;
   const availableDefaultModel = models?.some((candidate) => candidate.slug === defaultModel)
     ? defaultModel
     : undefined;
@@ -817,11 +816,25 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   const selectedBudget =
     selectedModelData?.features?.reasoning_budget && reasoningBudget ? reasoningBudget : undefined;
 
+  // The persisted history this Tab shows may miss a run's turn: the backend saves it only when the
+  // run ends. Set to the history read when this Tab began showing a run it did not send (or stopped
+  // reading one early); the first history read after that run ended replaces the messages. `null`
+  // when nothing needs reseeding; sending from this Tab gives up on it (this Tab's history wins).
+  const reseedAfter = useRef<UIMessage[] | null>(null);
+  // The latest history read, for the transport's callbacks.
+  const latestPersisted = useRef(persistedMessages);
+  useLayoutEffect(() => {
+    latestPersisted.current = persistedMessages;
+  });
+  // This Tab started the run it shows (locking keys stops only such a run).
+  const isOwnRun = useRef(false);
+  // Stop was pressed before `POST /api/chat` answered: the run it started is stopped once it has.
+  const stopAfterAdmission = useRef(false);
+
   const transport = useMemo(
     () =>
-      new DefaultChatTransport({
+      new ChatRunTransport({
         api: "/api/chat",
-        fetch: chatFetch as typeof fetch,
         body: {
           chatId,
           model: selectedModel,
@@ -830,6 +843,16 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           inferenceMode: effectiveMode,
           reasoningEffort: selectedEffort,
           reasoningBudget: selectedBudget,
+        },
+        onRunStream(source) {
+          if (source === "resume") {
+            // Reading a run another Tab or device sent (or this page, before a reload).
+            isOwnRun.current = false;
+            reseedAfter.current = latestPersisted.current ?? null;
+          } else if (stopAfterAdmission.current && chatId) {
+            stopAfterAdmission.current = false;
+            void stopChat({ chatId }).catch(() => toast.error("Could not stop this reply."));
+          }
         },
         // Approval continuations and retries carry no per-call body: fall back to the model and
         // provider recorded on the latest assistant turn.
@@ -841,6 +864,9 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           id,
           messages,
         }) {
+          reseedAfter.current = null;
+          isOwnRun.current = true;
+          stopAfterAdmission.current = false;
           let sendMessages = messages;
           let sendRevisions = revisions.current;
           let recipientKey: { e2eeId: string; epoch: number; publicKey: string } | undefined;
@@ -908,6 +934,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       selectedProvider,
       selectedTier,
       effectiveMode,
+      stopChat,
     ],
   );
 
@@ -920,6 +947,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     error,
     messages,
     regenerate,
+    resumeStream,
     sendMessage,
     setMessages,
     status,
@@ -928,12 +956,26 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
     id: chatId,
     transport,
     sendAutomaticallyWhen: ({ messages: nextMessages }) => {
+      // Until the history of a run another Tab sent is read back, this Tab lacks its user turn.
+      if (reseedAfter.current) return false;
       const continuationKey = getToolContinuationKey(nextMessages);
       if (!continuationKey || submittedToolContinuations.current.has(continuationKey)) {
         return false;
       }
       submittedToolContinuations.current.add(continuationKey);
       return true;
+    },
+    // A run's stream opens with its user turn (transient, never a part of the reply). A Tab that
+    // attached to a run it did not send lacks that turn until the run is saved: show it now. It
+    // is the stream's first chunk, so the reply is pushed after it. The sender (and a Tab that
+    // already showed it) holds that message id and keeps its own.
+    onData: (part) => {
+      if (part.type !== "data-radium-prompt") return;
+      const prompt = runPrompt(part.data);
+      if (!prompt) return;
+      setMessages((current) =>
+        current.some((message) => message.id === prompt.id) ? current : [...current, prompt],
+      );
     },
   });
 
@@ -1143,28 +1185,58 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
   }
 
   // Seed useChat once per chat from persisted messages; later query updates must not overwrite
-  // its live state. A chat opened while a request runs elsewhere (another Tab, or this page before
-  // a reload) seeds again once that request ends, because the backend saves the turn only then.
-  // Starting a request here first gives up on it: this Tab's history wins.
+  // its live state, except for the reseed after a run this Tab did not send (`reseedAfter`).
   const [seededChatId, setSeededChatId] = useState<string>();
-  const seededMidRequest = useRef(false);
   useEffect(() => {
     if (!chatContent || !chatId || !persistedMessages) return;
     if (seededChatId !== chatId) {
-      seededMidRequest.current = chatContent.activeStream;
+      reseedAfter.current = persistedWhileRunning ? persistedMessages : null;
       setMessages(persistedMessages);
       setSeededChatId(chatId);
       return;
     }
-    if (!seededMidRequest.current) return;
-    if (status !== "ready") {
-      seededMidRequest.current = false;
+    if (!reseedAfter.current || reseedAfter.current === persistedMessages) return;
+    if (status !== "ready" || persistedWhileRunning) return;
+    reseedAfter.current = null;
+    setMessages(persistedMessages);
+  }, [chatContent, persistedMessages, persistedWhileRunning, chatId, seededChatId, setMessages, status]);
+
+  // Attach to a run this Tab did not start: after a reload, or one another Tab or device started
+  // (its `chats` event refetches `chats.get`). Once per `chats.get` reading that reports a run; a
+  // stale reading whose run already ended finds nothing to resume (`204`).
+  const attachedFor = useRef<typeof chatData>(undefined);
+  useEffect(() => {
+    if (!chatId || seededChatId !== chatId || !chatData?.activeStream) return;
+    if (attachedFor.current === chatData) return;
+    if (status === "submitted" || status === "streaming") {
+      // This Tab is already reading the run this reading reports.
+      attachedFor.current = chatData;
       return;
     }
-    if (chatContent.activeStream) return;
-    seededMidRequest.current = false;
-    setMessages(persistedMessages);
-  }, [chatContent, persistedMessages, chatId, seededChatId, setMessages, status]);
+    if (status !== "ready") return;
+    attachedFor.current = chatData;
+    void resumeStream();
+  }, [chatData, chatId, resumeStream, seededChatId, status]);
+
+  /**
+   * Stops the chat's run for every Tab and device (`chats.stop`, allowed to its sender and the
+   * chat's managers), then stops reading it here. The run saves what it has; the saved turn
+   * replaces the partial one once it is read back. With `onlyOwnRun`, a run this Tab did not
+   * start is only no longer read here.
+   */
+  const stopRun = useCallback(
+    (onlyOwnRun: boolean) => {
+      const isReading = status === "submitted" || status === "streaming";
+      if (chatId && isReading && (!onlyOwnRun || isOwnRun.current)) {
+        // `POST /api/chat` may still be pending: the run it starts is stopped once it answers.
+        if (status === "submitted") stopAfterAdmission.current = true;
+        reseedAfter.current = persistedMessages ?? null;
+        void stopChat({ chatId }).catch(() => toast.error("Could not stop this reply."));
+      }
+      void stop();
+    },
+    [chatId, persistedMessages, status, stop, stopChat],
+  );
 
   useEffect(
     () =>
@@ -1177,7 +1249,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         if (!chat?.e2eeId) {
           return;
         }
-        void stop();
+        stopRun(true);
         setMessages([]);
         setPersistedMessages(undefined);
         setQueue(undefined);
@@ -1188,7 +1260,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         revisions.current = {};
         composerRef.current?.swapDraft({ text: "", files: [] });
       }),
-    [chat?.e2eeId, setMessages, stop],
+    [chat?.e2eeId, setMessages, stopRun],
   );
 
   // The todo tray shows the latest list while it has open items; a finished one sinks back. The
@@ -1207,6 +1279,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
       seededChatId !== chatId ||
       !queue ||
       status !== "ready" ||
+      chat?.activeStream ||
       sentQueueChatId.current === chatId
     ) {
       return;
@@ -1226,7 +1299,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
         },
       },
     );
-  }, [queue, contentFailure, chatId, seededChatId, sendMessage, status]);
+  }, [queue, contentFailure, chatId, chat?.activeStream, seededChatId, sendMessage, status]);
 
   const reportedUnavailable = useRef(false);
   useEffect(() => {
@@ -1799,6 +1872,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
           !isCreating &&
           (agentId === builtInAgent.id || !isAgentCatalogLoading)
       : chat !== undefined &&
+        !chat.activeStream &&
         seededChatId === chatId &&
         status === "ready" &&
         Boolean(selectedModel) &&
@@ -2102,7 +2176,7 @@ const BuiltInSessionScreen = memo(function BuiltInSessionScreen({
                 canSend={canSend}
                 isRunning={isRunning}
                 onSubmit={chatId === undefined ? submitDraft : submitTurn}
-                onStop={() => void stop()}
+                onStop={() => stopRun(false)}
                 commands={
                   agent.protocol === "acp" ? agent.installation?.defaults?.commands : undefined
                 }
@@ -2290,6 +2364,29 @@ function findLatestUsage(messages: UIMessage[]) {
   return undefined;
 }
 
+/**
+ * The user turn of a `data-radium-prompt` part (`packages/server/src/chatroom/run.ts`), or
+ * `undefined` for anything that is not a user message with an id and parts.
+ */
+function runPrompt(data: unknown): UIMessage | undefined {
+  if (typeof data !== "object" || data === null || !("message" in data)) return undefined;
+  const message = data.message;
+  if (
+    typeof message !== "object" ||
+    message === null ||
+    !("id" in message) ||
+    typeof message.id !== "string" ||
+    !("role" in message) ||
+    message.role !== "user" ||
+    !("parts" in message) ||
+    !Array.isArray(message.parts)
+  ) {
+    return undefined;
+  }
+  // The backend relays the turn exactly as the sender's client submitted it.
+  return message as UIMessage;
+}
+
 /** Queued attachments without a URL cannot be represented as AI SDK file parts. */
 function hasFileUrl<T extends { url?: string }>(file: T): file is T & FileUIPart {
   return Boolean(file.url);
@@ -2321,18 +2418,4 @@ function servedWorkerSelection(
   return grant
     ? { ...rest, grant: { ...grant, signature: buffer(fromBase64Url(grant.signature)) } }
     : rest;
-}
-
-/**
- * `POST /api/chat` on the web origin (cookie session). A refusal carries the server's message
- * (`409`: another run is active, or the chat's key must be rotated first); surface it as the error.
- */
-async function chatFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const response = await fetch(input, init);
-  if (response.ok) return response;
-  const body = (await response.json().catch(() => null)) as { error?: { message?: unknown } } | null;
-  const message = body?.error?.message;
-  throw new Error(
-    typeof message === "string" ? message : `The chat request failed (${response.status}).`,
-  );
 }

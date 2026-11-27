@@ -5,12 +5,13 @@ import { toast } from "sonner";
 import type { AppRouter } from "server/router";
 import {
   ACP_HISTORY_REQUEST_ITEMS,
+  ACP_VIEWER_HEARTBEAT_MS,
   acpAnswerError,
   type AcpCommandPayload,
   type AcpInteractionAnswer,
   type AcpInteractionRequest,
 } from "contracts/acp/contract";
-import { emptyAcpTimeline, startAcpEpoch } from "contracts/acp/fold";
+import { applyAcpFrames, emptyAcpTimeline, startAcpEpoch } from "contracts/acp/fold";
 import { isWorkerOnline, WORKER_ONLINE_WINDOW_MS } from "contracts/worker/presence";
 import { acpChatStatus, acpRunState, createAcpViewModel } from "./view-model";
 import {
@@ -19,8 +20,10 @@ import {
   writableChatKey,
   type ChatScope,
 } from "@/lib/crypto/chat-keys";
+import { useAcpSessionLive } from "@/lib/collections/acp-session";
 import { sealTitle } from "@/lib/crypto/chat-content";
 import { currentUserId } from "@/lib/crypto/runtime";
+import { readStream } from "@/lib/stream-reader";
 import { trpcClient } from "@/lib/trpc-client";
 import { useTrpc } from "@/lib/trpc";
 import { isTrpcRefusal, retryTransient } from "@/lib/trpc-error";
@@ -29,11 +32,15 @@ import { useKeyStatus } from "@/lib/crypto/use-key-status";
 import {
   acpFallbackTitle,
   openAcpError,
+  openAcpFrames,
   openAcpInteraction,
+  readEpochMessage,
   sealAcpAnswer,
   signAcpBinding,
   signAcpCommand,
   type AcpChatContext,
+  type AcpEpochCapsule,
+  type AcpFrameRow,
 } from "./acp-crypto";
 import {
   openHistoricalAcpSession,
@@ -49,10 +56,6 @@ export type AcpInteractionView = Omit<Interactions[number], "request" | "sealed"
 const noInteractions: AcpInteractionView[] = [];
 /** Quiet time after which a history request counts as finished (or failed, if nothing came). */
 const HISTORY_STALL_MS = 15_000;
-/** Refetch period while an ACP command the user issued is pending; never faster than this. */
-const ACP_POLL_MS = 5_000;
-/** How long after a one-shot command (config, mode, answer, cancel) the session keeps refetching. */
-const ACP_COMMAND_WATCH_MS = 60_000;
 /** The clock that notices a stale heartbeat, and so when to ask for a fresh one. */
 const WORKER_CLOCK_MS = 15_000;
 
@@ -102,9 +105,11 @@ function showActionError(error: unknown) {
 
 /**
  * Quiet metadata (`getSession`, `openInteractions`, `workerStatus`) loads while the Tab is visible
- * and refetches on focus and after the user's own commands. While a turn or a one-shot command the
- * user issued is pending it refetches every `ACP_POLL_MS`, and only then. Agent output itself has
- * no browser route before Phase 4, so the transcript shows no live content.
+ * and refetches on focus, after the user's own commands and when the chat's invalidation events
+ * name it. While visible the Tab heartbeats `acp.watch`, which keeps the session warm, and reads
+ * the current epoch's stream (`getSession.stream`) live: the capsule first, then sealed frames,
+ * opened and folded into the timeline. A closed or missing stream refetches the session, which
+ * names the next epoch once the Worker starts one.
  */
 export function useAcpSession({
   chatId,
@@ -116,19 +121,31 @@ export function useAcpSession({
   const trpc = useTrpc();
   const queryClient = useQueryClient();
   const keyStatus = useKeyStatus();
-  const [watching, setWatching] = useState(false);
-  const watchTimer = useRef<number | undefined>(undefined);
-  const [polling, setPolling] = useState(false);
-  const { data: liveSession, error: liveSessionError } = useQuery(
+  const { data: baseSession, error: liveSessionError } = useQuery(
     trpc.acp.getSession.queryOptions(
       { chat: chatId },
-      {
-        retry: retryTransient,
-        refetchOnWindowFocus: true,
-        refetchInterval: isVisible && polling ? ACP_POLL_MS : false,
-      },
+      { retry: retryTransient, refetchOnWindowFocus: true },
     ),
   );
+  // The `acpSession` collection carries what the Worker changes (lifecycle, epoch, config,
+  // commands, usage) while the Tab is visible: an Electric shape, or `getSession` itself.
+  const live = useAcpSessionLive(isVisible ? chatId : undefined);
+  const liveSession = useMemo(() => {
+    if (!baseSession || !live || live.id !== baseSession.id) return baseSession;
+    const { id: _id, sessionId, ...fields } = live;
+    return {
+      ...baseSession,
+      ...fields,
+      // Before the agent session exists, `getSession` fills commands from the agent's defaults.
+      commands: fields.commands ?? (sessionId ? null : baseSession.commands),
+    };
+  }, [baseSession, live]);
+  // A new epoch names a new stream and capsule; `getSession` re-reads warmth and agent details.
+  const liveEpoch = live?.epoch;
+  useEffect(() => {
+    if (liveEpoch === undefined || baseSession === undefined || liveEpoch === baseSession.epoch) return;
+    void queryClient.invalidateQueries({ queryKey: trpc.acp.getSession.queryKey({ chat: chatId }) });
+  }, [baseSession, chatId, liveEpoch, queryClient, trpc]);
   // A refusal is final; a network failure only counts while nothing has loaded yet.
   const sessionError =
     liveSessionError && (isTrpcRefusal(liveSessionError) || liveSession === undefined)
@@ -172,18 +189,6 @@ export function useAcpSession({
         : liveSession,
     [historicalSession, liveSession],
   );
-  const running =
-    session?.status === "starting" || session?.status === "running" || session?.status === "awaiting";
-  const shouldPoll = running || watching;
-  useEffect(() => {
-    setPolling(shouldPoll);
-  }, [shouldPoll]);
-  useEffect(
-    () => () => {
-      window.clearTimeout(watchTimer.current);
-    },
-    [],
-  );
   const [timeline, setTimeline] = useState(emptyAcpTimeline);
   const timelineRef = useRef(timeline);
   timelineRef.current = timeline;
@@ -197,7 +202,6 @@ export function useAcpSession({
     trpc.acp.openInteractions.queryOptions(isVisible ? { chat: chatId } : skipToken, {
       retry: retryTransient,
       refetchOnWindowFocus: true,
-      refetchInterval: polling ? ACP_POLL_MS : false,
     }),
   );
   const { data: workerData, refetch: refetchWorker } = useQuery(
@@ -229,20 +233,13 @@ export function useAcpSession({
     [chatId, e2eeId, workerId, workspaceId],
   );
 
-  /** Refetches what an own command changes now, then keeps refetching while it is pending. */
-  const afterCommand = useCallback(
-    (options: { watch: boolean }) => {
-      void queryClient.invalidateQueries({ queryKey: trpc.acp.getSession.queryKey({ chat: chatId }) });
-      void queryClient.invalidateQueries({
-        queryKey: trpc.acp.openInteractions.queryKey({ chat: chatId }),
-      });
-      if (!options.watch) return;
-      setWatching(true);
-      window.clearTimeout(watchTimer.current);
-      watchTimer.current = window.setTimeout(() => setWatching(false), ACP_COMMAND_WATCH_MS);
-    },
-    [chatId, queryClient, trpc],
-  );
+  /** Refetches what an own command changes now; later changes arrive as invalidation events. */
+  const afterCommand = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: trpc.acp.getSession.queryKey({ chat: chatId }) });
+    void queryClient.invalidateQueries({
+      queryKey: trpc.acp.openInteractions.queryKey({ chat: chatId }),
+    });
+  }, [chatId, queryClient, trpc]);
 
   const [openedInteractions, setOpenedInteractions] = useState<{
     source: Interactions;
@@ -335,7 +332,9 @@ export function useAcpSession({
   // A Worker re-reporting an error seals it into a new box each time; the last opened text stays
   // until the new box opens, so the generic server text only stands in before the first one does.
   const openedMessage = sealedError ? openedError?.message : undefined;
-  const errorMessage = openedMessage ?? session?.error ?? keyError;
+  /** Set when the epoch stream holds something that does not verify (see the reader below). */
+  const [streamError, setStreamError] = useState<string>();
+  const errorMessage = openedMessage ?? session?.error ?? keyError ?? streamError;
 
   /** Seals and signs a command for this chat's Worker. */
   const signCommand = useCallback(
@@ -354,6 +353,62 @@ export function useAcpSession({
     setLoadingBefore(undefined);
     setFailedBefore(undefined);
   }, [epoch, isVisible]);
+
+  // The viewer heartbeat: keeps the session warm while this Tab shows it, and warms a cold one
+  // (the Worker then starts a new epoch, announced by an invalidation event).
+  const [tab] = useState(() => crypto.randomUUID());
+  useEffect(() => {
+    if (!isVisible) return;
+    const beat = () => {
+      trpcClient().acp.watch.mutate({ chat: chatId, tab }).catch(() => {});
+    };
+    beat();
+    const timer = window.setInterval(beat, ACP_VIEWER_HEARTBEAT_MS);
+    return () => window.clearInterval(timer);
+  }, [chatId, isVisible, tab]);
+
+  // The current epoch's stream, read from its start: the capsule, then frames in order. Reading
+  // again (unlocked keys, a new epoch) re-delivers frames the fold already applied, which it skips.
+  const stream = session?.stream ?? undefined;
+  useEffect(() => {
+    setStreamError(undefined);
+    if (!isVisible || !chatContext || !stream || epoch === undefined || keyStatus.state !== "unlocked") return;
+    const controller = new AbortController();
+    let capsule: AcpEpochCapsule | undefined;
+    void readStream<unknown>({
+      url: `/api/streams/${stream}`,
+      offset: "-1",
+      signal: controller.signal,
+      onMessages: async (messages) => {
+        try {
+          const rows: AcpFrameRow[] = [];
+          for (const message of messages) {
+            const read = readEpochMessage(message);
+            if ("capsule" in read) capsule ??= read.capsule;
+            else rows.push(read.frame);
+          }
+          if (rows.length === 0) return;
+          const frames = await openAcpFrames(chatContext, epoch, capsule, rows);
+          if (controller.signal.aborted) return;
+          const next = applyAcpFrames(startAcpEpoch(timelineRef.current, epoch, { keepOlder: false }), frames);
+          timelineRef.current = next;
+          setTimeline(next);
+        } catch (error) {
+          // An unverifiable stream is never shown; locked keys restart the read once unlocked.
+          controller.abort();
+          if (!(error instanceof KeysLockedError)) {
+            setStreamError("Could not verify this Session's agent output, so it is not shown.");
+          }
+        }
+      },
+    }).then((end) => {
+      // Closed (rolled over) or gone (cooled, superseded): the session names what comes next.
+      if (end !== "aborted") {
+        void queryClient.invalidateQueries({ queryKey: trpc.acp.getSession.queryKey({ chat: chatId }) });
+      }
+    });
+    return () => controller.abort();
+  }, [chatContext, chatId, epoch, isVisible, keyStatus.state, queryClient, stream, trpc]);
 
   // One request streams every older page. While pages keep arriving it stays in flight; when they
   // stop with more left (item limit, Worker restart), the next request continues from there, and
@@ -411,7 +466,7 @@ export function useAcpSession({
           `history:${chatId}:${request.epoch}:${before}:${crypto.randomUUID()}`,
         ),
       });
-      afterCommand({ watch: true });
+      afterCommand();
     } catch (error) {
       requestedHistory.current.delete(key);
       setLoadingBefore(undefined);
@@ -463,7 +518,7 @@ export function useAcpSession({
           clientId,
           signed: await signCommand({ kind: "prompt", prompt }, clientId),
         });
-        afterCommand({ watch: false });
+        afterCommand();
         if (!session?.agent.sessionId) {
           // The server never sees the prompt text, so the fallback title is sealed here.
           void (async () => {
@@ -492,7 +547,7 @@ export function useAcpSession({
         chat: chatId,
         signed: await signCommand({ kind: "cancel" }),
       });
-      afterCommand({ watch: true });
+      afterCommand();
     } catch (error) {
       showActionError(error);
     }
@@ -504,7 +559,7 @@ export function useAcpSession({
           chat: chatId,
           signed: await signCommand({ kind: "set_config", configId, value }),
         });
-        afterCommand({ watch: true });
+        afterCommand();
       } catch (error) {
         showActionError(error);
       }
@@ -518,7 +573,7 @@ export function useAcpSession({
           chat: chatId,
           signed: await signCommand({ kind: "set_mode", modeId }),
         });
-        afterCommand({ watch: true });
+        afterCommand();
       } catch (error) {
         showActionError(error);
       }
@@ -544,7 +599,7 @@ export function useAcpSession({
           answer: response,
         });
         await answerMutation.mutateAsync({ interaction, sealed });
-        afterCommand({ watch: true });
+        afterCommand();
         return true;
       } catch (error) {
         showActionError(error);

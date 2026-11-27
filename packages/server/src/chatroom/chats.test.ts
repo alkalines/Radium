@@ -13,8 +13,9 @@ import {
   toBase64Url,
 } from "radium-crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { addModel, addProvider, offer, upstreamStream } from "../../test/gateway";
+import { addModel, addProvider, offer, upstreamHanging, upstreamStream } from "../../test/gateway";
 import { createTestRuntime, type TestRuntime } from "../../test/runtime";
+import { eventually, readNext, readOnce, readToEnd } from "../../test/streams";
 import { classicUser } from "../../test/users";
 import { chatKeyInput, rotateChatKey, wrapInput } from "../e2ee/chat-keys";
 import { e2eeCapsules, e2eeChatKeys, e2eeChatKeyWraps, e2eeIdentities } from "../e2ee/schema";
@@ -23,7 +24,8 @@ import { chatCompletions } from "../usage/schema";
 import { projects, workspaceMembers, workspaces } from "../workspaces/schema";
 import { openInteraction } from "./code-mode";
 import { chatMessageHeads, saveSealedChatMessages } from "./messages";
-import { admitRun, endRun } from "./run";
+import { admitRun, endRun, pruneChatRuns } from "./run";
+import { runStreamPath } from "./run-streams";
 import { chatMembers, chatMessages, chatRuns, chats } from "./schema";
 import { sealChatMessages } from "./sealing";
 import { detachWorkspaceMember } from "./workspace-chats";
@@ -925,19 +927,37 @@ describe("/api/chat", () => {
     expect(upstreamCalls).toBe(0);
   });
 
-  it("streams the reply to the sender and saves the turn sealed to the chat key", async () => {
+  it("writes the reply to a run stream every viewer reads, and saves the turn sealed to the chat key", async () => {
     const { chatId, e2eeId, epoch } = await createChat("owner", {
       scope: "shared",
       members: ["member"],
       bound: true,
     });
     const response = await send("member", chatId, { e2eeId, epoch });
-    expect(response.status).toBe(200);
-    const body = await response.text();
-    expect(body).toContain("Hello");
+    expect(response.status).toBe(201);
+    const { streamUrl } = (await response.json()) as { streamUrl: string };
+    expect(response.headers.get("location")).toBe(streamUrl);
+    const path = streamUrl.slice("/api/streams/".length);
+
+    // The sender and the chat's other reader see the same reply; nobody else can read it.
+    const [sender, creator] = await Promise.all([
+      readToEnd(test.app, users.member.headers, path),
+      readToEnd(test.app, users.owner.headers, path),
+    ]);
+    expect(creator).toEqual(sender);
+    expect(JSON.stringify(sender)).toContain("Hello");
+    expect(sender.at(-1)).toMatchObject({ type: "finish" });
+    // A viewer that attaches late sees the prompt too (transient, not part of the reply).
+    expect(sender[0]).toMatchObject({ type: "data-radium-prompt", transient: true, data: { message: { id: "u1", role: "user" } } });
+    for (const role of ["other", "outsider"] as const) {
+      expect((await readOnce(test.app, users[role].headers, path, "-1")).status).toBe(404);
+    }
     expect(upstreamCalls).toBeGreaterThan(0);
 
-    const [run] = await runsOf(chatId);
+    const [run] = await eventually(async () => {
+      const runs = await runsOf(chatId);
+      return runs[0]?.status === "finished" ? runs : null;
+    });
     expect(run).toMatchObject({ status: "finished", userId: users.member.id });
     const rows = await db().select().from(chatMessages).where(eq(chatMessages.chat, chatId)).orderBy(asc(chatMessages.position));
     expect(rows).toHaveLength(2);
@@ -968,6 +988,89 @@ describe("/api/chat", () => {
     expect(completions.length).toBeGreaterThan(0);
     expect(completions.every((row) => row.userId === users.member.id)).toBe(true);
     expect((await call("member").chats.get({ chatId })).activeStream).toBe(false);
+    const resume = await test.app.request(`/api/chat/${chatId}/stream`, { headers: users.member.headers });
+    expect(resume.status).toBe(204);
+
+    // Retention deletes the ended run together with its stream.
+    expect(await test.runtime.streams.tail(path)).not.toBeNull();
+    await pruneChatRuns(test.runtime, Date.now() + 11 * 60_000, 100);
+    expect(await runsOf(chatId)).toHaveLength(0);
+    expect(await test.runtime.streams.tail(path)).toBeNull();
+  });
+
+  it("keeps running without its sender, resumes on reload and stops from another device", async () => {
+    test.runtime.fetch = (async (_url: unknown, init?: RequestInit) => {
+      upstreamCalls += 1;
+      return upstreamHanging("Thinking", init?.signal);
+    }) as unknown as typeof fetch;
+    try {
+      const { chatId, e2eeId, epoch } = await createChat("owner", {
+        scope: "shared",
+        members: ["member", "other"],
+        bound: true,
+      });
+      const controller = new AbortController();
+      const headers = new Headers(users.member.headers);
+      headers.set("content-type", "application/json");
+      const response = await test.app.request("/api/chat", {
+        method: "POST",
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify({
+          chatId,
+          model: MODEL,
+          messages: [{ id: "u1", role: "user", parts: [{ type: "text", text: "Hi there" }] }],
+          recipientKey: { e2eeId, epoch, publicKey: toBase64Url(chatKey.publicKey) },
+        }),
+      });
+      const { streamUrl } = (await response.json()) as { streamUrl: string };
+      const path = streamUrl.slice("/api/streams/".length);
+      // The sender goes away; the run does not.
+      controller.abort();
+      await readNext(test.app, users.owner.headers, path, "-1");
+      expect((await call("owner").chats.get({ chatId })).activeStream).toBe(true);
+
+      // A reloaded Tab finds the same stream.
+      const resume = await test.app.request(`/api/chat/${chatId}/stream`, { headers: users.owner.headers });
+      expect(resume.status).toBe(200);
+      expect(resume.headers.get("location")).toBe(streamUrl);
+
+      // Neither the sender nor a manager: refused. The creator (a manager) stops it.
+      await expect(call("other").chats.stop({ chatId })).rejects.toThrow(/sender or a manager/);
+      expect(await call("owner").chats.stop({ chatId })).toBe(true);
+      const messages = await readToEnd(test.app, users.owner.headers, path);
+      expect(JSON.stringify(messages)).toContain("Thinking");
+      const [run] = await eventually(async () => {
+        const runs = await runsOf(chatId);
+        return runs[0]?.status !== "active" ? runs : null;
+      });
+      expect(run!.status).toBe("finished");
+      expect(await call("owner").chats.stop({ chatId })).toBe(false);
+    } finally {
+      test.runtime.fetch = (async () => {
+        upstreamCalls += 1;
+        return upstreamStream(["Hello", " world"]);
+      }) as unknown as typeof fetch;
+    }
+  });
+
+  it("deletes a deleted chat's run streams, and ends a lost run's stream", async () => {
+    const { chatId, e2eeId, epoch } = await createChat("owner");
+    const response = await send("owner", chatId, { e2eeId, epoch });
+    const path = ((await response.json()) as { streamUrl: string }).streamUrl.slice("/api/streams/".length);
+    await readToEnd(test.app, users.owner.headers, path);
+    await eventually(async () => (await runsOf(chatId))[0]?.status === "finished");
+    await call("owner").chats.delete({ chatId });
+    await eventually(async () => (await test.runtime.streams.tail(path)) === null);
+
+    // A run whose generator died (no lease renewal) is failed and its readers are released.
+    const lost = await createChat("owner");
+    const runId = (await admitRun(db(), lost.chatId, users.owner.id))!;
+    const lostPath = runStreamPath(lost.chatId, runId);
+    await test.runtime.streams.create(lostPath);
+    await pruneChatRuns(test.runtime, Date.now() + 2 * 60_000, 100);
+    expect((await runsOf(lost.chatId))[0]!.status).toBe("failed");
+    expect((await readToEnd(test.app, users.owner.headers, lostPath)).at(-1)).toMatchObject({ type: "error" });
   });
 
   it("refuses unknown chats and malformed bodies", async () => {

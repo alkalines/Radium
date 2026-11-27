@@ -2,8 +2,8 @@ name: Server
 
 # Checks of the new backend (packages/server) from the schema migration policy in
 # docs/Backend_Migration/Runtime.md: migrations match the schema, apply to an empty database, and
-# tests pass against real Postgres and Valkey. Applying to the previous release's database starts
-# with the first release on Postgres; there is none yet.
+# tests pass against real Postgres, Valkey and Durable Streams. Applying to the previous
+# release's database starts with the first release on Postgres; there is none yet.
 
 on:
   pull_request:
@@ -12,6 +12,7 @@ on:
       - "packages/contracts/**"
       - "packages/crypto/**"
       - "bun.lock"
+      - "docker/durable-streams/**"
       - ".github/workflows/server.yml"
   push:
     branches: [dev]
@@ -20,6 +21,7 @@ on:
       - "packages/contracts/**"
       - "packages/crypto/**"
       - "bun.lock"
+      - "docker/durable-streams/**"
       - ".github/workflows/server.yml"
 
 permissions:
@@ -81,6 +83,23 @@ jobs:
         run: |
           bun run db:migrate
           bun run db:migrate
+
+      # The deployment's own image (no upstream one exists), as in docker-compose.test.yml; a
+      # job service cannot be built, so it is started here.
+      - name: Durable Streams
+        working-directory: .
+        run: |
+          docker build -t radium-durable-streams:ci docker/durable-streams
+          docker run -d --name streams -e STREAMS_TOKEN=radium-test-streams \
+            --tmpfs /data:uid=65532,gid=65532,mode=0700 -p 54437:4437 radium-durable-streams:ci
+          for attempt in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer radium-test-streams" \
+              -X PUT -H "Content-Type: application/json" http://127.0.0.1:54437/v1/stream/t/ci/ready/1 || true)
+            [ "$status" = "201" ] || [ "$status" = "200" ] && exit 0
+            sleep 1
+          done
+          docker logs streams
+          exit 1
 
       - name: Tests
         run: bun run test

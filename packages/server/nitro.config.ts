@@ -26,10 +26,12 @@ export default defineConfig({
     "files:orphans": { handler: path("./src/jobs/tasks/files-orphans.ts") },
     "usage:prices": { handler: path("./src/jobs/tasks/usage-prices.ts") },
     "telemetry:retention": { handler: path("./src/jobs/tasks/telemetry-retention.ts") },
+    "streams:rotate": { handler: path("./src/jobs/tasks/streams-rotate.ts") },
+    "acp:cool": { handler: path("./src/jobs/tasks/acp-cool.ts") },
   },
   scheduledTasks: {
-    "* * * * *": ["jobs:sweep", "usage:prices"],
-    "*/5 * * * *": ["limits:poll", "retention"],
+    "* * * * *": ["jobs:sweep", "usage:prices", "acp:cool"],
+    "*/5 * * * *": ["limits:poll", "retention", "streams:rotate"],
     "0 * * * *": ["files:orphans", "telemetry:retention"],
   },
 });

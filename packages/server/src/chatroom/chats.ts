@@ -6,6 +6,7 @@ import { chatWorkerToolValidator } from "contracts/worker/chat-config";
 import { queueAcpChatDeletion } from "../acp/deletion";
 import { signedBindingInput, signedCommandInput } from "../acp/policy";
 import { acpChatBindings, isAcpChat, markAcpChatUserTitled } from "../acp/sessions";
+import { forgetEpochFence } from "../acp/live";
 import { removeWarm } from "../acp/warm";
 import type { Database, Kv } from "../drivers/types";
 import {
@@ -22,6 +23,7 @@ import { AppError } from "../errors";
 import { createInternalGatewayProvider } from "../gateway/completions";
 import { dispatchJobs } from "../jobs/outbox";
 import type { Runtime } from "../runtime";
+import { queueStreamDeletion } from "../streams/deletion";
 import {
   attachChatWorkerGrant,
   chatWorkerColumns,
@@ -36,6 +38,7 @@ import { requireChatAccess, requireChatManager, type Chat, type ChatWorkspace } 
 import { linkChatFiles, queueChatFileRelease } from "./files";
 import { readChatHistory } from "./messages";
 import { setChatMembers, touchChatMembers } from "./members";
+import { chatRunsWithStreams, requestRunStop } from "./run-streams";
 import { chatMembers, chatMessages, chatRuns, chats } from "./schema";
 import {
   chatCapsuleInput,
@@ -756,26 +759,37 @@ export const deleteChatInput = z.object({
 /**
  * Deletes a chat in one transaction (Convex `DeleteChat` + `cleanupChatContent`): messages,
  * members, keys, wraps, capsules, runs, tool overrides, file references and ACP session rows go
- * with it through foreign keys; the file objects are released by an outbox job. An ACP chat first
- * queues the caller's signed `close`/`delete` command for its Worker (`../acp/deletion.ts`), and
- * leaves the Worker's warm set after commit.
+ * with it through foreign keys; the file objects and the runs' and open ACP epoch's streams are
+ * released by outbox jobs. A reply still running is asked to stop. An ACP chat first queues the
+ * caller's signed `close`/`delete` command for its Worker (`../acp/deletion.ts`), and leaves the
+ * Worker's warm set (and its append fence cache) after commit.
  */
 export async function deleteChat(
   runtime: Runtime,
   userId: string,
   input: z.output<typeof deleteChatInput>,
 ) {
-  const { jobs, acp } = await runtime.drivers.db.transaction(async (tx) => {
+  const { jobs, acp, active } = await runtime.drivers.db.transaction(async (tx) => {
     const { chat } = await requireChatActor(tx, userId, input.chatId);
     const acp = await queueAcpChatDeletion(tx, chat, userId, {
       deleteInAgent: input.deleteInAgent,
       signed: input.acpCommand,
     });
     const released = await queueChatFileRelease(tx, chat.id);
+    const runs = await chatRunsWithStreams(tx, chat.id);
+    const streams = await queueStreamDeletion(tx, [
+      ...runs.map((run) => run.path),
+      ...(acp?.streams ?? []),
+    ]);
     await tx.delete(chats).where(eq(chats.id, chat.id));
-    return { jobs: released, acp };
+    const active = runs.filter((run) => run.status === "active").map((run) => run.id);
+    return { jobs: [...released, ...streams], acp, active };
   });
-  if (acp) await removeWarm(runtime.drivers.kv, acp.worker, input.chatId);
+  for (const run of active) await requestRunStop(runtime.drivers.kv, run);
+  if (acp) {
+    await removeWarm(runtime.drivers.kv, acp.worker, input.chatId);
+    await forgetEpochFence(runtime.drivers.kv, input.chatId);
+  }
   runtime.defer(dispatchJobs(runtime, jobs));
 }
 

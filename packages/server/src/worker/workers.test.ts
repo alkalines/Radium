@@ -256,7 +256,7 @@ describe("presence", () => {
     // A Project folder wins over the temp directory; leaving the Project falls back again.
     await db()
       .insert(projectFolders)
-      .values({ project: project!.id, worker: worker.workerId, directory: "/srv/app", position: 0 });
+      .values({ project: project!.id, workspace, worker: worker.workerId, directory: "/srv/app", position: 0 });
     await call("owner").chats.setProject({ chatId: chat!.id, project: project!.id });
     expect(await stored()).toEqual({ tools: ["read"], directory: "/srv/app" });
     await call("owner").chats.setProject({ chatId: chat!.id, project: null });

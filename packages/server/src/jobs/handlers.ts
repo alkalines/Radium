@@ -6,6 +6,7 @@ import { runFallbackJob } from "../notifications/push";
 import { runSealJob } from "../notifications/sealing";
 import { EXPORT_JOB, runExportJob } from "../telemetry/export";
 import { GC_JOB, runGcJob } from "../telemetry/retention";
+import { runStreamsDeleteJob, STREAMS_DELETE_JOB } from "../streams/deletion";
 import {
   PRICE_LOCAL_ROW_JOB,
   PRICE_TURN_JOB,
@@ -43,4 +44,6 @@ export const jobHandlers: JobHandlers = {
   [EXPORT_JOB]: (payload, runtime) => runExportJob(runtime, payload),
   // Collects the blobs and nodes deleted telemetry requests left unreferenced (`retention.ts`).
   [GC_JOB]: (payload, runtime) => runGcJob(runtime, payload),
+  // Deletes the run and ACP epoch streams of a deleted chat (`queueStreamDeletion`).
+  [STREAMS_DELETE_JOB]: (payload, runtime) => runStreamsDeleteJob(runtime, payload),
 };

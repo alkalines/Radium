@@ -15,6 +15,11 @@ const HOP_BY_HOP_HEADERS = [
   "host",
 ];
 
+/** A request as srvx hands it over on Bun (Nitro's Bun preset): with the serving Bun server. */
+type BunRequest = Request & {
+  runtime?: { bun?: { server?: { timeout?(request: Request, seconds: number): void } } };
+};
+
 /**
  * Forwards a browser request for `/api/*` to the backend at `API_INTERNAL_URL`, path and query
  * unchanged, streaming both bodies. Browsers only ever talk to the web origin, so the backend
@@ -35,6 +40,13 @@ export async function forwardToBackend(request: Request): Promise<Response> {
 
   const source = new URL(request.url);
   const target = new URL(`${source.pathname}${source.search}`, backendUrl);
+  // Live stream reads and Electric shape long-polls (20 s) stay quiet for long stretches (the
+  // stream server sends no keepalives), and Bun's 10 s per-connection idle timeout would cut them.
+  // srvx exposes the Bun server on the request under Nitro; other runtimes have no such timeout.
+  if (source.pathname.startsWith("/api/streams/") || source.pathname.startsWith("/api/shapes/")) {
+    const bunRequest: BunRequest = request;
+    bunRequest.runtime?.bun?.server?.timeout?.(request, 0);
+  }
 
   const headers = new Headers(request.headers);
   for (const name of [...HOP_BY_HOP_HEADERS, PROXY_SECRET_HEADER, PROXY_CLIENT_IP_HEADER]) {

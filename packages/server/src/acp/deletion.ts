@@ -8,6 +8,7 @@ import {
   verifySignedCommand,
   type SignedCommand,
 } from "./policy";
+import { epochStreamPath } from "./live";
 import { acpAgentSessions } from "./schema";
 
 /**
@@ -17,14 +18,15 @@ import { acpAgentSessions } from "./schema";
  * binding so the Worker can authorize it once the chat is gone. Nothing is queued without a
  * signed command, a published binding or a proven session id, since a paired Worker would refuse
  * it anyway. Deleting in the agent also drops the session's index entry. Returns the Worker whose
- * warm set must drop the chat after commit, or null for a built-in chat.
+ * warm set must drop the chat after commit and the open epoch's stream to delete with the chat,
+ * or null for a built-in chat.
  */
 export async function queueAcpChatDeletion(
   tx: Database,
   chat: Chat,
   userId: string,
   options: { deleteInAgent?: boolean; signed?: SignedCommand },
-): Promise<{ worker: string } | null> {
+): Promise<{ worker: string; streams: string[] } | null> {
   const session = await findSession(tx, chat.id, true);
   if (!session) return null;
   if (session.sessionId) {
@@ -71,5 +73,7 @@ export async function queueAcpChatDeletion(
       });
     }
   }
-  return { worker: session.worker };
+  // A cooled epoch's stream is already deleted; superseded ones have their own deletion jobs.
+  const open = session.epoch > 0 && session.epoch > (session.cooledEpoch ?? 0);
+  return { worker: session.worker, streams: open ? [epochStreamPath(chat.id, session.epoch)] : [] };
 }

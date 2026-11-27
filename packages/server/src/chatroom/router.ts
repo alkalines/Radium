@@ -26,6 +26,7 @@ import {
   setChatWorkerGrant,
 } from "./chats";
 import { answerInteraction } from "./code-mode";
+import { stopRun } from "./run";
 import { sealedBoxInput } from "./sealing";
 
 const idInput = z.string().min(1).max(256);
@@ -100,9 +101,11 @@ export const chatsRouter = router({
   delete: sessionProcedure
     .input(deleteChatInput)
     .mutation(({ ctx, input }) => deleteChat(ctx.runtime, ctx.user.id, input)),
+  /** Stops the chat's running reply from any Tab or device (its sender or a chat manager). */
+  stop: sessionProcedure
+    .input(chatInput)
+    .mutation(({ ctx, input }) => stopRun(ctx.runtime, ctx.user.id, input.chatId)),
   answerInteraction: sessionProcedure
     .input(z.object({ interaction: z.uuid(), response: codeModeInteractionResponseValidator }))
-    .mutation(({ ctx, input }) =>
-      answerInteraction(ctx.runtime.drivers.db, ctx.runtime.drivers.kv, ctx.user.id, input),
-    ),
+    .mutation(({ ctx, input }) => answerInteraction(ctx.runtime, ctx.user.id, input)),
 });

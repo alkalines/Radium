@@ -1,8 +1,9 @@
-import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { CAPSULE_BYTES, toBase64Url } from "radium-crypto";
 import { z } from "zod";
 import {
   ACP_AGENT_DEFINITIONS_MAX,
+  ACP_SUPERSEDED_EPOCH_MS,
   ACP_AGENT_SESSIONS_MAX,
   ACP_AGENT_SESSIONS_SYNC_CHUNK,
   ACP_SEALED_INTERACTION_BYTES,
@@ -23,12 +24,14 @@ import { base64urlBytes } from "contracts/wire";
 import { chatWithWorkspace } from "../chatroom/access";
 import type { Database } from "../drivers/types";
 import { chatKeyAt, chatKeyIsStale } from "../e2ee/chat-keys";
-import { dispatchJobs } from "../jobs/outbox";
+import { dispatchJobs, enqueueJob } from "../jobs/outbox";
 import { notify } from "../notifications/notify";
 import type { Runtime } from "../runtime";
+import { STREAMS_DELETE_JOB } from "../streams/deletion";
 import type { WorkerScope } from "../worker/auth";
 import { workerAgents } from "../worker/schema";
 import { applySessionPatch, chatE2ee, type SessionPatch } from "./lifecycle";
+import { epochStreamPath, forgetEpochFence, writeEpochCapsule } from "./live";
 import {
   acpError,
   checkWorker,
@@ -46,8 +49,8 @@ import { isWarm, warmChats } from "./warm";
 
 /*
  * Machine-side ACP (Convex `src/acp/machine.ts`): what the bound Worker reads and writes, scoped
- * by its verified identity (`workerProcedure`). Frame relay (`appendFrames`) and epoch streams are
- * Phase 4 (Durable Streams); the durable state they fence lives here.
+ * by its verified identity (`workerProcedure`). Frames go to the epoch streams (`./live.ts`)
+ * through `POST /api/streams/…`; the durable state that fences them lives here.
  */
 
 /** Commands, interactions and sessions one recovery pass handles per kind. */
@@ -307,12 +310,13 @@ export async function warmSessions(runtime: Runtime, scope: WorkerScope) {
 }
 
 /**
- * Advances the chat's stream epoch, fenced in one conditional update: the new epoch must be above
- * the current one and above any cooled epoch, so concurrent or stale starts can never move it
- * backwards. Retrying the current epoch is accepted. Every epoch of a keyed chat carries the
- * Worker-signed capsule of the current chat key; storing the capsule with the stream (and its
- * exact-retry check) comes with the Durable Streams epoch in Phase 4. A cold session is refused
- * with `accepted: false`.
+ * Advances the chat's stream epoch and opens its stream `c/<chat>/acp/<epoch>` with the
+ * Worker-signed capsule of the current chat key as its first message (`./live.ts`). Under the
+ * session row lock the new epoch must be above the current one and above any cooled epoch, so
+ * concurrent or stale starts can never move it backwards, and the session must be warm (a cold
+ * one is refused with `accepted: false`). Retrying the current epoch is accepted with the same
+ * capsule bytes only (`ACP_FRAME_CONFLICT` otherwise). The superseded epoch's stream is deleted
+ * `ACP_SUPERSEDED_EPOCH_MS` later, so its readers can move on first.
  */
 export async function startEpoch(
   runtime: Runtime,
@@ -332,22 +336,41 @@ export async function startEpoch(
     (await chatKeyIsStale(db, found.chat, found.workspace))
   )
     acpError("ACP_INVALID_SEALED");
-  if (input.epoch === session.epoch && input.epoch > (session.cooledEpoch ?? 0)) {
-    return { accepted: true };
+  const current = (row: AcpSession) => input.epoch === row.epoch && input.epoch > (row.cooledEpoch ?? 0);
+  if (!current(session)) {
+    const started = await db.transaction(async (tx) => {
+      const locked = await machineSession(tx, scope, input.chat, true);
+      if (current(locked)) return { accepted: true, job: null };
+      // Checked under the row lock: cooling leaves the warm set before it cools the epoch under
+      // this lock, so an epoch started here is always cooled after, and none starts once cold.
+      if (!(await isWarm(kv, scope.workerId, input.chat))) return { accepted: false, job: null };
+      if (input.epoch <= locked.epoch || input.epoch <= (locked.cooledEpoch ?? 0)) acpError("ACP_STALE_EPOCH");
+      await tx
+        .update(acpSessions)
+        .set({ epoch: input.epoch, updatedAt: new Date() })
+        .where(eq(acpSessions.id, locked.id));
+      const job =
+        locked.epoch > 0
+          ? await enqueueJob(tx, {
+              kind: STREAMS_DELETE_JOB,
+              payload: { paths: [epochStreamPath(input.chat, locked.epoch)] },
+              runAt: new Date(Date.now() + ACP_SUPERSEDED_EPOCH_MS),
+            })
+          : null;
+      return { accepted: true, job };
+    });
+    if (!started.accepted) return { accepted: false };
+    await forgetEpochFence(kv, input.chat);
+    runtime.defer(dispatchJobs(runtime, [started.job]));
   }
-  if (!(await isWarm(kv, scope.workerId, input.chat))) return { accepted: false };
-  const advanced = await db
-    .update(acpSessions)
-    .set({ epoch: input.epoch, updatedAt: new Date() })
-    .where(
-      and(
-        eq(acpSessions.id, session.id),
-        lt(acpSessions.epoch, input.epoch),
-        or(isNull(acpSessions.cooledEpoch), lt(acpSessions.cooledEpoch, input.epoch)),
-      ),
-    )
-    .returning({ epoch: acpSessions.epoch });
-  if (advanced.length === 0) acpError("ACP_STALE_EPOCH");
+  await writeEpochCapsule(runtime, input.chat, input.epoch, input.capsule);
+  // Cooling may have committed (and deleted the stream) between the start and the write above,
+  // which would have re-created a stream nothing deletes any more.
+  const after = await findSession(db, input.chat);
+  if (!after || (after.cooledEpoch ?? 0) >= input.epoch) {
+    await runtime.streams.delete(epochStreamPath(input.chat, input.epoch));
+    return { accepted: false };
+  }
   return { accepted: true };
 }
 

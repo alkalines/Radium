@@ -51,6 +51,7 @@ import { newTabId } from "@/components/window/window-tabs";
 import { useFrontendLogger } from "@/lib/logging";
 import { useTrpc } from "@/lib/trpc";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
+import { useProjectList } from "@/lib/collections/projects";
 import { SessionActionsMenu } from "./session-actions-menu";
 import {
   AgentSessions,
@@ -132,14 +133,9 @@ export function HomeScreen() {
       ownerWorkspace ? { workspace: ownerWorkspace } : skipToken,
     ),
   );
+  // An index refresh's progress arrives as `acp` events (the Worker's reports, `lib/live-events.ts`).
   const { data: agentRows } = useQuery(
-    trpc.acp.listAgents.queryOptions(ownerWorkspace ? { workspace: ownerWorkspace } : skipToken, {
-      // While an index refresh the owner started is running, its progress is read every 5 s.
-      refetchInterval: (query) =>
-        query.state.data?.some((report) => report.sessionsSync?.status === "running")
-          ? 5_000
-          : false,
-    }),
+    trpc.acp.listAgents.queryOptions(ownerWorkspace ? { workspace: ownerWorkspace } : skipToken),
   );
   const activeWorkers = (workers ?? []).filter((worker) => worker.status === "active");
   const activeWorkerIds = new Set(activeWorkers.map((worker) => worker.workerId));
@@ -158,9 +154,7 @@ export function HomeScreen() {
       ? agents.find((agent) => agent.agentId === agentSelection.agentId)
       : undefined;
 
-  const { data: projectsData, error: projectsError } = useQuery(
-    trpc.projects.list.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
-  );
+  const { data: projectsData, isError: projectsError } = useProjectList(workspaceId);
   const projects = useDecryptedNames(projectsData ?? [], "projects", workspaceId);
   // A selection made in another workspace, or of a Project deleted since, shows all sessions.
   const isSelectionCurrent =

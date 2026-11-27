@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/chart";
 import { Progress } from "@/components/ui/progress";
 import { useDecryptedNames } from "@/lib/crypto/use-decrypted-names";
+import { useProjectList } from "@/lib/collections/projects";
 import { useTrpc } from "@/lib/trpc";
 import { retryTransient } from "@/lib/trpc-error";
 import type { AppRouter } from "server/router";
@@ -151,9 +152,7 @@ export function ActivityPanel({
   const since = useMemo(() => Date.now() - Number(range) * DAY, [range]);
   const { workspaceId } = useWorkspace();
   const trpc = useTrpc();
-  const { data: projectsData } = useQuery(
-    trpc.projects.list.queryOptions(workspaceId ? { workspace: workspaceId } : skipToken),
-  );
+  const { data: projectsData } = useProjectList(workspaceId);
   const projects = useDecryptedNames(projectsData ?? [], "projects", workspaceId);
   const projectFilter =
     project === "none" || projects?.some((candidate) => candidate.id === project)

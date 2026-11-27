@@ -3,6 +3,7 @@ import * as z from "zod";
 import { AppError } from "../errors";
 import type { Runtime } from "../runtime";
 import { resolveWorker } from "../worker/auth";
+import { mutationSubject, publishMutationEvent } from "../streams/events";
 import { workspaceAccess } from "../workspaces/access";
 
 /**
@@ -40,13 +41,24 @@ export const publicProcedure = t.procedure.use(async ({ next }) => {
 /**
  * A signed-in user. The Better Auth session is resolved once per request: from the Valkey cache,
  * or from Postgres when the cache misses.
+ *
+ * A mutation that succeeds publishes an invalidation event to whoever else displays what it
+ * changed (`../streams/events.ts`), after the response and best effort.
  */
-export const sessionProcedure = publicProcedure.use(async ({ ctx, next }) => {
+export const sessionProcedure = publicProcedure.use(async ({ ctx, next, path, type, getRawInput }) => {
   const session = await ctx.runtime.auth.api.getSession({ headers: ctx.headers });
   if (!session) {
     throw new TRPCError({ code: "UNAUTHORIZED" });
   }
-  return next({ ctx: { user: session.user, session: session.session } });
+  const subject =
+    type === "mutation"
+      ? await mutationSubject(ctx.runtime.drivers.db, session.user.id, path, await getRawInput())
+      : null;
+  const result = await next({ ctx: { user: session.user, session: session.session } });
+  if (result.ok && subject) {
+    publishMutationEvent(ctx.runtime, subject, { path, userId: session.user.id, result: result.data });
+  }
+  return result;
 });
 
 /**

@@ -11,6 +11,8 @@ import {
   workerTrustState,
 } from "../e2ee/worker-keys";
 import { AppError } from "../errors";
+import { deferWorkspaceEvent, workerInbox } from "../streams/events";
+import { currentStream } from "../streams/rotating";
 import { ownedWorkspaceProcedure, router, workerProcedure } from "../trpc/init";
 import {
   finishLocalUsageSync,
@@ -59,14 +61,7 @@ export const workersRouter = router({
     ),
   revoke: ownedWorkspaceProcedure
     .input(workerInput)
-    .mutation(({ ctx, input }) =>
-      revokeWorker(
-        ctx.runtime.drivers.db,
-        ctx.runtime.drivers.kv,
-        ctx.access.workspace.id,
-        input.workerId,
-      ),
-    ),
+    .mutation(({ ctx, input }) => revokeWorker(ctx.runtime, ctx.access.workspace.id, input.workerId)),
   issueGatewayKey: ownedWorkspaceProcedure
     .input(workerInput)
     .mutation(({ ctx, input }) =>
@@ -102,6 +97,15 @@ const sealedResultInput = base64urlBytes(WORKER_SEALED_RESULT_BYTES);
 /** A Worker machine's own procedures; scope always comes from its access token. */
 export const workerMachineRouter = router({
   current: workerProcedure.query(({ ctx }) => currentWorker(ctx.runtime.drivers.db, ctx.worker)),
+  /**
+   * The Worker's current inbox stream (`k/<worker>/inbox/<gen>`), read through `/api/streams` with
+   * its access token. It carries doorbells only (`commands`, `answers`, `warm`, `tasks`, `trust`,
+   * `gateway`, `definitions`, `identity`); on one the Worker refetches that topic. A closed,
+   * missing or gone stream means: ask again.
+   */
+  inbox: workerProcedure.query(async ({ ctx }) => ({
+    stream: await currentStream(ctx.runtime.drivers.kv, ctx.runtime.streams, workerInbox(ctx.worker.workerId)),
+  })),
   publishKeys: workerProcedure
     .input(publishWorkerKeysInput)
     .mutation(({ ctx, input }) => publishWorkerKeys(ctx.runtime.drivers.db, ctx.worker, input)),
@@ -120,7 +124,9 @@ export const workerMachineRouter = router({
       if (!validChatWorkerDirectory(input.tempDirectory)) {
         throw new AppError("BAD_REQUEST", "Worker temp directory must be an absolute path.");
       }
-      await reportWorkerPresence(ctx.runtime.drivers.kv, ctx.worker.workerId, input.tempDirectory);
+      const presence = await reportWorkerPresence(ctx.runtime.drivers.kv, ctx.worker.workerId, input.tempDirectory);
+      // Offline needs no event: the Worker list derives it from the last heartbeat's age.
+      if (presence.cameOnline) deferWorkspaceEvent(ctx.runtime, ctx.worker.workspaceId, "workers");
     }),
   tasks: router({
     assigned: workerProcedure
@@ -145,9 +151,7 @@ export const workerMachineRouter = router({
           receipt: sealedResultInput.optional(),
         }),
       )
-      .mutation(({ ctx, input }) =>
-        completeSealedTask(ctx.runtime.drivers.db, ctx.worker, input),
-      ),
+      .mutation(({ ctx, input }) => completeSealedTask(ctx.runtime, ctx.worker, input)),
   }),
   gateway: router({
     state: workerProcedure.query(({ ctx }) => gatewayState(ctx.runtime.drivers.db, ctx.worker)),

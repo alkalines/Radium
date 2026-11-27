@@ -1,11 +1,13 @@
 import { trpcServer } from "@hono/trpc-server";
 import { Hono } from "hono";
 import { mountFileRoutes } from "./chatroom/files-http";
-import { handleChat } from "./chatroom/run";
+import { activeRunStream, handleChat } from "./chatroom/run";
 import { clientAddress, prepareAuthRequest } from "./auth/ingress";
-import { disableIdleTimeout, mountGatewayRoutes } from "./gateway/http";
+import { mountGatewayRoutes } from "./gateway/http";
 import type { Runtime } from "./runtime";
 import { appRouter } from "./trpc/router";
+import { mountShapeRoutes } from "./shapes/http";
+import { mountStreamRoutes } from "./streams/http";
 import { mountWorkerAuthRoutes } from "./worker/http";
 
 type Env = { Variables: { runtime: Runtime } };
@@ -47,10 +49,12 @@ export function createApp(resolveRuntime: () => Promise<Runtime>): App {
   mountGatewayRoutes(app);
   mountFileRoutes(app);
   mountWorkerAuthRoutes(app);
-  app.post("/api/chat", (c) => {
-    disableIdleTimeout(c.req.raw);
-    return handleChat(c.var.runtime, c.req.raw);
-  });
+  mountStreamRoutes(app);
+  mountShapeRoutes(app);
+  app.post("/api/chat", (c) => handleChat(c.var.runtime, c.req.raw));
+  app.get("/api/chat/:chat/stream", (c) =>
+    activeRunStream(c.var.runtime, c.req.raw, c.req.param("chat")),
+  );
 
   app.use(
     "/api/trpc/*",

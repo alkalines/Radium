@@ -586,15 +586,6 @@ export const AcpSessionScreen = memo(function AcpSessionScreen({
               </AlertDescription>
             </Alert>
           ) : null}
-          {!ended ? (
-            <Alert>
-              <AlertTitle>Live agent output is not connected yet</AlertTitle>
-              <AlertDescription>
-                Prompts, approvals and settings still reach the agent, but its replies cannot be
-                shown in this Session until live streaming is available.
-              </AlertDescription>
-            </Alert>
-          ) : null}
           {chat?.interruption && !running && !currentInteraction ? (
             <RunInterruptionCard
               interruption={chat.interruption}
