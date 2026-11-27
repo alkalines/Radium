@@ -28,6 +28,7 @@ without approval. Use subagents only for bounded, non-overlapping work.
 | [11 End-to-end encryption](11_E2EE.md)                   | Phases 1–6 done; Workers/ACP, telemetry, notifications and migration remain.     |
 | [12 Local models](12_Local_Models.md)                    | Implements 04's instance model for local runtimes; shares Worker keys with 11.   |
 | [13 Better Auth OPAQUE plugin](13_Better_Auth_Opaque.md) | Separate repository; implements 11 phase 2. Independent of Radium's 1.7 upgrade. |
+| [14 Backend rewrite](14_Backend_Rewrite.md)              | Replaces Convex; supersedes Convex-specific steps in 03–12. Phases 0–2 first.    |
 
 Every task includes documentation deliverables. Link product overviews and new
 subsystem guides from the [documentation index](../README.md); do not present
