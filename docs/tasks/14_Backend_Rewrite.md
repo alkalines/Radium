@@ -23,7 +23,7 @@ This is a fresh plan. The earlier attempt (branch `refactor/abandon-convex`, its
 | Runtimes                          | Bun is the reference self-host runtime (Bun.SQL, Bun.redis). Node and edge presets (Cloudflare, Vercel) must stay possible: domain code talks to small ports (below), never to `Bun.*` directly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | File storage                      | One API for every backend: Nitro's built-in storage layer ([unstorage](https://unstorage.unjs.io)), `useStorage("blobs")`, with the driver picked by configuration: `fs` (default, a compose volume) or `s3` (any S3-compatible store: AWS, R2, MinIO, Garage; fetch-based, so it also runs on edge). Domain code never knows which one is mounted.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Existing deployments              | One-shot importer from `convex export` into Postgres before 1.0. Legacy pre-workspace and pre-E2EE data must be fully migrated **on Convex** first; the new schema does not carry it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Admin dashboard                   | Last phase.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Admin dashboard                   | Last task (T14).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 ## Hard invariants found in the current code
 
@@ -75,22 +75,22 @@ flowchart LR
 | Better Auth Convex adapter + `convex()` JWT plugin + `auth.config.ts`                                                                                                                    | Better Auth Drizzle adapter, cookie sessions on the shared origin; `convex()` plugin and `jwks` table removed. Worker JWTs verified directly with `jose` against `WORKER_AUTH_JWKS`.                                                                                                                                                                                                                                                                                                                    |
 | `workerIdentity` component (`packages/worker-component`)                                                                                                                                 | Three ordinary tables in the server schema; package deleted.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `logging` component                                                                                                                                                                      | One `log_events` table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `@convex-dev/migrations`, `e2ee_migration*`                                                                                                                                              | drizzle-kit migrations; Convex-era backfills run on Convex before export (see Phase 10).                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `@convex-dev/migrations`, `e2ee_migration*`                                                                                                                                              | drizzle-kit migrations; Convex-era backfills run on Convex before export (see T11).                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `"use node"` actions (`web-push`, migration crypto)                                                                                                                                      | Normal server code on Bun/Node; edge needs a WebCrypto Web Push implementation.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 ### Runtime ports
 
-Domain code depends only on these; each has a Bun adapter first, Node in the same phase where cheap, edge later.
+Domain code depends only on these; each has a Bun adapter first, Node in the same task where cheap, edge in T13.
 
-| Port                                                            | Bun                                                                                       | Node                       | Edge (later)                          |
-| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------- | ------------------------------------- |
-| `db` (Drizzle instance)                                         | `drizzle-orm/bun-sql`                                                                     | `drizzle-orm/postgres-js`  | Hyperdrive/Neon driver                |
-| `kv` (get/set/TTL, INCR, Lua for limiters and live-log appends) | `Bun.redis`                                                                               | `ioredis`                  | TCP socket client or HTTP Redis       |
-| `bus` (publish/subscribe wake-ups for live subscriptions)       | `Bun.redis` duplicate connection                                                          | `ioredis`                  | polling fallback                      |
-| `blobs`                                                         | unstorage `fs` / `s3`                                                                     | unstorage `fs` / `s3`      | unstorage `s3` (R2)                   |
-| `jobs` runner                                                   | in-process poller                                                                         | in-process poller          | scheduled drain + `waitUntil`         |
-| Subscription transport                                          | WebSocket (Nitro/crossws)                                                                 | WebSocket (Nitro/crossws)  | SSE                                   |
-| `resumable-stream` pub/sub                                      | `resumable-stream/generic` with a small `Publisher`/`Subscriber` adapter over `Bun.redis` | `resumable-stream/ioredis` | TCP socket client; verify in phase 12 |
+| Port                                                            | Bun                                                                                       | Node                       | Edge (later)                     |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------- | -------------------------------- |
+| `db` (Drizzle instance)                                         | `drizzle-orm/bun-sql`                                                                     | `drizzle-orm/postgres-js`  | Hyperdrive/Neon driver           |
+| `kv` (get/set/TTL, INCR, Lua for limiters and live-log appends) | `Bun.redis`                                                                               | `ioredis`                  | TCP socket client or HTTP Redis  |
+| `bus` (publish/subscribe wake-ups for live subscriptions)       | `Bun.redis` duplicate connection                                                          | `ioredis`                  | polling fallback                 |
+| `blobs`                                                         | unstorage `fs` / `s3`                                                                     | unstorage `fs` / `s3`      | unstorage `s3` (R2)              |
+| `jobs` runner                                                   | in-process poller                                                                         | in-process poller          | scheduled drain + `waitUntil`    |
+| Subscription transport                                          | WebSocket (Nitro/crossws)                                                                 | WebSocket (Nitro/crossws)  | SSE                              |
+| `resumable-stream` pub/sub                                      | `resumable-stream/generic` with a small `Publisher`/`Subscriber` adapter over `Bun.redis` | `resumable-stream/ioredis` | TCP socket client; verify in T13 |
 
 Do not add a generic repository layer on top of Drizzle; the port is the Drizzle instance.
 
@@ -134,9 +134,9 @@ ACP frames are produced by the Worker, not by a server-side `streamText`, so the
 - `packages/backend` and `packages/worker-component`: frozen reference during the rewrite, deleted at cutover.
 - `packages/crypto`: unchanged (already runtime-neutral).
 
-## Phases
+## Tasks
 
-Each phase is one or more sessions and ends with its exit check.
+The rewrite is split into large tasks (T1–T14), each made of small tasks. A small task is one session or PR: it leaves the repository building and its tests passing. A large task is done when its **Done when** checks pass. Tick boxes as small tasks land.
 
 ### Port behavior, rewrite the code
 
@@ -155,26 +155,177 @@ Each phase is one or more sessions and ends with its exit check.
 
 Hot paths (Gateway completion, chat turn, Worker calls, live layer) get a micro-benchmark against compose services when rewritten; numbers go in the PR. tRPC routers are split per domain and procedures declare output schemas, keeping client type-checking fast at ~300 procedures.
 
-### Phase list
+### Order
 
-| #   | Phase                           | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Exit check                                                                                                                                                                                                                                                                                                   |
-| --- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0   | Foundation                      | `packages/server` scaffold (Nitro `bun` preset, Hono entry, tRPC root router + context + error formatting, env schema), `AppRouter` type exported for `import type` by every client, ports with Bun + Node adapters, Drizzle config, compose with Postgres + Valkey for dev/tests, Caddy entry proxy and Vite dev proxy (`ws: true`), crossws ↔ tRPC WebSocket shim, root `dev` script without Convex ordering, CI job for typecheck + server tests.                                                                                                                                                                                                                                                                                                                                                                       | Server boots on Bun and Node against compose services; health route; a typed tRPC query from web (through the proxy) and from a Bun script; a test subscription over the WebSocket through the proxy.                                                                                                        |
-| 1   | Auth and core platform          | Better Auth 1.7.x (Drizzle adapter, `@alkalines/better-auth-opaque`, Valkey secondary storage, trusted client-IP handling from `src/e2ee/auth-ingress.ts`), tRPC `sessionProcedure`/`workspaceProcedure`/`ownedWorkspaceProcedure`, Secret Store port, rate limiters (as tRPC middleware), `jobs` outbox + scheduled tasks, unstorage `blobs` mount with `fs` and `s3` drivers, logging ingest. OPAQUE: plugin 0.2.0 already avoids relying on transactions (task 13, decision 2) and wraps its own writes in one when the adapter supports it, which Drizzle does; add a Drizzle/Postgres test target to the plugin repository next to `test:convex`.                                                                                                                                                                     | Sign-up/sign-in (OPAQUE and classic legacy path) end to end in the browser; Secret Store round-trips rows encrypted by the Convex component format (fixture); the same upload/download test passes on `fs` and on an S3-compatible store.                                                                    |
-| 2   | Live layer                      | `src/live/`: Valkey log with Lua appends (idempotency, close, TTL), `bus` fan-out, `tracked()` subscription helper with replay and authorization, socket close on sign-out/revocation, per-user invalidation feed, web invalidation client. `resumable-stream` context with the Bun `Publisher`/`Subscriber` adapter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | On Bun and Node, over WebSocket and over SSE: a subscription resumes from `lastEventId` without gaps or duplicates after a forced disconnect; duplicate producer retries are ignored; ten Tabs on plain HTTP stay responsive. A `resumable-stream` test stream resumes from a second client on Bun and Node. |
-| 3   | Workspaces                      | Workspaces, members, settings, projects, preferences, names (sealed). Ownership/privacy policy ported from `src/workspaces/policy.ts`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Owner/member/non-member matrix tests against real Postgres.                                                                                                                                                                                                                                                  |
-| 4   | Gateway                         | Providers, models, authors, workspace configurations/credentials, API keys, routing (cursors, sessions, cooldowns in Valkey; decisions atomic via Lua or row locks), limits + adapters, ChatGPT subscription routes, `/api/openai/v1/chat/completions` + `/models`, `recordCompletion`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | JSON + SSE completions with usage rows; key revocation; tombstoned provider not routable; model listing.                                                                                                                                                                                                     |
-| 5   | Chatroom                        | Chats, messages, members, files (unstorage), tools, MCP, Exa, Code Mode interactions, title generation (outbox job), `POST /api/chat` + `GET /api/chat/:id/stream` + `chat.stop` following [Chat streams](#chat-streams), single active stream per chat, heartbeat reaper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Two Tabs see the same in-flight reply; reload resumes; closing the sender Tab does not stop the run; resuming after the run finished gets `204` and shows the saved reply; killing the server mid-run leaves the chat `Interrupted`, not stuck streaming; personal chat invisible to owner.                  |
-| 6   | E2EE                            | Identities, key bundles, device recovery, trust stores, workspace epochs/grants/rosters/invites/phrases/join requests, Worker keys/pairings, chat keys/wraps/capsules. Web `lib/crypto/*` moves from `cryptoClient()` to tRPC. Cutover machinery is not ported.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Existing `radium-crypto` + web crypto tests pass; new device joins and decrypts a chat created before the switch (imported fixture).                                                                                                                                                                         |
-| 7   | Worker                          | Enrollment, challenge/complete auth (tRPC public procedures), JWT in `connectionParams`, `workerProcedure`, presence, tasks + chat calls, Gateway access, downlink subscription; `packages/worker` drops `convex/browser` for the tRPC vanilla client (`httpBatchLink` + `wsLink`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Fresh enroll, pair, edit + Bash task via Chatroom, revoke cuts access on next call and closes the socket.                                                                                                                                                                                                    |
-| 8   | ACP                             | Agents/definitions, sessions, commands, interactions, deferred cleanups, usage + model prices, local usage; frames on the live log.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Warm ACP session streams to two viewers; Worker restart recovers epoch; zero Postgres writes per frame.                                                                                                                                                                                                      |
-| 9   | Telemetry, notifications, usage | Telemetry capture/ingest/retention/GC/export (OTLP), destinations, notifications + sealing + Web Push, activity/usage reads, operational logs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Capture on → owner sees request, member doesn't; export test destination; push delivered.                                                                                                                                                                                                                    |
-| 10  | Importer                        | CLI: `convex export` ZIP → Postgres + blob store. Preconditions checked from the export: ownership backfill (`migrations.ts runAll` + every `verify*`) complete, E2EE cutover complete (`e2ee_migration_state.cutoverComplete`), no rows needing `legacyContent` custody — otherwise refuse and point to the Convex runbook. Copies IDs verbatim, Secret Store rows verbatim, `_storage` files to blobs; per-table counts and edge checks.                                                                                                                                                                                                                                                                                                                                                                                 | Import of a real non-production export; app works on imported data, including decrypting old chats.                                                                                                                                                                                                          |
-| 11  | Cutover                         | Delete `packages/backend`, `packages/worker-component`, Convex dependencies/env/scripts; new Dockerfile + compose (web, server, Postgres, Valkey, Caddy); rewrite `architecture.md`, `deployment.md`, `api.md`, Worker/ACP transport docs, `docs/README.md`. **Adapt `AGENTS.md`**: Commands and setup (dev/test/typecheck scripts, env files), Wiring and code ownership (`packages/server` domains, tRPC as the only first-party API, ports, live layer), Verification (real Postgres/Valkey tests, live-layer resume tests), Authorization and persisted compatibility (drop legacy bridge rules, keep ID/AAD and Secret Store invariants), Deployment/generated files (drizzle-kit migrations instead of Convex codegen/deploy). Remove every Convex-specific rule; keep product, interface and code-clarity sections. | Clean `docker compose up` quickstart verified on a fresh machine; `AGENTS.md` names no Convex command or path.                                                                                                                                                                                               |
-| 12  | Edge presets                    | Edge adapters for ports, SSE subscription link, Cloudflare/Vercel build, documented limits (subscription durations, HTTP/2 required for SSE, no in-process runner, OPAQUE WASM loading).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Deployed preview passes the live-layer resume tests + Gateway smoke.                                                                                                                                                                                                                                         |
-| 13  | Admin dashboard                 | Instance-level administration (users, workspaces, jobs, storage, health). Design separately.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | —                                                                                                                                                                                                                                                                                                            |
+```mermaid
+flowchart LR
+  T1[T1 Foundation] --> T2[T2 Platform]
+  T2 --> T3[T3 Live layer]
+  T3 --> T4[T4 Workspaces]
+  T4 --> T5[T5 Gateway]
+  T4 --> T7[T7 E2EE]
+  T5 --> T6[T6 Chatroom]
+  T7 --> T6
+  T7 --> T8[T8 Worker]
+  T8 --> T9[T9 ACP]
+  T5 --> T10[T10 Telemetry, notifications, usage]
+  T7 --> T10
+  T6 --> T11[T11 Importer]
+  T9 --> T11
+  T10 --> T11
+  T11 --> T12[T12 Cutover]
+  T12 --> T13[T13 Edge presets]
+  T12 --> T14[T14 Admin dashboard]
+```
 
-Phases 3–9 depend on 0–2; 6 precedes 7–8 (Worker/ACP need keys); otherwise 3–9 can be parallel sessions with one owner per domain.
+T5 and T7 can run in parallel sessions after T4, one owner per domain; T8–T9 and T10 can likewise run in parallel once T7 is done.
+
+### T1 Foundation
+
+- [ ] **T1.1 Server scaffold.** `packages/server` with Nitro (`bun` preset), Hono entry, env schema, health route.
+- [ ] **T1.2 tRPC core.** Root router, context, error formatting, `AppRouter` type exported for `import type` by every client.
+- [ ] **T1.3 Ports.** `db`, `kv`, `bus`, `jobs` with Bun and Node adapters; Drizzle config and first empty migration.
+- [ ] **T1.4 Dev services.** Compose with Postgres + Valkey for development and tests.
+- [ ] **T1.5 Routing.** Caddy entry proxy (`/api/*` + WebSocket upgrades → server), Vite dev proxy with `ws: true`.
+- [ ] **T1.6 WebSocket bridge.** crossws ↔ tRPC `getWSConnectionHandler` shim; web and Bun clients with `httpBatchLink` + `wsLink`.
+- [ ] **T1.7 Scripts and CI.** Root `dev` script without Convex ordering; CI job for typecheck + server tests.
+
+**Done when:** the server boots on Bun and Node against compose services; a typed tRPC query works from web (through the proxy) and from a Bun script; a test subscription works over the WebSocket through the proxy.
+
+### T2 Platform
+
+- [ ] **T2.1 Better Auth.** Better Auth 1.7.x with the Drizzle adapter, cookie sessions, Valkey secondary storage, trusted client-IP handling from `src/e2ee/auth-ingress.ts`.
+- [ ] **T2.2 OPAQUE.** `@alkalines/better-auth-opaque` 0.2.0 wired with its hooks. It already avoids relying on transactions (task 13, decision 2) and wraps its own writes in one when the adapter supports it, which Drizzle does. Add a Drizzle/Postgres test target to the plugin repository next to `test:convex`.
+- [ ] **T2.3 Procedures.** `sessionProcedure`, `workspaceProcedure`, `ownedWorkspaceProcedure` (one joined workspace + settings read per request).
+- [ ] **T2.4 Secret Store.** `secrets` + `secret_events` tables with the ported envelope scheme (invariant 2), key rotation.
+- [ ] **T2.5 Rate limiters.** Valkey token bucket / fixed window with the 6 current configurations, as tRPC middleware.
+- [ ] **T2.6 Jobs.** `jobs` outbox (same-transaction enqueue, `SKIP LOCKED` runner, backoff) and Nitro scheduled tasks.
+- [ ] **T2.7 Blobs.** unstorage `blobs` mount with `fs` and `s3` drivers, `FormData` upload procedure, authorized `GET /api/files/:id`.
+- [ ] **T2.8 Logging.** `log_events` table and the rate-limited ingest procedure.
+
+**Done when:** OPAQUE and classic legacy sign-up/sign-in work end to end in the browser; Secret Store round-trips rows encrypted by the Convex component format (fixture); the same upload/download test passes on `fs` and on an S3-compatible store.
+
+### T3 Live layer
+
+- [ ] **T3.1 Log.** Valkey stream per topic, Lua appends (idempotency, close, TTL, length cap).
+- [ ] **T3.2 Fan-out.** One `bus` subscriber per process waking local subscribers.
+- [ ] **T3.3 Subscription helper.** `tracked()` replay after `lastEventId`, then tail; authorization through procedure middleware.
+- [ ] **T3.4 Socket lifecycle.** Close a user's sockets on sign-out and session revocation.
+- [ ] **T3.5 Invalidation feed.** Per-user feed on the server; web client that invalidates tRPC query keys.
+- [ ] **T3.6 Chat stream base.** `resumable-stream` context with the Bun `Publisher`/`Subscriber` adapter (Node uses `resumable-stream/ioredis`).
+
+**Done when:** on Bun and Node, over WebSocket and over SSE, a subscription resumes from `lastEventId` without gaps or duplicates after a forced disconnect; duplicate producer retries are ignored; ten Tabs on plain HTTP stay responsive; a `resumable-stream` test stream resumes from a second client.
+
+### T4 Workspaces
+
+- [ ] **T4.1 Schema.** `workspaces`, `workspace_members`, `workspace_settings`, `projects`, `user_preferences`.
+- [ ] **T4.2 Policy.** Ownership/privacy rules ported from `src/workspaces/policy.ts`.
+- [ ] **T4.3 Routers.** Workspace CRUD, members, archive/restore, settings, projects, preferences, sealed names.
+- [ ] **T4.4 Web.** Workspace provider, switcher, settings screens and Home projects on tRPC.
+
+**Done when:** owner/member/non-member matrix tests pass against real Postgres and the web workspace screens work in the browser.
+
+### T5 Gateway
+
+- [ ] **T5.1 Catalogue.** `providers`, `models`, `authors`; workspace configurations and credential metadata.
+- [ ] **T5.2 API keys.** Hashed keys, create/list/rename/revoke, key auth for Hono routes.
+- [ ] **T5.3 Routing.** Cursors, session affinity and cooldowns in Valkey; atomic pick and report via Lua or row locks.
+- [ ] **T5.4 Limits.** `credential_limits`, `limit_events`, provider adapters, polling task.
+- [ ] **T5.5 Subscriptions.** ChatGPT subscription routes and `subscription_state`.
+- [ ] **T5.6 OpenAI-compatible routes.** `/api/openai/v1/chat/completions` (JSON + SSE) and `/models`.
+- [ ] **T5.7 Usage recording.** `recordCompletion` as one statement per completion.
+- [ ] **T5.8 Web.** Providers, credentials, keys, routing and limits screens on tRPC.
+
+**Done when:** JSON and SSE completions record usage rows; key revocation takes effect; a tombstoned provider is not routable; model listing matches the routable set.
+
+### T6 Chatroom
+
+- [ ] **T6.1 Schema.** Chats, messages, members, files with `active_stream_id`.
+- [ ] **T6.2 Chat routers.** Create/fork/list/pin/scope/rename/delete, keyset pagination for lists.
+- [ ] **T6.3 Tools.** Tool settings, MCP servers, Exa key, Code Mode interactions (Valkey TTL).
+- [ ] **T6.4 Chat streams.** `POST /api/chat`, `GET /api/chat/:id/stream`, `chat.stop`, single active stream per chat, following [Chat streams](#chat-streams).
+- [ ] **T6.5 Reaper and titles.** Heartbeat reaper task; title generation as an outbox job.
+- [ ] **T6.6 Files.** Chat attachments on blobs with reference-counted deletion.
+- [ ] **T6.7 Web.** Session screen on `useChat({ resume: true })`, `DefaultChatTransport` with the `204` refetch, Home lists on tRPC.
+
+**Done when:** two Tabs see the same in-flight reply; reload resumes; closing the sender Tab does not stop the run; resuming after the run finished gets `204` and shows the saved reply; killing the server mid-run leaves the chat `Interrupted`, not stuck streaming; a personal chat stays invisible to the workspace owner.
+
+### T7 E2EE
+
+- [ ] **T7.1 Identities.** Identities, key bundles, device recovery, trust stores.
+- [ ] **T7.2 Workspace keys.** Epochs, grants, rosters, invites, phrases, join requests.
+- [ ] **T7.3 Chat keys.** Chat keys, wraps, capsules; sealed chat content paths.
+- [ ] **T7.4 Worker keys.** Worker keys and pairings.
+- [ ] **T7.5 Web crypto client.** `lib/crypto/*` moves from `cryptoClient()` to tRPC.
+
+Cutover machinery (`e2ee_migration_*`, legacy custody) is not ported.
+
+**Done when:** existing `radium-crypto` and web crypto tests pass; a new device joins and decrypts a chat created before the switch (imported fixture).
+
+### T8 Worker
+
+- [ ] **T8.1 Identity.** Enrollment, worker and key tables (from `packages/worker-component`).
+- [ ] **T8.2 Auth.** Challenge/complete as tRPC public procedures, ES256 JWT, `workerProcedure` re-checking revocation on every call.
+- [ ] **T8.3 Presence and Gateway access.** Presence heartbeat, Worker Gateway keys.
+- [ ] **T8.4 Tasks.** `worker_tasks` and `worker_chat_calls` with unique request IDs and revision-checked transitions.
+- [ ] **T8.5 Downlink.** Per-Worker downlink subscription.
+- [ ] **T8.6 Worker client.** `packages/worker` drops `convex/browser` for the tRPC vanilla client (`httpBatchLink` + `wsLink`, JWT in `connectionParams`).
+
+**Done when:** a fresh Worker enrolls, pairs and runs an edit + Bash task from Chatroom; revoking it cuts access on the next call and closes its socket.
+
+### T9 ACP
+
+- [ ] **T9.1 Agents.** Agent definitions, catalogue, registry.
+- [ ] **T9.2 Sessions and commands.** Sessions, command queue with atomic claim, deferred cleanups.
+- [ ] **T9.3 Interactions.** Permission/elicitation relay.
+- [ ] **T9.4 Frames.** `acp.appendFrames` on the live log with the `epoch`/`seq` check; `acp.frames` subscription; warm/cold retention as TTLs.
+- [ ] **T9.5 Usage.** Turn usage, model price cache, local usage syncs.
+- [ ] **T9.6 Web.** ACP session screen on tRPC.
+
+**Done when:** a warm ACP session streams to two viewers; a Worker restart recovers its epoch; there are zero Postgres writes per frame.
+
+### T10 Telemetry, notifications, usage
+
+- [ ] **T10.1 Capture.** Telemetry capture/ingest as one transaction per request.
+- [ ] **T10.2 Retention and GC.** Set-based retention and garbage collection.
+- [ ] **T10.3 Export.** OTLP/webhook destinations and delivery jobs.
+- [ ] **T10.4 Notifications.** Inbox, sealing, Web Push, device subscriptions.
+- [ ] **T10.5 Usage reads.** Activity and usage reads, operational logs screen.
+- [ ] **T10.6 Web.** Telemetry, notifications and activity screens on tRPC.
+
+**Done when:** with capture on, the owner sees a request and a member does not; a test export destination receives data; a push notification is delivered.
+
+### T11 Importer
+
+- [ ] **T11.1 Preconditions.** Read a `convex export` ZIP and refuse unless the ownership backfill (`migrations.ts runAll` + every `verify*`) and the E2EE cutover (`e2ee_migration_state.cutoverComplete`) are complete and no rows need `legacyContent` custody; point to the Convex runbook otherwise.
+- [ ] **T11.2 Rows.** Copy table rows with IDs verbatim (invariant 1), Better Auth and OPAQUE records verbatim.
+- [ ] **T11.3 Secrets.** Copy Secret Store rows verbatim with the same namespaces and key versions.
+- [ ] **T11.4 Files.** Copy `_storage` files into blobs.
+- [ ] **T11.5 Verification.** Per-table counts and cross-table edge checks.
+
+**Done when:** a real non-production export imports and the app works on it, including decrypting old chats.
+
+### T12 Cutover
+
+- [ ] **T12.1 Remove Convex.** Delete `packages/backend`, `packages/worker-component`, Convex dependencies, env and scripts.
+- [ ] **T12.2 Packaging.** New Dockerfile and compose (web, server, Postgres, Valkey, Caddy).
+- [ ] **T12.3 Docs.** Rewrite `architecture.md`, `deployment.md`, `api.md`, Worker/ACP transport docs, `docs/README.md`.
+- [ ] **T12.4 AGENTS.md.** Adapt Commands and setup (dev/test/typecheck scripts, env files), Wiring and code ownership (`packages/server` domains, tRPC as the only first-party API, ports, live layer), Verification (real Postgres/Valkey tests, live-layer resume tests), Authorization and persisted compatibility (drop legacy bridge rules, keep ID/AAD and Secret Store invariants), Deployment/generated files (drizzle-kit migrations instead of Convex codegen/deploy). Remove every Convex-specific rule; keep product, interface and code-clarity sections.
+
+**Done when:** a clean `docker compose up` quickstart is verified on a fresh machine and `AGENTS.md` names no Convex command or path.
+
+### T13 Edge presets
+
+- [ ] **T13.1 Adapters.** Edge adapters for the ports, including `resumable-stream` pub/sub.
+- [ ] **T13.2 Transport.** SSE subscription link selected for edge deployments.
+- [ ] **T13.3 Builds.** Cloudflare and Vercel builds.
+- [ ] **T13.4 Limits.** Document subscription durations, HTTP/2 required for SSE, no in-process job runner, OPAQUE WASM loading.
+
+**Done when:** a deployed preview passes the live-layer resume tests and a Gateway smoke test.
+
+### T14 Admin dashboard
+
+- [ ] **T14.1 Design.** Instance-level administration scope (users, workspaces, jobs, storage, health), designed separately.
 
 ## Data rules for the new schema
 
@@ -187,11 +338,11 @@ Phases 3–9 depend on 0–2; 6 precedes 7–8 (Worker/ACP need keys); otherwise
 ## Verification policy for this rewrite
 
 - Server tests run against real Postgres and Valkey from compose; no `convex-test`-style mocks for persistence or auth.
-- Each phase adds authorization-matrix tests for its procedures (owner, member, other user, personal chat creator, revoked Worker).
+- Each task adds authorization-matrix tests for its procedures (owner, member, other user, personal chat creator, revoked Worker).
 - Live-layer resume and end-of-stream tests run in CI against real Valkey.
-- Web is verified in a browser per phase; Worker against a real server.
+- Web is verified in a browser per large task; Worker against a real server.
 - Report unit, integration, browser and skipped verification separately (as in `AGENTS.md`).
 
 ## Open questions
 
-- None blocking Phase 0.
+- None blocking T1.
