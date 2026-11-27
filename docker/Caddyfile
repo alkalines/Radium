@@ -1,0 +1,21 @@
+# Radium's single origin: the browser, the Worker and API clients all talk to this address.
+#   /api/*  (HTTP, SSE and WebSocket upgrades) -> packages/server
+#   else                                     -> apps/web (TanStack Start)
+# apps/web forwards /api/* to the server by itself, so the /api route here is only a shortcut that
+# skips that hop; the browser sees the same origin either way (no CORS, first-party cookies).
+#
+# RADIUM_ADDRESS   site address, e.g. ":80" or "radium.example.com" for automatic HTTPS
+# SERVER_UPSTREAM  host:port of packages/server
+# WEB_UPSTREAM     host:port of apps/web
+{$RADIUM_ADDRESS::80} {
+	# reverse_proxy upgrades WebSockets and flushes `text/event-stream` responses as they are
+	# written, so subscriptions and chat streams need no extra settings. It also replaces
+	# client-sent X-Forwarded-* headers instead of trusting them.
+	handle /api/* {
+		reverse_proxy {$SERVER_UPSTREAM:server:3001}
+	}
+
+	handle {
+		reverse_proxy {$WEB_UPSTREAM:web:3000}
+	}
+}

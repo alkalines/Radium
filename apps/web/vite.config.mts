@@ -23,7 +23,15 @@ export default defineConfig({
       },
     }),
     viteReact(),
-    nitro(),
+    // `/api/*` HTTP is forwarded by the TanStack Start route `src/app/api/$.ts`. Route handlers
+    // cannot upgrade, so the WebSocket relay is a Nitro route.
+    nitro({
+      // Every start script and image runs the output on Bun. With WebSockets enabled the default
+      // node_server preset loads crossws's Node adapter, which refuses to run on Bun.
+      preset: "bun",
+      features: { websocket: true },
+      routes: { "/api/ws": "./src/server/api-ws.ts" },
+    }),
   ],
   ssr: {
     noExternal: ["@convex-dev/better-auth"],

@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { proxyRequest } from "@/lib/server-proxy";
+
 export async function proxyToConvex(request: Request) {
   const convexSiteUrl = process.env.VITE_CONVEX_SITE_URL;
   if (!convexSiteUrl) {
@@ -10,19 +12,7 @@ export async function proxyToConvex(request: Request) {
   const targetUrl = new URL(convexSiteUrl);
   targetUrl.pathname = sourceUrl.pathname.replace(/^\/api\/backend\//, "/api/");
   targetUrl.search = sourceUrl.search;
-  // Preserve redirects for the caller instead of following them with session headers.
-  const response = await fetch(new Request(targetUrl, request), { redirect: "manual" });
-  const headers = new Headers(response.headers);
-
-  // fetch decompresses upstream responses, so these headers no longer describe the body.
-  headers.delete("content-encoding");
-  headers.delete("content-length");
-
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
+  return proxyRequest(request, targetUrl, new Headers(request.headers));
 }
 
 export const Route = createFileRoute("/api/backend/$")({

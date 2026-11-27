@@ -18,10 +18,12 @@
   "scripts": {
     "build:components": "bun run --cwd packages/worker-component build",
     "codegen": "bun run build:components && bun run --cwd packages/worker-component build:codegen && bun run --cwd packages/backend codegen",
-    "predev": "bun run build:components && bun scripts/convex-ready.ts reset",
+    "dev": "concurrently -c cyan,magenta,green --names server,web,worker \"bun run --cwd packages/server dev\" \"bun --cwd=apps/web dev --clearScreen false\" \"bun run --cwd packages/worker dev\"",
+    "dev:services": "docker compose -f compose.dev.yml up -d --wait",
     "dev:worker": "bun run --cwd packages/worker dev",
-    "dev": "concurrently -c cyan,magenta,yellow,green --names component-build,vite-dev,convex-dev,worker-dev \"bun --cwd=packages/worker-component run dev\" \"bun --cwd=apps/web dev --clearScreen false\" \"bun --cwd=packages/backend run dev --start 'bun ../../scripts/convex-ready.ts mark'\" \"bun scripts/convex-ready.ts wait && bun run dev:worker\"",
-    "test": "bun run build:components && bun run --cwd packages/backend test",
+    "test": "bun run --cwd packages/server test",
+    "test:backend": "bun run build:components && bun run --cwd packages/backend test",
+    "typecheck": "bun run --cwd packages/server typecheck",
     "lint": "eslint",
     "format": "oxfmt",
     "format:check": "oxfmt --check"

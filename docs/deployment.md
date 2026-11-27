@@ -238,17 +238,17 @@ succeed. Standard codegen requires deployment access for component analysis and
 does not deploy the generated functions. Review the generated diff before committing.
 
 For a fresh checkout without deployment access, `bun run build:components` builds
-the local workspace package from checked-in bindings. `bun run dev` builds it
-first and runs a TypeScript build watcher alongside Vite, Convex, and the Worker
-source watcher; the Worker waits until Convex's first successful push marks it ready
-via `scripts/convex-ready.ts`, then runs
-`bun --watch src/cli.ts start` in `packages/worker`. Enroll the
-local Worker before starting it; see the [Worker setup guide](../packages/worker/README.md).
+the local workspace package from checked-in bindings. `bun run dev` no longer
+runs Convex: it starts the rewrite's `packages/server`, Vite and the Worker source
+watcher (`bun --watch src/cli.ts start` in `packages/worker`); see the
+[backend rewrite plan](tasks/14_Backend_Rewrite.md). Run the Convex backend
+manually with `bun run --cwd packages/backend dev` while it remains the reference.
+Enroll the local Worker before starting it; see the [Worker setup guide](../packages/worker/README.md).
 Without enrollment the Worker reports a startup error while the other processes
 continue. Imported Worker file changes restart its process and discard in-memory
 edit sessions and previews; claimed tasks are not automatically rerun. Source API
-or schema changes still require the explicit codegen sequence above. Tests use
-the built package too; `bun run test` builds before running backend tests. See the
+or schema changes still require the explicit codegen sequence above. Backend tests
+use the built package too; `bun run test:backend` builds before running them. See the
 [Worker component guide](Worker/Component.md) for package exports and scope.
 
 ### Offline API Binding Codegen

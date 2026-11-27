@@ -148,13 +148,14 @@ owner can import a provider, configure its credentials, and issue API keys under
 operation. Owners can add existing Better Auth users directly as workspace
 members; there is no invitation-acceptance flow.
 
-After initial configuration, `bun run dev` starts Vite, Convex, the component build
-watcher, and the Worker source watcher together. The `worker-dev` pane waits for
-`convex dev`'s first successful push (signalled through `scripts/convex-ready.ts`)
-before starting the Worker. Enroll the local Worker first using
-[Worker setup](packages/worker/README.md). The Worker watcher restarts the process
-on imported file changes; without enrollment its startup reports an error while
-the other development processes continue.
+The backend is being rewritten from Convex to `packages/server` (see the
+[rewrite plan](docs/tasks/14_Backend_Rewrite.md)); until cutover the steps above
+describe the Convex stack. For the new server, `bun run dev:services` starts
+Postgres and Valkey with Docker Compose, then `bun run dev` runs the server,
+Vite (the web app forwards `/api` to the server) and the Worker source watcher together.
+Enroll the local Worker first using [Worker setup](packages/worker/README.md);
+without enrollment its startup reports an error while the other development
+processes continue.
 
 ## Try The API
 

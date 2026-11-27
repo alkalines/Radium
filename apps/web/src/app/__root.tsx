@@ -16,6 +16,7 @@ import { Providers } from "@/components/providers";
 import { HarnessWindow } from "@/components/window/harness-window";
 import { Toaster } from "@/components/ui/sonner";
 import { getToken } from "@/lib/auth-server";
+import type { TRPC } from "@/lib/trpc";
 import appCss from "@/styles/app.css?url";
 
 const isDev = import.meta.env.DEV;
@@ -36,6 +37,7 @@ const getAuth = createServerFn({ method: "GET" }).handler(async () => {
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
   convexQueryClient: ConvexQueryClient;
+  trpc: TRPC;
 }>()({
   head: () => ({
     meta: [

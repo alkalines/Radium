@@ -1,0 +1,38 @@
+{
+  "name": "server",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./trpc": {
+      "types": "./src/trpc/router.ts"
+    }
+  },
+  "scripts": {
+    "dev": "bun --bun nitro dev --port 3001",
+    "build": "nitro build",
+    "build:node": "nitro build --preset node_server",
+    "start": "bun .output/server/index.mjs",
+    "start:node": "node --env-file-if-exists=.env .output/server/index.mjs",
+    "smoke": "bun scripts/smoke.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@trpc/server": "^11.32.2",
+    "crossws": "^0.4.17",
+    "drizzle-orm": "1.0.0-rc.6",
+    "hono": "^4.13.23",
+    "ioredis": "^6.1.0",
+    "nitro": "3.0.261103-rc",
+    "postgres": "^4.1.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@trpc/client": "^11.32.2",
+    "@types/bun": "^1.4.5",
+    "drizzle-kit": "1.0.0-rc.6",
+    "typescript": "^7.0.2"
+  }
+}

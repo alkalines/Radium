@@ -1,0 +1,54 @@
+# Development and test services for packages/server. Not a deployment.
+#
+#   docker compose -f compose.dev.yml up -d                    # Postgres + Valkey
+#   docker compose -f compose.dev.yml --profile proxy up -d    # + Caddy on http://localhost:8080
+#
+# Ports bind to 127.0.0.1 only: the credentials below are development defaults.
+name: radium-dev
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: radium
+      POSTGRES_PASSWORD: radium
+      POSTGRES_DB: radium
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Postgres 18 images keep data under a versioned directory inside /var/lib/postgresql.
+      - postgres:/var/lib/postgresql
+      # Runs on first start only: creates the separate database the server tests use.
+      - ./docker/postgres-test-database.sql:/docker-entrypoint-initdb.d/10-test-database.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U radium -d radium"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  valkey:
+    image: valkey/valkey:9-alpine
+    ports:
+      - "127.0.0.1:${VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # The production routing (docker/Caddyfile) in front of the dev processes on the host:
+  # /api/* and WebSocket upgrades straight to the server, the rest to Vite.
+  # Host networking reaches Vite and Nitro, which listen on localhost only.
+  caddy:
+    profiles: ["proxy"]
+    image: caddy:2-alpine
+    network_mode: host
+    environment:
+      RADIUM_ADDRESS: ":${PROXY_PORT:-8080}"
+      WEB_UPSTREAM: "localhost:3000"
+      SERVER_UPSTREAM: "localhost:3001"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+
+volumes:
+  postgres:
